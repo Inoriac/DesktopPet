@@ -1,10 +1,14 @@
 #include <QApplication>
 #include <QPushButton>
 
-int main(int argc, char *argv[]) {
-    QApplication a(argc, argv);
-    QPushButton button("Hello world!", nullptr);
-    button.resize(200, 100);
-    button.show();
-    return QApplication::exec();
+#include <QApplication>
+#include "ui/mainwindow.h"
+
+int main(int argc, char *argv[])
+{
+    qputenv("QT_DEBUG_PLUGINS", "1");  // 临时打开插件日志
+    QApplication app(argc, argv);
+    MainWindow w;
+    w.show();
+    return app.exec();
 }
