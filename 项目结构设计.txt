@@ -1,0 +1,106 @@
+Desktop-Pet/
+│
+├── CMakeLists.txt                 # 主构建配置文件
+├── main.cpp                       # 程序入口
+│
+├── include/                       # 全局头文件（公共定义、常量等）
+│   ├── common.h
+│   ├── global_types.h
+│   └── macros.h
+│
+├── ui/                            # UI 层（窗口、托盘、界面交互）
+│   ├── mainwindow.ui
+│   ├── mainwindow.cpp
+│   ├── mainwindow.h
+│   ├── petwindow.cpp              # 桌宠窗口（透明 + 置顶）
+│   ├── petwindow.h
+│   ├── trayicon.cpp               # 系统托盘逻辑
+│   └── trayicon.h
+│
+├── core/                          # 逻辑层（行为控制 / 动作管理 / 配置）
+│   ├── pet_controller.cpp
+│   ├── pet_controller.h
+│   ├── animation_manager.cpp
+│   ├── animation_manager.h
+│   ├── event_handler.cpp
+│   ├── event_handler.h
+│   ├── config_manager.cpp
+│   ├── config_manager.h
+│   ├── behavior_manager.cpp       # （可选）行为AI调度
+│   └── behavior_manager.h
+│
+├── engine/                        # 底层引擎（渲染 / 音频 / 平台接口）
+│   ├── render_engine.cpp
+│   ├── render_engine.h
+│   ├── model_loader.cpp           # 加载 glb 主模型 + 外部动作包
+│   ├── model_loader.h
+│   ├── sound_engine.cpp
+│   ├── sound_engine.h
+│   ├── platform_utils.cpp         # 窗口置顶 / 桌面透明 / 鼠标穿透等
+│   ├── platform_utils.h
+│   ├── shader_manager.cpp         # （可选）GL着色器管理
+│   └── shader_manager.h
+│
+├── assets/                        # 静态资源（模型 / 动作 / 声音 / 着色器 / 配置）
+│   ├── pets/                      # 所有桌宠资源集合
+│   │   ├── huahua/                # 桌宠「花花」
+│   │   │   ├── model/
+│   │   │   │   └── huahua.glb
+│   │   │   ├── actions/
+│   │   │   │   ├── idle.glb
+│   │   │   │   ├── walk.glb
+│   │   │   │   ├── sleep.glb
+│   │   │   │   └── click_react.glb
+│   │   │   ├── textures/
+│   │   │   │   ├── hair.png
+│   │   │   │   ├── body.png
+│   │   │   │   └── eyes.png
+│   │   │   ├── sounds/
+│   │   │   │   ├── click.wav
+│   │   │   │   ├── sleep.wav
+│   │   │   │   └── meow.wav
+│   │   │   ├── shaders/           # （若有专属shader）
+│   │   │   └── config.json        # 该宠物的动画/贴图配置
+│   │   │
+│   │   └── momo/                  # 桌宠「默默」
+│   │       ├── model/
+│   │       │   └── momo.glb
+│   │       ├── actions/
+│   │       │   ├── idle.glb
+│   │       │   └── jump.glb
+│   │       ├── textures/
+│   │       ├── sounds/
+│   │       └── config.json
+│   │
+│   ├── shaders/                   # 全局共享着色器
+│   │   ├── default.vert
+│   │   ├── default.frag
+│   │   └── outline.frag
+│   │
+│   ├── sounds/                    # 全局音效（系统提示 / 公用音）
+│   │   ├── click.wav
+│   │   └── bgm.mp3
+│   │
+│   └── config/                    # 全局配置
+│       ├── app_settings.json      # 程序设置
+│       └── pet_registry.json      # 所有宠物登记信息
+│
+├── cmake/                         # CMake 模块目录
+│   ├── FindGLTF.cmake             # glTF/GLB 相关解析（自定义）
+│   ├── FindAssimp.cmake           # 模型加载库
+│   └── QtConfig.cmake             # Qt 编译配置（可选）
+│
+├── scripts/                       # 脚本（安装 / 打包 / 运行）
+│   ├── build_windows.bat
+│   ├── build_linux.sh
+│   └── package_assets.py
+│
+├── docs/                          # 文档
+│   ├── architecture_diagram.png
+│   ├── structure_overview.md
+│   └── design_notes.md
+│
+└── tests/                         # 单元测试
+    ├── test_loader.cpp
+    ├── test_animation.cpp
+    └── test_config.cpp
