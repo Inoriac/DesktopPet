@@ -23,6 +23,7 @@
 QT_BEGIN_NAMESPACE
 class QAction;
 class QMenu;
+class RenderViewport;
 
 class MainWindow : public QMainWindow{
     Q_OBJECT
@@ -76,6 +77,8 @@ private:
 
     // 状态栏
     QLabel *statusLabel;
+
+    RenderViewport *renderViewport;
 };
 
 

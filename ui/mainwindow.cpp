@@ -3,6 +3,8 @@
 //
 
 #include "mainwindow.h"
+#include "render_viewport.h"
+
 #include <QApplication>
 #include <QMessageBox>
 #include <QFileDialog>
@@ -63,6 +65,10 @@ void MainWindow::createCentralWidget() {
     setCentralWidget(centralWidget);
 
     mainLayout = new QVBoxLayout(centralWidget);
+
+    renderViewport = new RenderViewport(centralWidget);
+    renderViewport->setMinimumHeight(240);
+    mainLayout->addWidget(renderViewport);
 
     // 创建宠物选择区域
     characterSelectionGroup = new QGroupBox("Character Selection");

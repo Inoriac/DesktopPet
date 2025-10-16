@@ -12,6 +12,8 @@ find_package(Qt6 COMPONENTS
         Core
         Gui
         Widgets
+        OpenGL
+        OpenGLWidgets
         REQUIRED)
 
 # 收集所有源文件
@@ -48,6 +50,8 @@ set(ENGINE_SOURCES
     engine/shader_manager.h
     engine/sound_engine.cpp
     engine/sound_engine.h
+        engine/render_viewport.cpp
+        engine/render_viewport.h
 )
 
 set(INCLUDE_SOURCES
@@ -79,6 +83,8 @@ target_link_libraries(Desktop_Pet
         Qt::Core
         Qt::Gui
         Qt::Widgets
+        Qt::OpenGL
+        Qt::OpenGLWidgets
 )
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
@@ -102,12 +108,21 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
     endif ()
-    foreach (QT_LIB Core Gui Widgets)
+    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets)
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E copy
                 "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
-    endforeach (QT_LIB)
+    endforeach ()
+
+    if (WIN32)
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
+                --no-translations
+                --no-system-d3d-compiler
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                COMMENT "Running windeployqt to copy Qt runtime dependencies...")
+    endif ()
 endif ()
 
 
