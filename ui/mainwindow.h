@@ -8,7 +8,6 @@
 #include <QMainWindow>
 #include <QMenuBar>
 #include <QStatusBar>
-#include <QVBoxLayout>
 #include <QHBoxLayout>
 #include <QPushButton>
 #include <QLabel>
@@ -17,7 +16,6 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QCheckBox>
-#include <QComboBox>
 
 
 QT_BEGIN_NAMESPACE

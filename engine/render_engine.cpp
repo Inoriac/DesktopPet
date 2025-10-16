@@ -4,6 +4,8 @@
 
 #include "render_engine.h"
 #include <QOpenGLFunctions_3_3_Core>
+#include <QElapsedTimer>
+#include <QMatrix4x4>
 #include <QVector3D>
 
 static const char *VERT_SRC = R"(#version 330 core
@@ -28,14 +30,23 @@ void main() {
 RenderEngine::RenderEngine() = default;
 
 RenderEngine::~RenderEngine() {
-    destroyTriangle();
+    if (!gl) return;
+    for (auto &m : meshes) {
+        if (m.ebo) gl->glDeleteBuffers(1, &m.ebo);
+        if (m.vbo) gl->glDeleteBuffers(1, &m.vbo);
+        if (m.vao) gl->glDeleteVertexArrays(1, &m.vao);
+    }
+    meshes.clear();
 }
 
 void RenderEngine::initialize(QOpenGLFunctions_3_3_Core *glFuncs) {
     gl = glFuncs;
     createProgram();
-    createTriangle();
+
     gl->glEnable(GL_DEPTH_TEST);
+    // gl->glDisable(GL_DEPTH_TEST);
+    gl->glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+
 }
 
 void RenderEngine::resize(int width, int height) {
@@ -45,94 +56,112 @@ void RenderEngine::resize(int width, int height) {
 }
 
 void RenderEngine::render() {
-    // 保护
-    if (!program.isLinked()) {
-        gl->glClearColor(0.1f, 0.12f, 0.15f, 1.0f);
+    static QElapsedTimer timer;
+    if (!timer.isValid()) timer.start(); // 第一次调用时初始化
+    float deltaSec = timer.restart() / 1000.0f; // 毫秒转秒
+
+    if (!program.isLinked() || meshes.empty()) {
+        gl->glClearColor(0.2f, 0.6f, 0.9f, 1.0f);
         gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
         return;
     }
 
-    gl->glClearColor(0.1f, 0.12f, 0.15f, 1.0f);
+    // 清屏
+    gl->glClearColor(0.2f, 0.6f, 0.9f, 1.0f);
     gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
+    // 旋转角度（每秒旋转 60 度）
+    angleDeg += 60.0f * deltaSec;
+    if (angleDeg >= 360.0f) angleDeg -= 360.0f;
+
+    // 构建变换矩阵
+    float aspect = (viewportHeight > 0) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
+
     QMatrix4x4 proj;
-    float aspect = (viewportHeight > 0 ) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
     proj.perspective(45.0f, aspect, 0.1f, 100.0f);
+
     QMatrix4x4 view;
-    view.lookAt(QVector3D(0, 0, 3), QVector3D(0,0,0), QVector3D(0,1,0));
+    view.lookAt(QVector3D(0, 0, 3), QVector3D(0, 0, 0), QVector3D(0, 1, 0));
+
     QMatrix4x4 model;
+    model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); // 绕 Y 轴旋转
+
     QMatrix4x4 mvp = proj * view * model;
 
+    // 绘制
     program.bind();
     program.setUniformValue("uMVP", mvp);
 
-    gl->glBindVertexArray(vao);
-    gl->glDrawArrays(GL_TRIANGLES, 0, 3);
-    gl->glBindVertexArray(0);
+    for (const auto &m : meshes) {
+        gl->glBindVertexArray(m.vao);
+        if (m.indexCount > 0) {
+            gl->glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, nullptr);
+        }
+    }
 
+    gl->glBindVertexArray(0);
     program.release();
 }
 
-void RenderEngine::createTriangle() {
-    // 位置(x,y,z) + 颜色(r,g,b)
-    // 上传给 GPU 的顶点数据数组 每个点包含六个信息
-    const float vertices[] = {
-        0.0f,  0.6f,  0.0f,   1.0f, 0.3f, 0.3f,
-       -0.6f, -0.4f,  0.0f,   0.3f, 1.0f, 0.3f,
-        0.6f, -0.4f,  0.0f,   0.3f, 0.3f, 1.0f
-   };
+void RenderEngine::addMesh(const std::vector<float> &interLeavePosColor,
+                            const std::vector<unsigned int> &indices) {
+    GpuMesh m;
 
-    // 分配实际的 GPU 对象
-    gl->glGenVertexArrays(1, &vao);         // 生成VAO(顶点数组对象)
-    gl->glGenBuffers(1, &vbo);              // 生成VBO(顶点缓冲对象)
+    // 分配 GPU 资源区域
+    gl->glGenVertexArrays(1, &m.vao);
+    gl->glGenBuffers(1, &m.vbo);
+    gl->glGenBuffers(1, &m.ebo);
 
-    // 绑定
-    gl->glBindVertexArray(vao);
-    gl->glBindBuffer(GL_ARRAY_BUFFER, vbo); // 绑定至 GL_ARRAY_BUFFER 目标
+    gl->glBindVertexArray(m.vao);
 
-    // 上传顶点数据至 GPU
-    // GL_STATIC_DRAW 表示数据不会频繁修改，提示驱动将其放入显存中优化读取速度
-    gl->glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    gl->glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    gl->glBufferData(GL_ARRAY_BUFFER,
+        GLsizeiptr(interLeavePosColor.size() * sizeof(float)),
+        interLeavePosColor.data(),
+        GL_STATIC_DRAW);
 
-    // 配置顶点属性：位置
+    gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    gl->glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        GLsizeiptr(indices.size() * sizeof(unsigned int)),
+        indices.data(),
+        GL_STATIC_DRAW);
+
     gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)0);
-    gl->glEnableVertexAttribArray(0);   // 启用索引0的顶点属性
-
-    // 配置顶点属性：颜色
+    gl->glEnableVertexAttribArray(0);
     gl->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 6 * sizeof(float), (void*)(3 * sizeof(float)));
     gl->glEnableVertexAttribArray(1);
 
-    // 解绑缓冲与VAO，避免后续误操作，改写当前VAO/VBO
-    gl->glBindBuffer(GL_ARRAY_BUFFER, 0);
     gl->glBindVertexArray(0);
+
+    m.indexCount = int(indices.size());
+    meshes.push_back(m);
 }
 
-void RenderEngine::destroyTriangle() {
+void RenderEngine::clearScene() {
     if (!gl) return;
-
-    if (vbo) {
-        gl->glDeleteBuffers(1, &vbo);
-        vbo = 0;
+    for (auto &m : meshes) {
+        if (m.ebo) gl->glDeleteBuffers(1, &m.ebo);
+        if (m.vbo) gl->glDeleteBuffers(1, &m.vbo);
+        if (m.vao) gl->glDeleteVertexArrays(1, &m.vao);
     }
-
-    if (vao) {
-        gl->glDeleteVertexArrays(1, &vao);
-        vao = 0;
-    }
+    meshes.clear();
 }
 
 void RenderEngine::createProgram() {
     program.create();
+    // program.addShaderFromSourceCode(QOpenGLShader::Vertex, VERT_SRC);
+    // program.addShaderFromSourceCode(QOpenGLShader::Fragment, FRAG_SRC);
+    // program.link();
     if (!program.addShaderFromSourceCode(QOpenGLShader::Vertex, VERT_SRC)) {
-        qWarning() << "Vertex shader compile error:" << program.log();
+        qWarning() << "Vertex compile:" << program.log();
         return;
     }
     if (!program.addShaderFromSourceCode(QOpenGLShader::Fragment, FRAG_SRC)) {
-        qWarning() << "Fragment shader compile error:" << program.log();
+        qWarning() << "Fragment compile:" << program.log();
         return;
     }
     if (!program.link()) {
-        qWarning() << "Shader link error:" << program.log();
+        qWarning() << "Program link:" << program.log();
         return;
     }
 }
