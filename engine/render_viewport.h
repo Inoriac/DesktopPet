@@ -9,6 +9,8 @@
 #include <QOpenGLFunctions_3_3_Core>
 #include <memory>
 
+#include "shader_manager.h"
+
 class RenderEngine;
 
 class RenderViewport : public QOpenGLWidget{
@@ -24,7 +26,8 @@ protected:
 
 private:
     std::unique_ptr<QOpenGLFunctions_3_3_Core> glCore;
-    std::unique_ptr<RenderEngine> renderEngine;
+    std::unique_ptr<RenderEngine> renderEngine;     // 渲染引擎
+    std::unique_ptr<ShaderManager> shaderManager;   // 着色器
 };
 
 #endif //DESKTOP_PET_RENDER_VIEWPORT_H

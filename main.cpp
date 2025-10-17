@@ -1,11 +1,12 @@
 #include <QApplication>
+#include <qdir.h>
 #include <QSurfaceFormat>
 
 #include "ui/mainwindow.h"
 
 int main(int argc, char *argv[])
 {
-    qputenv("QT_DEBUG_PLUGINS", "1");  // 临时打开插件日志
+    // qputenv("QT_DEBUG_PLUGINS", "1");  // 临时打开插件日志
     // 可选：高 DPI 支持（Qt6 默认不错，但可加）
     QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 
@@ -22,6 +23,8 @@ int main(int argc, char *argv[])
     app.setApplicationName("Desktop Pet");
     app.setOrganizationName("Desktop Pet Team");
     app.setApplicationVersion("1.0.0");
+
+    QDir::setCurrent(QCoreApplication::applicationDirPath() + "/..");
 
     MainWindow w;
     w.show();

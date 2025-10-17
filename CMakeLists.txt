@@ -77,6 +77,8 @@ target_include_directories(Desktop_Pet PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/ui
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
+
 )
 
 target_link_libraries(Desktop_Pet

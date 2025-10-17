@@ -5,7 +5,7 @@
 #ifndef DESKTOP_PET_RENDER_ENGINE_H
 #define DESKTOP_PET_RENDER_ENGINE_H
 
-#include <QOpenGLShaderProgram>
+#include "shader_manager.h"
 
 // 代表一个几何体
 struct GpuMesh {
@@ -24,20 +24,18 @@ public:
     ~RenderEngine();
 
     // 传入当前上下文的 QOpenGLFunctions
-    void initialize(QOpenGLFunctions_3_3_Core *glFuncs);
+    void initialize(QOpenGLFunctions_3_3_Core *glFuncs, ShaderManager *shaderMgr);
     void resize(int width, int height);
     void render();
 
-    // 从原始数据添加网络（支持索引绘制）
+    // 模型上传
     void addMesh(const std::vector<float>& interLeavePosColor, const std::vector<unsigned int>& indices);
 
     void clearScene();
 
 private:
-    void createProgram();
-
     QOpenGLFunctions_3_3_Core *gl {nullptr};    // 用于提供 OpenGL 的服务接口
-    QOpenGLShaderProgram program;   // 着色器
+    ShaderManager* shaderManager {nullptr};
 
     std::vector<GpuMesh> meshes;    // GPU 资源表
     int viewportWidth {0};
