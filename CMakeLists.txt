@@ -60,6 +60,12 @@ set(INCLUDE_SOURCES
     include/macros.h
 )
 
+set(TINYGLTF_SOURCES
+        third_party/tinygltf/tiny_gltf.cc
+        third_party/tinygltf/json.hpp
+        third_party/tinygltf/stb_image.h
+)
+
 # 合并所有源文件
 set(ALL_SOURCES
     main.cpp
@@ -67,6 +73,7 @@ set(ALL_SOURCES
     ${CORE_SOURCES}
     ${ENGINE_SOURCES}
     ${INCLUDE_SOURCES}
+    ${TINYGLTF_SOURCES}
 )
 
 add_executable(Desktop_Pet ${ALL_SOURCES})

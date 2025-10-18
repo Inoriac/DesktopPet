@@ -5,6 +5,7 @@
 #ifndef DESKTOP_PET_RENDER_ENGINE_H
 #define DESKTOP_PET_RENDER_ENGINE_H
 
+#include "model_loader.h"
 #include "shader_manager.h"
 
 // 代表一个几何体
@@ -14,6 +15,7 @@ struct GpuMesh {
     unsigned int vbo {0};   // 数据存储位置
     unsigned int ebo {0};   // 网格中顶点的连接方式
     int indexCount {0};
+    int materialIndex {0};  // 材质索引
 };
 
 class QOpenGLFunctions_3_3_Core;
@@ -30,6 +32,7 @@ public:
 
     // 模型上传
     void addMesh(const std::vector<float>& interLeavePosColor, const std::vector<unsigned int>& indices);
+    void addMeshFromData(const MeshData& meshData);
 
     void clearScene();
 

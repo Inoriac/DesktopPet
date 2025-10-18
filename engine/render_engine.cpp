@@ -59,12 +59,15 @@ void RenderEngine::render() {
     QMatrix4x4 proj;
     float aspect = (viewportHeight > 0) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
     proj.perspective(45.0f, aspect, 0.1f, 100.0f);  // 近大远小
+
     // 视图矩阵(控制相机位置与方向)
     QMatrix4x4 view;
-    view.lookAt(QVector3D(0, 0, 3), QVector3D(0, 0, 0), QVector3D(0, 1, 0));
+    view.lookAt(QVector3D(0, 1.5f, 4), QVector3D(0, 1, 0), QVector3D(0, 1, 0));
     // 模型矩阵
     QMatrix4x4 model;
+    model.scale(0.05f);  // 缩小
     model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); // 绕 Y 轴旋转
+
     // 综合矩阵 遵循右乘 结果等价于先把顶点从模型空间变换到世界坐标，再到视图，最后进行投影
     QMatrix4x4 mvp = proj * view * model;
 
@@ -83,6 +86,23 @@ void RenderEngine::render() {
     shader->setUniformValue("model", model);
     shader->setUniformValue("view", view);
     shader->setUniformValue("projection", proj);
+
+    shader->setUniformValue("albedo", QVector3D(0.8f, 0.6f, 0.4f)); // 基础颜色
+    shader->setUniformValue("metallic", 0.0f);  // 非金属
+    shader->setUniformValue("roughness", 0.5f); // 中等粗糙度
+    shader->setUniformValue("ao", 1.0f);        // 环境光遮蔽
+
+    // 设置纹理使用状态
+    shader->setUniformValue("useAlbedoMap", false);
+    shader->setUniformValue("useNormalMap", false);
+    shader->setUniformValue("useMetallicMap", false);
+    shader->setUniformValue("useRoughnessMap", false);
+    shader->setUniformValue("useAoMap", false);
+
+    // 设置光照
+    shader->setUniformValue("lightPositions[0]", QVector3D(2.0f, 2.0f, 2.0f));
+    shader->setUniformValue("lightColors[0]", QVector3D(1.0f, 1.0f, 1.0f));
+    shader->setUniformValue("viewPos", QVector3D(0, 0, 3));
 
     for (const auto &m : meshes) {
         gl->glBindVertexArray(m.vao);
@@ -135,6 +155,90 @@ void RenderEngine::addMesh(const std::vector<float> &interLeavePosColor,
 
     m.indexCount = int(indices.size());
     meshes.push_back(m);
+}
+
+void RenderEngine::addMeshFromData(const MeshData &meshData) {
+    GpuMesh m;
+
+    // 分配 GPU 资源
+    gl->glGenVertexArrays(1, &m.vao);
+    gl->glGenBuffers(1, &m.vbo);
+    gl->glGenBuffers(1, &m.ebo);
+
+    // 激活顶点配置上下文
+    gl->glBindVertexArray(m.vao);
+
+    // 准备顶点数据(位置 + 法线 + UV)
+    std::vector<float> interleaveData;
+
+    // 确保所有数据长度一致
+    size_t vertexCount = meshData.vertices.size() / 3;
+    size_t normalCount = meshData.normals.size() / 3;
+    size_t uvCount = meshData.uvs.size() / 2;
+
+    qDebug() << "Processing mesh with" << vertexCount << " vertices";
+    qDebug() << "Normals:" << normalCount << "UVs:" << uvCount;
+
+    // 交错存储
+    for (size_t i = 0; i< vertexCount; i++) {
+        // 位置
+        interleaveData.push_back(meshData.vertices[i * 3 + 0]);
+        interleaveData.push_back(meshData.vertices[i * 3 + 1]);
+        interleaveData.push_back(meshData.vertices[i * 3 + 2]);
+
+        // 法线
+        if (i < normalCount) {
+            interleaveData.push_back(meshData.normals[i * 3 + 0]);
+            interleaveData.push_back(meshData.normals[i * 3 + 1]);
+            interleaveData.push_back(meshData.normals[i * 3 + 2]);
+        } else {    // 默认值
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(1.0f);
+        }
+
+        // UV 坐标
+        if (i < uvCount) {
+            interleaveData.push_back(meshData.uvs[i * 2 + 0]);
+            interleaveData.push_back(meshData.uvs[i * 2 + 1]);
+        } else {
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(0.0f);
+        }
+    }
+    // 上传顶点数据
+    gl->glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
+    gl->glBufferData(GL_ARRAY_BUFFER,
+        GLsizeiptr(interleaveData.size() * sizeof(float)),
+        interleaveData.data(),
+        GL_STATIC_DRAW);
+
+    // 上传索引数据
+    gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
+    gl->glBufferData(GL_ELEMENT_ARRAY_BUFFER,
+        GLsizeiptr(meshData.indices.size() * sizeof(unsigned int)),
+        meshData.indices.data(),
+        GL_STATIC_DRAW);
+
+    // 配置顶点属性格式
+    //位置 (Location = 0)
+    gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    gl->glEnableVertexAttribArray(0);
+
+    // 法线(Location = 1)
+    gl->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    gl->glEnableVertexAttribArray(1);
+
+    // UV 坐标(Location = 2)
+    gl->glVertexAttribPointer(2, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    gl->glEnableVertexAttribArray(2);
+
+    gl->glBindVertexArray(0);
+
+    m.indexCount = int(meshData.indices.size());
+    meshes.push_back(m);
+
+    qDebug() << "Mesh added to GPU with" << m.indexCount << " indices";
 }
 
 void RenderEngine::clearScene() {
