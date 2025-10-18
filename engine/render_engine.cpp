@@ -5,6 +5,7 @@
 #include "render_engine.h"
 #include <QOpenGLFunctions_3_3_Core>
 #include <QElapsedTimer>
+#include <qimage.h>
 #include <QMatrix4x4>
 #include <QVector3D>
 
@@ -25,8 +26,11 @@ void RenderEngine::initialize(QOpenGLFunctions_3_3_Core *glFuncs, ShaderManager 
     shaderManager = shaderMgr;
 
     gl->glEnable(GL_DEPTH_TEST);    // 仅绘制离摄像机更近的片段
-    // gl->glDisable(GL_DEPTH_TEST);
     gl->glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);  // 设置多边形所有面均以实心模式绘制
+}
+
+void RenderEngine::setMaterials(std::vector<MaterialData> materialDatas) {
+    materials = materialDatas;
 }
 
 void RenderEngine::resize(int width, int height) {
@@ -79,37 +83,43 @@ void RenderEngine::render() {
 
     // 绘制
     shader->bind();
-    static float time = 0.0f;
-    time += deltaSec;
-
-    shader->setUniformValue("time", time);
     shader->setUniformValue("model", model);
     shader->setUniformValue("view", view);
     shader->setUniformValue("projection", proj);
-
-    shader->setUniformValue("albedo", QVector3D(0.8f, 0.6f, 0.4f)); // 基础颜色
-    shader->setUniformValue("metallic", 0.0f);  // 非金属
-    shader->setUniformValue("roughness", 0.5f); // 中等粗糙度
-    shader->setUniformValue("ao", 1.0f);        // 环境光遮蔽
-
-    // 设置纹理使用状态
-    shader->setUniformValue("useAlbedoMap", false);
-    shader->setUniformValue("useNormalMap", false);
-    shader->setUniformValue("useMetallicMap", false);
-    shader->setUniformValue("useRoughnessMap", false);
-    shader->setUniformValue("useAoMap", false);
 
     // 设置光照
     shader->setUniformValue("lightPositions[0]", QVector3D(2.0f, 2.0f, 2.0f));
     shader->setUniformValue("lightColors[0]", QVector3D(1.0f, 1.0f, 1.0f));
     shader->setUniformValue("viewPos", QVector3D(0, 0, 3));
 
-    for (const auto &m : meshes) {
-        gl->glBindVertexArray(m.vao);
-        if (m.indexCount > 0) { // 顶点数
-            // 进入绘制 pipeline
-            gl->glDrawElements(GL_TRIANGLES, m.indexCount, GL_UNSIGNED_INT, nullptr);
+    // 绘制网格
+    for (const auto &mesh: meshes) {
+
+        if (mesh.materialIndex < 0 || mesh.materialIndex >= materials.size()) {
+            qWarning() << "Mesh has invalid material index:" << mesh.materialIndex;
+            continue;
         }
+
+        // 取出对应材质
+        const auto &mat = materials[mesh.materialIndex];
+        gl->glBindVertexArray(mesh.vao);
+
+        // 绑定不同的纹理槽位
+        if (mat.albedoTexID) {
+            gl->glActiveTexture(GL_TEXTURE0);
+            gl->glBindTexture(GL_TEXTURE_2D, mat.albedoTexID);
+        }
+        if (mat.normalTexID) {
+            gl->glActiveTexture(GL_TEXTURE1);
+            gl->glBindTexture(GL_TEXTURE_2D, mat.normalTexID);
+        }
+        if (mat.metallicRoughnessTexID) {
+            gl->glActiveTexture(GL_TEXTURE2);
+            gl->glBindTexture(GL_TEXTURE_2D, mat.metallicRoughnessTexID);
+        }
+
+        gl->glDrawElements(GL_TRIANGLES, mesh.indexCount, GL_UNSIGNED_INT, nullptr);
+        gl->glBindVertexArray(0);
     }
 
     // 清理状态
@@ -236,10 +246,70 @@ void RenderEngine::addMeshFromData(const MeshData &meshData) {
     gl->glBindVertexArray(0);
 
     m.indexCount = int(meshData.indices.size());
+    m.materialIndex = meshData.materialIndex;
+
     meshes.push_back(m);
 
     qDebug() << "Mesh added to GPU with" << m.indexCount << " indices";
 }
+
+void RenderEngine::uploadMaterialTextures(MaterialData &material) {
+    auto uploadFromQImage = [&](const QImage &img, unsigned int &texID) {
+        if (img.isNull()) return;
+
+        QImage tmp = img.convertToFormat(QImage::Format_RGBA8888).mirrored();
+
+        gl->glGenTextures(1, &texID);
+        gl->glBindTexture(GL_TEXTURE_2D, texID);
+
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+        gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+
+        gl->glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, tmp.width(), tmp.height(), 0, GL_RGBA, GL_UNSIGNED_BYTE, tmp.bits());
+        gl->glGenerateMipmap(GL_TEXTURE_2D);
+        gl->glBindTexture(GL_TEXTURE_2D, 0);
+    };
+
+    auto loadAndUpload = [&](const std::string &path,
+                             const std::vector<unsigned char> &imageData,
+                             const std::string &mime,
+                             unsigned int &texID) {
+        // 优先使用内嵌字节流（imageData）
+        if (!imageData.empty()) {
+            QImage img = QImage::fromData(reinterpret_cast<const uchar*>(imageData.data()), static_cast<int>(imageData.size()));
+            if (!img.isNull()) {
+                uploadFromQImage(img, texID);
+                return;
+            } else {
+                qWarning() << "QImage::fromData failed for embedded image (mime)" << QString::fromStdString(mime);
+            }
+        }
+
+        // 如果没有内嵌数据，再尝试通过路径加载（外部 .png/.jpg）
+        if (!path.empty()) {
+            // 注意：path 可能是相对路径，需与 GLTF 文件所在目录拼接 —— 这里假设 path 可直接访问
+            QImage img(QString::fromStdString(path));
+            if (!img.isNull()) {
+                uploadFromQImage(img, texID);
+                return;
+            } else {
+                qWarning() << "Failed to load texture from path:" << QString::fromStdString(path);
+            }
+        }
+
+        // 均失败则 texID 保持 0（表示无纹理）
+    };
+
+    // 调用：albedo / normal / mr / ao / emissive
+    loadAndUpload(material.albedoTexPath, material.albedoImageData, material.albedoMimeType, material.albedoTexID);
+    loadAndUpload(material.normalTexPath, material.normalImageData, material.normalMimeType, material.normalTexID);
+    loadAndUpload(material.metallicRoughnessTexPath, material.metallicRoughnessImageData, material.metallicRoughnessMimeType, material.metallicRoughnessTexID);
+    loadAndUpload(material.aoTexPath, material.aoImageData, material.aoMimeType, material.aoTexID);
+    // emissive 可以类似处理，如果需要
+}
+
 
 void RenderEngine::clearScene() {
     if (!gl) return;

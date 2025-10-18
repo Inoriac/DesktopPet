@@ -17,7 +17,7 @@ class RenderViewport : public QOpenGLWidget{
     Q_OBJECT
 public:
     explicit RenderViewport(QWidget *parent = nullptr);
-    ~RenderViewport();
+    ~RenderViewport() override;
 
 protected:
     void initializeGL() override;

@@ -33,13 +33,7 @@ void RenderViewport::initializeGL() {
         return;
     }
 
-    // 初始化着色器
-    shaderManager = std::make_unique<ShaderManager>();
-    shaderManager->initialize(glCore.get());
-
-    // 加载 PBR 着色器
-    if (bool success = shaderManager->loadShader("pbr", "assets/shaders/pbr.vert", "assets/shaders/pbr.frag")) qDebug() << "PBR shader loaded successfully";
-
+    // GPU 信息
     auto *f = QOpenGLContext::currentContext()->functions();
     qDebug() << "Vendor:"   << reinterpret_cast<const char*>(f->glGetString(GL_VENDOR));
     qDebug() << "Renderer:" << reinterpret_cast<const char*>(f->glGetString(GL_RENDERER));
@@ -47,23 +41,38 @@ void RenderViewport::initializeGL() {
     qDebug() << "GLSL:"     << reinterpret_cast<const char*>(f->glGetString(GL_SHADING_LANGUAGE_VERSION));
 
 
+    // 初始化着色器
+    shaderManager = std::make_unique<ShaderManager>();
+    shaderManager->initialize(glCore.get());
+
+    // 加载 PBR 着色器
+    if (shaderManager->loadShader("pbr", "assets/shaders/pbr.vert", "assets/shaders/pbr.frag")) qDebug() << "PBR shader loaded successfully";
+
+    // 初始化渲染引擎
     renderEngine = std::make_unique<RenderEngine>();
     renderEngine->initialize(glCore.get(), shaderManager.get());
 
-    // 测试ModelLoader
+    // 模型加载
     ModelLoader loader;
-    bool success_model = loader.loadModel("assets/models/milltina/model/milltina.glb");
+    bool success = loader.loadModel("assets/models/milltina/model/milltina.gltf");
 
-    if (success_model) {
+    if (success) {
         qDebug() << "Model loaded successfully!";
         qDebug() << "Mesh count:" << loader.getMeshes().size();
+        qDebug() << "Material count:" << loader.getMaterials().size();
 
-        // 添加所有的网格到渲染引擎
+        // 上传网格数据
         for (const auto& meshData : loader.getMeshes()) {
             renderEngine->addMeshFromData(meshData);
         }
+        qDebug() << "All meshes uploaded to GPU successfully";
 
-        qDebug() << "All meshed added to render engine";
+        // 上传纹理材质
+        for (auto& material : loader.getMaterials()) {
+            renderEngine->uploadMaterialTextures(material);
+        }
+        qDebug() << "All materials uploaded to GPU successfully";
+
     } else {
         qWarning() << "Failed to load model";
 
@@ -77,6 +86,9 @@ void RenderViewport::initializeGL() {
         std::vector<unsigned int> idx = {0,1,2};
         renderEngine->addMesh(tri, idx);
     }
+
+    // 同步材质信息
+    renderEngine->setMaterials(loader.getMaterials());
 }
 
 void RenderViewport::resizeGL(int w, int h) {

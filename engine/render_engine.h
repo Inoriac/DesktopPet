@@ -25,14 +25,16 @@ public:
     RenderEngine();
     ~RenderEngine();
 
-    // 传入当前上下文的 QOpenGLFunctions
     void initialize(QOpenGLFunctions_3_3_Core *glFuncs, ShaderManager *shaderMgr);
+    void setMaterials(std::vector<MaterialData> materialDatas);
+
     void resize(int width, int height);
     void render();
 
     // 模型上传
     void addMesh(const std::vector<float>& interLeavePosColor, const std::vector<unsigned int>& indices);
     void addMeshFromData(const MeshData& meshData);
+    void uploadMaterialTextures(MaterialData& material);
 
     void clearScene();
 
@@ -41,6 +43,8 @@ private:
     ShaderManager* shaderManager {nullptr};
 
     std::vector<GpuMesh> meshes;    // GPU 资源表
+    std::vector<MaterialData> materials;    // 材质列表
+
     int viewportWidth {0};
     int viewportHeight {0};
     float angleDeg {0.0f};  // 渲染对象旋转角度
