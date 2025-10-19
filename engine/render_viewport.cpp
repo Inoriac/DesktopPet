@@ -55,23 +55,24 @@ void RenderViewport::initializeGL() {
     // 模型加载
     ModelLoader loader;
     bool success = loader.loadModel("assets/models/milltina/model/milltina.gltf");
+    // bool success = loader.loadModel("assets/models/kipfel/model/Kipfel_1.0.3.gltf");
 
     if (success) {
         qDebug() << "Model loaded successfully!";
         qDebug() << "Mesh count:" << loader.getMeshes().size();
         qDebug() << "Material count:" << loader.getMaterials().size();
 
-        // 上传网格数据
-        for (const auto& meshData : loader.getMeshes()) {
-            renderEngine->addMeshFromData(meshData);
-        }
-        qDebug() << "All meshes uploaded to GPU successfully";
-
         // 上传纹理材质
         for (auto& material : loader.getMaterials()) {
             renderEngine->uploadMaterialTextures(material);
         }
         qDebug() << "All materials uploaded to GPU successfully";
+
+        // 上传网格数据
+        for (const auto& meshData : loader.getMeshes()) {
+            renderEngine->addMeshFromData(meshData);
+        }
+        qDebug() << "All meshes uploaded to GPU successfully";
 
     } else {
         qWarning() << "Failed to load model";
@@ -89,6 +90,7 @@ void RenderViewport::initializeGL() {
 
     // 同步材质信息
     renderEngine->setMaterials(loader.getMaterials());
+    renderEngine->sortMeshesByMaterial();   // 索引优化
 }
 
 void RenderViewport::resizeGL(int w, int h) {

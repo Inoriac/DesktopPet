@@ -25,11 +25,6 @@ bool ModelLoader::loadModel(const std::string &path) {
     }
 
     modelDirectory = fileInfo.path().toStdString();
-    // 裁剪资源路径至 ./assets/models/{model_name}
-    size_t pos = modelDirectory.rfind("/model");
-    if (pos != std::string::npos) {
-        modelDirectory = modelDirectory.substr(0, pos);
-    }
 
 
     return parseGLTF(path);
@@ -198,100 +193,68 @@ MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, con
     MaterialData material;
     material.name = mat.name;
 
-    // 基础色因子
+    // === 基础色因子 ===
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
         material.baseColorFactor = QVector3D(
             mat.pbrMetallicRoughness.baseColorFactor[0],
             mat.pbrMetallicRoughness.baseColorFactor[1],
-            mat.pbrMetallicRoughness.baseColorFactor[2]
-        );
+            mat.pbrMetallicRoughness.baseColorFactor[2]);
+        material.alphaFactor = static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]);
     }
-    material.metallicFactor  = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+
+    material.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
     material.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
 
-    // Lambda: 将纹理索引转换为路径或内嵌数据
-    auto fillImage = [&](int texIndex,
-                         std::string &outPath,
-                         std::vector<unsigned char> &outImageData,
-                         std::string &outMime) {
-
-        outPath.clear();
-        outImageData.clear();
-        outMime.clear();
-
-        if (texIndex < 0 || texIndex >= static_cast<int>(model.textures.size())) return;
+    // === 函数：加载贴图 ===
+    auto loadTexture = [&](int texIndex,
+                           std::string &outPath,
+                           std::vector<unsigned char> &outImageData,
+                           int &outWidth,
+                           int &outHeight) {
+        if (texIndex < 0 || texIndex >= model.textures.size())
+            return;
 
         const tinygltf::Texture &tex = model.textures[texIndex];
-        int imgIndex = tex.source;
-        if (imgIndex < 0 || imgIndex >= static_cast<int>(model.images.size())) return;
+        const tinygltf::Image &img = model.images[tex.source];
 
-        const tinygltf::Image &img = model.images[imgIndex];
-
-        // A. 外部 URI 图片
         if (!img.uri.empty()) {
-            // 拼接成绝对路径
-            outPath = modelDirectory + "/textures/" + img.uri;
-            qDebug() << "Resolved external image path:" << QString::fromStdString(outPath);
-            return;
-        }
-
-        // B. 内嵌图像（.glb）
-        if (!img.image.empty()) {
+            // 外部图片文件路径（相对路径）
+            outPath = modelDirectory + "/" + img.uri;
+        } else if (!img.image.empty()) {
+            // 内嵌图像（glb bufferView 或 base64）
             outImageData = img.image;
-            outMime = img.mimeType;
-            qDebug() << "Found embedded image (size):"
-                     << outImageData.size()
-                     << " mime:" << QString::fromStdString(outMime);
-            return;
+            outWidth = img.width;
+            outHeight = img.height;
         }
-
-        // C. bufferView 解包（备用）
-        if (img.bufferView >= 0 && img.bufferView < static_cast<int>(model.bufferViews.size())) {
-            const auto &bufferView = model.bufferViews[img.bufferView];
-            const auto &buffer = model.buffers[bufferView.buffer];
-
-            size_t offset = bufferView.byteOffset;
-            size_t length = bufferView.byteLength;
-            if (offset + length <= buffer.data.size()) {
-                outImageData.insert(outImageData.end(),
-                                    buffer.data.begin() + offset,
-                                    buffer.data.begin() + offset + length);
-                outMime = img.mimeType;
-                qDebug() << "Recovered embedded image via bufferView (offset:" << offset
-                         << ", len:" << length << ") mime:" << QString::fromStdString(outMime);
-            } else {
-                qWarning() << "Invalid bufferView range for image" << imgIndex;
-            }
-            return;
-        }
-
-        qWarning() << "Image" << imgIndex << "has no valid data source.";
     };
 
-    // BaseColor
-    fillImage(mat.pbrMetallicRoughness.baseColorTexture.index,
-              material.albedoTexPath,
-              material.albedoImageData,
-              material.albedoMimeType);
+    // === 基础色贴图 ===
+    loadTexture(mat.pbrMetallicRoughness.baseColorTexture.index,
+                material.albedoTexPath,
+                material.albedoImageData,
+                material.albedoWidth,
+                material.albedoHeight);
 
-    // MetallicRoughness
-    fillImage(mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
-              material.metallicRoughnessTexPath,
-              material.metallicRoughnessImageData,
-              material.metallicRoughnessMimeType);
+    // === 金属度/粗糙度贴图 ===
+    loadTexture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
+                material.metallicRoughnessTexPath,
+                material.metallicRoughnessImageData,
+                material.metallicRoughnessWidth,
+                material.metallicRoughnessHeight);
 
-    // Normal
-    fillImage(mat.normalTexture.index,
-              material.normalTexPath,
-              material.normalImageData,
-              material.normalMimeType);
+    // === 法线贴图 ===
+    loadTexture(mat.normalTexture.index,
+                material.normalTexPath,
+                material.normalImageData,
+                material.normalWidth,
+                material.normalHeight);
 
-    // AO
-    fillImage(mat.occlusionTexture.index,
-              material.aoTexPath,
-              material.aoImageData,
-              material.aoMimeType);
+    // === 环境光 AO 贴图 ===
+    loadTexture(mat.occlusionTexture.index,
+                material.aoTexPath,
+                material.aoImageData,
+                material.aoWidth,
+                material.aoHeight);
 
     return material;
 }
-

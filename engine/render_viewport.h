@@ -6,7 +6,6 @@
 #define DESKTOP_PET_RENDER_VIEWPORT_H
 
 #include <QOpenGLWidget>
-#include <QOpenGLFunctions_3_3_Core>
 #include <memory>
 
 #include "shader_manager.h"

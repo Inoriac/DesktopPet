@@ -34,7 +34,12 @@ public:
     // 模型上传
     void addMesh(const std::vector<float>& interLeavePosColor, const std::vector<unsigned int>& indices);
     void addMeshFromData(const MeshData& meshData);
+
+    void ensureDefaultWhiteTexture();
     void uploadMaterialTextures(MaterialData& material);
+    GLuint getDefaultWhiteTexture() const { return defaultWhiteTex; }
+
+    void sortMeshesByMaterial();    // 按材质索引排序，减少材质切换次数
 
     void clearScene();
 
@@ -48,6 +53,8 @@ private:
     int viewportWidth {0};
     int viewportHeight {0};
     float angleDeg {0.0f};  // 渲染对象旋转角度
+
+    GLuint defaultWhiteTex {0};
 };
 
 #endif //DESKTOP_PET_RENDER_ENGINE_H

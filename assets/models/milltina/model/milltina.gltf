@@ -29241,22 +29241,22 @@
 		{
 			"mimeType":"image/png",
 			"name":"Milltina_Costume",
-			"uri":"Milltina_Costume.png"
+			"uri":"textures/Milltina_Costume.png"
 		},
 		{
 			"mimeType":"image/png",
 			"name":"Milltina_Face",
-			"uri":"Milltina_Face.png"
+			"uri":"textures/Milltina_Face.png"
 		},
 		{
 			"mimeType":"image/png",
 			"name":"Milltina_Body",
-			"uri":"Milltina_Body.png"
+			"uri":"textures/Milltina_Body.png"
 		},
 		{
 			"mimeType":"image/png",
 			"name":"Milltina_Hair",
-			"uri":"Milltina_Hair.png"
+			"uri":"textures/Milltina_Hair.png"
 		}
 	],
 	"skins":[

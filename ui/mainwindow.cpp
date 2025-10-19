@@ -67,7 +67,7 @@ void MainWindow::createCentralWidget() {
     mainLayout = new QVBoxLayout(centralWidget);
 
     renderViewport = new RenderViewport(centralWidget);
-    renderViewport->setMinimumHeight(240);
+    renderViewport->setMinimumHeight(500);
     mainLayout->addWidget(renderViewport);
 
     // 创建宠物选择区域

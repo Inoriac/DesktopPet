@@ -43,7 +43,7 @@ Desktop-Pet/
 │
 ├── assets/                        # 静态资源（模型 / 动作 / 声音 / 着色器 / 配置）
 │   ├── pets/                      # 所有桌宠资源集合
-│   │   ├── huahua/                # 桌宠「花花」
+│   │   ├── huahua/                # 桌宠
 │   │   │   ├── model/
 │   │   │   │   └── huahua.glb
 │   │   │   ├── actions/
@@ -61,17 +61,7 @@ Desktop-Pet/
 │   │   │   │   └── meow.wav
 │   │   │   ├── shaders/           # （若有专属shader）
 │   │   │   └── config.json        # 该宠物的动画/贴图配置
-│   │   │
-│   │   └── momo/                  # 桌宠「默默」
-│   │       ├── model/
-│   │       │   └── momo.glb
-│   │       ├── actions/
-│   │       │   ├── idle.glb
-│   │       │   └── jump.glb
-│   │       ├── textures/
-│   │       ├── sounds/
-│   │       └── config.json
-│   │
+|
 │   ├── shaders/                   # 全局共享着色器
 │   │   ├── default.vert
 │   │   ├── default.frag

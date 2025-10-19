@@ -11,6 +11,8 @@
 #include <unordered_map>
 #include <memory>
 
+#include "model_loader.h"
+
 class ShaderManager {
 public:
     ShaderManager();
@@ -33,6 +35,23 @@ public:
 
     // 清理所有着色器
     void cleanup();
+
+    // 自动绑定 PBR uniform
+    void applyPBRUniforms(QOpenGLShaderProgram* shader,
+                      const QMatrix4x4& model,
+                      const QMatrix4x4& view,
+                      const QMatrix4x4& projection,
+                      const QVector3D& baseColorFactor,
+                      float alphaFactor,
+                      float metallicFactor,
+                      float roughnessFactor,
+                      const QVector3D& viewPos,
+                      const QVector3D* lightPositions,
+                      const QVector3D* lightColors,
+                      int lightCount);
+
+    // 自动绑定纹理
+    void bindPBRTextures(const MaterialData& mat, QOpenGLShaderProgram* shader, GLuint defaultTexID);
 
 private:
     QOpenGLFunctions_3_3_Core* gl;
