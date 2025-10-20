@@ -39,6 +39,17 @@ bool ModelLoader::parseGLTF(const std::string &path) {
     tinygltf::TinyGLTF loader;
     std::string err, warn;
 
+    loader.SetImageLoader(
+        [](tinygltf::Image *image, const int image_idx, std::string *err,
+           std::string *warn, int req_width, int req_height,
+           const unsigned char *bytes, int size, void *user_data) -> bool {
+            // 什么都不做，只保留 URI
+            // tinygltf 会自动保留 image.uri 字段
+            return true;
+        },
+        nullptr
+    );
+
     // 兼容 .glb 与 .gltf
     bool ret = false;
     if (path.find(".glb") != std::string::npos) {
@@ -193,7 +204,7 @@ MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, con
     MaterialData material;
     material.name = mat.name;
 
-    // === 基础色因子 ===
+    // 基础色因子
     if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
         material.baseColorFactor = QVector3D(
             mat.pbrMetallicRoughness.baseColorFactor[0],
@@ -205,7 +216,7 @@ MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, con
     material.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
     material.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
 
-    // === 函数：加载贴图 ===
+    // 加载贴图
     auto loadTexture = [&](int texIndex,
                            std::string &outPath,
                            std::vector<unsigned char> &outImageData,
@@ -218,7 +229,7 @@ MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, con
         const tinygltf::Image &img = model.images[tex.source];
 
         if (!img.uri.empty()) {
-            // 外部图片文件路径（相对路径）
+            // 外部图片文件路径
             outPath = modelDirectory + "/" + img.uri;
         } else if (!img.image.empty()) {
             // 内嵌图像（glb bufferView 或 base64）

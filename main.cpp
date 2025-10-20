@@ -7,8 +7,6 @@
 int main(int argc, char *argv[])
 {
     // qputenv("QT_DEBUG_PLUGINS", "1");  // 临时打开插件日志
-    // 可选：高 DPI 支持（Qt6 默认不错，但可加）
-    QCoreApplication::setAttribute(Qt::AA_EnableHighDpiScaling);
 
     // 要求 OpenGL 3.3 Core，上下文需在 QApplication 创建前设置
     QSurfaceFormat fmt;

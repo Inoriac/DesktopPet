@@ -1,6 +1,21 @@
 cmake_minimum_required(VERSION 4.0)
 project(Desktop_Pet)
 
+if(NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release)
+endif()
+
+# 添加编译优化选项
+if(CMAKE_BUILD_TYPE MATCHES Release)
+    if(MSVC)
+        add_compile_options(/O2 /GL)
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG")
+    else()
+        add_compile_options(-O3 -DNDEBUG)
+    endif()
+    message(STATUS "Building in Release mode with optimizations")
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -94,6 +109,7 @@ target_link_libraries(Desktop_Pet
         Qt::Widgets
         Qt::OpenGL
         Qt::OpenGLWidgets
+        psapi
 )
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)

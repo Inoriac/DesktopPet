@@ -7,6 +7,7 @@
 
 #include "model_loader.h"
 #include "shader_manager.h"
+#include <unordered_map>
 
 // 代表一个几何体
 struct GpuMesh {
@@ -49,12 +50,15 @@ private:
 
     std::vector<GpuMesh> meshes;    // GPU 资源表
     std::vector<MaterialData> materials;    // 材质列表
+    std::unordered_map<std::string, GLuint> textureCache;  // 材质缓存
 
     int viewportWidth {0};
     int viewportHeight {0};
     float angleDeg {0.0f};  // 渲染对象旋转角度
 
     GLuint defaultWhiteTex {0};
+    const int targetSize = 1024;
+
 };
 
 #endif //DESKTOP_PET_RENDER_ENGINE_H

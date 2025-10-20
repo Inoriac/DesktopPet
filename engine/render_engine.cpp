@@ -2,10 +2,11 @@
 // Created by Inoriac on 2025/10/15.
 //
 
+#include "stb_image.h"
 #include "render_engine.h"
+
 #include <QOpenGLFunctions_3_3_Core>
 #include <QElapsedTimer>
-#include <qimage.h>
 #include <QMatrix4x4>
 #include <QVector3D>
 
@@ -333,18 +334,61 @@ void RenderEngine::uploadMaterialTextures(MaterialData &material) {
             return;
         }
 
-        QString fullPath = QString::fromStdString(texPath);
-        QImage img(fullPath);
+        // 检查缓存是否命中
+        auto it = textureCache.find(texPath);
+        if (it != textureCache.end()) {
+            outTexId = it->second;
+            qDebug() << "[CACHED] Texture reused:" << texPath.c_str() << "ID:" << outTexId;
+            return;
+        }
 
-        if (img.isNull()) {
-            qWarning() << "Failed to load texture from file:" << fullPath;
+        // 缓存未命中
+        // 使用 stb_image 加载
+        int originalWidth, originalHeight, channels;
+        unsigned char* originalData = stbi_load(texPath.c_str(), &originalWidth, &originalHeight, &channels, 4);
+
+        if (!originalData) {
+            qWarning() << "Failed to load texture:" << texPath.c_str();
             outTexId = 0;
             return;
         }
 
-        // 转换为 RGBA8888 格式
-        QImage glImage = img.convertToFormat(QImage::Format_RGBA8888);
+        int finalWidth = originalWidth;
+        int finalHeight = originalHeight;
+        unsigned char* finalData = originalData;
 
+        // 如果原始尺寸大于目标，进行缩放
+        if (originalWidth > targetSize || originalHeight > targetSize) {
+            // 使用 OpenGL 的 gluScaleImage 或者手动实现简单缩放
+            // 这里用简单的双线性插值缩放
+
+            finalWidth = targetSize;
+            finalHeight = targetSize;
+
+            // 分配新的缓冲区
+            finalData = new unsigned char[finalWidth * finalHeight * 4];
+
+            // 简单的最近邻采样（快速但质量较低）
+            for (int y = 0; y < finalHeight; y++) {
+                for (int x = 0; x < finalWidth; x++) {
+                    int srcX = x * originalWidth / finalWidth;
+                    int srcY = y * originalHeight / finalHeight;
+
+                    int srcIdx = (srcY * originalWidth + srcX) * 4;
+                    int dstIdx = (y * finalWidth + x) * 4;
+
+                    finalData[dstIdx + 0] = originalData[srcIdx + 0];
+                    finalData[dstIdx + 1] = originalData[srcIdx + 1];
+                    finalData[dstIdx + 2] = originalData[srcIdx + 2];
+                    finalData[dstIdx + 3] = originalData[srcIdx + 3];
+                }
+            }
+
+            qDebug() << "Resized texture from" << originalWidth << "x" << originalHeight
+                     << "to" << finalWidth << "x" << finalHeight;
+        }
+
+        // 上传到 GPU
         gl->glGenTextures(1, &outTexId);
         gl->glBindTexture(GL_TEXTURE_2D, outTexId);
         gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
@@ -352,13 +396,20 @@ void RenderEngine::uploadMaterialTextures(MaterialData &material) {
         gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
         gl->glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
-        GLint internalFmt = srgb ? GL_SRGB8_ALPHA8 : GL_RGBA8;
-        gl->glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, glImage.width(), glImage.height(),
-                        0, GL_RGBA, GL_UNSIGNED_BYTE, glImage.bits());
+        GLint internalFmt = GL_RGBA8;
+        gl->glTexImage2D(GL_TEXTURE_2D, 0, internalFmt, finalWidth, finalHeight,
+                        0, GL_RGBA, GL_UNSIGNED_BYTE, finalData);
         gl->glGenerateMipmap(GL_TEXTURE_2D);
         gl->glBindTexture(GL_TEXTURE_2D, 0);
 
-        qDebug() << "Texture loaded successfully:" << fullPath;
+        // 立即释放内存
+        stbi_image_free(finalData);
+
+        // 加入缓存
+        textureCache[texPath] = outTexId;
+
+        qDebug() << "[LOADED] Texture:" << texPath.c_str() << "ID:" << outTexId
+                 << "Size:" << finalWidth << "x" << finalHeight;
     };
 
     // === 上传 albedo 纹理（优先内嵌数据，否则从文件加载）===
