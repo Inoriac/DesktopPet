@@ -33,7 +33,6 @@ public:
     void render();
 
     // 模型上传
-    void addMesh(const std::vector<float>& interLeavePosColor, const std::vector<unsigned int>& indices);
     void addMeshFromData(const MeshData& meshData);
 
     void ensureDefaultWhiteTexture();
@@ -47,6 +46,9 @@ public:
 private:
     QOpenGLFunctions_3_3_Core *gl {nullptr};    // 用于提供 OpenGL 的服务接口
     ShaderManager* shaderManager {nullptr};
+
+    // 相机位置，后续可控
+    QVector3D viewPos = QVector3D(0, 1.5f, 4);
 
     std::vector<GpuMesh> meshes;    // GPU 资源表
     std::vector<MaterialData> materials;    // 材质列表

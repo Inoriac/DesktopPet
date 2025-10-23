@@ -5,6 +5,7 @@
 #include "stb_image.h"
 #include "render_engine.h"
 
+#include <cfloat>
 #include <QOpenGLFunctions_3_3_Core>
 #include <QElapsedTimer>
 #include <QMatrix4x4>
@@ -75,8 +76,8 @@ void RenderEngine::render() {
     }
 
     // 清屏
-    gl->glClearColor(0.2f, 0.6f, 0.9f, 1.0f);   // 背景色
-    gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT); // 清除颜色与深度缓冲
+    gl->glClearColor(0.0f, 0.0f, 0.0f, 0.0f);      // 背景透明
+    gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);     // 清除颜色与深度缓冲
 
     // 旋转角度（每秒旋转 60 度）(帧率无关)
     angleDeg += 60.0f * deltaSec;
@@ -168,48 +169,34 @@ void RenderEngine::render() {
     shader->release();
 }
 
-void RenderEngine::addMesh(const std::vector<float> &interLeavePosColor,
-                            const std::vector<unsigned int> &indices) {
-    GpuMesh m;
-
-    // 分配 GPU 资源区域 获取 GPU 对象 ID
-    gl->glGenVertexArrays(1, &m.vao);
-    gl->glGenBuffers(1, &m.vbo);
-    gl->glGenBuffers(1, &m.ebo);
-
-    // 激活顶点配置上下文，存储所有的配置信息
-    gl->glBindVertexArray(m.vao);
-
-    // 上传顶点数据
-    gl->glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
-    gl->glBufferData(GL_ARRAY_BUFFER,
-        GLsizeiptr(interLeavePosColor.size() * sizeof(float)),
-        interLeavePosColor.data(),
-        GL_STATIC_DRAW);
-
-    // 上传索引数据 indices[i] 表示第 i 个顶点在 VBO 中的序号
-    gl->glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, m.ebo);
-    gl->glBufferData(GL_ELEMENT_ARRAY_BUFFER,
-        GLsizeiptr(indices.size() * sizeof(unsigned int)),
-        indices.data(),
-        GL_STATIC_DRAW);
-
-    // 配置顶点属性格式，也即读取方式(一次读多少个，从哪里开始读)，对应 VERT_SRC 的 aPos 与 aColor(索引对应)
-    gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
-    gl->glEnableVertexAttribArray(0);
-    gl->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
-    gl->glEnableVertexAttribArray(1);
-    gl->glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
-    gl->glEnableVertexAttribArray(2);
-
-    gl->glBindVertexArray(0);
-
-    m.indexCount = int(indices.size());
-    meshes.push_back(m);
-}
-
 void RenderEngine::addMeshFromData(const MeshData &meshData) {
     GpuMesh m;
+
+    // 添加调试信息
+    qDebug() << "=== Mesh Data Debug ===";
+    qDebug() << "Vertex count:" << meshData.vertices.size() / 3;
+    qDebug() << "Index count:" << meshData.indices.size();
+    qDebug() << "Material index:" << meshData.materialIndex;
+
+    // 检查顶点数据范围
+    if (!meshData.vertices.empty()) {
+        float minX = meshData.vertices[0], maxX = meshData.vertices[0];
+        float minY = meshData.vertices[1], maxY = meshData.vertices[1];
+        float minZ = meshData.vertices[2], maxZ = meshData.vertices[2];
+
+        for (size_t i = 0; i < meshData.vertices.size(); i += 3) {
+            minX = qMin(minX, meshData.vertices[i]);
+            maxX = qMax(maxX, meshData.vertices[i]);
+            minY = qMin(minY, meshData.vertices[i+1]);
+            maxY = qMax(maxY, meshData.vertices[i+1]);
+            minZ = qMin(minZ, meshData.vertices[i+2]);
+            maxZ = qMax(maxZ, meshData.vertices[i+2]);
+        }
+
+        qDebug() << "Vertex bounds - X:" << minX << "to" << maxX;
+        qDebug() << "Vertex bounds - Y:" << minY << "to" << maxY;
+        qDebug() << "Vertex bounds - Z:" << minZ << "to" << maxZ;
+    }
 
     // 分配 GPU 资源
     gl->glGenVertexArrays(1, &m.vao);
@@ -359,9 +346,7 @@ void RenderEngine::uploadMaterialTextures(MaterialData &material) {
 
         // 如果原始尺寸大于目标，进行缩放
         if (originalWidth > targetSize || originalHeight > targetSize) {
-            // 使用 OpenGL 的 gluScaleImage 或者手动实现简单缩放
             // 这里用简单的双线性插值缩放
-
             finalWidth = targetSize;
             finalHeight = targetSize;
 
@@ -403,7 +388,12 @@ void RenderEngine::uploadMaterialTextures(MaterialData &material) {
         gl->glBindTexture(GL_TEXTURE_2D, 0);
 
         // 立即释放内存
-        stbi_image_free(finalData);
+        if (finalData != originalData) {
+            // 缩放后的数据用 delete[] 释放
+            delete[] finalData;
+        }
+        // 原始数据用 stbi_image_free 释放
+        stbi_image_free(originalData);
 
         // 加入缓存
         textureCache[texPath] = outTexId;

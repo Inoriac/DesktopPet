@@ -17,6 +17,7 @@
 #include <QSpinBox>
 #include <QCheckBox>
 
+#include "petwindow.h"
 
 QT_BEGIN_NAMESPACE
 class QAction;
@@ -36,6 +37,7 @@ private slots:
     void OnStopPet();
     void OnSettingsChanged();
     void OnAbout();
+    void OnAddPet();
 
 private:
     void createActions();
@@ -43,40 +45,46 @@ private:
     void createStatusBar();
     void createCentralWidget();
     void setupConnections();
+    void loadPetList();
 
     // UI组件
-    QWidget *centralWidget;
-    QVBoxLayout *mainLayout;
+    QWidget *centralWidget{};
+    QVBoxLayout *mainLayout{};
 
     // 宠物选择区域
-    QGroupBox *characterSelectionGroup;
-    QListWidget *petListWidget;
-    QPushButton *startPetButton;
-    QPushButton *stopPetButton;
+    QGroupBox *characterSelectionGroup{};
+    QListWidget *petListWidget{};
+    QPushButton *startPetButton{};
+    QPushButton *stopPetButton{};
+
+    // PetWindow
+    PetWindow *activePetWindow {nullptr};
 
     // 设置区域
-    QGroupBox *settingsGroup;
-    QLabel *sizeLabel;
-    QSlider *sizeSlider;
-    QSpinBox *sizeSpinBox;
-    QCheckBox *alwaysOnTopCheckBox;
-    QCheckBox *clickThroughCheckBox;
-    QCheckBox *soundEnabledCheckBox;
-    QSlider *volumeSlider;
-    QLabel *volumeLabel;
+    QGroupBox *settingsGroup{};
+    QLabel *sizeLabel{};
+    QSlider *sizeSlider{};
+    QSpinBox *sizeSpinBox{};
+    QCheckBox *alwaysOnTopCheckBox{};
+    QCheckBox *clickThroughCheckBox{};
+    QCheckBox *soundEnabledCheckBox{};
+    QSlider *volumeSlider{};
+    QLabel *volumeLabel{};
 
     // 菜单和动作
-    QMenu *fileMenu;
-    QMenu *settingsMenu;
-    QMenu *helpMenu;
-    QAction *exitAction;
-    QAction *preferencesAction;
-    QAction *aboutAction;
+    QMenu *fileMenu{};
+    QMenu *settingsMenu{};
+    QMenu *helpMenu{};
+    QAction *exitAction{};
+    QAction *preferencesAction{};
+    QAction *aboutAction{};
 
     // 状态栏
-    QLabel *statusLabel;
+    QLabel *statusLabel{};
 
-    RenderViewport *renderViewport;
+    std::string const modelBasePath = "/assets/models/";
+
+    RenderViewport *renderViewport{};
 };
 
 

@@ -43,25 +43,19 @@ Desktop-Pet/
 │
 ├── assets/                        # 静态资源（模型 / 动作 / 声音 / 着色器 / 配置）
 │   ├── pets/                      # 所有桌宠资源集合
-│   │   ├── huahua/                # 桌宠
-│   │   │   ├── model/
-│   │   │   │   └── huahua.glb
-│   │   │   ├── actions/
-│   │   │   │   ├── idle.glb
-│   │   │   │   ├── walk.glb
-│   │   │   │   ├── sleep.glb
-│   │   │   │   └── click_react.glb
-│   │   │   ├── textures/
-│   │   │   │   ├── hair.png
-│   │   │   │   ├── body.png
-│   │   │   │   └── eyes.png
-│   │   │   ├── sounds/
-│   │   │   │   ├── click.wav
-│   │   │   │   ├── sleep.wav
-│   │   │   │   └── meow.wav
-│   │   │   ├── shaders/           # （若有专属shader）
-│   │   │   └── config.json        # 该宠物的动画/贴图配置
-|
+│   │   └── milltina/                # 桌宠
+│   │       └── model/
+│   │           ├── milltina.gltf
+    │           ├── textures/
+    │           │   ├── hair.png
+    │           │   ├── body.png
+    │           │   └── eyes.png
+│   │           └── actions/
+│   │           ├── idle.glb
+│   │           ├── walk.glb
+│   │           ├── sleep.glb
+│   │           └── click_react.glb
+|   |
 │   ├── shaders/                   # 全局共享着色器
 │   │   ├── default.vert
 │   │   ├── default.frag
@@ -75,20 +69,10 @@ Desktop-Pet/
 │       ├── app_settings.json      # 程序设置
 │       └── pet_registry.json      # 所有宠物登记信息
 │
-├── cmake/                         # CMake 模块目录
-│   ├── FindGLTF.cmake             # glTF/GLB 相关解析（自定义）
-│   ├── FindAssimp.cmake           # 模型加载库
-│   └── QtConfig.cmake             # Qt 编译配置（可选）
-│
 ├── scripts/                       # 脚本（安装 / 打包 / 运行）
 │   ├── build_windows.bat
 │   ├── build_linux.sh
 │   └── package_assets.py
-│
-├── docs/                          # 文档
-│   ├── architecture_diagram.png
-│   ├── structure_overview.md
-│   └── design_notes.md
 │
 └── tests/                         # 单元测试
     ├── test_loader.cpp

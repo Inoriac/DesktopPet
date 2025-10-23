@@ -81,6 +81,11 @@ set(TINYGLTF_SOURCES
         third_party/tinygltf/stb_image.h
 )
 
+set(ENTITY_SOURCES
+        entity/pet.cpp
+        entity/pet.h
+)
+
 # 合并所有源文件
 set(ALL_SOURCES
     main.cpp
@@ -89,6 +94,7 @@ set(ALL_SOURCES
     ${ENGINE_SOURCES}
     ${INCLUDE_SOURCES}
     ${TINYGLTF_SOURCES}
+    ${ENTITY_SOURCES}
 )
 
 add_executable(Desktop_Pet ${ALL_SOURCES})
@@ -100,6 +106,7 @@ target_include_directories(Desktop_Pet PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
+    ${CMAKE_CURRENT_SOURCE_DIR}/entity
 
 )
 
@@ -113,10 +120,14 @@ target_link_libraries(Desktop_Pet
 )
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    set(DEBUG_SUFFIX)
+    # ---- 判断 Debug 后缀 ----
+    set(DEBUG_SUFFIX "")
     if (MSVC AND CMAKE_BUILD_TYPE MATCHES "Debug")
+        # MSVC 下 Debug 版 DLL 带 d 后缀
         set(DEBUG_SUFFIX "d")
     endif ()
+
+    # ---- 推断 Qt 安装路径 ----
     set(QT_INSTALL_PATH "${CMAKE_PREFIX_PATH}")
     if (NOT EXISTS "${QT_INSTALL_PATH}/bin")
         set(QT_INSTALL_PATH "${QT_INSTALL_PATH}/..")
@@ -124,23 +135,46 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
             set(QT_INSTALL_PATH "${QT_INSTALL_PATH}/..")
         endif ()
     endif ()
+
+    message(STATUS "Detected Qt install path: ${QT_INSTALL_PATH}")
+
+    # ---- 平台插件 (qwindows.dll) ----
     if (EXISTS "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND ${CMAKE_COMMAND} -E make_directory
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
                 "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll"
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
-    endif ()
-    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets)
+    elseif (EXISTS "${QT_INSTALL_PATH}/plugins/platforms/qwindows.dll")
+        # ✅ MinGW 没有 debug 后缀，补充这一分支
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy
-                "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
+        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${QT_INSTALL_PATH}/plugins/platforms/qwindows.dll"
+                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
+    endif ()
+
+    # ---- 复制 Qt 核心 DLL ----
+    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets)
+        if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+        elseif (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll")
+            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll"
+                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
+        endif ()
     endforeach ()
 
-    if (WIN32)
+    # ---- 调用 windeployqt 自动部署 ----
+    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
                 --no-translations
@@ -149,5 +183,3 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 COMMENT "Running windeployqt to copy Qt runtime dependencies...")
     endif ()
 endif ()
-
-

@@ -4,12 +4,14 @@
 
 #include "mainwindow.h"
 #include "render_viewport.h"
+#include "pet.h"
 
 #include <QApplication>
 #include <QMessageBox>
 #include <QFileDialog>
 #include <QStandardPaths>
 #include <QIcon>
+#include <QInputDialog>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent){
     setWindowTitle("Desktop 3D Pet");
@@ -22,11 +24,32 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent){
     createCentralWidget();
     setupConnections();
 
+    Pet::instance().load();
+
     setWindowIcon(QIcon(":/assets/icons/icon.png"));
 }
 
 MainWindow::~MainWindow() {
+    if(activePetWindow){
+        activePetWindow->close();
+        delete activePetWindow;
+    }
+}
 
+void MainWindow::loadPetList(){
+    petListWidget->clear();
+
+    // 获取并加载所有 pet 名称
+    auto petNames = Pet::instance().getPetNames();
+
+    for (const QString& name : petNames) {
+        petListWidget->addItem(name);
+    }
+
+    // 默认选择第一个
+    if (petListWidget->count() > 0) {
+        petListWidget->setCurrentRow(0);
+    }
 }
 
 void MainWindow::createActions() {
@@ -66,17 +89,16 @@ void MainWindow::createCentralWidget() {
 
     mainLayout = new QVBoxLayout(centralWidget);
 
-    renderViewport = new RenderViewport(centralWidget);
-    renderViewport->setMinimumHeight(500);
-    mainLayout->addWidget(renderViewport);
+    // renderViewport = new RenderViewport(centralWidget);
+    // renderViewport->setMinimumHeight(500);
+    // mainLayout->addWidget(renderViewport);
 
     // 创建宠物选择区域
     characterSelectionGroup = new QGroupBox("Character Selection");
     QVBoxLayout *characterLayout = new QVBoxLayout(characterSelectionGroup);
 
-    // TODO：此处显示桌宠名字 后期需要根据用户传入模型来进行修改
     petListWidget = new QListWidget;
-    petListWidget->addItem("Milltina");
+    petListWidget->addItem("milltina");
     petListWidget->setCurrentRow(0);
 
     QHBoxLayout *buttonLayout = new QHBoxLayout;
@@ -164,14 +186,43 @@ void MainWindow::OnPetSelected() {
 }
 
 void MainWindow::OnStartPet() {
-    QString petName = petListWidget->currentItem()->text();
+    if (activePetWindow) {
+        QMessageBox::warning(this, "提示", "已有宠物正在运行，请先停止当前宠物");
+        return;
+    }
+
+    QListWidgetItem* item = petListWidget->currentItem();
+    if (!item) {
+        QMessageBox::warning(this, "提示", "请先选择一个桌宠!");
+        return;
+    }
+
+    QString petName = item->text();
+    qDebug() << "Selected pet:" << petName;
+
+    QString modelPath = Pet::instance().getModelPath(petName);
+    qDebug() << "Model path:" << modelPath;
+
+    if(modelPath.isEmpty()){
+        QMessageBox::warning(this, "提示", "无法找到宠物模型");
+        return;
+    }
+
     statusLabel->setText(QString("正在启动 %1...").arg(petName));
+
+    activePetWindow = new PetWindow(modelPath, nullptr);
+
+    int sizePercent = sizeSlider->value();
+    bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
+    bool clickThrough = clickThroughCheckBox->isChecked();
+    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough);
+
+    activePetWindow->show();
 
     startPetButton->setEnabled(false);
     stopPetButton->setEnabled(true);
 
-    // TODO: 这里将来会调用宠物控制器来启动宠物
-    QMessageBox::information(this, "提示", QString("宠物 %1 已启动！").arg(petName));
+    // QMessageBox::information(this, "提示", QString("宠物 %1 已启动！").arg(petName));
     statusLabel->setText(QString("%1 正在运行").arg(petName));
 }
 
@@ -179,22 +230,51 @@ void MainWindow::OnStopPet() {
     QString petName = petListWidget->currentItem()->text();
     statusLabel->setText(QString("正在停止 %1...").arg(petName));
 
+    activePetWindow->close();
+    activePetWindow->deleteLater();
+    activePetWindow = nullptr;
+
     startPetButton->setEnabled(true);
     stopPetButton->setEnabled(false);
 
     // TODO: 这里将来会调用宠物控制器来停止宠物
-    QMessageBox::information(this, "提示", QString("宠物 %1 已停止！").arg(petName));
+    // QMessageBox::information(this, "提示", QString("宠物 %1 已停止！").arg(petName));
     statusLabel->setText("就绪");
 }
 
 void MainWindow::OnSettingsChanged() {
     statusLabel->setText("设置已更改");
+
+    // 应用至桌宠界面
+    if(activePetWindow){
+        int sizePercent = sizeSlider->value();
+        bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
+        bool clickThrough = clickThroughCheckBox->isChecked();
+        activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough);
+    }
 }
 
 void MainWindow::OnAbout() {
     QMessageBox::about(this, "关于 Desktop Pet",
                       "<h2>Desktop Pet</h2>"
                       "<p>一个可爱的桌面宠物应用程序</p>"
-                      "<p>版本: 1.0.0</p>"
+                      "<p>版本: 1.0.3</p>"
                       "<p>使用 Qt6 开发</p>");
+}
+
+void MainWindow::OnAddPet() {
+    QString petName = QInputDialog::getText(this, "添加桌宠", "请输入桌宠名称:");
+    if (petName.isEmpty()) return;
+
+    if (Pet::instance().hasPet(petName)) {
+        QMessageBox::warning(this, "错误", "桌宠名称已存在!");
+        return;
+    }
+
+    QString modelPath = QFileDialog::getOpenFileName(this, "选择模型文件",
+        "assets/models/", "GLTF Files (*.gltf *.glb)");
+    if (modelPath.isEmpty()) return;
+
+    Pet::instance().addPet(petName, modelPath);
+    loadPetList();
 }

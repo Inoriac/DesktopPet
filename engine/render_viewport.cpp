@@ -115,16 +115,6 @@ void RenderViewport::initializeGL() {
 
     } else {
         qWarning() << "Failed to load model";
-
-        // 使用默认三角形
-        std::vector<float> tri = {
-            // x, y, z,    r, g, b,    u, v
-            0.0f,  0.6f, 0.0f, 1.0f,0.3f,0.3f, 0.5f, 1.0f,  // 顶点0：顶部，UV(0.5, 1.0)
-           -0.6f, -0.4f, 0.0f, 0.3f,1.0f,0.3f, 0.0f, 0.0f,  // 顶点1：左下，UV(0.0, 0.0)
-            0.6f, -0.4f, 0.0f, 0.3f,0.3f,1.0f, 1.0f, 0.0f   // 顶点2：右下，UV(1.0, 0.0)
-        };
-        std::vector<unsigned int> idx = {0,1,2};
-        renderEngine->addMesh(tri, idx);
     }
 
     // 同步材质信息
