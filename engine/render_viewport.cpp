@@ -133,3 +133,10 @@ void RenderViewport::resizeGL(int w, int h) {
 void RenderViewport::paintGL() {
     if (renderEngine) renderEngine->render();
 }
+
+void RenderViewport::clearModel() {
+    if (renderEngine) {
+        renderEngine->clearScene();
+        qDebug() << "Model cleared from GPU memory";
+    }
+}

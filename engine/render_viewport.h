@@ -18,6 +18,8 @@ public:
     explicit RenderViewport(QWidget *parent = nullptr);
     ~RenderViewport() override;
 
+    void clearModel();
+
 protected:
     void initializeGL() override;
     void resizeGL(int w, int h) override;

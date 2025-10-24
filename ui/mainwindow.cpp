@@ -212,6 +212,9 @@ void MainWindow::OnStartPet() {
 
     activePetWindow = new PetWindow(modelPath, nullptr);
 
+    // 用于接收宠物窗口关闭信号
+    connect(activePetWindow, &PetWindow::requestStop, this, &MainWindow::OnStopPet);
+
     int sizePercent = sizeSlider->value();
     bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
     bool clickThrough = clickThroughCheckBox->isChecked();
@@ -237,7 +240,6 @@ void MainWindow::OnStopPet() {
     startPetButton->setEnabled(true);
     stopPetButton->setEnabled(false);
 
-    // TODO: 这里将来会调用宠物控制器来停止宠物
     // QMessageBox::information(this, "提示", QString("宠物 %1 已停止！").arg(petName));
     statusLabel->setText("就绪");
 }

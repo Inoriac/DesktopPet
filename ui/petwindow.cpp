@@ -8,7 +8,6 @@
 
 #include <QApplication>
 #include <qboxlayout.h>
-#include <QScreen>
 #include <QDebug>
 #include <QCloseEvent>
 
@@ -19,14 +18,20 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     , modelName(modelName)
     , sizePercent(100)
     , alwaysOnTop(true)
-    , clickThrough(false){
+    , clickThrough(false)
+    , contextMenu(nullptr)
+    , closeAction(nullptr) {
     setupWindow();
     setupRenderViewport();
+    setupContextMenu();
 }
 
 PetWindow::~PetWindow() {
     if (renderViewport) {
         delete renderViewport;
+    }
+    if (contextMenu) {
+        delete contextMenu;
     }
 }
 
@@ -46,6 +51,23 @@ void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrou
     qDebug() << "PetWindow setting applied - size:" << newSize;
 }
 
+void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
+    contextMenu->exec(event->globalPos());
+}
+
+void PetWindow::setupContextMenu() {
+    contextMenu = new QMenu(this);
+    closeAction = new QAction("关闭", this);
+
+    contextMenu->addAction(closeAction);
+
+    // 转发关闭信号至 mainwindow，确保状态一致与内存释放
+    connect(closeAction, &QAction::triggered, this, [this]() {
+        qDebug() << "Requesting stop from context menu";
+        emit requestStop();
+    });
+}
+
 void PetWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton && !clickThrough) {
         isDragging = true;
@@ -56,7 +78,9 @@ void PetWindow::mousePressEvent(QMouseEvent *event) {
 
 void PetWindow::mouseMoveEvent(QMouseEvent *event) {
     if (isDragging && !clickThrough) {
-        move(event->globalPosition().toPoint() - dragStartPosition);
+        QPoint delta = event->globalPosition().toPoint() - dragStartPosition;
+        move(pos() + delta);
+        dragStartPosition = event->globalPosition().toPoint();
         event->accept();
     }
 }
@@ -70,6 +94,7 @@ void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
 
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
+    unloadModel();
     emit aboutToClose();  // 可以发送信号给 MainWindow
     event->accept();
 }
@@ -127,5 +152,12 @@ void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
     if (isVisible()) {
         hide();
         show();
+    }
+}
+
+void PetWindow::unloadModel() {
+    if (renderViewport) {
+        renderViewport->clearModel();
+        qDebug() << "Unloading model:" << modelName;
     }
 }

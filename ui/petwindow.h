@@ -4,7 +4,9 @@
 
 #ifndef DESKTOP_PET_PETWINDOW_H
 #define DESKTOP_PET_PETWINDOW_H
-#include <QWidget>
+
+#include <QMenu>
+#include <QAction>
 
 class RenderViewport;
 
@@ -19,6 +21,7 @@ public:
 
 signals:
     void aboutToClose();  // 窗口即将关闭时发送
+    void requestStop();
 
 protected:
     // 鼠标事件处理
@@ -27,17 +30,27 @@ protected:
     void mouseMoveEvent(QMouseEvent *event) override;
     void mouseReleaseEvent(QMouseEvent *event) override;
 
+    // 右键菜单
+    void contextMenuEvent(QContextMenuEvent *event) override;
+
     // 窗口事件
     void closeEvent(QCloseEvent *event) override;
 
 private:
     void setupWindow();
     void setupRenderViewport();
+    void setupContextMenu();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
+
+    void unloadModel();
 
     // 拖拽相关
     bool isDragging;
     QPoint dragStartPosition;
+
+    // 右键菜单
+    QMenu *contextMenu;
+    QAction *closeAction;
 
     // 渲染组件
     RenderViewport *renderViewport;
