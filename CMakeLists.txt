@@ -65,8 +65,8 @@ set(ENGINE_SOURCES
     engine/shader_manager.h
     engine/sound_engine.cpp
     engine/sound_engine.h
-        engine/render_viewport.cpp
-        engine/render_viewport.h
+    engine/render_viewport.cpp
+    engine/render_viewport.h
 )
 
 set(INCLUDE_SOURCES
@@ -86,6 +86,16 @@ set(ENTITY_SOURCES
         entity/pet.h
 )
 
+set(STATISTIC_SOURCES
+        statistic/statistic_manager.h
+        statistic/statistic_manager.cpp
+        statistic/statistic_types.h
+)
+
+set(MUSIC_SOURCES
+
+)
+
 # 合并所有源文件
 set(ALL_SOURCES
     main.cpp
@@ -95,6 +105,8 @@ set(ALL_SOURCES
     ${INCLUDE_SOURCES}
     ${TINYGLTF_SOURCES}
     ${ENTITY_SOURCES}
+    ${STATISTIC_SOURCES}
+    ${MUSIC_SOURCES}
 )
 
 add_executable(Desktop_Pet ${ALL_SOURCES})
@@ -107,7 +119,8 @@ target_include_directories(Desktop_Pet PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
     ${CMAKE_CURRENT_SOURCE_DIR}/entity
-
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    ${CMAKE_CURRENT_SOURCE_DIR}/music
 )
 
 target_link_libraries(Desktop_Pet
