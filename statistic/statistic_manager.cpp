@@ -40,6 +40,8 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
         {
             QMutexLocker locker(&dataMutex);
 
+            eventSlots.clear();
+
             filePath = savePath;
             autoSaveInterval = autoSaveIntervalSec;
 
@@ -72,12 +74,19 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
     // 注册事件监听
     // 启动
     registerEventSlot(StatisticEventType::PET_START, [this](const StatisticEvent& event) {
-        ensurePetStatistics(event.petName);
-        auto* stats = petStatisticsMap[event.petName];
+        PetStatistics* stats = nullptr;
+        {
+            QMutexLocker locker(&dataMutex);
+
+            ensurePetStatistics(event.petName);
+            stats = petStatisticsMap[event.petName];
+        }
 
         stats->startTime = QDateTime::currentDateTime();
         stats->sessionCount++;
         stats->isRunning = true;
+
+        emit statisticsUpdated(event.petName, *stats);
     });
 
     // 关闭
@@ -91,6 +100,8 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
             stats->startTime = QDateTime(); // 清空，标记会话结束
             stats->isRunning = false;
         }
+
+        emit statisticsUpdated(event.petName, *stats);
     });
 
     // 触摸
@@ -104,6 +115,8 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
         }
         stats->touchAreaCount[event.areaName] += 1;
         qDebug() << "Touch:" << event.areaName << " for " << stats->petName << " area";
+
+        emit statisticsUpdated(event.petName, *stats);
     });
 
     //情绪
@@ -133,16 +146,28 @@ void StatisticManager::emitStatisticEvent(const StatisticEvent &event) {
 }
 
 void StatisticManager::recordPetStart(const QString& petName) {
+    if(petName.isEmpty()){
+        qDebug() << "pet name is empty!";
+        return;
+    }
     StatisticEvent event = StatisticEvent(StatisticEventType::PET_START, petName, {});
     emitStatisticEvent(event);
 }
 
 void StatisticManager::recordPetStop(const QString& petName) {
+    if(petName.isEmpty()){
+        qDebug() << "pet name is empty!";
+        return;
+    }
     StatisticEvent event = StatisticEvent(StatisticEventType::PET_STOP, petName, {});
     emitStatisticEvent(event);
 }
 
 void StatisticManager::recordTouchInteraction(const QString& petName, const QString& areaName) {
+    if(petName.isEmpty()){
+        qDebug() << "pet name is empty!";
+        return;
+    }
     StatisticEvent event = StatisticEvent(StatisticEventType::BODY_PART_TOUCH, petName, areaName);
     emitStatisticEvent(event);
 }
@@ -207,12 +232,6 @@ void StatisticManager::setAutoSaveInterval(int seconds)
     if (autoSaveEnabled && autoSaveInterval > 0) {
         autoSaveTimer->start(autoSaveInterval * 1000);
     }
-}
-
-void StatisticManager::statisticEventOccurred(const StatisticEvent &event) {
-}
-
-void StatisticManager::statisticsUpdated(const QString &petName, const PetStatistics &statistics) {
 }
 
 void StatisticManager::onAutoSaveTimer() {

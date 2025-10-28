@@ -29,6 +29,7 @@ find_package(Qt6 COMPONENTS
         Widgets
         OpenGL
         OpenGLWidgets
+        Test
         REQUIRED)
 
 # 收集所有源文件
@@ -132,6 +133,27 @@ target_link_libraries(Desktop_Pet
         psapi
 )
 
+set(TEST_SOURCES
+        tests/test_statistic_manager.cpp
+)
+
+add_executable(statistic_tests ${TEST_SOURCES}
+                               ${STATISTIC_SOURCES}
+)
+
+target_include_directories(statistic_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(statistic_tests
+        Qt6::Core
+        Qt6::Test
+)
+
+enable_testing()
+add_test(NAME StatisticTests COMMAND statistic_tests)
+
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----
     set(DEBUG_SUFFIX "")
@@ -194,5 +216,15 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 --no-system-d3d-compiler
                 "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
                 COMMENT "Running windeployqt to copy Qt runtime dependencies...")
+    endif ()
+
+    # ---- 调用 windeployqt 自动部署测试程序 ----
+    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
+        add_custom_command(TARGET statistic_tests POST_BUILD
+                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
+                --no-translations
+                --no-system-d3d-compiler
+                "$<TARGET_FILE:statistic_tests>"
+                COMMENT "Running windeployqt for statistic_tests...")
     endif ()
 endif ()

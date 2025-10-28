@@ -25,7 +25,7 @@ struct StatisticEvent {
     QString areaName;
     QDateTime timestamp;        // 事件时间戳
 
-    StatisticEvent(StatisticEventType t, const QString& detail, const QString& name)
+    StatisticEvent(StatisticEventType t,  const QString& name, const QString& detail)
     : type(t), petName(name) ,areaName(detail) ,timestamp(QDateTime::currentDateTime()) {}
 };
 

@@ -87,8 +87,8 @@ private:
     QHash<StatisticEventType, QList<QMetaObject::Connection>> eventConnections; // 事件连接
 
     QString filePath;                                // 存储文件路径
-    QTimer* autoSaveTimer;                           // 自动保存定时器
-    QTimer* runtimeUpdateTimer;                      // 运行时长更新定时器
+    QTimer* autoSaveTimer{};                           // 自动保存定时器
+    QTimer* runtimeUpdateTimer{};                      // 运行时长更新定时器
 
     bool autoSaveEnabled = true;                     // 是否启用自动保存
     int autoSaveInterval = 300;                      // 自动保存间隔(秒)
