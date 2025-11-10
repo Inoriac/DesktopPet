@@ -43,16 +43,19 @@ set(UI_SOURCES
 )
 
 set(CORE_SOURCES
-    core/animation_manager.cpp
-    core/animation_manager.h
-    core/behavior_manager.cpp
-    core/behavior_manager.h
-    core/config_manager.cpp
-    core/config_manager.h
+    core/manager/animation_manager.cpp
+    core/manager/animation_manager.h
+    core/manager/behavior_manager.cpp
+    core/manager/behavior_manager.h
+    core/manager/config_manager.cpp
+    core/manager/config_manager.h
     core/event_handler.cpp
     core/event_handler.h
-    core/pet_controller.cpp
-    core/pet_controller.h
+    core/controller/pet_controller.cpp
+    core/controller/pet_controller.h
+    core/manager/reminder/pet_reminder.h
+    core/manager/reminder/pet_reminder_manager.cpp
+    core/manager/reminder/pet_reminder_manager.h
 )
 
 set(ENGINE_SOURCES
@@ -85,6 +88,8 @@ set(TINYGLTF_SOURCES
 set(ENTITY_SOURCES
         entity/pet.cpp
         entity/pet.h
+        entity/pet_personality.cpp
+        entity/pet_personality.h
 )
 
 set(STATISTIC_SOURCES
