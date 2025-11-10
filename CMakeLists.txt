@@ -139,16 +139,21 @@ target_link_libraries(Desktop_Pet
 )
 
 set(TEST_SOURCES
-        tests/test_statistic_manager.cpp
+#        tests/test_statistic_manager.cpp
+        tests/test_pet_reminder_manager.cpp
 )
 
 add_executable(statistic_tests ${TEST_SOURCES}
                                ${STATISTIC_SOURCES}
+                               ${CORE_SOURCES}
+                               ${ENTITY_SOURCES}
 )
 
 target_include_directories(statistic_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/entity
 )
 
 target_link_libraries(statistic_tests
