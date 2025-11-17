@@ -102,8 +102,8 @@ bool ModelLoader::parseGLTF(const std::string &path) {
 
     qDebug() << "Extracted" << meshes.size() << "meshes";
 
-    qDebug() << "---------------------VALIDATION---------------------";
-    runAllModelTests(model);
+    // qDebug() << "---------------------VALIDATION---------------------";
+    // runAllModelTests(model);
 
     return true;
 }
@@ -532,212 +532,212 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
     qDebug() << "[ModelLoader] Skinning data extracted. Vertices = " << vertexCount;
 }
 
-// Test 1: Node consistency with glTF children/parent mapping
-bool ModelLoader::testNodesIntegrity(const tinygltf::Model &model) {
-    bool ok = true;
-    if (nodes.size() != model.nodes.size()) {
-        qWarning() << "[TestNodes] nodes.size() mismatch with model.nodes.size()"
-                   << nodes.size() << model.nodes.size();
-        ok = false;
-    }
-
-    // For every model node i, ensure each child j has parent==i in nodes[]
-    for (size_t i = 0; i < model.nodes.size(); ++i) {
-        const tinygltf::Node &gnode = model.nodes[i];
-        for (int childIdx : gnode.children) {
-            if (childIdx < 0 || childIdx >= (int)nodes.size()) {
-                qWarning() << "[TestNodes] invalid child index in glTF:" << childIdx << "parent gltf node:" << (int)i;
-                ok = false;
-                continue;
-            }
-            if (nodes[childIdx].parent != (int)i) {
-                qWarning() << "[TestNodes] parent mismatch: nodes[" << childIdx << "].parent="
-                           << nodes[childIdx].parent << " expected=" << (int)i
-                           << " child name=" << QString::fromStdString(nodes[childIdx].name)
-                           << " parent name=" << QString::fromStdString(nodes[i].name);
-                ok = false;
-            }
-        }
-    }
-
-    if (ok) qDebug() << "[TestNodes] OK: node parent/child mapping consistent.";
-    return ok;
-}
-
-// Test 2: Skeleton vs Skin consistency (joints count, bone.index map)
-bool ModelLoader::testSkeletonIntegrity() {
-    bool ok = true;
-    if (skeleton.bones.empty()) {
-        qWarning() << "[TestSkeleton] skeleton.bones empty";
-        return false;
-    }
-    if (skeleton.skinIndex < 0 || skeleton.skinIndex >= (int)skins.size()) {
-        qWarning() << "[TestSkeleton] invalid skeleton.skinIndex =" << skeleton.skinIndex;
-        ok = false;
-    } else {
-        const Skin &skin = skins[skeleton.skinIndex];
-        if (skin.joints.size() != skeleton.bones.size()) {
-            qWarning() << "[TestSkeleton] joints.size() != skeleton.bones.size()"
-                       << skin.joints.size() << skeleton.bones.size();
-            ok = false;
-        }
-        // ensure each bone.index matches skin.joints
-        for (size_t i = 0; i < skeleton.bones.size() && i < skin.joints.size(); ++i) {
-            if (skeleton.bones[i].index != skin.joints[i]) {
-                qWarning() << "[TestSkeleton] bone[" << i << "].index mismatch:"
-                           << skeleton.bones[i].index << " vs skin.joints[" << i << "] =" << skin.joints[i]
-                           << " bone name=" << QString::fromStdString(skeleton.bones[i].name);
-                ok = false;
-            }
-            // verify nameToIndex mapping
-            auto it = skeleton.nameToIndex.find(skeleton.bones[i].name);
-            if (it == skeleton.nameToIndex.end() || it->second != (int)i) {
-                qWarning() << "[TestSkeleton] nameToIndex inconsistent for bone" << QString::fromStdString(skeleton.bones[i].name)
-                           << "map->" << (it == skeleton.nameToIndex.end() ? -999 : it->second)
-                           << "expected=" << (int)i;
-                ok = false;
-            }
-        }
-    }
-    if (ok) qDebug() << "[TestSkeleton] OK: skeleton and skin.joints consistent.";
-    return ok;
-}
-
-// Test 3: Hierarchy consistency between Node tree and Bone parents
-bool ModelLoader::testHierarchyConsistency() {
-    bool ok = true;
-    for (size_t bi = 0; bi < skeleton.bones.size(); ++bi) {
-        const Bone &b = skeleton.bones[bi];
-        if (b.parent >= 0) {
-            // The parent's node index should equal nodes[b.parent].index
-            int parentNodeIndex = skeleton.bones[b.parent].index;
-            // And nodes[b.index].parent should equal parentNodeIndex
-            if (nodes[b.index].parent != parentNodeIndex) {
-                qWarning() << "[TestHierarchy] bone parent node mismatch for bone" << QString::fromStdString(b.name)
-                           << " bone.parent=" << b.parent
-                           << " skeleton.bones[b.parent].index=" << parentNodeIndex
-                           << " nodes[b.index].parent=" << nodes[b.index].parent;
-                ok = false;
-            }
-        } else {
-            // root bone: nodes[b.index].parent should be either -1 or something not in joints
-            // no strong assertion, but warn if node parent is non -1 and actually a joint
-            if (nodes[b.index].parent >= 0) {
-                int pnode = nodes[b.index].parent;
-                // if parent node is itself a joint -> suspicious
-                auto it = skeleton.nameToIndex.find(nodes[pnode].name);
-                if (it != skeleton.nameToIndex.end()) {
-                    qWarning() << "[TestHierarchy] root bone" << QString::fromStdString(b.name)
-                               << "has node parent that is also a joint:" << nodes[pnode].name;
-                    ok = false;
-                }
-            }
-        }
-    }
-
-    if (ok) qDebug() << "[TestHierarchy] OK: bone parent relationships align with node tree.";
-    return ok;
-}
-
-// Test 4: Mesh skin arrays correctness and weights normalization
-bool ModelLoader::testMeshSkinningArrays(const MeshData &m, int meshIndex) {
-    bool ok = true;
-    size_t vcount = 0;
-    if (m.vertices.size() % 3 == 0) vcount = m.vertices.size() / 3;
-    else {
-        qWarning() << "[TestMesh] vertex array size not multiple of 3";
-        ok = false;
-    }
-
-    if (!m.hasSkinning) {
-        qDebug() << "[TestMesh] mesh has no skinning (meshIndex=" << meshIndex << ")";
-        return true; // not an error, just no skinning
-    }
-
-    if (m.boneIndices.size() != vcount * 4) {
-        qWarning() << "[TestMesh] boneIndices size mismatch: expected" << vcount*4 << "got" << m.boneIndices.size();
-        ok = false;
-    }
-    if (m.boneWeights.size() != vcount * 4) {
-        qWarning() << "[TestMesh] boneWeights size mismatch: expected" << vcount*4 << "got" << m.boneWeights.size();
-        ok = false;
-    }
-
-    // Check ranges and normalization on first N vertices and sample others
-    const int SAMPLE = std::min((size_t)16, vcount);
-    for (int i = 0; i < SAMPLE; ++i) {
-        float w0 = m.boneWeights[i*4 + 0];
-        float w1 = m.boneWeights[i*4 + 1];
-        float w2 = m.boneWeights[i*4 + 2];
-        float w3 = m.boneWeights[i*4 + 3];
-        float sum = w0 + w1 + w2 + w3;
-        if (sum <= 0.0f) {
-            qWarning() << "[TestMesh] vertex" << i << "weights sum == 0 (unbound?) meshIndex=" << meshIndex;
-            ok = false;
-        } else {
-            if (std::fabs(sum - 1.0f) > 1e-3f) {
-                qWarning() << "[TestMesh] vertex" << i << "weights not normalized sum=" << sum << "meshIndex=" << meshIndex;
-                // not fatal, but warn
-            }
-        }
-        // joint range check
-        for (int k = 0; k < 4; ++k) {
-            int bid = m.boneIndices[i*4 + k];
-            if (bid < -1 || bid >= (int)skeleton.bones.size()) {
-                qWarning() << "[TestMesh] vertex" << i << "bone index out of range:" << bid << "meshIndex=" << meshIndex;
-                ok = false;
-            }
-        }
-    }
-
-    if (ok) qDebug() << "[TestMesh] meshIndex" << meshIndex << "skin arrays look OK (sampled).";
-    return ok;
-}
-
-// Test 5: inverseBindMatrices correctness (inverse(bindGlobal) ~ inverseBind)
-bool ModelLoader::testInverseBindMatrices(float eps) {
-    if (skeleton.bones.empty() || skeleton.skinIndex < 0) {
-        qWarning() << "[TestIBM] skeleton empty or no skin";
-        return false;
-    }
-    const Skin &skin = skins[skeleton.skinIndex];
-    bool ok = true;
-    if (skin.inverseBindMatrices.size() != skeleton.bones.size()) {
-        qWarning() << "[TestIBM] IBM count != bone count" << skin.inverseBindMatrices.size() << skeleton.bones.size();
-        ok = false;
-    }
-
-    int sampleCount = std::min((size_t)10, skeleton.bones.size());
-    for (int i = 0; i < sampleCount; ++i) {
-        const Bone &b = skeleton.bones[i];
-        const QMatrix4x4 &ibm = skin.inverseBindMatrices.size() > i ? skin.inverseBindMatrices[i] : QMatrix4x4();
-        QMatrix4x4 m = ibm * b.globalTransform;
-        if (!isIdentity(m, eps)) {
-            qWarning() << "[TestIBM] IBM * bindGlobal != I for bone" << QString::fromStdString(b.name)
-                       << "sampleIndex=" << i;
-            ok = false;
-        }
-    }
-    if (ok) qDebug() << "[TestIBM] IBM * bindGlobal ≈ Identity for sampled bones.";
-    return ok;
-}
-
-// Runner: call all tests
-void ModelLoader::runAllModelTests(const tinygltf::Model &model) {
-    qDebug() << "=== Running Model Tests ===";
-    bool n_ok = testNodesIntegrity(model);
-    bool s_ok = testSkeletonIntegrity();
-    bool h_ok = testHierarchyConsistency();
-
-    bool mesh_ok_all = true;
-    for (int i = 0; i < (int)meshes.size(); ++i) {
-        bool r = testMeshSkinningArrays(meshes[i], i);
-        mesh_ok_all &= r;
-    }
-
-    bool ibm_ok = testInverseBindMatrices();
-
-    qDebug() << "=== Tests Summary ===";
-    qDebug() << "Nodes:" << n_ok << "Skeleton:" << s_ok << "Hierarchy:" << h_ok
-             << "MeshSkin:" << mesh_ok_all << "IBM:" << ibm_ok;
-}
+// // Test 1: Node consistency with glTF children/parent mapping
+// bool ModelLoader::testNodesIntegrity(const tinygltf::Model &model) {
+//     bool ok = true;
+//     if (nodes.size() != model.nodes.size()) {
+//         qWarning() << "[TestNodes] nodes.size() mismatch with model.nodes.size()"
+//                    << nodes.size() << model.nodes.size();
+//         ok = false;
+//     }
+//
+//     // For every model node i, ensure each child j has parent==i in nodes[]
+//     for (size_t i = 0; i < model.nodes.size(); ++i) {
+//         const tinygltf::Node &gnode = model.nodes[i];
+//         for (int childIdx : gnode.children) {
+//             if (childIdx < 0 || childIdx >= (int)nodes.size()) {
+//                 qWarning() << "[TestNodes] invalid child index in glTF:" << childIdx << "parent gltf node:" << (int)i;
+//                 ok = false;
+//                 continue;
+//             }
+//             if (nodes[childIdx].parent != (int)i) {
+//                 qWarning() << "[TestNodes] parent mismatch: nodes[" << childIdx << "].parent="
+//                            << nodes[childIdx].parent << " expected=" << (int)i
+//                            << " child name=" << QString::fromStdString(nodes[childIdx].name)
+//                            << " parent name=" << QString::fromStdString(nodes[i].name);
+//                 ok = false;
+//             }
+//         }
+//     }
+//
+//     if (ok) qDebug() << "[TestNodes] OK: node parent/child mapping consistent.";
+//     return ok;
+// }
+//
+// // Test 2: Skeleton vs Skin consistency (joints count, bone.index map)
+// bool ModelLoader::testSkeletonIntegrity() {
+//     bool ok = true;
+//     if (skeleton.bones.empty()) {
+//         qWarning() << "[TestSkeleton] skeleton.bones empty";
+//         return false;
+//     }
+//     if (skeleton.skinIndex < 0 || skeleton.skinIndex >= (int)skins.size()) {
+//         qWarning() << "[TestSkeleton] invalid skeleton.skinIndex =" << skeleton.skinIndex;
+//         ok = false;
+//     } else {
+//         const Skin &skin = skins[skeleton.skinIndex];
+//         if (skin.joints.size() != skeleton.bones.size()) {
+//             qWarning() << "[TestSkeleton] joints.size() != skeleton.bones.size()"
+//                        << skin.joints.size() << skeleton.bones.size();
+//             ok = false;
+//         }
+//         // ensure each bone.index matches skin.joints
+//         for (size_t i = 0; i < skeleton.bones.size() && i < skin.joints.size(); ++i) {
+//             if (skeleton.bones[i].index != skin.joints[i]) {
+//                 qWarning() << "[TestSkeleton] bone[" << i << "].index mismatch:"
+//                            << skeleton.bones[i].index << " vs skin.joints[" << i << "] =" << skin.joints[i]
+//                            << " bone name=" << QString::fromStdString(skeleton.bones[i].name);
+//                 ok = false;
+//             }
+//             // verify nameToIndex mapping
+//             auto it = skeleton.nameToIndex.find(skeleton.bones[i].name);
+//             if (it == skeleton.nameToIndex.end() || it->second != (int)i) {
+//                 qWarning() << "[TestSkeleton] nameToIndex inconsistent for bone" << QString::fromStdString(skeleton.bones[i].name)
+//                            << "map->" << (it == skeleton.nameToIndex.end() ? -999 : it->second)
+//                            << "expected=" << (int)i;
+//                 ok = false;
+//             }
+//         }
+//     }
+//     if (ok) qDebug() << "[TestSkeleton] OK: skeleton and skin.joints consistent.";
+//     return ok;
+// }
+//
+// // Test 3: Hierarchy consistency between Node tree and Bone parents
+// bool ModelLoader::testHierarchyConsistency() {
+//     bool ok = true;
+//     for (size_t bi = 0; bi < skeleton.bones.size(); ++bi) {
+//         const Bone &b = skeleton.bones[bi];
+//         if (b.parent >= 0) {
+//             // The parent's node index should equal nodes[b.parent].index
+//             int parentNodeIndex = skeleton.bones[b.parent].index;
+//             // And nodes[b.index].parent should equal parentNodeIndex
+//             if (nodes[b.index].parent != parentNodeIndex) {
+//                 qWarning() << "[TestHierarchy] bone parent node mismatch for bone" << QString::fromStdString(b.name)
+//                            << " bone.parent=" << b.parent
+//                            << " skeleton.bones[b.parent].index=" << parentNodeIndex
+//                            << " nodes[b.index].parent=" << nodes[b.index].parent;
+//                 ok = false;
+//             }
+//         } else {
+//             // root bone: nodes[b.index].parent should be either -1 or something not in joints
+//             // no strong assertion, but warn if node parent is non -1 and actually a joint
+//             if (nodes[b.index].parent >= 0) {
+//                 int pnode = nodes[b.index].parent;
+//                 // if parent node is itself a joint -> suspicious
+//                 auto it = skeleton.nameToIndex.find(nodes[pnode].name);
+//                 if (it != skeleton.nameToIndex.end()) {
+//                     qWarning() << "[TestHierarchy] root bone" << QString::fromStdString(b.name)
+//                                << "has node parent that is also a joint:" << nodes[pnode].name;
+//                     ok = false;
+//                 }
+//             }
+//         }
+//     }
+//
+//     if (ok) qDebug() << "[TestHierarchy] OK: bone parent relationships align with node tree.";
+//     return ok;
+// }
+//
+// // Test 4: Mesh skin arrays correctness and weights normalization
+// bool ModelLoader::testMeshSkinningArrays(const MeshData &m, int meshIndex) {
+//     bool ok = true;
+//     size_t vcount = 0;
+//     if (m.vertices.size() % 3 == 0) vcount = m.vertices.size() / 3;
+//     else {
+//         qWarning() << "[TestMesh] vertex array size not multiple of 3";
+//         ok = false;
+//     }
+//
+//     if (!m.hasSkinning) {
+//         qDebug() << "[TestMesh] mesh has no skinning (meshIndex=" << meshIndex << ")";
+//         return true; // not an error, just no skinning
+//     }
+//
+//     if (m.boneIndices.size() != vcount * 4) {
+//         qWarning() << "[TestMesh] boneIndices size mismatch: expected" << vcount*4 << "got" << m.boneIndices.size();
+//         ok = false;
+//     }
+//     if (m.boneWeights.size() != vcount * 4) {
+//         qWarning() << "[TestMesh] boneWeights size mismatch: expected" << vcount*4 << "got" << m.boneWeights.size();
+//         ok = false;
+//     }
+//
+//     // Check ranges and normalization on first N vertices and sample others
+//     const int SAMPLE = std::min((size_t)16, vcount);
+//     for (int i = 0; i < SAMPLE; ++i) {
+//         float w0 = m.boneWeights[i*4 + 0];
+//         float w1 = m.boneWeights[i*4 + 1];
+//         float w2 = m.boneWeights[i*4 + 2];
+//         float w3 = m.boneWeights[i*4 + 3];
+//         float sum = w0 + w1 + w2 + w3;
+//         if (sum <= 0.0f) {
+//             qWarning() << "[TestMesh] vertex" << i << "weights sum == 0 (unbound?) meshIndex=" << meshIndex;
+//             ok = false;
+//         } else {
+//             if (std::fabs(sum - 1.0f) > 1e-3f) {
+//                 qWarning() << "[TestMesh] vertex" << i << "weights not normalized sum=" << sum << "meshIndex=" << meshIndex;
+//                 // not fatal, but warn
+//             }
+//         }
+//         // joint range check
+//         for (int k = 0; k < 4; ++k) {
+//             int bid = m.boneIndices[i*4 + k];
+//             if (bid < -1 || bid >= (int)skeleton.bones.size()) {
+//                 qWarning() << "[TestMesh] vertex" << i << "bone index out of range:" << bid << "meshIndex=" << meshIndex;
+//                 ok = false;
+//             }
+//         }
+//     }
+//
+//     if (ok) qDebug() << "[TestMesh] meshIndex" << meshIndex << "skin arrays look OK (sampled).";
+//     return ok;
+// }
+//
+// // Test 5: inverseBindMatrices correctness (inverse(bindGlobal) ~ inverseBind)
+// bool ModelLoader::testInverseBindMatrices(float eps) {
+//     if (skeleton.bones.empty() || skeleton.skinIndex < 0) {
+//         qWarning() << "[TestIBM] skeleton empty or no skin";
+//         return false;
+//     }
+//     const Skin &skin = skins[skeleton.skinIndex];
+//     bool ok = true;
+//     if (skin.inverseBindMatrices.size() != skeleton.bones.size()) {
+//         qWarning() << "[TestIBM] IBM count != bone count" << skin.inverseBindMatrices.size() << skeleton.bones.size();
+//         ok = false;
+//     }
+//
+//     int sampleCount = std::min((size_t)10, skeleton.bones.size());
+//     for (int i = 0; i < sampleCount; ++i) {
+//         const Bone &b = skeleton.bones[i];
+//         const QMatrix4x4 &ibm = skin.inverseBindMatrices.size() > i ? skin.inverseBindMatrices[i] : QMatrix4x4();
+//         QMatrix4x4 m = ibm * b.globalTransform;
+//         if (!isIdentity(m, eps)) {
+//             qWarning() << "[TestIBM] IBM * bindGlobal != I for bone" << QString::fromStdString(b.name)
+//                        << "sampleIndex=" << i;
+//             ok = false;
+//         }
+//     }
+//     if (ok) qDebug() << "[TestIBM] IBM * bindGlobal ≈ Identity for sampled bones.";
+//     return ok;
+// }
+//
+// // Runner: call all tests
+// void ModelLoader::runAllModelTests(const tinygltf::Model &model) {
+//     qDebug() << "=== Running Model Tests ===";
+//     bool n_ok = testNodesIntegrity(model);
+//     bool s_ok = testSkeletonIntegrity();
+//     bool h_ok = testHierarchyConsistency();
+//
+//     bool mesh_ok_all = true;
+//     for (int i = 0; i < (int)meshes.size(); ++i) {
+//         bool r = testMeshSkinningArrays(meshes[i], i);
+//         mesh_ok_all &= r;
+//     }
+//
+//     bool ibm_ok = testInverseBindMatrices();
+//
+//     qDebug() << "=== Tests Summary ===";
+//     qDebug() << "Nodes:" << n_ok << "Skeleton:" << s_ok << "Hierarchy:" << h_ok
+//              << "MeshSkin:" << mesh_ok_all << "IBM:" << ibm_ok;
+// }

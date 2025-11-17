@@ -150,25 +150,25 @@ private:
     void extractSkeletonHierarchy(const tinygltf::Model& model);    // 解析骨骼层级
     void extractSkinningData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData);   // 解析 mesh 的皮肤数据
 
-    // 临时测试方法
-    bool testNodesIntegrity(const tinygltf::Model &model);
-    bool testSkeletonIntegrity();
-    bool testHierarchyConsistency();
-    bool testMeshSkinningArrays(const MeshData &m, int meshIndex = -1);
-    bool testInverseBindMatrices(float eps = 1e-2f);
-    void runAllModelTests(const tinygltf::Model &model);
+    // // 临时测试方法
+    // bool testNodesIntegrity(const tinygltf::Model &model);
+    // bool testSkeletonIntegrity();
+    // bool testHierarchyConsistency();
+    // bool testMeshSkinningArrays(const MeshData &m, int meshIndex = -1);
+    // bool testInverseBindMatrices(float eps = 1e-2f);
+    // void runAllModelTests(const tinygltf::Model &model);
 
-    // 小工具：判断矩阵是否接近单位矩阵
-    static bool isIdentity(const QMatrix4x4 &m, float eps = 1e-3f) {
-        // Compare to identity
-        for (int r = 0; r < 4; ++r) {
-            for (int c = 0; c < 4; ++c) {
-                float expected = (r == c) ? 1.0f : 0.0f;
-                if (std::fabs(m(r, c) - expected) > eps) return false;
-            }
-        }
-        return true;
-    }
+    // // 小工具：判断矩阵是否接近单位矩阵
+    // static bool isIdentity(const QMatrix4x4 &m, float eps = 1e-3f) {
+    //     // Compare to identity
+    //     for (int r = 0; r < 4; ++r) {
+    //         for (int c = 0; c < 4; ++c) {
+    //             float expected = (r == c) ? 1.0f : 0.0f;
+    //             if (std::fabs(m(r, c) - expected) > eps) return false;
+    //         }
+    //     }
+    //     return true;
+    // }
 
     // 构建 tinygltf_matrix -> QMatrix4x4
     static QMatrix4x4 getNodeLocalTransform(const tinygltf::Node& node)
