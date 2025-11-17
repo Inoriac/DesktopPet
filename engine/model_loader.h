@@ -5,6 +5,7 @@
 #ifndef DESKTOP_PET_MODEL_LOADER_H
 #define DESKTOP_PET_MODEL_LOADER_H
 
+#include <QMatrix4x4>
 #include <QVector3D>
 #include <string>
 #include <vector>
@@ -60,14 +61,57 @@ struct MaterialData {
     unsigned int emissiveTexID {0};
 };
 
+// 通用 gltf 节点
+struct Node {
+    std::string name;
+    int index;                    // glTF node index
+    int parent = -1;
+    std::vector<int> children;
+
+    QMatrix4x4 localTransform;    // TRS → matrix
+    QMatrix4x4 globalTransform;   // runtime calculated
+};
+
+struct Bone {
+    std::string name;
+    int index;              // 对应 gltf 节点索引
+    int parent = -1;        // 父节点索引 -1表示 root
+    QMatrix4x4 localTransform;  // 本地变换矩阵
+    QMatrix4x4 globalTransform; // 初始全局变换
+    QMatrix4x4 inverseBindMatrix;   // gltf 提供的 inverse bind matrix
+};
+
+struct Skeleton {
+    int skinIndex;
+    std::vector<Bone> bones;
+    std::unordered_map<std::string, int> nameToIndex;   // 骨骼索引
+};
+
+struct Skin {
+    int skeletonRoot = -1;
+
+    std::vector<int> joints;
+    std::vector<QMatrix4x4> inverseBindMatrices;    // gltf IBM
+
+    // 运行时数据
+    std::vector<QMatrix4x4> skinMatrices;   // 最终骨骼矩阵
+};
+
 // CPU 端数据结构，用于存储从GLB文件解析出来的原始数据
 struct MeshData {
     std::vector<float> vertices;    // 顶点数据
     std::vector<unsigned int> indices;  // 索引数据
     std::vector<float> normals;     // 法线数据
     std::vector<float> uvs;         //  uv 坐标
+
+    // 蒙皮数据
+    std::vector<float> boneWeights;
+    std::vector<int> boneIndices;
+
     std::string materialName;      // 材质名称
     int materialIndex;                   // 材质索引
+
+    bool hasSkinning = false;
 };
 
 class ModelLoader {
@@ -82,8 +126,12 @@ public:
 
 private:
     std::string modelDirectory;
+
     std::vector<MeshData> meshes;
     std::vector<MaterialData> materials;    // 存储所有材质
+    std::vector<Node> nodes;
+    std::vector<Skin> skins;
+    Skeleton skeleton;  // 骨骼信息
 
     // 辅助方法
     bool parseGLTF(const std::string& path);    // 加载模型
@@ -92,6 +140,67 @@ private:
     void extractVertexData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData); // 提取顶点数据
     void extractIndexData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData);  // 提取索引数据
     MaterialData extractMaterialData(const tinygltf::Material& mat, const tinygltf::Model& model);     // 提取材质信息
+
+    /// @brief 解析 gltf 节点结构
+    /// @param model Model的引用
+    /// @param nodeIndex 当前节点的索引
+    /// @param parentIndex 当前节点的父索引
+    void extractNodes(const tinygltf::Model& model, int nodeIndex, int parentIndex);
+
+    void extractSkeleton(const tinygltf::Model& model);     // 读取骨骼列表与 inverseBindMatrices
+    void extractSkeletonHierarchy(const tinygltf::Model& model);    // 解析骨骼层级
+    void extractSkinningData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData);   // 解析 mesh 的皮肤数据
+
+    // 构建 tinygltf_matrix -> QMatrix4x4
+    static QMatrix4x4 getNodeLocalTransform(const tinygltf::Node& node) {
+        QMatrix4x4 mat;
+        mat.setToIdentity();
+
+        // 优先使用 gltf 节点中的 matrix
+        if(node.matrix.size() == 16){
+            for(int col = 0; col < 4; ++col) {
+                for(int row = 0; row < 4; ++row) {
+                    float v = static_cast<float>(node.matrix[col*4 + row]);
+                    mat(row, col) = v;
+                }
+            }
+            return mat;
+        }
+
+        // 构造 TRS
+        QMatrix4x4 T, R, S;
+
+        // --- Translation ---
+        if (!node.translation.empty()) {
+            T.translate(
+                node.translation[0],
+                node.translation[1],
+                node.translation[2]
+            );
+        }
+
+        // --- Rotation ---
+        if (!node.rotation.empty()) {
+            QQuaternion q(
+                node.rotation[3],   // w
+                node.rotation[0],   // x
+                node.rotation[1],   // y
+                node.rotation[2]    // z
+            );
+            R.rotate(q);
+        }
+
+        // --- Scale ---
+        if (!node.scale.empty()) {
+            S.scale(
+                node.scale[0],
+                node.scale[1],
+                node.scale[2]
+            );
+        }
+
+        return T * R * S;
+    }
 };
 
 #endif //DESKTOP_PET_MODEL_LOADER_H
