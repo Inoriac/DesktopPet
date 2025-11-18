@@ -1,0 +1,17 @@
+{
+  "presets": [
+    {
+      "name": "健忘型",
+      "forgetProbability": 0.35,
+      "randomVariance": 20,
+      "reminderPhrases": [
+        "对了！你有件事要做～",
+        "啊，时间到啦～"
+      ],
+      "forgetPhrases": [
+        "糟了，我是不是忘了什么……",
+        "哎呀，好像错过了时间……"
+      ]
+    }
+  ]
+}

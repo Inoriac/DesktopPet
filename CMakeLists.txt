@@ -43,19 +43,27 @@ set(UI_SOURCES
 )
 
 set(CORE_SOURCES
-    core/manager/animation_manager.cpp
-    core/manager/animation_manager.h
-    core/manager/behavior_manager.cpp
-    core/manager/behavior_manager.h
-    core/manager/config_manager.cpp
-    core/manager/config_manager.h
-    core/event_handler.cpp
-    core/event_handler.h
+    core/animation/animation_manager.cpp
+    core/animation/animation_manager.h
+    core/animation/animation_importer.cpp
+    core/animation/animation_importer.h
+    core/animation/animation_structs.h
+
+    core/behavior/behavior_manager.cpp
+    core/behavior/behavior_manager.h
+
+    core/configLoader/config_manager.cpp
+    core/configLoader/config_manager.h
+
+    core/eventHandler/event_handler.cpp
+    core/eventHandler/event_handler.h
+
     core/controller/pet_controller.cpp
     core/controller/pet_controller.h
-    core/manager/reminder/pet_reminder.h
-    core/manager/reminder/pet_reminder_manager.cpp
-    core/manager/reminder/pet_reminder_manager.h
+
+    core/reminder/pet_reminder.h
+    core/reminder/pet_reminder_manager.cpp
+    core/reminder/pet_reminder_manager.h
 )
 
 set(ENGINE_SOURCES
