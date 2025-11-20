@@ -148,13 +148,17 @@ target_link_libraries(Desktop_Pet
 
 set(TEST_SOURCES
 #        tests/test_statistic_manager.cpp
-        tests/test_pet_reminder_manager.cpp
+#        tests/test_pet_reminder_manager.cpp
+        tests/test_animation_importer.cpp
 )
 
 add_executable(statistic_tests ${TEST_SOURCES}
                                ${STATISTIC_SOURCES}
                                ${CORE_SOURCES}
                                ${ENTITY_SOURCES}
+                               ${ENGINE_SOURCES}
+                               ${TINYGLTF_SOURCES}
+
 )
 
 target_include_directories(statistic_tests PRIVATE
@@ -162,11 +166,17 @@ target_include_directories(statistic_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/entity
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
 )
 
 target_link_libraries(statistic_tests
-        Qt6::Core
-        Qt6::Test
+        Qt::Core
+        Qt::Test
+        Qt::Widgets
+        Qt::OpenGL
+        Qt::OpenGLWidgets
+        psapi
 )
 
 enable_testing()

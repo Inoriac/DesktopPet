@@ -532,6 +532,10 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
     qDebug() << "[ModelLoader] Skinning data extracted. Vertices = " << vertexCount;
 }
 
+std::unordered_map<std::string, int> & ModelLoader::getNameToBone() {
+    return skeleton.nameToIndex;
+}
+
 // // Test 1: Node consistency with glTF children/parent mapping
 // bool ModelLoader::testNodesIntegrity(const tinygltf::Model &model) {
 //     bool ok = true;

@@ -124,6 +124,9 @@ public:
     std::vector<MaterialData>& getMaterials() { return materials; };
     void clear();
 
+    // 临时测试方法
+    std::unordered_map<std::string, int>& getNameToBone();
+
 private:
     std::string modelDirectory;
 
