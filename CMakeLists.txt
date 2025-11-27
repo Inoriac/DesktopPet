@@ -64,6 +64,8 @@ set(CORE_SOURCES
     core/reminder/pet_reminder.h
     core/reminder/pet_reminder_manager.cpp
     core/reminder/pet_reminder_manager.h
+        core/animation/animation_player.cpp
+        core/animation/animation_player.h
 )
 
 set(ENGINE_SOURCES

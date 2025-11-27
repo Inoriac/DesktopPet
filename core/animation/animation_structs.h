@@ -50,10 +50,16 @@ struct AnimationClip {
 };
 
 // 状态机
+// 候选动画
+struct AnimationCLipOption {
+    std:: string clipName;  // 动画文件名
+    float weight = 1.0f;    // TODO:权重，后续可能可以使用
+};
+
 // 单个状态定义
 struct AnimationState {
     std::string name;       // 状态名称
-    std::string clipName;   // 动画文件或内部动画名
+    std::vector<AnimationCLipOption> clipOptions;   // 候选动画列表
     bool loop = true;       // 是否循环播放
 };
 

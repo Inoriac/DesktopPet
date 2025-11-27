@@ -9,7 +9,6 @@
 #include <QVector3D>
 #include <string>
 #include <vector>
-#include <GL/gl.h>
 
 #include "tiny_gltf.h"
 
