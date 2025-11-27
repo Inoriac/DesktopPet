@@ -102,7 +102,7 @@ private:
     AnimationPose posePrevious;
     AnimationPose poseFinal;
 
-    std::mt19937 rng { std::random_device{}() };
+    std::mt19937 rng { std::random_device{}() };    // 随机数生成器
 
 };
 

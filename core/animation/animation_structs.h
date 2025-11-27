@@ -53,7 +53,7 @@ struct AnimationClip {
 // 候选动画
 struct AnimationCLipOption {
     std:: string clipName;  // 动画文件名
-    float weight = 1.0f;    // TODO:权重，后续可能可以使用
+    float weight = 1.0f;
 };
 
 // 单个状态定义

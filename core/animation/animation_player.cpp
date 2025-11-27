@@ -24,15 +24,19 @@ AnimationPlayer::AnimationPlayer(const Skeleton *skeleton, const std::unordered_
 }
 
 void AnimationPlayer::selectRandomClipForState(const AnimationState& state) {
-    // TODO: 此处尚未引入权重的概念，未对其进行处理，后续可以考虑加入
     const auto& it = state.clipOptions;
     if (it.empty()) {
         currentClipIndex = -1;
         return;
     }
 
-    std::uniform_int_distribution<int> u(0, it.size() - 1);
-    currentClipIndex = u(rng);
+    std::vector<float> clipWeights;
+    for (auto clipOption : it) {
+        clipWeights.push_back(clipOption.weight);
+    }
+
+    std::discrete_distribution<int> dist(clipWeights.begin(), clipWeights.end());
+    currentClipIndex = dist(rng);
 }
 
 void AnimationPlayer::update(double deltaTime) {
