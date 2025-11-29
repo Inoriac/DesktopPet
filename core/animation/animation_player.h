@@ -98,12 +98,11 @@ private:
     double blendTime = 0;
     int nextClipIndex = -1;
 
-    AnimationPose poseCurrent;
-    AnimationPose posePrevious;
+    AnimationPose poseCurrent;      // 当前姿势
+    AnimationPose posePrevious;     // 上一帧姿势
     AnimationPose poseFinal;
 
     std::mt19937 rng { std::random_device{}() };    // 随机数生成器
-
 };
 
 
