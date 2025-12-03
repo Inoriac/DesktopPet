@@ -57,6 +57,9 @@ public:
 
     // 获取最终的当前姿势(用于 skinning)
     const AnimationPose& currentPose() const { return poseFinal; }
+    
+    // 根据状态名切换动画
+    void changeState(const std::string& targetState);
 
 private:
     // 内部流程函数
@@ -73,7 +76,7 @@ private:
     void updateFinalPose();
 
     // 根据状态名切换动画
-    void changeState(const std::string& targetState);
+    // void changeState(const std::string& targetState);
 
     // 随机挑选 clip
     void selectRandomClipForState(const AnimationState& state);

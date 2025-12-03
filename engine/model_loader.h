@@ -125,6 +125,7 @@ public:
 
     // 临时测试方法
     std::unordered_map<std::string, int>& getNameToBone();
+    Skeleton& getSkeleton() { return skeleton; };
 
 private:
     std::string modelDirectory;
