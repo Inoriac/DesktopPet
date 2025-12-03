@@ -151,7 +151,8 @@ target_link_libraries(Desktop_Pet
 set(TEST_SOURCES
 #        tests/test_statistic_manager.cpp
 #        tests/test_pet_reminder_manager.cpp
-        tests/test_animation_importer.cpp
+#        tests/test_animation_importer.cpp
+        tests/test_animation_player.cpp
 )
 
 add_executable(statistic_tests ${TEST_SOURCES}
