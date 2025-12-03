@@ -479,4 +479,17 @@ void RenderEngine::clearScene() {
         if (mat.emissiveTexID) gl->glDeleteTextures(1, &mat.emissiveTexID);
     }
     materials.clear();
+
+    // 清理动画播放器
+    animationPlayer.reset();
+}
+
+void RenderEngine::setAnimationPlayer(std::unique_ptr<AnimationPlayer> player) {
+    animationPlayer = std::move(player);
+}
+
+void RenderEngine::updateAnimation(float deltaTime) {
+    if (animationPlayer) {
+        animationPlayer->update(deltaTime);
+    }
 }

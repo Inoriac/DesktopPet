@@ -210,7 +210,7 @@ void MainWindow::OnStartPet() {
 
     statusLabel->setText(QString("正在启动 %1...").arg(petName));
 
-    activePetWindow = new PetWindow(modelPath, nullptr);
+    activePetWindow = new PetWindow(petName, nullptr);
 
     // 用于接收宠物窗口关闭信号
     connect(activePetWindow, &PetWindow::requestStop, this, &MainWindow::OnStopPet);

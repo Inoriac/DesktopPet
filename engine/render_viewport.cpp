@@ -11,18 +11,26 @@
 #include <QDebug>
 #include <QTimer>
 #include <psapi.h>
+#include <QDir>
+#include <QElapsedTimer>
 
 #include "model_loader.h"
+#include "../core/configLoader/config_manager.h"
 
 RenderViewport::RenderViewport(QWidget *parent)
     : QOpenGLWidget(parent) {
-    // 每16毫秒触发一次（约60帧）
+    // 从配置管理器获取默认帧率
+    ConfigManager& config = ConfigManager::instance();
+    int fps = config.getDefaultFPS();
+    int interval = fps > 0 ? 1000 / fps : 16; // 默认60帧
+    
+    // 设置定时器
     QTimer *timer = new QTimer(this);
     // update被调用时，会发出一个“请求重绘”的信号，从而让Qt在下一个事件循环中用到 paintGL
     connect(timer, &QTimer::timeout, this, QOverload<>::of(&RenderViewport::update));
-    timer->start(16);
+    timer->start(interval);
 
-    qDebug() << "RenderViewport timer started (60 FPS)";
+    qDebug() << "RenderViewport timer started (" << fps << " FPS, interval: " << interval << "ms)";
 }
 
 RenderViewport::~RenderViewport() = default;
@@ -76,18 +84,76 @@ void RenderViewport::initializeGL() {
     size_t mem4 = getCurrentMemoryUsage();
     qDebug() << "After RenderEngine init:" << mem4 << "MB, delta:" << (mem4-mem3) << "MB";
 
-    // 模型加载
-    qDebug() << "--- Loading model ---";
+    // 初始化动画管理器
+    initializeAnimationManager();
+
+    size_t memFinal = getCurrentMemoryUsage();
+    qDebug() << "=== Final memory:" << memFinal << "MB ===";
+    qDebug() << "Total increase:" << (memFinal - mem0) << "MB";
+    
+    // 发送初始化完成信号
+    emit initializationCompleted();
+}
+
+void RenderViewport::resizeGL(int w, int h) {
+    if (renderEngine) renderEngine->resize(w, h);
+}
+
+void RenderViewport::paintGL() {
+    static QElapsedTimer timer;
+    if (!timer.isValid()) {
+        timer.start();
+    }
+    
+    // 计算deltatime（秒）
+    float deltaTime = timer.restart() / 1000.0f;
+    
+    // 应用动画速度设置
+    ConfigManager& config = ConfigManager::instance();
+    deltaTime *= config.getAnimationSpeed();
+    
+    if (renderEngine) {
+        // 更新动画
+        renderEngine->updateAnimation(deltaTime);
+        renderEngine->render();
+    }
+}
+
+void RenderViewport::clearModel() {
+    if (renderEngine) {
+        renderEngine->clearScene();
+        qDebug() << "Model cleared from GPU memory";
+    }
+    
+    if (animationManager) {
+        animationManager->clear();
+        qDebug() << "Animations cleared";
+    }
+    
+    currentModelPath.clear();
+    currentAnimationPath.clear();
+}
+
+void RenderViewport::initializeAnimationManager() {
+    animationManager = std::make_unique<AnimationManager>();
+    animationManager->initialize();
+    qDebug() << "AnimationManager initialized";
+}
+
+bool RenderViewport::loadModel(const QString& modelPath) {
+    if (!renderEngine || !animationManager) {
+        qWarning() << "RenderViewport not properly initialized";
+        return false;
+    }
+
+    // 清除当前模型
+    clearModel();
+    currentModelPath = modelPath;
+
+    qDebug() << "--- Loading model:" << modelPath << "---";
     ModelLoader loader;
 
-    size_t mem5 = getCurrentMemoryUsage();
-    qDebug() << "After ModelLoader created:" << mem5 << "MB, delta:" << (mem5-mem4) << "MB";
-
-    bool success = loader.loadModel("assets/models/milltina/model/milltina.gltf");
-    // bool success = loader.loadModel("assets/models/kipfel/model/Kipfel_1.0.3.gltf");
-
-    size_t mem6 = getCurrentMemoryUsage();
-    qDebug() << "After model loaded:" << mem6 << "MB, delta:" << (mem6-mem5) << "MB ← KEY!";
+    bool success = loader.loadModel(modelPath.toStdString());
 
     if (success) {
         qDebug() << "Model loaded successfully!";
@@ -100,43 +166,38 @@ void RenderViewport::initializeGL() {
         }
         qDebug() << "All materials uploaded to GPU successfully";
 
-        size_t mem7 = getCurrentMemoryUsage();
-        qDebug() << "After textures uploaded:" << mem7 << "MB, delta:" << (mem7-mem6) << "MB";
-
         // 上传网格数据
         for (const auto& meshData : loader.getMeshes()) {
             renderEngine->addMeshFromData(meshData);
         }
         qDebug() << "All meshes uploaded to GPU successfully";
 
-        size_t mem8 = getCurrentMemoryUsage();
-        qDebug() << "After meshes uploaded:" << mem8 << "MB, delta:" << (mem8-mem7) << "MB";
+        // 同步材质信息
+        renderEngine->setMaterials(loader.getMaterials());
+        renderEngine->sortMeshesByMaterial();   // 索引优化
 
+        // 加载对应动画
+        QString modelDir = QFileInfo(modelPath).absoluteDir().absolutePath();
+        QString animationsPath = modelDir + "/../animations/";
+        QDir animDir(animationsPath);
+        
+        if (animDir.exists()) {
+            qDebug() << "Loading animations from:" << animationsPath;
+            if (animationManager->loadAnimations(animationsPath.toStdString(), loader.getSkeleton())) {
+                // 创建动画播放器
+                auto animPlayer = animationManager->createAnimationPlayer(&loader.getSkeleton());
+                if (animPlayer) {
+                    renderEngine->setAnimationPlayer(std::move(animPlayer));
+                    qDebug() << "Animation player created successfully";
+                }
+            }
+        } else {
+            qWarning() << "Animation directory not found:" << animationsPath;
+        }
 
+        return true;
     } else {
-        qWarning() << "Failed to load model";
-    }
-
-    // 同步材质信息
-    renderEngine->setMaterials(loader.getMaterials());
-    renderEngine->sortMeshesByMaterial();   // 索引优化
-
-    size_t memFinal = getCurrentMemoryUsage();
-    qDebug() << "=== Final memory:" << memFinal << "MB ===";
-    qDebug() << "Total increase:" << (memFinal - mem0) << "MB";
-}
-
-void RenderViewport::resizeGL(int w, int h) {
-    if (renderEngine) renderEngine->resize(w, h);
-}
-
-void RenderViewport::paintGL() {
-    if (renderEngine) renderEngine->render();
-}
-
-void RenderViewport::clearModel() {
-    if (renderEngine) {
-        renderEngine->clearScene();
-        qDebug() << "Model cleared from GPU memory";
+        qWarning() << "Failed to load model:" << modelPath;
+        return false;
     }
 }

@@ -18,6 +18,14 @@ public:
     ~PetWindow();
 
     void applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough);
+    bool loadModel(const QString &modelPath);
+    
+    // 动画控制方法
+    void playAnimation();
+    void pauseAnimation();
+    void stopAnimation();
+    void setAnimationSpeed(float speed);
+    void setAnimationLoop(bool loop);
 
 signals:
     void aboutToClose();  // 窗口即将关闭时发送

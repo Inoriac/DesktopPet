@@ -7,7 +7,9 @@
 
 #include "model_loader.h"
 #include "shader_manager.h"
+#include "animation/animation_player.h"
 #include <unordered_map>
+#include <memory>
 
 // 代表一个几何体
 struct GpuMesh {
@@ -43,6 +45,11 @@ public:
 
     void clearScene();
 
+    // 动画相关方法
+    void setAnimationPlayer(std::unique_ptr<AnimationPlayer> player);
+    AnimationPlayer* getAnimationPlayer() const { return animationPlayer.get(); }
+    void updateAnimation(float deltaTime);
+
 private:
     QOpenGLFunctions_3_3_Core *gl {nullptr};    // 用于提供 OpenGL 的服务接口
     ShaderManager* shaderManager {nullptr};
@@ -61,6 +68,9 @@ private:
     GLuint defaultWhiteTex {0};
     const int targetSize = 1024;
 
+    // 动画相关
+    std::unique_ptr<AnimationPlayer> animationPlayer;
 };
+
 
 #endif //DESKTOP_PET_RENDER_ENGINE_H

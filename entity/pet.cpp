@@ -101,7 +101,7 @@ void Pet::removePet(const QString& name) {
 }
 
 QString Pet::getModelPath(const QString &name) {
-    QString path = pets.key(name);
+    QString path = pets.value(name);
     if (path.isEmpty()) {
         path = "assets/models/" + name + "/model/" + name + ".gltf";
         pets[name] = path;

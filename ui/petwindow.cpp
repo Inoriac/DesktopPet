@@ -129,11 +129,14 @@ void PetWindow::setupRenderViewport() {
     layout->addWidget(renderViewport);
 
     layout.release();
-
-    // 加载模型（这里需要 RenderViewport 支持动态加载）
-    // if (!renderViewport->loadModel(Pet::instance().getModelPath(modelName))) {
-    //     qWarning() << "Failed to load model:" << Pet::instance().getModelPath(modelName);
-    // }
+    
+    // 连接渲染视口的初始化完成信号，确保只有在初始化完成后才加载模型
+    connect(renderViewport, &RenderViewport::initializationCompleted, this, [this]() {
+        qDebug() << "RenderViewport initialization completed, now loading model...";
+        if (!renderViewport->loadModel(Pet::instance().getModelPath(modelName))) {
+            qWarning() << "Failed to load model:" << Pet::instance().getModelPath(modelName);
+        }
+    });
 }
 
 void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
@@ -155,9 +158,43 @@ void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
     }
 }
 
+bool PetWindow::loadModel(const QString &modelPath) {
+    if (!renderViewport) {
+        qWarning() << "RenderViewport not initialized";
+        return false;
+    }
+    
+    return renderViewport->loadModel(modelPath);
+}
+
 void PetWindow::unloadModel() {
     if (renderViewport) {
         renderViewport->clearModel();
         qDebug() << "Unloading model:" << modelName;
     }
+}
+
+void PetWindow::playAnimation() {
+    // 动画播放控制逻辑
+    qDebug() << "Playing animation";
+}
+
+void PetWindow::pauseAnimation() {
+    // 动画暂停控制逻辑
+    qDebug() << "Pausing animation";
+}
+
+void PetWindow::stopAnimation() {
+    // 动画停止控制逻辑
+    qDebug() << "Stopping animation";
+}
+
+void PetWindow::setAnimationSpeed(float speed) {
+    // 设置动画速度逻辑
+    qDebug() << "Setting animation speed:" << speed;
+}
+
+void PetWindow::setAnimationLoop(bool loop) {
+    // 设置动画循环逻辑
+    qDebug() << "Setting animation loop:" << loop;
 }
