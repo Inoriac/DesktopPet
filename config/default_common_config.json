@@ -1,1 +1,12 @@
-// 默认全局配置
+{
+  "appSettings": {
+    "defaultFPS": 60,
+    "animationSpeed": 1.0,
+    "volume": 0.75
+  },
+  "renderSettings": {
+    "antialiasing": true,
+    "shadowQuality": "medium",
+    "textureQuality": "high"
+  }
+}
