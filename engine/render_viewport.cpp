@@ -12,6 +12,7 @@
 #include <QTimer>
 #include <psapi.h>
 #include <QDir>
+#include <QCoreApplication>
 #include <QElapsedTimer>
 
 #include "model_loader.h"
@@ -25,7 +26,7 @@ RenderViewport::RenderViewport(QWidget *parent)
     int interval = fps > 0 ? 1000 / fps : 16; // 默认60帧
     
     // 设置定时器
-    QTimer *timer = new QTimer(this);
+    auto *timer = new QTimer(this);
     // update被调用时，会发出一个“请求重绘”的信号，从而让Qt在下一个事件循环中用到 paintGL
     connect(timer, &QTimer::timeout, this, QOverload<>::of(&RenderViewport::update));
     timer->start(interval);
@@ -106,8 +107,9 @@ void RenderViewport::paintGL() {
     }
     
     // 计算deltatime（秒）
-    float deltaTime = timer.restart() / 1000.0f;
-    
+    qint64 msDelta = timer.restart();
+    float deltaTime = static_cast<float>(msDelta) / 1000.0f;
+
     // 应用动画速度设置
     ConfigManager& config = ConfigManager::instance();
     deltaTime *= config.getAnimationSpeed();
@@ -176,23 +178,58 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         renderEngine->setMaterials(loader.getMaterials());
         renderEngine->sortMeshesByMaterial();   // 索引优化
 
-        // 加载对应动画
-        QString modelDir = QFileInfo(modelPath).absoluteDir().absolutePath();
-        QString animationsPath = modelDir + "/../animations/";
-        QDir animDir(animationsPath);
-        
-        if (animDir.exists()) {
-            qDebug() << "Loading animations from:" << animationsPath;
-            if (animationManager->loadAnimations(animationsPath.toStdString(), loader.getSkeleton())) {
-                // 创建动画播放器
-                auto animPlayer = animationManager->createAnimationPlayer(&loader.getSkeleton());
-                if (animPlayer) {
-                    renderEngine->setAnimationPlayer(std::move(animPlayer));
-                    qDebug() << "Animation player created successfully";
-                }
+        // TODO：现在采用的是通过路径加载，后续可能需要更改
+        // 加载动画
+        bool loadedAny = false;
+        for (const auto& state : animationManager->getStateMachine().states) {
+            if (animationManager->loadAnimations(state.name, loader.getSkeleton())) {
+                qDebug() << "state:" + state.name + "'s animations loaded success";
+                loadedAny = true;
             }
+        }
+
+        // for (const QString& p : tryPaths) {
+        //     QDir d(p);
+        //     if (!d.exists()) continue;
+        //     qDebug() << "Attempting to load animations from:" << p;
+        //     if (animationManager->loadAnimations(p.toStdString(), loader.getSkeleton())) {
+        //         loadedAny = true;
+        //         qDebug() << "Loaded animations from:" << p;
+        //         break;
+        //     } else {
+        //         qDebug() << "No valid animations loaded from:" << p;
+        //     }
+        // }
+
+        if (!loadedAny) {
+            qWarning() << "No animations found in any candidate paths; model will be loaded without animations.";
         } else {
-            qWarning() << "Animation directory not found:" << animationsPath;
+            // 创建动画播放器（前提：已经有 clips 并且 skeleton 可用）
+            auto animPlayer = animationManager->createAnimationPlayer(loader.releaseSkeleton());
+            if (animPlayer) {
+                const auto& stateMachine = animationManager->getStateMachine();
+                // 优先使用默认状态；若缺失，则选择第一个有 clipOptions 的状态
+                std::string targetState;
+                if (!stateMachine.defaultState.empty()) {
+                    targetState = stateMachine.defaultState;
+                } else {
+                    for (const auto& st : stateMachine.states) {
+                        if (!st.clipOptions.empty()) { targetState = st.name; break; }
+                    }
+                }
+
+                if (!targetState.empty()) {
+                    animPlayer->changeState(targetState);
+                    qDebug() << "Animation player default state set to:" << QString::fromStdString(targetState);
+                } else {
+                    qDebug() << "No state with clipOptions available to set as default state.";
+                }
+
+                renderEngine->setAnimationPlayer(std::move(animPlayer));
+                qDebug() << "Animation player created and attached to render engine";
+            } else {
+                qWarning() << "AnimationManager produced no AnimationPlayer (no clips or missing skeleton)";
+            }
         }
 
         return true;

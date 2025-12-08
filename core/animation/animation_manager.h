@@ -23,19 +23,14 @@ public:
 
     // 初始化动画管理器
     void initialize();
-
     // 加载动画文件
-    bool loadAnimations(const std::string& animationsPath, const Skeleton& skeleton);
-
+    bool loadAnimations(const std::string& stateName, const Skeleton& skeleton);
     // 创建动画播放器
-    std::unique_ptr<AnimationPlayer> createAnimationPlayer(const Skeleton* skeleton);
-
+    std::unique_ptr<AnimationPlayer> createAnimationPlayer(Skeleton skeleton);
     // 获取动画片段
     const std::unordered_map<std::string, AnimationClip>& getClips() const { return clips; }
-
-    // 获取状态机定义
+    // 获取状态机
     const AnimationStateMachineDefinition& getStateMachine() const { return stateMachine; }
-
     // 清理资源
     void clear();
 

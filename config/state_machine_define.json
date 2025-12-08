@@ -1,0 +1,55 @@
+{
+  "defaultState": "Intro",
+
+  "states": [
+    { "name": "Intro", "loop": false, "clipOptions": [] },
+    { "name": "Idle", "loop": true, "clipOptions": [] },
+    { "name": "Dance", "loop": true, "clipOptions": [] },
+    { "name": "Drag", "loop": true, "clipOptions": [] },
+    { "name": "Sitting", "loop": true, "clipOptions": [] },
+    { "name": "WindowSit", "loop": true, "clipOptions": [] },
+    { "name": "Sleeping", "loop": true, "clipOptions": [] },
+    { "name": "HeadPat", "loop": false, "clipOptions": [] },
+    { "name": "IntimeRegion", "loop": false, "clipOptions": [] },
+
+    { "name": "CustomDance", "loop": true, "clipOptions": [] },
+    { "name": "WaitForDance", "loop": true, "clipOptions": [] },
+    { "name": "NextCustomDance", "loop": false, "clipOptions": [] },
+    { "name": "PreviousCustomDance", "loop": false, "clipOptions": [] }
+  ],
+
+  "transactions": [
+    { "fromState": "Intro", "toState": "Idle", "condition": "intro_finished", "blendDuration": 0.3 },
+
+    { "fromState": "Idle", "toState": "Dance", "condition": "start_dance" },
+    { "fromState": "Idle", "toState": "Drag", "condition": "drag" },
+    { "fromState": "Idle", "toState": "Sitting", "condition": "sit" },
+    { "fromState": "Idle", "toState": "Sleeping", "condition": "sleep" },
+    { "fromState": "Idle", "toState": "HeadPat", "condition": "headpat" },
+    { "fromState": "Idle", "toState": "IntimeRegion", "condition": "intime" },
+    { "fromState": "Idle", "toState": "CustomDance", "condition": "custom_dance" },
+
+    { "fromState": "Drag", "toState": "Idle", "condition": "stop_drag" },
+    { "fromState": "Drag", "toState": "Sitting", "condition": "sit" },
+    { "fromState": "Drag", "toState": "WindowSit", "condition": "window_sit" },
+    { "fromState": "Drag", "toState": "Dance", "condition": "start_dance" },
+
+    { "fromState": "Sitting", "toState": "Idle", "condition": "stand" },
+    { "fromState": "Sitting", "toState": "Drag", "condition": "drag" },
+    { "fromState": "Sitting", "toState": "Sleeping", "condition": "sleep" },
+
+    { "fromState": "Sleeping", "toState": "Idle", "condition": "wake" },
+    { "fromState": "Sleeping", "toState": "Drag", "condition": "drag" },
+
+    { "fromState": "WindowSit", "toState": "Drag", "condition": "drag" },
+    { "fromState": "WindowSit", "toState": "Idle", "condition": "leave_window" },
+
+    { "fromState": "HeadPat", "toState": "Idle", "condition": "finish" },
+    { "fromState": "IntimeRegion", "toState": "Idle", "condition": "finish" },
+
+    { "fromState": "CustomDance", "toState": "NextCustomDance", "condition": "next" },
+    { "fromState": "CustomDance", "toState": "PreviousCustomDance", "condition": "previous" },
+    { "fromState": "CustomDance", "toState": "WaitForDance", "condition": "wait" },
+    { "fromState": "WaitForDance", "toState": "CustomDance", "condition": "resume" }
+  ]
+}

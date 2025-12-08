@@ -1,0 +1,24 @@
+{
+  "defaultState": "Intro",
+
+  "states": [
+    { "name": "Intro", "loop": false, "clipOptions": [] },
+    { "name": "Idle", "loop": true, "clipOptions": [] },
+    { "name": "Dance", "loop": true, "clipOptions": [] },
+    { "name": "Sitting", "loop": true, "clipOptions": [] },
+    { "name": "Sleeping", "loop": true, "clipOptions": [] }
+  ],
+
+  "transactions": [
+    { "fromState": "Intro", "toState": "Idle", "condition": "intro_finished", "blendDuration": 0.3 },
+
+    { "fromState": "Idle", "toState": "Dance", "condition": "start_dance" },
+    { "fromState": "Idle", "toState": "Sitting", "condition": "sit" },
+    { "fromState": "Idle", "toState": "Sleeping", "condition": "sleep" },
+
+    { "fromState": "Sitting", "toState": "Idle", "condition": "stand" },
+    { "fromState": "Sitting", "toState": "Sleeping", "condition": "sleep" },
+
+    { "fromState": "Sleeping", "toState": "Idle", "condition": "wake" }
+  ]
+}

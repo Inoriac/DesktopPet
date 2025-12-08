@@ -14,6 +14,10 @@ ModelLoader::~ModelLoader() {
     clear();
 }
 
+Skeleton ModelLoader::releaseSkeleton() {
+    return std::move(skeleton);
+}
+
 bool ModelLoader::loadModel(const std::string &path) {
     clear();
 

@@ -26,6 +26,9 @@ public:
     bool isAntialiasingEnabled() const { return antialiasing; }
     QString getShadowQuality() const { return shadowQuality; }
     QString getTextureQuality() const { return textureQuality; }
+
+    QString getStateMachinePath() const { return stateMachinePath; }
+    QString getAnimationsBasePath() const { return animationsBasePath; }
     
 private:
     ConfigManager();
@@ -40,6 +43,9 @@ private:
     bool antialiasing = true;
     QString shadowQuality = "medium";
     QString textureQuality = "high";
+
+    QString stateMachinePath = "config/animation_state_machine.json";
+    QString animationsBasePath = "assets/animations/";
     
     QJsonObject configJson;
 };

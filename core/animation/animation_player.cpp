@@ -6,10 +6,10 @@
 
 #include <random>
 
-AnimationPlayer::AnimationPlayer(const Skeleton *skeleton, const std::unordered_map<std::string, AnimationClip> *clips,
+AnimationPlayer::AnimationPlayer(Skeleton skeleton, const std::unordered_map<std::string, AnimationClip> *clips,
                                  const AnimationStateMachineDefinition *stateMachine)
-    : mySkeleton(skeleton), myClips(clips), myStateMachine(stateMachine), currentClip(nullptr), currentClipIndex(-1){
-    size_t boneCount = mySkeleton ? mySkeleton->bones.size() : 0;
+    : mySkeleton(std::move(skeleton)), myClips(clips), myStateMachine(stateMachine), currentClip(nullptr), currentClipIndex(-1){
+    size_t boneCount = mySkeleton.bones.size();
 
     poseCurrent = AnimationPose(boneCount);
     posePrevious = AnimationPose(boneCount);
@@ -179,12 +179,12 @@ void AnimationPlayer::triggerEvent(const std::string &eventName) {
 }
 
 void AnimationPlayer::sampleClip(const AnimationClip& clip, double time, AnimationPose& outPose) {
-    outPose.bonePoses.resize(mySkeleton->bones.size());
+    outPose.bonePoses.resize(mySkeleton.bones.size());
 
     // 对每根骨骼进行处理
     for (const auto& channel : clip.channels) {
         int boneIndex = channel.boneIndex;
-        if (boneIndex < 0 || boneIndex >= static_cast<int>(mySkeleton->bones.size())) continue;
+        if (boneIndex < 0 || boneIndex >= static_cast<int>(mySkeleton.bones.size())) continue;
 
         BonePose& bp = outPose.bonePoses[boneIndex];
 

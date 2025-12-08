@@ -3,8 +3,14 @@
 //
 
 #include <iostream>
+#include <fstream>
 
 #include "animation_importer.h"
+
+
+#include "json.hpp"
+#include "configLoader/config_manager.h"
+using json = nlohmann::json;
 
 AnimationClip AnimationImporter::loadAnimation(const std::string &filepath,
     const std::unordered_map<std::string, int> &boneNameToIndexMap) {
@@ -27,6 +33,62 @@ AnimationClip AnimationImporter::loadAnimation(const std::string &filepath,
     if (dot != std::string::npos) clipName = clipName.substr(0, dot);
 
     return extractAnimationClip(model, animation, boneNameToIndexMap, clipName);
+}
+
+void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationStateMachineDefinition &outStateMachine) {
+    std::ifstream file(filepath);
+    if (!file.is_open()) {
+        std::cerr << "[StateMachine] Failed to open: " << filepath << std::endl;
+        return;
+    }
+
+    // 清空旧数据，防止重复加载
+    outStateMachine.defaultState.clear();
+    outStateMachine.states.clear();
+    outStateMachine.transactions.clear();
+
+    json data;
+    try { file >> data; }
+    catch (std::exception &e) {
+        std::cerr << "[StateMachine] JSON parse failed: " << e.what() << std::endl;
+        return;
+    }
+
+    // 默认状态
+    if (data.contains("defaultState"))
+        outStateMachine.defaultState = data["defaultState"];
+
+    // 加载状态列表
+    if (data.contains("states"))
+    {
+        for (auto &s : data["states"])
+        {
+            AnimationState state;
+            state.name = s.value("name", "");
+            state.loop = s.value("loop", true);
+
+            outStateMachine.states.push_back(state);
+        }
+    }
+
+    // 加载转移列表
+    if (data.contains("transactions"))
+    {
+        for (auto &t : data["transactions"])
+        {
+            AnimationTransition trans;
+            trans.fromState    = t.value("fromState", "");
+            trans.toState      = t.value("toState", "");
+            trans.condition    = t.value("condition", "");
+            trans.blendDuration= t.value("blendDuration", 0.2);
+
+            outStateMachine.transactions.push_back(trans);
+        }
+    }
+
+    // 建立快速映射表，供运行时查询
+    outStateMachine.buildLookupTables();
+    std::cout << "[StateMachine] Loaded successfully: " << filepath << std::endl;
 }
 
 bool AnimationImporter::loadGltfFile(const std::string &filepath, tinygltf::Model &model) {

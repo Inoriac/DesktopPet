@@ -18,6 +18,8 @@ class AnimationImporter {
 public:
     AnimationImporter() = default;
 
+    // 加载状态机
+    void loadStateMachine(const std::string& filepath, AnimationStateMachineDefinition& outStateMachine);
     // 加载动画文件
     AnimationClip loadAnimation(const std::string& filepath, const std::unordered_map<std::string, int>& boneNameToIndexMap);
 

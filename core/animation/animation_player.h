@@ -44,7 +44,7 @@ struct AnimationPose
 class AnimationPlayer : public QObject {
     Q_OBJECT
 public:
-    explicit AnimationPlayer(const Skeleton* skeleton,
+    explicit AnimationPlayer(Skeleton skeleton,
                     const std::unordered_map<std::string, AnimationClip>* clips,
                     const AnimationStateMachineDefinition* stateMachine);
     ~AnimationPlayer() = default;
@@ -83,7 +83,7 @@ private:
 
 private:
     // 输入依赖
-    const Skeleton* mySkeleton = nullptr;
+    Skeleton mySkeleton;
     const std::unordered_map<std::string, AnimationClip>* myClips = nullptr;
     const AnimationStateMachineDefinition* myStateMachine = nullptr;
 
