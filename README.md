@@ -2,6 +2,7 @@
 
 
 
+
 一个基于 C++ 和 Qt 6 开发的高性能、高可定制化的桌面宠物系统。
 本项目旨在提供一个生动、智能且具有“灵魂”的桌面伴侣，支持 GLTF 模型热加载、复杂的动画状态机、情绪系统以及丰富的桌面交互功能。
 
@@ -59,22 +60,78 @@
 
 ## 📂 项目结构 (Project Structure)
 
-
-
+```text
 Desktop-Pet/
+├── assets/             # 资源文件 (模型, 动画, 配置, 图标)
+├── config/             # 配置文件 (状态机定义, 个性设置)
+├── core/               # 核心逻辑 (动画控制, 行为树, 事件处理)
+├── engine/             # 渲染引擎 (OpenGL封装, 模型加载, 音频)
+├── entity/             # 实体逻辑 (宠物类, 个性化数据)
+├── ui/                 # 界面实现 (主窗口, 托盘, 菜单)
+├── statistic/          # 数据统计模块
+└── third_party/        # 第三方库 (TinyGLTF等)
+```
 
-├── assets/             # 资源文件 (模型, 动画, 配置, 图标)
+---
 
-├── config/             # 配置文件 (状态机定义, 个性设置)
+## 🚀 快速开始 (Getting Started)
 
-├── core/               # 核心逻辑 (动画控制, 行为树, 事件处理)
+### 环境要求
 
-├── engine/             # 渲染引擎 (OpenGL封装, 模型加载, 音频)
+* C++ 编译器 (支持 C++20, 如 MSVC 2019+ 或 MinGW 11+)
+* Qt 6.x SDK
+* CMake 3.20+
 
-├── entity/             # 实体逻辑 (宠物类, 个性化数据)
+### 构建步骤
 
-├── ui/                 # 界面实现 (主窗口, 托盘, 菜单)
+1. **克隆仓库**
+   
+   ```bash
+   git clone https://github.com/YourUsername/Desktop-Pet.git
+   cd Desktop-Pet
+   ```
 
-├── statistic/          # 数据统计模块
+2. **配置 CMake**
+   
+   ```bash
+   mkdir build
+   cd build
+   cmake .. -DCMAKE_PREFIX_PATH="path/to/your/Qt/6.x.x/mingw_64"
+   ```
 
-└── third_party/        # 第三方库 (TinyGLTF等)
+3. **编译**
+   
+   ```bash
+   cmake --build .
+   ```
+
+4. **运行**
+   确保 `assets` 文件夹与可执行文件在同一级目录，或在配置中正确指定路径。
+
+---
+
+## ⚙️ 配置说明 (Configuration)
+
+项目包含两份主要配置文件：
+
+1. **`default_common_config.json`**: 系统默认配置，用于初始化或恢复出厂设置。
+2. **`userConfig.json`** (生成): 用户自定义配置，保存界面风格、功能开关等。
+
+---
+
+## 📄 协议与版权 (License & Credits)
+
+### Project License
+
+本项目遵循 **MateEngine Pro License (v2.1)**。
+查看完整的 [LICENSE](LICENSE.md) 文件。
+
+### Attribution
+
+* **Developer**: Inoriac
+* **Original Engine Logic & Inspiration**: [Mate-Engine](https://github.com/shinyflvre/Mate-Engine) by Johnson Jason.
+* **Assets (Animations/Visuals)**: Copyright © 2025 **Shiny**.
+  * *Note: Assets are used under a non-commercial license and strictly copyrighted.*
+
+**严禁将本项目用于任何商业用途（包括但不限于 Steam、itch.io 销售或付费订阅）。**
+**Strictly prohibited for commercial use.**
