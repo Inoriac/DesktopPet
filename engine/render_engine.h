@@ -70,6 +70,17 @@ private:
 
     // 动画相关
     std::unique_ptr<AnimationPlayer> animationPlayer;
+
+    // 摄像机调试控制
+    // 默认视角：用户精调后的参数
+    QVector3D cameraEye {-0.5f, 1.5f, 10.0f};
+    QVector3D cameraCenter {-0.5f, 3.0f, 0.0f};
+
+public:
+    QVector3D getCameraEye() const { return cameraEye; }
+    QVector3D getCameraCenter() const { return cameraCenter; }
+    void setCameraEye(const QVector3D& v) { cameraEye = v; }
+    void setCameraCenter(const QVector3D& v) { cameraCenter = v; }
 };
 
 

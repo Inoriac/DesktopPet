@@ -340,3 +340,46 @@ void AnimationPlayer::changeState(const std::string& targetState){
     currentClip = nextClip;
     currentTime = 0.0;
 }
+
+std::vector<QMatrix4x4> AnimationPlayer::getCurrentTransforms() {
+    size_t boneCount = mySkeleton.bones.size();
+    if (boneCount == 0) return {};
+
+    std::vector<QMatrix4x4> finalMatrices(boneCount);
+
+    // 安全检查：如果骨骼姿势未初始化（例如刚启动），返回单位矩阵以防渲染错误
+    if (poseFinal.bonePoses.empty()) {
+        for(size_t i=0; i<boneCount; ++i) finalMatrices[i].setToIdentity();
+        return finalMatrices;
+    }
+
+    // 计算骨骼的全局变换 (递归/层级累积)
+    // 思路：Local(T*R*S) -> Accumulate Parent -> Global
+    std::vector<QMatrix4x4> globalTransforms(boneCount);
+
+    for (size_t i = 0; i < boneCount; ++i) {
+        const auto& boneNode = mySkeleton.bones[i];
+
+        // 构建局部变换矩阵 (T * R * S)
+        QMatrix4x4 localTransform;
+        localTransform.translate(poseFinal.bonePoses[i].translation);
+        localTransform.rotate(poseFinal.bonePoses[i].rotation);
+        localTransform.scale(poseFinal.bonePoses[i].scale);
+
+        int parentIdx = boneNode.parent;
+        if (parentIdx != -1) {
+            // 父变换 * 局部变换
+            globalTransforms[i] = globalTransforms[parentIdx] * localTransform;
+        } else {
+            // 根骨骼
+            globalTransforms[i] = localTransform;
+        }
+    }
+
+    // 计算最终蒙皮矩阵: GlobalTransform * InverseBindMatrix
+    for (size_t i = 0; i < boneCount; ++i) {
+        finalMatrices[i] = globalTransforms[i] * mySkeleton.bones[i].inverseBindMatrix;
+    }
+
+    return finalMatrices;
+}

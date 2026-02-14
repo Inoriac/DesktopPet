@@ -80,8 +80,8 @@ void RenderEngine::render() {
     gl->glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);     // 清除颜色与深度缓冲
 
     // 旋转角度（每秒旋转 60 度）(帧率无关)
-    angleDeg += 60.0f * deltaSec;
-    if (angleDeg >= 360.0f) angleDeg -= 360.0f;
+    // angleDeg += 60.0f * deltaSec;
+    // if (angleDeg >= 360.0f) angleDeg -= 360.0f;
 
     // 构建变换矩阵
     // 投影矩阵
@@ -91,10 +91,25 @@ void RenderEngine::render() {
 
     // 视图矩阵(控制相机位置与方向)
     QMatrix4x4 view;
-    view.lookAt(QVector3D(0, 1.5f, 4), QVector3D(0, 1, 0), QVector3D(0, 1, 0));
+    // 使用成员变量控制相机
+    view.lookAt(cameraEye, cameraCenter, QVector3D(0.0f, 1.0f, 0.0f));
+
     // 模型矩阵
     QMatrix4x4 model;
-    model.scale(0.035f);  // 缩小
+    
+    // 1. 自动旋转：保留之前的自转逻辑（绕世界 Y 轴旋转）
+    // model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); 
+
+    // 2. 缩放
+    model.scale(0.035f);  // 缩放保
+
+    // 3. 姿态修正：把躺着的模型扶正
+    // 之前尝试 -90 (倒立)，说明方向反了。
+    // 现在尝试 +90 度绕 X 轴旋转，把朝上(+Y)的面转到朝前(+Z)
+    model.rotate(90.0f, 1.0f, 0.0f, 0.0f);
+
+    // 默认视角调整回常规正视逻辑
+    // view.lookAt(QVector3D(0, 1.5f, 4.0f), QVector3D(0, 1.0f, 0), QVector3D(0, 1, 0));
     model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); // 绕 Y 轴旋转
 
     // 综合矩阵 遵循右乘 结果等价于先把顶点从模型空间变换到世界坐标，再到视图，最后进行投影
@@ -106,6 +121,36 @@ void RenderEngine::render() {
         return;
     }
     shader->bind();
+
+    if (animationPlayer) {
+        std::vector<QMatrix4x4> transforms = animationPlayer->getCurrentTransforms();
+
+        // DEBUG用信息
+        // static int debugFrame = 0;
+        // if (++debugFrame % 180 == 0 && !transforms.empty()) {
+        //     QMatrix4x4 m = transforms[0]; // 打印第一根骨骼的矩阵
+        //     qDebug() << "Bone[0] Matrix:" << m.row(0) << m.row(1) << m.row(2) << m.row(3);
+        //
+        //     // 检查是否也是单位矩阵？
+        //     if (m.isIdentity()) qDebug() << "WARNING: Matrix is Identity (T-Pose)";
+        //
+        //     // 检查是否全0？(如果全0，屏幕上就是一坨)
+        //     bool isZero = true;
+        //     for(int r=0;r<4;r++) for(int c=0;c<4;c++) if(abs(m(r,c)) > 0.0001) isZero = false;
+        //     if (isZero) qDebug() << "CRITICAL: Matrix is ZERO! This causes the collapse.";
+        // }
+
+        if (!transforms.empty()) {
+            // 限制最大数量防止越界（假设 Shader 里数组大小是 200）
+            int count = std::min((int)transforms.size(), 200);
+            shader->setUniformValueArray("finalBonesMatrices[0]", transforms.data(), count);
+        } else {
+            // 如果数据未就绪，传单位矩阵防止错误
+            QMatrix4x4 id; shader->setUniformValue("finalBonesMatrices[0]", id);
+        }
+    } else {
+        QMatrix4x4 id; shader->setUniformValue("finalBonesMatrices[0]", id);
+    }
 
     // 光照与视角
     QVector3D viewPos(0, 1.5f, 4);
@@ -243,6 +288,32 @@ void RenderEngine::addMeshFromData(const MeshData &meshData) {
             interleaveData.push_back(0.0f);
             interleaveData.push_back(0.0f);
         }
+
+        // 骨骼索引
+        if (meshData.hasSkinning && !meshData.boneIndices.empty()) {
+            interleaveData.push_back((float)meshData.boneIndices[i * 4 + 0]);
+            interleaveData.push_back((float)meshData.boneIndices[i * 4 + 1]);
+            interleaveData.push_back((float)meshData.boneIndices[i * 4 + 2]);
+            interleaveData.push_back((float)meshData.boneIndices[i * 4 + 3]);
+        } else {
+            interleaveData.push_back(-1.0f);
+            interleaveData.push_back(-1.0f);
+            interleaveData.push_back(-1.0f);
+            interleaveData.push_back(-1.0f);
+        }
+
+        // 骨骼权重
+        if (meshData.hasSkinning && !meshData.boneWeights.empty()) {
+            interleaveData.push_back(meshData.boneWeights[i * 4 + 0]);
+            interleaveData.push_back(meshData.boneWeights[i * 4 + 1]);
+            interleaveData.push_back(meshData.boneWeights[i * 4 + 2]);
+            interleaveData.push_back(meshData.boneWeights[i * 4 + 3]);
+        } else {
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(0.0f);
+            interleaveData.push_back(0.0f);
+        }
     }
     // 上传顶点数据
     gl->glBindBuffer(GL_ARRAY_BUFFER, m.vbo);
@@ -259,17 +330,27 @@ void RenderEngine::addMeshFromData(const MeshData &meshData) {
         GL_STATIC_DRAW);
 
     // 配置顶点属性格式
-    //位置 (Location = 0)
-    gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)0);
+    int stride = 16 * sizeof(float);
+
+    // 位置 (Location = 0)
+    gl->glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, stride, (void*)0);
     gl->glEnableVertexAttribArray(0);
 
     // 法线(Location = 1)
-    gl->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(3 * sizeof(float)));
+    gl->glVertexAttribPointer(1, 3, GL_FLOAT, GL_FALSE, stride, (void*)(3 * sizeof(float)));
     gl->glEnableVertexAttribArray(1);
 
     // UV 坐标(Location = 2)
-    gl->glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, 8 * sizeof(float), (void*)(6 * sizeof(float)));
+    gl->glVertexAttribPointer(2, 2, GL_FLOAT, GL_FALSE, stride, (void*)(6 * sizeof(float)));
     gl->glEnableVertexAttribArray(2);
+
+    // 骼索引 (Location = 3)
+    gl->glVertexAttribPointer(3, 4, GL_FLOAT, GL_FALSE, stride, (void*)(8 * sizeof(float)));
+    gl->glEnableVertexAttribArray(3);
+
+    // 骨骼权重 (Location = 4)
+    gl->glVertexAttribPointer(4, 4, GL_FLOAT, GL_FALSE, stride, (void*)(12 * sizeof(float)));
+    gl->glEnableVertexAttribArray(4);
 
     gl->glBindVertexArray(0);
 

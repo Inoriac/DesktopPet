@@ -57,6 +57,12 @@ public:
 
     // 获取最终的当前姿势(用于 skinning)
     const AnimationPose& currentPose() const { return poseFinal; }
+
+    // 获取当前帧数所有骨骼的最终变换矩阵 (用于 Shader)
+    std::vector<QMatrix4x4> getCurrentTransforms();
+
+    // 获取当前状态名
+    std::string getCurrentStateName() const { return currentStateName; }
     
     // 根据状态名切换动画
     void changeState(const std::string& targetState);

@@ -178,7 +178,6 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         renderEngine->setMaterials(loader.getMaterials());
         renderEngine->sortMeshesByMaterial();   // 索引优化
 
-        // TODO：现在采用的是通过路径加载，后续可能需要更改
         // 加载动画
         bool loadedAny = false;
         for (const auto& state : animationManager->getStateMachine().states) {

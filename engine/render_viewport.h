@@ -20,6 +20,8 @@ public:
     explicit RenderViewport(QWidget *parent = nullptr);
     ~RenderViewport() override;
 
+    RenderEngine* getRenderEngine() const { return renderEngine.get(); }
+
     // 动态加载模型和动画
     bool loadModel(const QString& modelPath);
     void clearModel();

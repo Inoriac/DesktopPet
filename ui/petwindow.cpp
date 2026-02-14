@@ -10,6 +10,9 @@
 #include <qboxlayout.h>
 #include <QDebug>
 #include <QCloseEvent>
+#include <QKeyEvent>
+
+#include "render_engine.h"
 
 PetWindow::PetWindow(const QString modelName, QWidget *parent)
     : QWidget(parent)
@@ -57,6 +60,27 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
 
 void PetWindow::setupContextMenu() {
     contextMenu = new QMenu(this);
+
+    QMenu* debugMenu = contextMenu->addMenu("调试动作 (Debug)");
+
+    // 我们需要在这里动态获取状态列表，或者硬编码几个常用状态
+    // 由于 setup 只运行一次，硬编码比较简单
+    QStringList debugStates = {"Intro", "Idle", "Dance", "Sitting", "Sleeping"};
+
+    for (const QString& state : debugStates) {
+        debugMenu->addAction(state, [this, state]() {
+            if (renderViewport && renderViewport->getRenderEngine()) {
+                auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+                if (player) {
+                    qDebug() << "Debug: Switching to state" << state;
+                    player->changeState(state.toStdString());
+                }
+            }
+        });
+    }
+    contextMenu->addSeparator();
+
+
     closeAction = new QAction("关闭", this);
 
     contextMenu->addAction(closeAction);
@@ -97,6 +121,51 @@ void PetWindow::closeEvent(QCloseEvent *event) {
     unloadModel();
     emit aboutToClose();  // 可以发送信号给 MainWindow
     event->accept();
+}
+
+void PetWindow::keyPressEvent(QKeyEvent *event) {
+    if (!renderViewport || !renderViewport->getRenderEngine()) {
+        QWidget::keyPressEvent(event);
+        return;
+    }
+
+    auto* engine = renderViewport->getRenderEngine();
+    QVector3D eye = engine->getCameraEye();
+    QVector3D center = engine->getCameraCenter();
+
+    // 移动速度
+    float speed = 0.5f;
+    if (event->modifiers() & Qt::ShiftModifier) speed *= 4.0f; // Shift 加速
+    if (event->modifiers() & Qt::ControlModifier) speed *= 0.25f; // Ctrl 减速
+
+    bool changed = false;
+
+    // 前后: W/S (Z轴)
+    if (event->key() == Qt::Key_W) { eye.setZ(eye.z() - speed); changed = true; }
+    if (event->key() == Qt::Key_S) { eye.setZ(eye.z() + speed); changed = true; }
+    
+    // 左右: A/D (X轴，同时移动Center以保持水平平移)
+    if (event->key() == Qt::Key_A) { eye.setX(eye.x() - speed); center.setX(center.x() - speed); changed = true; }
+    if (event->key() == Qt::Key_D) { eye.setX(eye.x() + speed); center.setX(center.x() + speed); changed = true; }
+
+    // 上下(升降): Q/E (Y轴)
+    if (event->key() == Qt::Key_Q) { eye.setY(eye.y() + speed); changed = true; }
+    if (event->key() == Qt::Key_E) { eye.setY(eye.y() - speed); changed = true; }
+
+    // 调整观看中心高度: Up/Down 
+    if (event->key() == Qt::Key_Up) { center.setY(center.y() + speed); changed = true; }
+    if (event->key() == Qt::Key_Down) { center.setY(center.y() - speed); changed = true; }
+
+    if (changed) {
+        engine->setCameraEye(eye);
+        engine->setCameraCenter(center);
+        qDebug() << "Camera Updated -> Eye:" << eye << " Center:" << center;
+        qDebug() << "Code: view.lookAt(QVector3D(" 
+                 << eye.x() << "f," << eye.y() << "f," << eye.z() << "f), QVector3D("
+                 << center.x() << "f," << center.y() << "f," << center.z() << "f), ...);";
+    } else {
+        QWidget::keyPressEvent(event);
+    }
 }
 
 void PetWindow::setupWindow() {

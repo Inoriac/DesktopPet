@@ -44,6 +44,9 @@ protected:
     // 窗口事件
     void closeEvent(QCloseEvent *event) override;
 
+    // 键盘事件(用于调试相机视角)
+    void keyPressEvent(QKeyEvent *event) override;
+
 private:
     void setupWindow();
     void setupRenderViewport();

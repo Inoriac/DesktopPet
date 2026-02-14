@@ -478,6 +478,17 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
             continue;
         }
 
+        // glTF JOINTS_0 存储的是 skin.joints 数组的索引，而我们的 skeleton.bones 正是按照 skin.joints 顺序构建的
+        // 所以 j0, j1, j2, j3 直接对应 skeleton bone index
+        // 无需经过 mapNodeToBone (那是用于从节点名查找骨骼的)
+
+        meshData.boneIndices[v * 4 + 0] = j0;
+        meshData.boneIndices[v * 4 + 1] = j1;
+        meshData.boneIndices[v * 4 + 2] = j2;
+        meshData.boneIndices[v * 4 + 3] = j3;
+
+/*
+        // 旧的错误逻辑：误以为 j0 是 nodeIndex
         // 将 gltf 的 joints 格式从node index 转为 skeleton bone index
         auto mapNodeToBone = [&](int nodeIndex) -> int {
             const std::string& name = nodes[nodeIndex].name;
@@ -492,6 +503,7 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
         meshData.boneIndices[v * 4 + 1] = mapNodeToBone(j1);
         meshData.boneIndices[v * 4 + 2] = mapNodeToBone(j2);
         meshData.boneIndices[v * 4 + 3] = mapNodeToBone(j3);
+*/
 
         // WEIGHTS
         const unsigned char* weightPtr = weightsDataBase + v * weightsStride;
