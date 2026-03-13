@@ -4,6 +4,7 @@
 
 #include "config_manager.h"
 #include <QDir>
+#include <QJsonArray>
 
 ConfigManager::ConfigManager() {
     // 默认加载配置
@@ -47,6 +48,47 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         antialiasing = renderSettings["antialiasing"].toBool(true);
         shadowQuality = renderSettings["shadowQuality"].toString("medium");
         textureQuality = renderSettings["textureQuality"].toString("high");
+
+        // 读取相机设置
+        if (renderSettings.contains("cameraSettings")) {
+            QJsonObject camObj = renderSettings["cameraSettings"].toObject();
+            QJsonArray eyeArr = camObj["defaultEye"].toArray();
+            QJsonArray centerArr = camObj["defaultCenter"].toArray();
+
+            if (eyeArr.size() == 3) {
+                defaultCameraEye = QVector3D(eyeArr[0].toDouble(), eyeArr[1].toDouble(), eyeArr[2].toDouble());
+            }
+            if (centerArr.size() == 3) {
+                defaultCameraCenter = QVector3D(centerArr[0].toDouble(), centerArr[1].toDouble(), centerArr[2].toDouble());
+            }
+        }
+    }
+
+    // 读取碰撞配置
+    colliderConfigs.clear();
+    if (configJson.contains("interactionSettings")) {
+        QJsonObject interaction = configJson["interactionSettings"].toObject();
+        if (interaction.contains("colliders")) {
+            QJsonArray arr = interaction["colliders"].toArray();
+            for (const auto& val : arr) {
+                QJsonObject obj = val.toObject();
+
+                std::string bone = obj["bone"].toString().toStdString();
+                float r = obj["radius"].toDouble(0.2);
+                std::string tag = obj["tag"].toString("Body").toStdString();
+
+                QVector3D offset(0,0,0);
+                if (obj.contains("offset")) {
+                    QJsonArray off = obj["offset"].toArray();
+                    if (off.size() >= 3) {
+                        offset = QVector3D(off[0].toDouble(), off[1].toDouble(), off[2].toDouble());
+                    }
+                }
+
+                // 存入全局结构体
+                colliderConfigs.emplace_back(bone, r, offset, tag);
+            }
+        }
     }
     
     qDebug() << "配置文件加载成功:" << configPath;

@@ -89,10 +89,6 @@ void MainWindow::createCentralWidget() {
 
     mainLayout = new QVBoxLayout(centralWidget);
 
-    // renderViewport = new RenderViewport(centralWidget);
-    // renderViewport->setMinimumHeight(500);
-    // mainLayout->addWidget(renderViewport);
-
     // 创建宠物选择区域
     characterSelectionGroup = new QGroupBox("Character Selection");
     QVBoxLayout *characterLayout = new QVBoxLayout(characterSelectionGroup);
@@ -137,7 +133,7 @@ void MainWindow::createCentralWidget() {
     alwaysOnTopCheckBox->setChecked(true);
 
     clickThroughCheckBox = new QCheckBox("Click through");
-    clickThroughCheckBox->setChecked(true);
+    clickThroughCheckBox->setChecked(false);
 
     soundEnabledCheckBox = new QCheckBox("Sound enabled");
     soundEnabledCheckBox->setChecked(false);

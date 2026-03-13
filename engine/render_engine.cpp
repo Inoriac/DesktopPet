@@ -11,6 +11,8 @@
 #include <QMatrix4x4>
 #include <QVector3D>
 
+#include "configLoader/config_manager.h"
+
 RenderEngine::RenderEngine() = default;
 
 RenderEngine::~RenderEngine() {
@@ -52,6 +54,18 @@ void RenderEngine::initialize(QOpenGLFunctions_3_3_Core *glFuncs, ShaderManager 
     gl->glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);  // 支持读取透明度
 
     // gl->glDisable(GL_CULL_FACE); // 禁用背面剔除
+}
+
+void RenderEngine::initColliders() {
+    boneColliders.clear();
+
+    const auto& configs = ConfigManager::instance().getColliderConfigs();
+    for (const auto& config : configs) {
+        BoneCollider collider = config; // 复制配置
+        collider.radius *= this->modelScale;    // 进行缩放
+        boneColliders.push_back(collider);
+    }
+    qDebug() << "Initialized" << boneColliders.size() << "runtime colliders with scale:" << modelScale;
 }
 
 void RenderEngine::setMaterials(std::vector<MaterialData> materialDatas) {
@@ -96,21 +110,22 @@ void RenderEngine::render() {
 
     // 模型矩阵
     QMatrix4x4 model;
-    
-    // 1. 自动旋转：保留之前的自转逻辑（绕世界 Y 轴旋转）
-    // model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); 
 
-    // 2. 缩放
-    model.scale(0.035f);  // 缩放保
-
-    // 3. 姿态修正：把躺着的模型扶正
-    // 之前尝试 -90 (倒立)，说明方向反了。
-    // 现在尝试 +90 度绕 X 轴旋转，把朝上(+Y)的面转到朝前(+Z)
+    // 姿态修正：把躺着的模型扶正
     model.rotate(90.0f, 1.0f, 0.0f, 0.0f);
 
-    // 默认视角调整回常规正视逻辑
-    // view.lookAt(QVector3D(0, 1.5f, 4.0f), QVector3D(0, 1.0f, 0), QVector3D(0, 1, 0));
-    model.rotate(angleDeg, 0.0f, 1.0f, 0.0f); // 绕 Y 轴旋转
+    // 缩放
+    float finalScale = modelScale;
+    if (finalScale <= 0.0001f) finalScale = 1.0f;
+    model.scale(finalScale);
+
+    // 绕 Y 轴旋转
+    model.rotate(angleDeg, 0.0f, 1.0f, 0.0f);
+
+    // 应用中心偏移
+    // model.translate(modelOffset);
+
+    currentModelMatrix = model;
 
     // 综合矩阵 遵循右乘 结果等价于先把顶点从模型空间变换到世界坐标，再到视图，最后进行投影
     QMatrix4x4 mvp = proj * view * model;
@@ -121,6 +136,8 @@ void RenderEngine::render() {
         return;
     }
     shader->bind();
+
+
 
     if (animationPlayer) {
         std::vector<QMatrix4x4> transforms = animationPlayer->getCurrentTransforms();
@@ -152,23 +169,30 @@ void RenderEngine::render() {
         QMatrix4x4 id; shader->setUniformValue("finalBonesMatrices[0]", id);
     }
 
-    // 光照与视角
-    QVector3D viewPos(0, 1.5f, 4);
+    // 光照与视角 - 使用当前的摄像机位置
+    QVector3D viewPos = cameraEye;
 
-    // 光源围绕相机位置布置（相对于相机的偏移）
+    // 光源围绕相机位置布置（始终跟随相机）
+    // 由于相机距离变远了(从4变到10)，光源也随之变远，因此需要大幅增强强度，或者让光源靠近模型
+    // 这里我们选择让光源尽量靠近模型(假设模型在 0,0,0 附近)，而不是跟随相机
+    // 或者我们保持跟随相机，但大幅增强强度
+    
+    // 方案B：让光源作为"摄影棚灯光"固定在模型周围，而非跟随相机
+    // 这样无论相机在哪，模型都被照亮
     QVector3D lightPositions[4] = {
-        viewPos + QVector3D(0.0f, 3.0f, 0.5f),    // 主光源：相机正上方偏前
-        viewPos + QVector3D(-2.0f, 1.0f, 0.5f),   // 左补光：相机左侧
-        viewPos + QVector3D(2.0f, 1.0f, 0.5f),    // 右补光：相机右侧
-        viewPos + QVector3D(0.0f, -1.0f, 1.0f)    // 底部补光：相机下方偏前
+        QVector3D(3.0f, 5.0f, 5.0f),    // 主光源：右前上方
+        QVector3D(-3.0f, 5.0f, 5.0f),   // 辅光源：左前上方
+        QVector3D(0.0f, 2.0f, -5.0f),   // 背光/轮廓光：后方
+        QVector3D(0.0f, 0.5f, 3.0f)     // 底部补光：正前下方
     };
 
-    // 大幅增强光源强度（因为距离近，衰减快）
+    // PBR 光照强度调整 (修复过曝)
+    // 采用"真实感"配置：降低整体亮度，主光带暖色(太阳)，辅光带冷色(天空)，轮廓光增强立体感
     QVector3D lightColors[4] = {
-        QVector3D(50.0f, 50.0f, 50.0f),   // 主光源：非常亮
-        QVector3D(25.0f, 25.0f, 25.0f),   // 左补光
-        QVector3D(25.0f, 25.0f, 25.0f),   // 右补光
-        QVector3D(15.0f, 15.0f, 15.0f)    // 底部补光
+        QVector3D(100.0f, 96.0f, 90.0f),    // 主光：暖白 (强度约为之前的1/3)
+        QVector3D(50.0f, 55.0f, 60.0f),     // 辅光：冷白 (模拟环境天光)
+        QVector3D(60.0f, 60.0f, 70.0f),     // 背光：冷色，勾勒轮廓
+        QVector3D(20.0f, 20.0f, 20.0f)      // 底光：微弱补光，防止死黑
     };
 
     int lastMaterialIndex = -1; // 记录上一个使用的材质索引，用于性能优化

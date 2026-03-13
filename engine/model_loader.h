@@ -123,6 +123,11 @@ public:
     std::vector<MaterialData>& getMaterials() { return materials; };
     void clear();
 
+    // 获取归一化的缩放比例
+    float getNormalizationScale() const { return normalizationScale; };
+    // 获取模型原本的中心偏移点
+    QVector3D getCenterOffset() const { return centerOffset; };
+
     // 临时测试方法
     std::unordered_map<std::string, int>& getNameToBone();
     Skeleton& getSkeleton() { return skeleton; };
@@ -137,6 +142,10 @@ private:
     std::vector<Skin> skins;
     Skeleton skeleton;  // 骨骼信息
 
+    float normalizationScale = 1.0f;
+    QVector3D centerOffset;
+
+private:
     // 辅助方法
     bool parseGLTF(const std::string& path);    // 加载模型
     void extractMeshData(const tinygltf::Model& model, const tinygltf::Mesh& mesh); // 获取 MeshData
@@ -153,6 +162,8 @@ private:
     void extractSkeleton(const tinygltf::Model& model);     // 读取骨骼列表与 inverseBindMatrices
     void extractSkeletonHierarchy(const tinygltf::Model& model);    // 解析骨骼层级
     void extractSkinningData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData);   // 解析 mesh 的皮肤数据
+
+    void calculateBoundingBox(const tinygltf::Model& model);    // 计算包围盒
 
     // // 临时测试方法
     // bool testNodesIntegrity(const tinygltf::Model &model);

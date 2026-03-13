@@ -64,7 +64,6 @@ void RenderViewport::initializeGL() {
     qDebug() << "Version:"  << reinterpret_cast<const char*>(f->glGetString(GL_VERSION));
     qDebug() << "GLSL:"     << reinterpret_cast<const char*>(f->glGetString(GL_SHADING_LANGUAGE_VERSION));
 
-
     // 初始化着色器
     shaderManager = std::make_unique<ShaderManager>();
     shaderManager->initialize(glCore.get());
@@ -81,6 +80,11 @@ void RenderViewport::initializeGL() {
     // 初始化渲染引擎
     renderEngine = std::make_unique<RenderEngine>();
     renderEngine->initialize(glCore.get(), shaderManager.get());
+
+    // 从配置中加载默认相机位置
+    ConfigManager& config = ConfigManager::instance();
+    renderEngine->setCameraCenter(config.getDefaultCameraCenter());
+    renderEngine->setCameraEye(config.getDefaultCameraEye());
 
     size_t mem4 = getCurrentMemoryUsage();
     qDebug() << "After RenderEngine init:" << mem4 << "MB, delta:" << (mem4-mem3) << "MB";
@@ -162,6 +166,9 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         qDebug() << "Mesh count:" << loader.getMeshes().size();
         qDebug() << "Material count:" << loader.getMaterials().size();
 
+        // 传递归一化参数到渲染引擎
+        renderEngine->setModelTransform(loader.getNormalizationScale(), loader.getCenterOffset());
+
         // 上传纹理材质
         for (auto& material : loader.getMaterials()) {
             renderEngine->uploadMaterialTextures(material);
@@ -177,6 +184,9 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         // 同步材质信息
         renderEngine->setMaterials(loader.getMaterials());
         renderEngine->sortMeshesByMaterial();   // 索引优化
+
+        // 初始化碰撞体
+        renderEngine->initColliders();
 
         // 加载动画
         bool loadedAny = false;

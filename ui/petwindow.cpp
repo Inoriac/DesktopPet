@@ -9,7 +9,6 @@
 #include <QApplication>
 #include <qboxlayout.h>
 #include <QDebug>
-#include <QCloseEvent>
 #include <QKeyEvent>
 
 #include "render_engine.h"
@@ -170,9 +169,9 @@ void PetWindow::keyPressEvent(QKeyEvent *event) {
 
 void PetWindow::setupWindow() {
     // 设置窗口属性
-    setAttribute(Qt::WA_TranslucentBackground, true);
-    setAttribute(Qt::WA_NoSystemBackground, true);
-    setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    // setAttribute(Qt::WA_TranslucentBackground, true);
+    // setAttribute(Qt::WA_NoSystemBackground, true);
+    // setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     // 设置窗口标志
     updateWindowFlags(alwaysOnTop, clickThrough);

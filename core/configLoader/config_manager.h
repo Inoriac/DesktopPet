@@ -6,10 +6,10 @@
 #define DESKTOP_PET_CONFIG_MANAGER_H
 
 #include <QJsonObject>
-#include <QJsonDocument>
 #include <QString>
-#include <QFile>
-#include <QDebug>
+#include <QJsonDocument>
+
+#include "global_types.h"
 
 class ConfigManager {
 public:
@@ -29,6 +29,13 @@ public:
 
     QString getStateMachinePath() const { return stateMachinePath; }
     QString getAnimationsBasePath() const { return animationsBasePath; }
+
+    // 相机设置
+    QVector3D getDefaultCameraEye() const { return defaultCameraEye; }
+    QVector3D getDefaultCameraCenter() const { return defaultCameraCenter; }
+
+    // 获取碰撞配置列表
+    const std::vector<BoneCollider>& getColliderConfigs() const { return colliderConfigs; }
     
 private:
     ConfigManager();
@@ -48,6 +55,12 @@ private:
     QString animationsBasePath = "assets/animations/";
     
     QJsonObject configJson;
+
+    // 相机默认设置
+    QVector3D defaultCameraEye {0.0f, 3.0f, 12.0f};
+    QVector3D defaultCameraCenter {0.0f, 4.0f, 0.0f};
+
+    std::vector<BoneCollider> colliderConfigs;
 };
 
 #endif //DESKTOP_PET_CONFIG_MANAGER_H

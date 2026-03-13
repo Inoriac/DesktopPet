@@ -355,7 +355,9 @@ std::vector<QMatrix4x4> AnimationPlayer::getCurrentTransforms() {
 
     // 计算骨骼的全局变换 (递归/层级累积)
     // 思路：Local(T*R*S) -> Accumulate Parent -> Global
-    std::vector<QMatrix4x4> globalTransforms(boneCount);
+    if (cachedGlobalTransforms.size() != boneCount) {
+        cachedGlobalTransforms.resize(boneCount);
+    }
 
     for (size_t i = 0; i < boneCount; ++i) {
         const auto& boneNode = mySkeleton.bones[i];
@@ -369,16 +371,16 @@ std::vector<QMatrix4x4> AnimationPlayer::getCurrentTransforms() {
         int parentIdx = boneNode.parent;
         if (parentIdx != -1) {
             // 父变换 * 局部变换
-            globalTransforms[i] = globalTransforms[parentIdx] * localTransform;
+            cachedGlobalTransforms[i] = cachedGlobalTransforms[parentIdx] * localTransform;
         } else {
             // 根骨骼
-            globalTransforms[i] = localTransform;
+            cachedGlobalTransforms[i] = localTransform;
         }
     }
 
     // 计算最终蒙皮矩阵: GlobalTransform * InverseBindMatrix
     for (size_t i = 0; i < boneCount; ++i) {
-        finalMatrices[i] = globalTransforms[i] * mySkeleton.bones[i].inverseBindMatrix;
+        finalMatrices[i] = cachedGlobalTransforms[i] * mySkeleton.bones[i].inverseBindMatrix;
     }
 
     return finalMatrices;

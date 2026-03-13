@@ -7,6 +7,10 @@
   "renderSettings": {
     "antialiasing": true,
     "shadowQuality": "medium",
-    "textureQuality": "high"
+    "textureQuality": "high",
+    "cameraSettings": {
+      "defaultEye": [0.0, 3.0, 12.0],
+      "defaultCenter": [0.0, 4.0, 0.0]
+    }
   }
 }

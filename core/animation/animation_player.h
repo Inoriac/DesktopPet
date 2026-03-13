@@ -61,6 +61,12 @@ public:
     // 获取当前帧数所有骨骼的最终变换矩阵 (用于 Shader)
     std::vector<QMatrix4x4> getCurrentTransforms();
 
+    // 获取当前所有骨骼的全局变换矩阵
+    const std::vector<QMatrix4x4>& getGlobalTransforms() const { return cachedGlobalTransforms; }
+
+    // 获取骨骼结构定义，用于查询骨骼名称对应的索引
+    const Skeleton& getSkeleton() const { return mySkeleton; }
+
     // 获取当前状态名
     std::string getCurrentStateName() const { return currentStateName; }
     
@@ -80,9 +86,6 @@ private:
 
     // 计算最终姿势（当前动画 + 混合）
     void updateFinalPose();
-
-    // 根据状态名切换动画
-    // void changeState(const std::string& targetState);
 
     // 随机挑选 clip
     void selectRandomClipForState(const AnimationState& state);
@@ -110,6 +113,9 @@ private:
     AnimationPose poseCurrent;      // 当前姿势
     AnimationPose posePrevious;     // 上一帧姿势
     AnimationPose poseFinal;
+
+    // 缓存每一帧计算出的全局变换
+    std::vector<QMatrix4x4> cachedGlobalTransforms;
 
     std::mt19937 rng { std::random_device{}() };    // 随机数生成器
 };

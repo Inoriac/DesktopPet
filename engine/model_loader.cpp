@@ -109,6 +109,8 @@ bool ModelLoader::parseGLTF(const std::string &path) {
     // qDebug() << "---------------------VALIDATION---------------------";
     // runAllModelTests(model);
 
+    calculateBoundingBox(model);
+
     return true;
 }
 
@@ -547,6 +549,52 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
 
     qDebug() << "[ModelLoader] Skinning data extracted. Vertices = " << vertexCount;
 }
+
+void ModelLoader::calculateBoundingBox(const tinygltf::Model &model) {
+    QVector3D minBox(1e9, 1e9, 1e9);
+    QVector3D maxBox(-1e9, -1e9, -1e9);
+    bool valid = false;
+
+    // 遍历所有 mesh 的 POSITION 属性，更新包围盒
+    for (const auto& mesh : model.meshes) {
+        for (const auto& primitive : mesh.primitives) {
+            auto it = primitive.attributes.find("POSITION");
+            if (it != primitive.attributes.end()) {
+                const auto& accessor = model.accessors[it->second];
+
+                if (accessor.minValues.size() == 3 && accessor.maxValues.size() == 3) {
+                    minBox.setX(std::min(minBox.x(), (float)accessor.minValues[0]));
+                    minBox.setY(std::min(minBox.y(), (float)accessor.minValues[1]));
+                    minBox.setZ(std::min(minBox.z(), (float)accessor.minValues[2]));
+
+                    maxBox.setX(std::max(maxBox.x(), (float)accessor.maxValues[0]));
+                    maxBox.setY(std::max(maxBox.y(), (float)accessor.maxValues[1]));
+                    maxBox.setZ(std::max(maxBox.z(), (float)accessor.maxValues[2]));
+                    valid = true;
+                }
+            }
+        }
+    }
+
+    if (valid) {
+        // 计算尺寸
+        QVector3D size = maxBox - minBox;
+        float maxDim = std::max({size.x(), size.y(), size.z()});
+
+        // 目标大小，将模型归一化到 3.0 个单位
+        constexpr float TARGET_SIZE = 3.0f;
+
+        if (maxDim > 0.001f) {
+            normalizationScale = TARGET_SIZE / maxDim;
+            centerOffset = -(minBox + size * 0.5f) * normalizationScale;
+        }
+
+        qDebug() << "Model Bounding Box: Min" << minBox << "Max" << maxBox;
+        qDebug() << "Original Size:" << maxDim;
+        qDebug() << "Auto Normalization Scale:" << normalizationScale;
+    }
+}
+
 
 std::unordered_map<std::string, int> & ModelLoader::getNameToBone() {
     return skeleton.nameToIndex;
