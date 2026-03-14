@@ -563,6 +563,79 @@ void RenderEngine::sortMeshesByMaterial() {
     qDebug() << "Meshes sorted by material index for optimal rendering";
 }
 
+std::string RenderEngine::checkHit(int viewX, int viewY) {
+    if (!animationPlayer || boneColliders.empty()) return "";
+
+    // 获取变换矩阵
+    QMatrix4x4 view;
+    view.lookAt(cameraEye, cameraCenter, QVector3D(0, 1, 0));
+
+    QMatrix4x4 proj;
+    float aspect = (viewportHeight > 0) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
+    proj.perspective(45.0f, aspect, 0.01f, 100.0f);
+
+    int glY = viewportHeight - viewY; // OpenGL 的 Y 轴是反向的
+
+    // 生成射线
+    // 视口区域 (x, y, w, h)
+    QRect viewport(0, 0, viewportWidth, viewportHeight);
+
+    QVector3D nearPoint = QVector3D(viewX, glY, 0.0f).unproject(view, proj, viewport);
+    QVector3D farPoint = QVector3D(viewX, glY, 1.0f).unproject(view, proj, viewport);
+
+    QVector3D rayOrigin = nearPoint;
+    QVector3D rayDir = (farPoint - nearPoint).normalized();
+
+    // 遍历碰撞体
+    // 获取骨骼数据
+    const auto& boneTransforms = animationPlayer->getGlobalTransforms();
+    const auto& skeleton = animationPlayer->getSkeleton();
+
+    float minDist = FLT_MAX;
+    std::string hitTag = "";
+
+    for (const auto& collider : boneColliders) {
+        // 查找骨骼索引
+        auto it = skeleton.nameToIndex.find(collider.boneName);
+        if (it == skeleton.nameToIndex.end()) continue; // 骨骼不存在
+
+        int boneIndex = it->second;
+        if (boneIndex >= boneTransforms.size()) continue; // 安全检查
+
+        // 计算球心世界坐标
+        QVector3D sphereCenterModel = boneTransforms[boneIndex] * collider.offset;
+        QVector3D sphereCenterWorld = currentModelMatrix * sphereCenterModel;
+
+        float radius = collider.radius;
+        float dist = 0.0f;
+        if (intersectRaySphere(rayOrigin, rayDir, sphereCenterWorld, radius, dist)) {
+            if (dist < minDist) {
+                minDist = dist;
+                hitTag = collider.tag;
+            }
+        }
+    }
+
+    return hitTag;
+}
+
+bool RenderEngine::intersectRaySphere(const QVector3D &rayOrigin, const QVector3D &rayDir, const QVector3D &sphereCenter, float sphereRadius, float &outDist) {
+    QVector3D m = rayOrigin - sphereCenter;
+    float b = QVector3D::dotProduct(m, rayDir);
+    float c = QVector3D::dotProduct(m, m) - sphereRadius * sphereRadius;
+    // 射线起点在球外且指向远离球心的方向
+    if (c > 0.0f && b > 0.0f) return false;
+
+    float discr = b * b - c;
+    if (discr < 0.0f) return false;
+
+    // 计算最近交点
+    float t = -b - sqrt(discr);
+    if (t < 0.0f) t = 0.0f;
+
+    outDist = t;
+    return true;
+}
 
 void RenderEngine::clearScene() {
     if (!gl) return;
