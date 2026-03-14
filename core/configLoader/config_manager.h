@@ -34,6 +34,9 @@ public:
     QVector3D getDefaultCameraEye() const { return defaultCameraEye; }
     QVector3D getDefaultCameraCenter() const { return defaultCameraCenter; }
 
+    int getDragThreshold() const { return dragThreshold; }
+    int getClickTimeout() const { return clickTimeout; }
+
     // 获取碰撞配置列表
     const std::vector<BoneCollider>& getColliderConfigs() const { return colliderConfigs; }
     
@@ -59,6 +62,10 @@ private:
     // 相机默认设置
     QVector3D defaultCameraEye {0.0f, 3.0f, 12.0f};
     QVector3D defaultCameraCenter {0.0f, 4.0f, 0.0f};
+
+    // 触摸相关参数
+    int dragThreshold = 5;
+    int clickTimeout = 200;
 
     std::vector<BoneCollider> colliderConfigs;
 };

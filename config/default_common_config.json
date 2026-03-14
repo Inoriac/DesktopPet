@@ -12,5 +12,41 @@
       "defaultEye": [0.0, 3.0, 12.0],
       "defaultCenter": [0.0, 4.0, 0.0]
     }
+  },
+  "interactionSettings": {
+    "dragThreshold": 5,
+    "clickTimeout": 200,
+    "colliders": [
+      {
+        "bone": "Head",
+        "radius": 0.25,
+        "offset": [0.0, 0.1, 0.0],
+        "tag": "Head"
+      },
+      {
+        "bone": "Spine",
+        "radius": 0.3,
+        "offset": [0.0, 0.0, 0.0],
+        "tag": "Body"
+      },
+      {
+        "bone": "Hips",
+        "radius": 0.3,
+        "offset": [0.0, 0.0, 0.0],
+        "tag": "Body"
+      },
+      {
+        "bone": "LeftHand",
+        "radius": 0.15,
+        "offset": [0.0, 0.0, 0.0],
+        "tag": "HandL"
+      },
+      {
+        "bone": "RightHand",
+        "radius": 0.15,
+        "offset": [0.0, 0.0, 0.0],
+        "tag": "HandR"
+      }
+    ]
   }
 }

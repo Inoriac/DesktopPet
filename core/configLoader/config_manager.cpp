@@ -68,6 +68,10 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     colliderConfigs.clear();
     if (configJson.contains("interactionSettings")) {
         QJsonObject interaction = configJson["interactionSettings"].toObject();
+
+        dragThreshold = interaction["dragThreshold"].toInt(5);
+        clickTimeout = interaction["clickTimeout"].toInt(200);
+
         if (interaction.contains("colliders")) {
             QJsonArray arr = interaction["colliders"].toArray();
             for (const auto& val : arr) {
