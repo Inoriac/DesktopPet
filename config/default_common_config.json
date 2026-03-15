@@ -15,7 +15,7 @@
   },
   "interactionSettings": {
     "dragThreshold": 5,
-    "clickTimeout": 200,
+    "clickTimeout": 500,
     "colliders": [
       {
         "bone": "Head",

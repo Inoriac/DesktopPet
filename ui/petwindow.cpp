@@ -12,6 +12,7 @@
 #include <QKeyEvent>
 
 #include "render_engine.h"
+#include "configLoader/config_manager.h"
 
 PetWindow::PetWindow(const QString modelName, QWidget *parent)
     : QWidget(parent)
@@ -91,26 +92,111 @@ void PetWindow::setupContextMenu() {
     });
 }
 
-void PetWindow::mousePressEvent(QMouseEvent *event) {
-    if (event->button() == Qt::LeftButton && !clickThrough) {
-        isDragging = true;
-        dragStartPosition = event->globalPosition().toPoint();
-        event->accept();
+bool PetWindow::canTriggerTouch() const {
+    if (!renderViewport || !renderViewport->getRenderEngine()) return false;
+    auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+    if (!player) return false;
+
+    std::string currentState = player->getCurrentStateName();
+
+    // 简单互斥：如果当前状态以 "Touch" 开头，说明正在反应中，不可打断
+    if (currentState.find("Touch") == 0) {
+        return false;
+    }
+    return true;
+}
+
+void PetWindow::triggerTouchReaction(const std::string& tag) {
+    if (!canTriggerTouch()) {
+        qDebug() << "Touch ignored: reaction playing";
+        return;
+    }
+
+    if (renderViewport && renderViewport->getRenderEngine()) {
+        auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+        if (player) {
+            std::string targetState = "Touch" + tag;
+            qDebug() << "Triggering touch reaction:" << targetState.c_str();
+            player->changeState(targetState);
+        }
     }
 }
 
-void PetWindow::mouseMoveEvent(QMouseEvent *event) {
-    if (isDragging && !clickThrough) {
-        QPoint delta = event->globalPosition().toPoint() - dragStartPosition;
-        move(pos() + delta);
+void PetWindow::mousePressEvent(QMouseEvent *event) {
+    if (event->button() == Qt::LeftButton) {
+        // 初始化状态
+        isDragging = false;
         dragStartPosition = event->globalPosition().toPoint();
+        pressLocalPosition = event->pos();
+        pressTimer.start();
+    }
+
+    // 射线检测
+    if (renderViewport && renderViewport->getRenderEngine()) {
+        auto* engine = renderViewport->getRenderEngine();
+
+        // 获取 viewport 相对坐标
+        QPoint viewPos = renderViewport->mapFrom(this, event->pos());
+        // 兼容不同 Qt/平台下的坐标语义：
+        // 先尝试逻辑像素坐标，若未命中再尝试物理像素坐标。
+        hitPartTag = engine->checkHit(viewPos.x(), viewPos.y());
+        if (hitPartTag.empty()) {
+            qreal dpr = renderViewport->devicePixelRatioF();
+            int physX = static_cast<int>(viewPos.x() * dpr);
+            int physY = static_cast<int>(viewPos.y() * dpr);
+            hitPartTag = engine->checkHit(physX, physY);
+        }
+        isPressingModel = !hitPartTag.empty();
+
+        if (isPressingModel) {
+            qDebug() << "Pressed on part:" << hitPartTag.c_str();
+        }
+    } else {
+        isPressingModel = false;
+    }
+
+    event->accept();
+}
+
+void PetWindow::mouseMoveEvent(QMouseEvent *event) {
+    if (!clickThrough) {
+        QPoint currentPosition = event->globalPosition().toPoint();
+        int threshold = ConfigManager::instance().getDragThreshold();
+
+        if (isDragging) {
+            move(pos() + (currentPosition - dragStartPosition));
+            dragStartPosition = currentPosition;
+
+            // TODO: 这里添加边界检查(防止拖到太边缘的位置)与打断现在的动作的逻辑
+            // TODO：吸附窗口部分的逻辑也可以在这里进行添加
+        } else if ((currentPosition - dragStartPosition).manhattanLength() > threshold) {
+            isDragging = true;
+            isPressingModel = false;
+        }
+
         event->accept();
     }
 }
 
 void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
+        int timeout = ConfigManager::instance().getClickTimeout();
+
+        if (!isDragging) {
+            if (pressTimer.elapsed() < timeout) {
+                if (isPressingModel && !hitPartTag.empty()) {
+                    triggerTouchReaction(hitPartTag);
+                } else {
+                    qDebug() << "Short press (no model hit)";
+                }
+            } else {
+                qDebug() << "Long press (ignored or open menu)";
+            }
+        }
+
         isDragging = false;
+        isPressingModel = false;
+        hitPartTag.clear();
         event->accept();
     }
 }

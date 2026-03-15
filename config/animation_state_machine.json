@@ -6,7 +6,12 @@
     { "name": "Idle", "loop": true, "clipOptions": [] },
     { "name": "Dance", "loop": true, "clipOptions": [] },
     { "name": "Sitting", "loop": true, "clipOptions": [] },
-    { "name": "Sleeping", "loop": true, "clipOptions": [] }
+    { "name": "Sleeping", "loop": true, "clipOptions": [] },
+
+    { "name": "TouchHead", "loop": false, "clipOptions": [] },
+    { "name": "TouchBody", "loop": false, "clipOptions": [] },
+    { "name": "TouchHandL", "loop": false, "clipOptions": [] },
+    { "name": "TouchHandR", "loop": false, "clipOptions": [] }
   ],
 
   "transactions": [
@@ -21,6 +26,11 @@
 
     { "fromState": "Sleeping", "toState": "Idle", "condition": "wake" },
 
-    { "fromState": "Dance", "toState": "Idle", "condition": "stop_dance" }
+    { "fromState": "Dance", "toState": "Idle", "condition": "stop_dance" },
+
+    { "fromState": "TouchHead", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+    { "fromState": "TouchBody", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+    { "fromState": "TouchHandL", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+    { "fromState": "TouchHandR", "toState": "Idle", "condition": "", "blendDuration": 0.2 }
   ]
 }

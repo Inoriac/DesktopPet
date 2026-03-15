@@ -7,6 +7,7 @@
 
 #include <QMenu>
 #include <QAction>
+#include <QElapsedTimer>
 
 class RenderViewport;
 
@@ -55,9 +56,19 @@ private:
 
     void unloadModel();
 
-    // 拖拽相关
-    bool isDragging;
+    // 辅助交互方法
+    bool canTriggerTouch() const;   // 是否能够触发触摸反应，交互锁
+    void triggerTouchReaction(const std::string& tag);  // 触发触摸反应逻辑
+
+    // 交互相关
+    bool isDragging = false;
+    bool isPressingModel = false;
+    std::string hitPartTag;
+
     QPoint dragStartPosition;
+    QPoint pressLocalPosition;
+
+    QElapsedTimer pressTimer;
 
     // 右键菜单
     QMenu *contextMenu;
