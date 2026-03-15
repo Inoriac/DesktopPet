@@ -11,7 +11,7 @@
 #include <vector>
 
 #include "animation_player.h"
-#include "animation_structs.h"
+#include "animation_types.h"
 
 class AnimationImporter;
 class Skeleton;

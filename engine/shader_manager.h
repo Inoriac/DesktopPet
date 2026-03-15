@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "model_loader.h"
+#include "material_types.h"
 
 class ShaderManager {
 public:

@@ -13,27 +13,9 @@
 #include <unordered_map>
 #include <vector>
 
-#include "animation_structs.h"
-#include "model_loader.h"
+#include "animation_types.h"
+#include "model_types.h"
 // #include "animation_state_machine.h"
-
-// 一个骨骼的最终姿势
-struct BonePose {
-    QVector3D translation {0, 0, 0};
-    QQuaternion rotation {1, 0, 0, 0};
-    QVector3D scale {1, 1, 1};
-};
-
-// 某帧下所有骨骼的姿势合集
-struct AnimationPose
-{
-    std::vector<BonePose> bonePoses;
-
-    AnimationPose() = default;
-    AnimationPose(size_t boneCount)
-        : bonePoses(boneCount)
-    {}
-};
 
 /**
  * 动画播放器

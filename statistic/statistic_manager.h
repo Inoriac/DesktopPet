@@ -14,7 +14,7 @@
 #include <QMutex>
 #include <functional>
 
-#include "statistic_types.h"
+#include "../include/statistic_types.h"
 
 class StatisticManager : public QObject {
     Q_OBJECT

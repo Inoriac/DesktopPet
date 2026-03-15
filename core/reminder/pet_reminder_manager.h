@@ -10,7 +10,7 @@
 #include <QList>
 #include <QRandomGenerator>
 
-#include "pet_reminder.h"
+#include "../../include/pet_reminder_types.h"
 #include "pet_personality.h"
 
 class PetReminderManager : public QObject {

@@ -1,11 +1,11 @@
-//
-// Created by Inoriac on 2025/11/18.
-//
-
 #pragma once
+
 #include <string>
 #include <vector>
 #include <unordered_map>
+#include <QVector3D>
+#include <QQuaternion>
+#include <QMatrix4x4>
 
 // 基本关键帧结构
 struct KeyFrameVec3 {
@@ -15,7 +15,7 @@ struct KeyFrameVec3 {
 
 struct KeyFrameQuat {
     double time;
-    float x , y, z, w;  // quaternion
+    float x, y, z, w;  // quaternion
 };
 
 // 动画通道
@@ -52,7 +52,7 @@ struct AnimationClip {
 // 状态机
 // 候选动画
 struct AnimationCLipOption {
-    std:: string clipName;  // 动画文件名
+    std::string clipName;   // 动画文件名
     float weight = 1.0f;
 };
 
@@ -98,4 +98,20 @@ struct AnimationStateMachineDefinition
     }
 };
 
+// 一个骨骼的最终姿势
+struct BonePose {
+    QVector3D translation {0, 0, 0};
+    QQuaternion rotation {1, 0, 0, 0};
+    QVector3D scale {1, 1, 1};
+};
 
+// 某帧下所有骨骼的姿势合集
+struct AnimationPose
+{
+    std::vector<BonePose> bonePoses;
+
+    AnimationPose() = default;
+    AnimationPose(size_t boneCount)
+        : bonePoses(boneCount)
+    {}
+};

@@ -12,7 +12,7 @@
 #include <memory>
 
 #include <tiny_gltf.h>
-#include "animation_structs.h"
+#include "animation_types.h"
 
 class AnimationImporter {
 public:

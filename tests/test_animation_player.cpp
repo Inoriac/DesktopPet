@@ -81,13 +81,13 @@ void TestAnimationPlayer::cleanupTestCase() {
 
 void TestAnimationPlayer::testInitialization() {
     // 测试基本初始化
-    AnimationPlayer player(skeleton.get(), &clips, &stateMachine);
+    AnimationPlayer player(*skeleton, &clips, &stateMachine);
     
     QVERIFY(player.currentPose().bonePoses.size() > 0);
 }
 
 void TestAnimationPlayer::testAnimationSampling() {
-    AnimationPlayer player(skeleton.get(), &clips, &stateMachine);
+    AnimationPlayer player(*skeleton, &clips, &stateMachine);
     
     // 更新动画并检查是否生成有效姿势
     player.update(0.1f);
@@ -97,7 +97,7 @@ void TestAnimationPlayer::testAnimationSampling() {
 }
 
 void TestAnimationPlayer::testStateTransition() {
-    AnimationPlayer player(skeleton.get(), &clips, &stateMachine);
+    AnimationPlayer player(*skeleton, &clips, &stateMachine);
 
     // 测试状态转换
     player.changeState("walk");  // 直接调用私有方法进行测试
@@ -105,7 +105,7 @@ void TestAnimationPlayer::testStateTransition() {
 }
 
 void TestAnimationPlayer::testEventTrigger() {
-    AnimationPlayer player(skeleton.get(), &clips, &stateMachine);
+    AnimationPlayer player(*skeleton, &clips, &stateMachine);
     
     // 测试事件触发状态转换
     player.triggerEvent("walk");
@@ -121,7 +121,7 @@ void TestAnimationPlayer::testEventTrigger() {
 }
 
 void TestAnimationPlayer::testBlending() {
-    AnimationPlayer player(skeleton.get(), &clips, &stateMachine);
+    AnimationPlayer player(*skeleton, &clips, &stateMachine);
     
     // 触发混合（通过直接调用私有方法进行测试）
     player.changeState("walk");

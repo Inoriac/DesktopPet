@@ -47,7 +47,6 @@ set(CORE_SOURCES
     core/animation/animation_manager.h
     core/animation/animation_importer.cpp
     core/animation/animation_importer.h
-    core/animation/animation_structs.h
 
     core/behavior/behavior_manager.cpp
     core/behavior/behavior_manager.h
@@ -61,11 +60,11 @@ set(CORE_SOURCES
     core/controller/pet_controller.cpp
     core/controller/pet_controller.h
 
-    core/reminder/pet_reminder.h
     core/reminder/pet_reminder_manager.cpp
     core/reminder/pet_reminder_manager.h
-        core/animation/animation_player.cpp
-        core/animation/animation_player.h
+
+    core/animation/animation_player.cpp
+    core/animation/animation_player.h
 )
 
 set(ENGINE_SOURCES
@@ -87,6 +86,11 @@ set(INCLUDE_SOURCES
     include/common.h
     include/global_types.h
     include/macros.h
+    include/animation_types.h
+    include/pet_reminder_types.h
+    include/material_types.h
+    include/model_types.h
+    include/render_types.h
 )
 
 set(TINYGLTF_SOURCES
@@ -105,7 +109,7 @@ set(ENTITY_SOURCES
 set(STATISTIC_SOURCES
         statistic/statistic_manager.h
         statistic/statistic_manager.cpp
-        statistic/statistic_types.h
+        include/statistic_types.h
 )
 
 set(MUSIC_SOURCES
