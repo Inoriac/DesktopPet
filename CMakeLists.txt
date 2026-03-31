@@ -65,6 +65,8 @@ set(CORE_SOURCES
 
     core/animation/animation_player.cpp
     core/animation/animation_player.h
+    core/animation/animation_crossfader.cpp
+    core/animation/animation_crossfader.h
 )
 
 set(ENGINE_SOURCES

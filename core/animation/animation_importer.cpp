@@ -65,6 +65,8 @@ void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationS
         {
             AnimationState state;
             state.name = s.value("name", "");
+            state.folder = s.value("folder", state.name);
+            state.clipMatch = s.value("clipMatch", "");
             state.loop = s.value("loop", true);
 
             outStateMachine.states.push_back(state);

@@ -21,16 +21,17 @@ public:
     ~RenderViewport() override;
 
     RenderEngine* getRenderEngine() const { return renderEngine.get(); }
+    AnimationManager* getAnimationManager() const { return animationManager.get(); }
 
     // 动态加载模型和动画
     bool loadModel(const QString& modelPath);
     void clearModel();
     
-    // 获取初始化状态
+    // 获取初始化状�?
     bool isInitialized() const { return renderEngine && animationManager; }
     
 signals:
-    // 初始化完成信号
+    // 初始化完成信�?
     void initializationCompleted();
 
 protected:
@@ -42,9 +43,9 @@ private:
     std::unique_ptr<QOpenGLFunctions_3_3_Core> glCore;
     std::unique_ptr<RenderEngine> renderEngine;     // 渲染引擎
      std::unique_ptr<ShaderManager> shaderManager;   // 着色器
-     std::unique_ptr<AnimationManager> animationManager;  // 动画管理器
-     QString currentModelPath;  // 当前加载的模型路径
-     QString currentAnimationPath;  // 当前加载的动画路径
+     std::unique_ptr<AnimationManager> animationManager;  // 动画管理�?
+     QString currentModelPath;  // 当前加载的模型路�?
+     QString currentAnimationPath;  // 当前加载的动画路�?
 
      // 初始化动画管理器
      void initializeAnimationManager();

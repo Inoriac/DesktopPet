@@ -12,7 +12,7 @@ AnimationPlayer::AnimationPlayer(Skeleton skeleton, const std::unordered_map<std
     size_t boneCount = mySkeleton.bones.size();
 
     poseCurrent = AnimationPose(boneCount);
-    posePrevious = AnimationPose(boneCount);
+    
     poseFinal = AnimationPose(boneCount);
 
     // 默认状态
@@ -94,8 +94,7 @@ void AnimationPlayer::update(double deltaTime) {
                         if (trans.condition.empty()) {
                             // 验证目标状态是否存在
                             if (myStateMachine->stateIndexMap.find(trans.toState) != myStateMachine->stateIndexMap.end()) {
-                                blendDuration = trans.blendDuration;
-                                changeState(trans.toState);
+                                changeState(trans.toState, trans.blendDuration);
                                 hasAutoTransition = true;
                                 break;
                             }
@@ -115,47 +114,12 @@ void AnimationPlayer::update(double deltaTime) {
     sampleClip(*currentClip, currentTime, poseCurrent);
 
     // 更新混合时间
-    if (isBlending) {
-        blendTime += deltaTime;
-
-        if (blendTime >= blendDuration) {
-            isBlending = false;
-            nextClip = nullptr;
-        } else if (nextClip) {
-            // 采样下一个动画姿势用于混合
-            AnimationPose nextPose(poseCurrent.bonePoses.size());
-            double nextClipTime = blendTime * (nextClip->duration / blendDuration);
-            sampleClip(*nextClip, nextClipTime, nextPose);
-            
-            // 更新最终姿势，使用当前姿势和下一姿势进行混合
-            size_t boneCount = poseCurrent.bonePoses.size();
-            poseFinal.bonePoses.resize(boneCount);
-            
-            // 计算混合因子
-            double t = blendTime / blendDuration;
-            t = std::clamp(t, 0.0, 1.0);
-            
-            // 执行混合计算
-            for (size_t i = 0; i < boneCount; ++i) {
-                // 对每根骨骼进行混合
-                poseFinal.bonePoses[i].translation = posePrevious.bonePoses[i].translation * (1.0 - t) + nextPose.bonePoses[i].translation * t;
-                poseFinal.bonePoses[i].scale = posePrevious.bonePoses[i].scale * (1.0 - t) + nextPose.bonePoses[i].scale * t;
-                poseFinal.bonePoses[i].rotation = QQuaternion::slerp(posePrevious.bonePoses[i].rotation, nextPose.bonePoses[i].rotation, t);
-            }
-            
-            // 如果混合已完成，关闭混合模式
-            if (t >= 1.0) {
-                isBlending = false;
-                nextClip = nullptr;
-                poseFinal = nextPose;  // 完全切换到新姿势
-            }
-            
-            return;  // 已处理混合，直接返回
-        }
+    if (m_crossfader.isFading()) {
+        m_crossfader.update(deltaTime);
+        AnimationCrossfader::blendPoses(m_crossfader.getSnapshot(), poseCurrent, poseFinal, m_crossfader.getBlendWeight());
+    } else {
+        poseFinal = poseCurrent;
     }
-
-    // 不是混合状态，直接使用当前姿势
-    updateFinalPose();
 }
 
 void AnimationPlayer::triggerEvent(const std::string &eventName) {
@@ -171,8 +135,7 @@ void AnimationPlayer::triggerEvent(const std::string &eventName) {
         // 检查转换条件是否匹配当前事件
         if (trans.condition == eventName) {
             // 设置混合时间并执行状态转换
-            blendDuration = trans.blendDuration;
-            changeState(trans.toState);
+            changeState(trans.toState, trans.blendDuration);
             return;  // 找到匹配的转换后立即返回
         }
     }
@@ -202,6 +165,12 @@ void AnimationPlayer::sampleClip(const AnimationClip& clip, double time, Animati
 QVector3D AnimationPlayer::sampleVec3(const std::vector<KeyFrameVec3>& keys, double time){
     if (keys.empty()) return QVector3D();
     if (keys.size() == 1) return QVector3D(keys[0].x, keys[0].y, keys[0].z);
+
+    // 若时间早于第一个关键点，直接取最前
+    if (time <= keys.front().time) {
+        const auto& k = keys.front();
+        return QVector3D(k.x, k.y, k.z);
+    }
 
     // 若时间超过最后一个关键点，直接取最后
     if (time >= keys.back().time) {
@@ -233,6 +202,11 @@ QQuaternion AnimationPlayer::sampleQuat(const std::vector<KeyFrameQuat>& keys, d
     if (keys.size() == 1)
         return QQuaternion(keys[0].w, keys[0].x, keys[0].y, keys[0].z);
 
+    if (time <= keys.front().time) {
+        const auto& k = keys.front();
+        return QQuaternion(k.w, k.x, k.y, k.z);
+    }
+
     if (time >= keys.back().time) {
         const auto& k = keys.back();
         return QQuaternion(k.w, k.x, k.y, k.z);
@@ -254,66 +228,19 @@ QQuaternion AnimationPlayer::sampleQuat(const std::vector<KeyFrameQuat>& keys, d
     return QQuaternion(k.w, k.x, k.y, k.z);
 }
 
-void AnimationPlayer::updateFinalPose(){    // TODO:暂时采用相对比较简单的混合方式进行动作混合
-    // 若不在混合，直接使用当前姿势
-    if (!isBlending) {
-        poseFinal = poseCurrent;
-        return;
-    }
-
-    // 确保混合状态下姿势大小一致
-    if (posePrevious.bonePoses.size() != poseCurrent.bonePoses.size()) {
-        poseFinal = poseCurrent;
-        isBlending = false;
-        nextClip = nullptr;
-        return;
-    }
-
-    // 计算插值因子(0~1)
-    double t = blendDuration > 0 ? (blendTime / blendDuration) : 1.0;
-    t = std::clamp(t, 0.0, 1.0);    // 限制t的范围为[0,1]
-
-    size_t boneCount = poseCurrent.bonePoses.size();
-    poseFinal.bonePoses.resize(boneCount);
-
-    for (size_t i = 0; i < boneCount; ++i) {
-        const BonePose& a = posePrevious.bonePoses[i];  // 来源A
-        const BonePose& b = poseCurrent.bonePoses[i];   // 来源B
-        BonePose& out = poseFinal.bonePoses[i];
-
-        // T/S 使用线性插值
-        out.translation = a.translation * (1.0 - t) + b.translation * t;
-        out.scale = a.scale * (1.0 - t) + b.scale * t;
-
-        // 旋转使用 slerp
-        out.rotation = QQuaternion::slerp(a.rotation, b.rotation, t);
-    }
-
-    // 若 blending 完成，关闭混合模式
-    if (t >= 1.0) {
-        isBlending = false;
-        nextClip = nullptr;
-    }
-}
-
-void AnimationPlayer::changeState(const std::string& targetState){
+void AnimationPlayer::changeState(const std::string& targetState, double transitionDuration){
     if (currentStateName == targetState) return;
-    if (!myStateMachine) return;  // 添加安全检查
+    if (!myStateMachine) return;
 
-    // 查询目标状态
     auto it = myStateMachine->stateIndexMap.find(targetState);
     if (it == myStateMachine->stateIndexMap.end()) {
-        qDebug() << "[AnimationPlayer] State " << targetState << " not found";
+        qDebug() << "[AnimationPlayer] State " << targetState.c_str() << " not found";
         return;
     }
 
     int stateIndex = it->second;
     const AnimationState& target = myStateMachine->states[stateIndex];
 
-    // 保存当前动画姿势(用于混合)
-    posePrevious = poseFinal;
-
-    // 选择目标 clip
     selectRandomClipForState(target);
     if (currentClipIndex < 0 || currentClipIndex >= static_cast<int>(target.clipOptions.size())) {
         qDebug() << "[AnimationPlayer] clip index invalid for state" << targetState.c_str();
@@ -328,16 +255,14 @@ void AnimationPlayer::changeState(const std::string& targetState){
         return;
     }
 
-    // 设置 nextClip 和混合参数
-    nextClip = &clipIt->second;
-    nextStateName = targetState;
+    if (transitionDuration > 0.0 && currentClip != nullptr) {
+        m_crossfader.startFade(poseFinal, transitionDuration);
+    }
+    
+    qDebug() << "[AnimationPlayer] changeState from" << currentStateName.c_str() << "to" << targetState.c_str() << "blendDuration=" << transitionDuration;
 
-    blendTime = 0.0;
-    isBlending = (blendDuration > 0);
-
-    // 切换当前状态
     currentStateName = targetState;
-    currentClip = nextClip;
+    currentClip = &clipIt->second;
     currentTime = 0.0;
 }
 

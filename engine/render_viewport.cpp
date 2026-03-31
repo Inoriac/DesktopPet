@@ -113,6 +113,7 @@ void RenderViewport::paintGL() {
     // 计算deltatime（秒）
     qint64 msDelta = timer.restart();
     float deltaTime = static_cast<float>(msDelta) / 1000.0f;
+    if (deltaTime > 0.05f) deltaTime = 0.05f; // 防止系统阻塞或后台暂停导致的巨大deltaTime跳跃吞掉动画过程
 
     // 应用动画速度设置
     ConfigManager& config = ConfigManager::instance();
@@ -247,3 +248,5 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         return false;
     }
 }
+
+// Touch to force rebuild

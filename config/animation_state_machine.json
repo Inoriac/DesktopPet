@@ -2,16 +2,30 @@
   "defaultState": "Intro",
 
   "states": [
-    { "name": "Intro", "loop": true, "clipOptions": [] },
+    { "name": "Intro", "loop": false, "clipOptions": [] },
     { "name": "Idle", "loop": true, "clipOptions": [] },
     { "name": "Dance", "loop": true, "clipOptions": [] },
-    { "name": "Sitting", "loop": true, "clipOptions": [] },
+    { "name": "Sitting", "loop": true, "folder": "Sitting", "clipMatch": "SITTING|suwari|sippose", "clipOptions": [] },
     { "name": "Sleeping", "loop": true, "clipOptions": [] },
 
-    { "name": "TouchHead", "loop": false, "clipOptions": [] },
-    { "name": "TouchBody", "loop": false, "clipOptions": [] },
+    { "name": "TouchHead", "loop": false, "folder": "Face", "clipMatch": "HAIR_STROKE", "clipOptions": [] },
+    { "name": "TouchBody", "loop": false, "folder": "Face", "clipMatch": "INTIME", "clipOptions": [] },
     { "name": "TouchHandL", "loop": false, "clipOptions": [] },
-    { "name": "TouchHandR", "loop": false, "clipOptions": [] }
+    { "name": "TouchHandR", "loop": false, "clipOptions": [] },
+
+    { "name": "Eat", "loop": false, "clipOptions": [] },
+    { "name": "Drink", "loop": false, "clipOptions": [] },
+    { "name": "Happy", "loop": false, "folder": "Misc", "clipMatch": "HAPPY|SMILE|LAUGH", "clipOptions": [] },
+    { "name": "Cry", "loop": false, "clipOptions": [] },
+    { "name": "Angry", "loop": false, "clipOptions": [] },
+    { "name": "Fear", "loop": false, "clipOptions": [] },
+    { "name": "Hide", "loop": false, "clipOptions": [] },
+    { "name": "BigScreen", "loop": true, "folder": "BigScreen", "clipMatch": "BIG_SCREEN", "clipOptions": [] },
+    { "name": "ScreenSaver", "loop": true, "folder": "BigScreen", "clipMatch": "SCREEN_SAVER", "clipOptions": [] },
+    { "name": "Alarm", "loop": true, "folder": "BigScreen", "clipMatch": "ALARM", "clipOptions": [] },
+    { "name": "WindowSit", "loop": true, "folder": "Sitting", "clipMatch": "WINDOW_LAY", "clipOptions": [] },
+    { "name": "Drag", "loop": true, "folder": "Misc", "clipMatch": "DRAG", "clipOptions": [] },
+    { "name": "Talk", "loop": true, "clipOptions": [] }
   ],
 
   "transactions": [
@@ -31,6 +45,45 @@
     { "fromState": "TouchHead", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
     { "fromState": "TouchBody", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
     { "fromState": "TouchHandL", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-    { "fromState": "TouchHandR", "toState": "Idle", "condition": "", "blendDuration": 0.2 }
+    { "fromState": "TouchHandR", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Eat", "condition": "eat" },
+    { "fromState": "Eat", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Drink", "condition": "drink" },
+    { "fromState": "Drink", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Happy", "condition": "happy" },
+    { "fromState": "Happy", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Cry", "condition": "cry" },
+    { "fromState": "Cry", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Angry", "condition": "angry" },
+    { "fromState": "Angry", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Fear", "condition": "fear" },
+    { "fromState": "Fear", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
+
+    { "fromState": "Idle", "toState": "Hide", "condition": "hide" },
+    { "fromState": "Hide", "toState": "Idle", "condition": "show" },
+
+    { "fromState": "Idle", "toState": "BigScreen", "condition": "start_big_screen" },
+    { "fromState": "BigScreen", "toState": "Idle", "condition": "stop_big_screen" },
+
+    { "fromState": "Idle", "toState": "ScreenSaver", "condition": "start_screen_saver" },
+    { "fromState": "ScreenSaver", "toState": "Idle", "condition": "stop_screen_saver" },
+
+    { "fromState": "Idle", "toState": "Alarm", "condition": "start_alarm" },
+    { "fromState": "Alarm", "toState": "Idle", "condition": "stop_alarm" },
+
+    { "fromState": "Idle", "toState": "WindowSit", "condition": "window_sit" },
+    { "fromState": "WindowSit", "toState": "Idle", "condition": "window_stand" },
+
+    { "fromState": "Idle", "toState": "Drag", "condition": "start_drag", "blendDuration": 0.1 },
+    { "fromState": "Drag", "toState": "Idle", "condition": "stop_drag", "blendDuration": 0.2 },
+    
+    { "fromState": "Idle", "toState": "Talk", "condition": "start_talk" },
+    { "fromState": "Talk", "toState": "Idle", "condition": "stop_talk" }
   ]
 }

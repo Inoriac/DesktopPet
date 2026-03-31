@@ -55,34 +55,51 @@ void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrou
 }
 
 void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
-    contextMenu->exec(event->globalPos());
-}
-
-void PetWindow::setupContextMenu() {
-    contextMenu = new QMenu(this);
+    if (!contextMenu) {
+        contextMenu = new QMenu(this);
+    }
+    contextMenu->clear();
 
     QMenu* debugMenu = contextMenu->addMenu("调试动作 (Debug)");
 
-    // 我们需要在这里动态获取状态列表，或者硬编码几个常用状态
-    // 由于 setup 只运行一次，硬编码比较简单
-    QStringList debugStates = {"Intro", "Idle", "Dance", "Sitting", "Sleeping"};
+    if (renderViewport && renderViewport->getRenderEngine() && renderViewport->getRenderEngine()->getAnimationPlayer()) {
+        auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+        std::string currentState = player->getCurrentStateName();
+        std::string currentClip = player->getCurrentClipName();
+        
+        QAction* infoAction = debugMenu->addAction(QString("当前状态: %1\n当前动画: %2")
+                                                     .arg(currentState.c_str())
+                                                     .arg(currentClip.c_str()));
+        infoAction->setEnabled(false);
+        debugMenu->addSeparator();
 
-    for (const QString& state : debugStates) {
-        debugMenu->addAction(state, [this, state]() {
-            if (renderViewport && renderViewport->getRenderEngine()) {
-                auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
-                if (player) {
-                    qDebug() << "Debug: Switching to state" << state;
-                    player->changeState(state.toStdString());
+        auto* animManager = renderViewport->getAnimationManager();
+        if (animManager) {
+            const auto& stateMachine = animManager->getStateMachine();
+            for (const auto& state : stateMachine.states) {
+                QString stateName = QString::fromStdString(state.name);
+                QString text = stateName + QString(" (%1)").arg(state.clipOptions.size());
+                QAction* action = debugMenu->addAction(text, [this, stateName]() {
+                    if (renderViewport && renderViewport->getRenderEngine()) {
+                        auto* p = renderViewport->getRenderEngine()->getAnimationPlayer();
+                        if (p) {
+                            qDebug() << "Debug: Switching to state" << stateName;
+                            p->changeState(stateName.toStdString());
+                        }
+                    }
+                });
+                if (state.clipOptions.empty()) {
+                    action->setEnabled(false);
                 }
             }
-        });
+        }
+    } else {
+        debugMenu->addAction("未加载动画系统")->setEnabled(false);
     }
+
     contextMenu->addSeparator();
 
-
     closeAction = new QAction("关闭", this);
-
     contextMenu->addAction(closeAction);
 
     // 转发关闭信号至 mainwindow，确保状态一致与内存释放
@@ -90,6 +107,12 @@ void PetWindow::setupContextMenu() {
         qDebug() << "Requesting stop from context menu";
         emit requestStop();
     });
+
+    contextMenu->exec(event->globalPos());
+}
+
+void PetWindow::setupContextMenu() {
+    contextMenu = new QMenu(this);
 }
 
 bool PetWindow::canTriggerTouch() const {

@@ -25,7 +25,16 @@ void AnimationManager::initialize() {
 }
 
 bool AnimationManager::loadAnimations(const std::string& stateName, const Skeleton& skeleton) {
-    std::string animationsPath = ConfigManager::instance().getAnimationsBasePath().toStdString() + stateName;
+    // 找到指定状态
+    auto stateIt = stateMachine.stateIndexMap.find(stateName);
+    if (stateIt == stateMachine.stateIndexMap.end()) {
+        qWarning() << "State" << stateName.c_str() << "not found in state machine.";
+        return false;
+    }
+    AnimationState& targetState = stateMachine.states[stateIt->second];
+
+    std::string targetFolder = targetState.folder.empty() ? targetState.name : targetState.folder;
+    std::string animationsPath = ConfigManager::instance().getAnimationsBasePath().toStdString() + targetFolder;
     QDir animDir(QString::fromStdString(animationsPath));
     if (!animDir.exists()) {
         qWarning() << "Animation directory not found:" << animationsPath.c_str();
@@ -36,34 +45,46 @@ bool AnimationManager::loadAnimations(const std::string& stateName, const Skelet
     QStringList nameFilters;
     nameFilters << "*.gltf" << "*.glb";
 
-    std::vector<std::string> newlyLoadedClipNames;
+    std::vector<std::string> matchedClipNames;
     QDirIterator it(animDir.path(), nameFilters, QDir::Files, QDirIterator::Subdirectories);
     while (it.hasNext()) {
         QString filePath = it.next();
-        AnimationClip clip = importer->loadAnimation(filePath.toStdString(), skeleton.nameToIndex);
-        if (!clip.name.empty()) {
-            if (clips.find(clip.name) == clips.end()) {
-                newlyLoadedClipNames.push_back(clip.name); // <--- 修正2：记录新动画名
-                clips[clip.name] = std::move(clip);
+        QString fileName = QFileInfo(filePath).baseName();
+
+        // 匹配检查
+        if (!targetState.clipMatch.empty()) {
+            QStringList keywords = QString::fromStdString(targetState.clipMatch).split("|");
+            bool matched = false;
+            for (const QString& kw : keywords) {
+                if (fileName.contains(kw.trimmed(), Qt::CaseInsensitive)) {
+                    matched = true;
+                    break;
+                }
             }
+            if (!matched) continue;
+        }
+
+        std::string clipName = fileName.toStdString();
+        // 只有当 clips 中没有缓存时才进行加载
+        if (clips.find(clipName) == clips.end()) {
+            AnimationClip clip = importer->loadAnimation(filePath.toStdString(), skeleton.nameToIndex);
+            if (!clip.name.empty()) {
+                clipName = clip.name; // 更新为加载后的名字 (可能和文件名一致)
+                clips[clipName] = std::move(clip);
+                matchedClipNames.push_back(clipName);
+            }
+        } else {
+            matchedClipNames.push_back(clipName);
         }
     }
 
-    if (newlyLoadedClipNames.empty()) {
-        qDebug() << "No new animations loaded from:" << animDir.path();
+    if (matchedClipNames.empty()) {
+        qDebug() << "No matching animations found for state:" << stateName.c_str() << "in folder:" << animDir.path();
         return false;
     }
 
-    // 找到指定状态
-    auto stateIt = stateMachine.stateIndexMap.find(stateName);
-    if (stateIt == stateMachine.stateIndexMap.end()) {
-        qWarning() << "State" << stateName.c_str() << "not found in state machine after loading animations.";
-        return false;
-    }
-    AnimationState& targetState = stateMachine.states[stateIt->second];
-
-    for (const auto& clipName : newlyLoadedClipNames) { // <--- 修正3：只遍历新加载的动画
-        // 检查是否已存在相同的 clipOption (理论上不应该，因为是新加载的，但作为安全检查)
+    for (const auto& clipName : matchedClipNames) { 
+        // 检查是否已存在相同的 clipOption
         auto optionIt = std::find_if(targetState.clipOptions.begin(), targetState.clipOptions.end(),
                                    [&](const AnimationCLipOption& opt) {
                                        return opt.clipName == clipName;

@@ -59,6 +59,8 @@ struct AnimationCLipOption {
 // 单个状态定义
 struct AnimationState {
     std::string name;       // 状态名称
+    std::string folder;     // 绑定的子文件夹名，若为空则默认等于 name
+    std::string clipMatch;  // 绑定的动画文件名匹配字符串（支持'|'分隔）
     std::vector<AnimationCLipOption> clipOptions;   // 候选动画列表
     bool loop = true;       // 是否循环播放
 };

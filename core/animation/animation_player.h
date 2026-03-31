@@ -15,13 +15,14 @@
 
 #include "animation_types.h"
 #include "model_types.h"
+#include "animation_crossfader.h"
 // #include "animation_state_machine.h"
 
 /**
- * 动画播放器
+ * 动画播放�?
  * 播放 AnimationClip, 进行插值，计算当前骨骼姿势
  * 实现动画混合
- * 与状态机联动，处理过渡条件
+ * 与状态机联动，处理过渡条�?
  */
 class AnimationPlayer : public QObject {
     Q_OBJECT
@@ -34,13 +35,13 @@ public:
     // 更新动画
     void update(double deltaTime);
 
-    // 外部事件触发状态跳转
+    // 外部事件触发状态跳�?
     void triggerEvent(const std::string& eventName);
 
     // 获取最终的当前姿势(用于 skinning)
     const AnimationPose& currentPose() const { return poseFinal; }
 
-    // 获取当前帧数所有骨骼的最终变换矩阵 (用于 Shader)
+    // 获取当前帧数所有骨骼的最终变换矩�?(用于 Shader)
     std::vector<QMatrix4x4> getCurrentTransforms();
 
     // 获取当前所有骨骼的全局变换矩阵
@@ -51,25 +52,24 @@ public:
 
     // 获取当前状态名
     std::string getCurrentStateName() const { return currentStateName; }
+
+    std::string getCurrentClipName() const { return currentClip ? currentClip->name : "None"; }
     
     // 根据状态名切换动画
-    void changeState(const std::string& targetState);
+    void changeState(const std::string& targetState, double transitionDuration = 0.2);
 
 private:
     // 内部流程函数
-    // 依据时间从 AnimationClip 中采样 pose
+    // 依据时间�?AnimationClip 中采�?pose
     void sampleClip(const AnimationClip& clip, double time, AnimationPose& outPose);
 
-    // 根据关键帧数组进行插值（Vec3）
+    // 根据关键帧数组进行插值（Vec3�?
     QVector3D sampleVec3(const std::vector<KeyFrameVec3>& keys, double time);
 
-    // 插值旋转（Quat）
+    // 插值旋转（Quat�?
     QQuaternion sampleQuat(const std::vector<KeyFrameQuat>& keys, double time);
 
-    // 计算最终姿势（当前动画 + 混合）
-    void updateFinalPose();
-
-    // 随机挑选 clip
+    // 随机挑�?clip
     void selectRandomClipForState(const AnimationState& state);
 
 private:
@@ -78,23 +78,17 @@ private:
     const std::unordered_map<std::string, AnimationClip>* myClips = nullptr;
     const AnimationStateMachineDefinition* myStateMachine = nullptr;
 
-    // 当前状态
+    // 当前状�?
     std::string currentStateName;
     const AnimationClip* currentClip = nullptr;
     double currentTime = 0;   // 当前动画播放到的秒数
     int currentClipIndex = -1;
 
     // 混合过渡
-    bool isBlending = false;
-    std::string nextStateName;
-    const AnimationClip* nextClip = nullptr;
-    double blendDuration = 0;
-    double blendTime = 0;
-    int nextClipIndex = -1;
-
+    AnimationCrossfader m_crossfader;
+    
     AnimationPose poseCurrent;      // 当前姿势
-    AnimationPose posePrevious;     // 上一帧姿势
-    AnimationPose poseFinal;
+    AnimationPose poseFinal;        // 最终输出姿势
 
     // 缓存每一帧计算出的全局变换
     std::vector<QMatrix4x4> cachedGlobalTransforms;
