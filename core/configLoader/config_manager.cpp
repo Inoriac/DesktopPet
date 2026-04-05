@@ -78,7 +78,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                 QJsonObject obj = val.toObject();
 
                 std::string bone = obj["bone"].toString().toStdString();
-                float r = obj["radius"].toDouble(0.2);
+                float r = obj["hoverRadius"].toDouble(0.25);
                 std::string tag = obj["tag"].toString("Body").toStdString();
 
                 QVector3D offset(0,0,0);
@@ -89,8 +89,16 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                     }
                 }
 
+                QVector3D worldOffset(0,0,0);
+                if (obj.contains("worldOffset")) {
+                    QJsonArray off = obj["worldOffset"].toArray();
+                    if (off.size() >= 3) {
+                        worldOffset = QVector3D(off[0].toDouble(), off[1].toDouble(), off[2].toDouble());
+                    }
+                }
+
                 // 存入全局结构体
-                colliderConfigs.emplace_back(bone, r, offset, tag);
+                colliderConfigs.emplace_back(bone, r, offset, worldOffset, tag);
             }
         }
     }

@@ -64,10 +64,6 @@ void RenderEngine::initColliders() {
     const auto& configs = ConfigManager::instance().getColliderConfigs();
     for (const auto& config : configs) {
         BoneCollider collider = config; // 复制配置
-        // 注意：我们不再缩放半径。配置中的半径应被视为"世界空间/标准化空间"的单位。
-        // 由于我们将所有模型标准化为高度~3.0，配置的半径(如0.25)应直接适用，
-        // 而不应受到原始模型尺寸(modelScale)的影响。
-        // collider.radius *= this->modelScale; 
         boneColliders.push_back(collider);
     }
     qDebug() << "Initialized" << boneColliders.size() << "runtime colliders (Radius fixed, no scale applied)";
@@ -177,13 +173,6 @@ void RenderEngine::render() {
     // 光照与视角 - 使用当前的摄像机位置
     QVector3D viewPos = cameraEye;
 
-    // 光源围绕相机位置布置（始终跟随相机）
-    // 由于相机距离变远了(从4变到10)，光源也随之变远，因此需要大幅增强强度，或者让光源靠近模型
-    // 这里我们选择让光源尽量靠近模型(假设模型在 0,0,0 附近)，而不是跟随相机
-    // 或者我们保持跟随相机，但大幅增强强度
-    
-    // 方案B：让光源作为"摄影棚灯光"固定在模型周围，而非跟随相机
-    // 这样无论相机在哪，模型都被照亮
     QVector3D lightPositions[4] = {
         QVector3D(3.0f, 5.0f, 5.0f),    // 主光源：右前上方
         QVector3D(-3.0f, 5.0f, 5.0f),   // 辅光源：左前上方
@@ -579,284 +568,176 @@ std::string RenderEngine::checkHit(int viewX, int viewY) {
     float aspect = (viewportHeight > 0) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
     proj.perspective(45.0f, aspect, 0.1f, 100.0f); // 0.1f to match render
 
+    QMatrix4x4 vpMatrix = proj * view;
+
     int glY = viewportHeight - viewY; // OpenGL 的 Y 轴是反向的
 
-    // 生成射线
-    // 视口区域 (x, y, w, h)
-    QRect viewport(0, 0, viewportWidth, viewportHeight);
+    QVector2D mouseScreen(static_cast<float>(viewX), static_cast<float>(glY));
 
-    QVector3D nearPoint = QVector3D(viewX, glY, 0.0f).unproject(view, proj, viewport);
-    QVector3D farPoint = QVector3D(viewX, glY, 1.0f).unproject(view, proj, viewport);
-
-    QVector3D rayOrigin = nearPoint;
-    QVector3D rayDir = (farPoint - nearPoint).normalized();
-
-    // qDebug() << "=== CheckHit Debug ===";
-    // qDebug() << "Mouse:" << viewX << viewY << "GL_Y:" << glY;
-    // qDebug() << "Ray Origin:" << rayOrigin;
-    // qDebug() << "Ray Dir:" << rayDir;
-    // qDebug() << "Colliders Count:" << boneColliders.size();
-
-    // 遍历碰撞体
     // 获取骨骼数据
     const auto& boneTransforms = animationPlayer->getGlobalTransforms();
     const auto& skeleton = animationPlayer->getSkeleton();
 
-    // qDebug() << "Skeleton Bones Count:" << skeleton.nameToIndex.size();
-
-    float minDist = FLT_MAX;
+    float minDist2 = FLT_MAX;
     std::string hitTag = "";
-    constexpr float clickToleranceScale = 2.4f;
 
-    // 调试：打印所有骨骼名称(仅打印前5个作为示例)
-    // if (!skeleton.nameToIndex.empty()) {
-    //     qDebug() << "Example Bone Names in Skeleton:";
-    //     int count = 0;
-    //     for (const auto& pair : skeleton.nameToIndex) {
-    //         qDebug() << " - " << pair.first.c_str();
-    //         if (++count >= 5) break;
-    //     }
-    // }
+    // 用于自动将半径从世界空间投影到屏幕空间的辅助 lambda
+    auto worldToScreen = [&](const QVector3D& worldPos) -> QVector2D {
+        QVector4D clip = vpMatrix * QVector4D(worldPos, 1.0f);
+        if (std::fabs(clip.w()) < 1e-6f) return QVector2D(-1e6f, -1e6f); // 避免除以零
+        QVector3D ndc = clip.toVector3D() / clip.w();  // 透视除法：clip → NDC
+        float sx = (ndc.x() * 0.5f + 0.5f) * viewportWidth;
+        float sy = (ndc.y() * 0.5f + 0.5f) * viewportHeight;
+        return QVector2D(sx, sy);
+    };
+
+    // 相机右方向（用于投影半径）
+    QVector3D camRight = QVector3D::crossProduct(
+        (cameraCenter - cameraEye).normalized(),
+        QVector3D(0, 1, 0)
+    ).normalized();
 
     for (const auto& collider : boneColliders) {
-        // 查找骨骼索引
         int boneIndex = -1;
         auto it = skeleton.nameToIndex.find(collider.boneName);
-        
         if (it != skeleton.nameToIndex.end()) {
             boneIndex = it->second;
         } else {
-             // 智能匹配: 尝试寻找以 "Separator + Name" 结尾的骨骼
-             // 支持的分隔符: ':', '_', ' '
-             // 例如配置 "Head" 可以匹配 "mixamorig:Head", "Bip001_Head", "Character Head"
-             std::string targetName = collider.boneName;
-             for (const auto& pair : skeleton.nameToIndex) {
-                 const std::string& name = pair.first;
-                 // 检查是否以 targetName 结尾
-                 if (name.size() >= targetName.size() && 
-                     name.compare(name.size() - targetName.size(), targetName.size(), targetName) == 0) {
-                     
-                     // 如果长度相等，就是精确匹配（虽然前面已经check过了，但安全起见）
-                     if (name.size() == targetName.size()) {
-                         boneIndex = pair.second;
-                         break;
-                     }
-                     
-                     // 检查前一个字符是否为分隔符
-                     char separator = name[name.size() - targetName.size() - 1];
-                     if (separator == ':' || separator == '_' || separator == ' ') {
-                         boneIndex = pair.second;
-                         // qDebug() << "  -> Smart match resolved:" << collider.boneName.c_str() << "->" << name.c_str();
-                         break;
-                     }
-                 }
-             }
-        }
-
-        if (boneIndex == -1) {
-             // 最后的尝试：如果依然没找到，打印失败信息（降低日志频次，仅在第一次未找到时打印）
-             static std::set<std::string> missingBones;
-             if (missingBones.find(collider.boneName) == missingBones.end()) {
-                 // qDebug() << "  -> NOT FOUND in Skeleton (checked smart match):" << collider.boneName.c_str();
-                 missingBones.insert(collider.boneName);
-             }
-             continue; 
-        }
-
-        if (boneIndex >= boneTransforms.size()) {
-            // qDebug() << "  -> Index Out of Bounds!";
-            continue; // 安全检查
-        }
-
-        // 计算骨骼原点（模型空间）
-        QVector3D bonePosModel = boneTransforms[boneIndex] * QVector3D(0.0f, 0.0f, 0.0f);
-
-        // 自动寻找一个直接子骨骼，用于估计骨段方向和长度（适配 humanoid 通用骨架）
-        int childIndex = -1;
-        for (int i = 0; i < static_cast<int>(skeleton.bones.size()); ++i) {
-            if (skeleton.bones[i].parent == boneIndex) {
-                childIndex = i;
-                break;
-            }
-        }
-
-        QVector3D childPosModel = bonePosModel;
-        if (childIndex >= 0 && childIndex < static_cast<int>(boneTransforms.size())) {
-            childPosModel = boneTransforms[childIndex] * QVector3D(0.0f, 0.0f, 0.0f);
-        }
-
-        QVector3D parentPosModel = bonePosModel;
-        int parentIndex = skeleton.bones[boneIndex].parent;
-        if (parentIndex >= 0 && parentIndex < static_cast<int>(boneTransforms.size())) {
-            parentPosModel = boneTransforms[parentIndex] * QVector3D(0.0f, 0.0f, 0.0f);
-        }
-
-        // 先按配置偏移（骨骼局部方向）
-        QVector3D sphereCenterModel = boneTransforms[boneIndex] * collider.offset;
-
-        // 再做 humanoid 自适应修正，减少不同来源骨架的偏移误差
-        float boneLenToChild = (childPosModel - bonePosModel).length();
-        float boneLenToParent = (bonePosModel - parentPosModel).length();
-
-        if (collider.tag == "Head") {
-            // 头部常以颈部到头部方向作为“上方”估计，中心稍微抬高
-            QVector3D upDir = bonePosModel - parentPosModel;
-            if (upDir.lengthSquared() > 1e-6f) {
-                upDir.normalize();
-                sphereCenterModel = bonePosModel + upDir * (boneLenToParent > 1e-4f ? boneLenToParent * 0.35f : 0.12f);
-            } else {
-                sphereCenterModel = bonePosModel;
-            }
-        } else if (collider.tag == "Body") {
-            // 躯干取骨骼到子骨骼方向的中上部，落点更接近胸腔
-            if (boneLenToChild > 1e-4f) {
-                sphereCenterModel = bonePosModel + (childPosModel - bonePosModel) * 0.35f;
-            } else {
-                sphereCenterModel = bonePosModel;
-            }
-        } else if (collider.tag == "LeftHand" || collider.tag == "RightHand") {
-            // 手部通常沿掌骨方向略向前，减少点到手腕却触发不到的情况
-            if (boneLenToChild > 1e-4f) {
-                sphereCenterModel = bonePosModel + (childPosModel - bonePosModel) * 0.25f;
-            } else {
-                sphereCenterModel = bonePosModel;
-            }
-        } else {
-            sphereCenterModel = bonePosModel;
-        }
-
-        // 半径保持配置值，仅做统一点击容差放大，避免骨段估计异常导致“全屏命中”
-        float radius = collider.radius;
-        float testRadius = radius * clickToleranceScale;
-
-        // debug: 使用主中心计算点到射线距离，观察偏差趋势
-        // QVector3D debugCenterWorld = currentModelMatrix * sphereCenterModel;
-        // QVector3D pointToOrigin = debugCenterWorld - rayOrigin;
-        // float perpendicularDist = pointToOrigin.crossProduct(pointToOrigin, rayDir).length();
-        
-        // 仅针对 Head 打印详细调试信息，或者总是显示
-        // if (collider.boneName == "Head" || collider.boneName == "Spine") {
-        //      qDebug() << "  [Detail] Bone:" << collider.boneName.c_str()
-        //               << "WorldPos:" << debugCenterWorld
-        //               << "Radius:" << radius
-        //               << "TestRadius:" << testRadius
-        //               << "DistToRay:" << perpendicularDist
-        //               << "(Hit if <" << testRadius << ")";
-        // }
-
-        if (collider.tag == "Body") {
-            // Body 使用胶囊体：优先 bone->child，无 child 时退化为 parent->bone
-            QVector3D capA = bonePosModel;
-            QVector3D capB = childPosModel;
-            if (boneLenToChild <= 1e-4f && boneLenToParent > 1e-4f) {
-                capA = parentPosModel;
-                capB = bonePosModel;
-            }
-
-            QVector3D capAWorld = currentModelMatrix * capA;
-            QVector3D capBWorld = currentModelMatrix * capB;
-
-            float dist = 0.0f;
-            if (intersectRayCapsule(rayOrigin, rayDir, capAWorld, capBWorld, testRadius, dist)) {
-                qDebug() << "HIT!" << collider.tag.c_str() << "Dist:" << dist;
-                if (dist < minDist) {
-                    minDist = dist;
-                    hitTag = collider.tag;
+            std::string targetName = collider.boneName;
+            for (const auto& pair : skeleton.nameToIndex) {
+                const std::string& name = pair.first;
+                if (name.size() >= targetName.size() &&
+                    name.compare(name.size() - targetName.size(), targetName.size(), targetName) == 0) {
+                    if (name.size() == targetName.size()) {
+                        boneIndex = pair.second;
+                        break;
+                    }
+                    char separator = name[name.size() - targetName.size() - 1];
+                    if (separator == ':' || separator == '_' || separator == ' ') {
+                        boneIndex = pair.second;
+                        break;
+                    }
                 }
             }
-        } else {
-            QVector3D sphereCenterWorld = currentModelMatrix * sphereCenterModel;
-            float dist = 0.0f;
-            if (intersectRaySphere(rayOrigin, rayDir, sphereCenterWorld, testRadius, dist)) {
-                qDebug() << "HIT!" << collider.tag.c_str() << "Dist:" << dist;
-                if (dist < minDist) {
-                    minDist = dist;
-                    hitTag = collider.tag;
-                }
+        }
+        if (boneIndex == -1 || boneIndex >= static_cast<int>(boneTransforms.size())) continue;
+
+        // 计算骨骼在世界空间的位置
+        // 骨骼本地偏移（跟随骨骼旋转）
+        QVector3D boneWorldPos = currentModelMatrix * (boneTransforms[boneIndex] * collider.offset);
+        // 加上世界空间固定偏移（不跟随骨骼旋转）
+        boneWorldPos += collider.worldOffset;
+
+        // 投影到 2D 屏幕空间
+        QVector2D boneScreen = worldToScreen(boneWorldPos);
+
+        // 投影半径：世界空间 hoverRadius 在屏幕上有多大
+        QVector2D edgeScreen = worldToScreen(boneWorldPos + camRight * collider.hoverRadius);
+        float screenRadius2 = (boneScreen - edgeScreen).lengthSquared();
+
+        // 2D 距离判断
+        float dist2 = (mouseScreen - boneScreen).lengthSquared();
+
+        // === DEBUG: 打印每个碰撞体的投影信息 ===
+        float screenRadius = std::sqrt(screenRadius2);
+        float dist = std::sqrt(dist2);
+        qDebug().noquote() << QString("  [HitCheck] %1 (tag:%2) boneIdx:%3 worldPos:(%4,%5,%6) screenPos:(%7,%8) mouse:(%9,%10) screenR:%11px dist:%12px %13")
+            .arg(collider.boneName.c_str())
+            .arg(collider.tag.c_str())
+            .arg(boneIndex)
+            .arg(boneWorldPos.x(), 0, 'f', 3).arg(boneWorldPos.y(), 0, 'f', 3).arg(boneWorldPos.z(), 0, 'f', 3)
+            .arg(boneScreen.x(), 0, 'f', 1).arg(boneScreen.y(), 0, 'f', 1)
+            .arg(mouseScreen.x(), 0, 'f', 1).arg(mouseScreen.y(), 0, 'f', 1)
+            .arg(screenRadius, 0, 'f', 1)
+            .arg(dist, 0, 'f', 1)
+            .arg(dist2 <= screenRadius2 ? "HIT" : "miss");
+
+        if (dist2 <= screenRadius2) {
+            // 命中，取最近的（屏幕距离最近 = 最精确匹配）
+            if (dist2 < minDist2) {
+                minDist2 = dist2;
+                hitTag = collider.tag;
             }
         }
     }
-
-    // qDebug() << "Final Hit:" << (hitTag.empty() ? "None" : hitTag.c_str());
-
     return hitTag;
 }
 
-bool RenderEngine::intersectRaySphere(const QVector3D &rayOrigin, const QVector3D &rayDir, const QVector3D &sphereCenter, float sphereRadius, float &outDist) {
-    QVector3D m = rayOrigin - sphereCenter;
-    float b = QVector3D::dotProduct(m, rayDir);
-    float c = QVector3D::dotProduct(m, m) - sphereRadius * sphereRadius;
-    // 射线起点在球外且指向远离球心的方向
-    if (c > 0.0f && b > 0.0f) return false;
-
-    float discr = b * b - c;
-    if (discr < 0.0f) return false;
-
-    // 计算最近交点
-    float t = -b - sqrt(discr);
-    if (t < 0.0f) t = 0.0f;
-
-    outDist = t;
-    return true;
-}
-
-bool RenderEngine::intersectRayCapsule(const QVector3D &rayOrigin, const QVector3D &rayDir,
-                                       const QVector3D &capsuleA, const QVector3D &capsuleB,
-                                       float capsuleRadius, float &outDist) {
-    QVector3D ab = capsuleB - capsuleA;
-    float abLenSq = QVector3D::dotProduct(ab, ab);
-
-    // 退化为球体
-    if (abLenSq < 1e-8f) {
-        return intersectRaySphere(rayOrigin, rayDir, capsuleA, capsuleRadius, outDist);
-    }
-
-    QVector3D w0 = rayOrigin - capsuleA;
-    float a = QVector3D::dotProduct(rayDir, rayDir); // 理论上为1
-    float b = QVector3D::dotProduct(rayDir, ab);
-    float c = abLenSq;
-    float d = QVector3D::dotProduct(rayDir, w0);
-    float e = QVector3D::dotProduct(ab, w0);
-
-    float denom = a * c - b * b;
-    float tRay = 0.0f;
-    float tSeg = 0.0f;
-
-    if (std::fabs(denom) > 1e-8f) {
-        tRay = (b * e - c * d) / denom;
-        tSeg = (a * e - b * d) / denom;
-    } else {
-        // 近平行：固定在射线起点投影
-        tRay = 0.0f;
-        tSeg = e / c;
-    }
-
-    // 约束到有效区间
-    if (tRay < 0.0f) tRay = 0.0f;
-    if (tSeg < 0.0f) tSeg = 0.0f;
-    if (tSeg > 1.0f) tSeg = 1.0f;
-
-    // 约束 segment 后重新计算 ray 参数
-    tRay = -(d + b * tSeg) / a;
-    if (tRay < 0.0f) {
-        tRay = 0.0f;
-        tSeg = e / c;
-        if (tSeg < 0.0f) tSeg = 0.0f;
-        if (tSeg > 1.0f) tSeg = 1.0f;
-    }
-
-    QVector3D closestRay = rayOrigin + rayDir * tRay;
-    QVector3D closestSeg = capsuleA + ab * tSeg;
-    QVector3D delta = closestRay - closestSeg;
-    float distSq = QVector3D::dotProduct(delta, delta);
-
-    if (distSq <= capsuleRadius * capsuleRadius) {
-        outDist = tRay;
-        return true;
-    }
-
-    return false;
-}
+// bool RenderEngine::intersectRaySphere(const QVector3D &rayOrigin, const QVector3D &rayDir, const QVector3D &sphereCenter, float sphereRadius, float &outDist) {
+//     QVector3D m = rayOrigin - sphereCenter;
+//     float b = QVector3D::dotProduct(m, rayDir);
+//     float c = QVector3D::dotProduct(m, m) - sphereRadius * sphereRadius;
+//     // 射线起点在球外且指向远离球心的方向
+//     if (c > 0.0f && b > 0.0f) return false;
+//
+//     float discr = b * b - c;
+//     if (discr < 0.0f) return false;
+//
+//     // 计算最近交点
+//     float t = -b - sqrt(discr);
+//     if (t < 0.0f) t = 0.0f;
+//
+//     outDist = t;
+//     return true;
+// }
+//
+// bool RenderEngine::intersectRayCapsule(const QVector3D &rayOrigin, const QVector3D &rayDir,
+//                                        const QVector3D &capsuleA, const QVector3D &capsuleB,
+//                                        float capsuleRadius, float &outDist) {
+//     QVector3D ab = capsuleB - capsuleA;
+//     float abLenSq = QVector3D::dotProduct(ab, ab);
+//
+//     // 退化为球体
+//     if (abLenSq < 1e-8f) {
+//         return intersectRaySphere(rayOrigin, rayDir, capsuleA, capsuleRadius, outDist);
+//     }
+//
+//     QVector3D w0 = rayOrigin - capsuleA;
+//     float a = QVector3D::dotProduct(rayDir, rayDir); // 理论上为1
+//     float b = QVector3D::dotProduct(rayDir, ab);
+//     float c = abLenSq;
+//     float d = QVector3D::dotProduct(rayDir, w0);
+//     float e = QVector3D::dotProduct(ab, w0);
+//
+//     float denom = a * c - b * b;
+//     float tRay = 0.0f;
+//     float tSeg = 0.0f;
+//
+//     if (std::fabs(denom) > 1e-8f) {
+//         tRay = (b * e - c * d) / denom;
+//         tSeg = (a * e - b * d) / denom;
+//     } else {
+//         // 近平行：固定在射线起点投影
+//         tRay = 0.0f;
+//         tSeg = e / c;
+//     }
+//
+//     // 约束到有效区间
+//     if (tRay < 0.0f) tRay = 0.0f;
+//     if (tSeg < 0.0f) tSeg = 0.0f;
+//     if (tSeg > 1.0f) tSeg = 1.0f;
+//
+//     // 约束 segment 后重新计算 ray 参数
+//     tRay = -(d + b * tSeg) / a;
+//     if (tRay < 0.0f) {
+//         tRay = 0.0f;
+//         tSeg = e / c;
+//         if (tSeg < 0.0f) tSeg = 0.0f;
+//         if (tSeg > 1.0f) tSeg = 1.0f;
+//     }
+//
+//     QVector3D closestRay = rayOrigin + rayDir * tRay;
+//     QVector3D closestSeg = capsuleA + ab * tSeg;
+//     QVector3D delta = closestRay - closestSeg;
+//     float distSq = QVector3D::dotProduct(delta, delta);
+//
+//     if (distSq <= capsuleRadius * capsuleRadius) {
+//         outDist = tRay;
+//         return true;
+//     }
+//
+//     return false;
+// }
 
 void RenderEngine::clearScene() {
     if (!gl) return;

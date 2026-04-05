@@ -19,32 +19,37 @@
     "colliders": [
       {
         "bone": "Head",
-        "radius": 0.25,
-        "offset": [0.0, 0.1, 0.0],
+        "hoverRadius": 0.35,
+        "offset": [0.0, 0.15, 0.0],
+        "worldOffset": [0.0, 0.0, 0.0],
         "tag": "Head"
       },
       {
         "bone": "Spine",
-        "radius": 0.3,
+        "hoverRadius": 0.45,
         "offset": [0.0, 0.0, 0.0],
+        "worldOffset": [0.0, 0.0, 0.0],
         "tag": "Body"
       },
       {
         "bone": "Hips",
-        "radius": 0.3,
+        "hoverRadius": 0.40,
         "offset": [0.0, 0.0, 0.0],
+        "worldOffset": [0.0, 0.0, 0.0],
         "tag": "Body"
       },
       {
         "bone": "LeftHand",
-        "radius": 0.15,
+        "hoverRadius": 0.20,
         "offset": [0.0, 0.0, 0.0],
+        "worldOffset": [0.0, 0.0, 0.0],
         "tag": "HandL"
       },
       {
         "bone": "RightHand",
-        "radius": 0.15,
+        "hoverRadius": 0.20,
         "offset": [0.0, 0.0, 0.0],
+        "worldOffset": [0.0, 0.0, 0.0],
         "tag": "HandR"
       }
     ]

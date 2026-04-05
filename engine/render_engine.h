@@ -60,11 +60,11 @@ public:
 
     // 碰撞检测：根据屏幕坐标检测是否点击到模型，返回对应的交互标签
     std::string checkHit(int viewX, int viewY);
-    bool intersectRaySphere(const QVector3D& rayOrigin, const QVector3D& rayDir,
-                            const QVector3D& sphereCenter, float sphereRadius, float& outDist);
-    bool intersectRayCapsule(const QVector3D& rayOrigin, const QVector3D& rayDir,
-                             const QVector3D& capsuleA, const QVector3D& capsuleB,
-                             float capsuleRadius, float& outDist);
+    // bool intersectRaySphere(const QVector3D& rayOrigin, const QVector3D& rayDir,
+    //                         const QVector3D& sphereCenter, float sphereRadius, float& outDist);
+    // bool intersectRayCapsule(const QVector3D& rayOrigin, const QVector3D& rayDir,
+    //                          const QVector3D& capsuleA, const QVector3D& capsuleB,
+    //                          float capsuleRadius, float& outDist);
 
 private:
     QOpenGLFunctions_3_3_Core *gl {nullptr};    // 用于提供 OpenGL 的服务接口

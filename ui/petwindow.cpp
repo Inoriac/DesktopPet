@@ -139,8 +139,36 @@ void PetWindow::triggerTouchReaction(const std::string& tag) {
         auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
         if (player) {
             std::string targetState = "Touch" + tag;
-            qDebug() << "Triggering touch reaction:" << targetState.c_str();
-            player->changeState(targetState);
+
+            // === DEBUG: 暂时禁用状态转换，仅输出诊断信息 ===
+            qDebug() << "=== Touch Debug Info ===";
+            qDebug() << "  Hit tag:" << tag.c_str();
+            qDebug() << "  Would transition to:" << targetState.c_str();
+            qDebug() << "  Current state:" << player->getCurrentStateName().c_str();
+            qDebug() << "  Current clip:" << player->getCurrentClipName().c_str();
+
+            // 打印所有碰撞体的骨骼绑定情况
+            auto* engine = renderViewport->getRenderEngine();
+            const auto& skeleton = player->getSkeleton();
+            qDebug() << "  --- Bone binding check ---";
+            qDebug() << "  Total bones in skeleton:" << skeleton.bones.size();
+            for (const auto& pair : skeleton.nameToIndex) {
+                // 只打印可能相关的骨骼（包含配置中常用关键词的）
+                const std::string& name = pair.first;
+                if (name.find("Head") != std::string::npos ||
+                    name.find("Spine") != std::string::npos ||
+                    name.find("Hips") != std::string::npos ||
+                    name.find("Hand") != std::string::npos ||
+                    name.find("head") != std::string::npos ||
+                    name.find("spine") != std::string::npos ||
+                    name.find("hand") != std::string::npos) {
+                    qDebug() << "    Bone:" << name.c_str() << " -> index:" << pair.second;
+                }
+            }
+            qDebug() << "=== End Touch Debug ===";
+
+            // TODO: 调试完毕后取消下面的注释以恢复状态转换
+            // player->changeState(targetState);
         }
     }
 }
