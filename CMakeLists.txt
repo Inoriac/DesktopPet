@@ -67,6 +67,11 @@ set(CORE_SOURCES
     core/animation/animation_player.h
     core/animation/animation_crossfader.cpp
     core/animation/animation_crossfader.h
+        core/ai/ai_tool.h
+        core/ai/tool_registry.cpp
+        core/ai/tool_registry.h
+        core/ai/tools/animation_tools.h
+        core/ai/tools/environment_tools.h
 )
 
 set(ENGINE_SOURCES
@@ -93,6 +98,7 @@ set(INCLUDE_SOURCES
     include/material_types.h
     include/model_types.h
     include/render_types.h
+        include/ai_types.h
 )
 
 set(TINYGLTF_SOURCES
@@ -190,6 +196,36 @@ target_link_libraries(statistic_tests
 
 enable_testing()
 add_test(NAME StatisticTests COMMAND statistic_tests)
+
+# ---- Tool 系统测试 ----
+# 轻量测试，不依赖 OpenGL / 模型文件
+add_executable(tool_tests
+        tests/test_tool_registry.cpp
+        core/ai/tool_registry.cpp
+        core/ai/tool_registry.h
+        core/ai/ai_tool.h
+        core/ai/tools/environment_tools.h
+        core/ai/tools/animation_tools.h
+        include/ai_types.h
+        ${STATISTIC_SOURCES}
+)
+
+target_include_directories(tool_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/tools
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/entity
+)
+
+target_link_libraries(tool_tests
+        Qt::Core
+        Qt::Test
+)
+
+add_test(NAME ToolTests COMMAND tool_tests)
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----
