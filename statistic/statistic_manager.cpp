@@ -83,6 +83,7 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
         }
 
         stats->startTime = QDateTime::currentDateTime();
+        stats->lastActiveTime = stats->startTime;
         stats->sessionCount++;
         stats->isRunning = true;
 
@@ -100,6 +101,7 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
             stats->startTime = QDateTime(); // 清空，标记会话结束
             stats->isRunning = false;
         }
+        stats->lastActiveTime = QDateTime::currentDateTime();
 
         emit statisticsUpdated(event.petName, *stats);
     });
@@ -161,6 +163,9 @@ void StatisticManager::recordPetStop(const QString& petName) {
     }
     StatisticEvent event = StatisticEvent(StatisticEventType::PET_STOP, petName, {});
     emitStatisticEvent(event);
+
+    // 停止事件后立即落盘，便于快速验证运行时长统计。
+    saveStatistics();
 }
 
 void StatisticManager::recordTouchInteraction(const QString& petName, const QString& areaName) {
@@ -170,6 +175,32 @@ void StatisticManager::recordTouchInteraction(const QString& petName, const QStr
     }
     StatisticEvent event = StatisticEvent(StatisticEventType::BODY_PART_TOUCH, petName, areaName);
     emitStatisticEvent(event);
+}
+
+void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& usage) {
+    const QString effectivePetName = petName.isEmpty() ? "AI_GLOBAL" : petName;
+
+    PetStatistics* stats = nullptr;
+    {
+        QMutexLocker locker(&dataMutex);
+        ensurePetStatistics(effectivePetName);
+        stats = petStatisticsMap[effectivePetName];
+
+        stats->llmCallCount += 1;
+        stats->lastActiveTime = QDateTime::currentDateTime();
+        stats->llmPromptTokens += usage.promptTokens;
+        stats->llmCompletionTokens += usage.completionTokens;
+        stats->llmTotalTokens += usage.totalTokens;
+        stats->llmReasoningTokens += usage.reasoningTokens;
+        stats->llmCachedTokens += usage.cachedTokens;
+        stats->llmPromptCacheHitTokens += usage.promptCacheHitTokens;
+        stats->llmPromptCacheMissTokens += usage.promptCacheMissTokens;
+    }
+
+    emit statisticsUpdated(effectivePetName, *stats);
+
+    // LLM usage 发生后立即落盘，便于验证 token 统计持久化。
+    saveStatistics();
 }
 
 PetStatistics* StatisticManager::getPetStatistics(const QString& petName)
@@ -276,6 +307,10 @@ QString StatisticManager::eventTypeToString(StatisticEventType type) {
 }
 
 void StatisticManager::saveToFile() {
+    if (filePath.isEmpty()) {
+        return;
+    }
+
     QFile file(filePath);
     if (file.open(QIODevice::WriteOnly)) {
         QJsonDocument doc(statisticsToJson());
@@ -285,6 +320,10 @@ void StatisticManager::saveToFile() {
 }
 
 void StatisticManager::loadFromFile() {
+    if (filePath.isEmpty()) {
+        return;
+    }
+
     QFile file(filePath);
     if (file.open(QIODevice::ReadOnly)) {
         QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
@@ -309,6 +348,14 @@ QJsonObject StatisticManager::statisticsToJson() {
         petObj["lastActiveTime"] = stats->lastActiveTime.toString(Qt::ISODate);
         petObj["totalRuntimeMs"] = stats->totalRuntimeMs;
         petObj["sessionRuntimeMs"] = stats->sessionRuntimeMs;
+        petObj["llmCallCount"] = static_cast<qint64>(stats->llmCallCount);
+        petObj["llmPromptTokens"] = static_cast<qint64>(stats->llmPromptTokens);
+        petObj["llmCompletionTokens"] = static_cast<qint64>(stats->llmCompletionTokens);
+        petObj["llmTotalTokens"] = static_cast<qint64>(stats->llmTotalTokens);
+        petObj["llmReasoningTokens"] = static_cast<qint64>(stats->llmReasoningTokens);
+        petObj["llmCachedTokens"] = static_cast<qint64>(stats->llmCachedTokens);
+        petObj["llmPromptCacheHitTokens"] = static_cast<qint64>(stats->llmPromptCacheHitTokens);
+        petObj["llmPromptCacheMissTokens"] = static_cast<qint64>(stats->llmPromptCacheMissTokens);
 
         // 触摸区域统计
         QJsonObject touchAreaObj;
@@ -339,6 +386,14 @@ void StatisticManager::jsonToStatistics(const QJsonObject &json) {
         stats->lastActiveTime = QDateTime::fromString(petObj["lastActiveTime"].toString(), Qt::ISODate);
         stats->totalRuntimeMs = petObj["totalRuntimeMs"].toVariant().toLongLong();
         stats->sessionRuntimeMs = petObj["sessionRuntimeMs"].toVariant().toLongLong();
+        stats->llmCallCount = petObj["llmCallCount"].toVariant().toLongLong();
+        stats->llmPromptTokens = petObj["llmPromptTokens"].toVariant().toLongLong();
+        stats->llmCompletionTokens = petObj["llmCompletionTokens"].toVariant().toLongLong();
+        stats->llmTotalTokens = petObj["llmTotalTokens"].toVariant().toLongLong();
+        stats->llmReasoningTokens = petObj["llmReasoningTokens"].toVariant().toLongLong();
+        stats->llmCachedTokens = petObj["llmCachedTokens"].toVariant().toLongLong();
+        stats->llmPromptCacheHitTokens = petObj["llmPromptCacheHitTokens"].toVariant().toLongLong();
+        stats->llmPromptCacheMissTokens = petObj["llmPromptCacheMissTokens"].toVariant().toLongLong();
 
         // 加载触摸区域统计
         QJsonObject touchAreaObj = petObj["touchAreaCount"].toObject();

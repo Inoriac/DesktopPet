@@ -8,6 +8,10 @@
 #include <QMenu>
 #include <QAction>
 #include <QElapsedTimer>
+#include <memory>
+
+#include "ai/ai_brain.h"
+#include "ai/tool_registry.h"
 
 class RenderViewport;
 
@@ -18,7 +22,7 @@ public:
     explicit PetWindow(const QString modelName, QWidget *parent = nullptr);
     ~PetWindow();
 
-    void applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough);
+    void applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough, bool aiEnabled = false);
     bool loadModel(const QString &modelPath);
     
     // 动画控制方法
@@ -53,6 +57,7 @@ private:
     void setupRenderViewport();
     void setupContextMenu();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
+    void setupAiBrain();
 
     void unloadModel();
 
@@ -82,6 +87,10 @@ private:
     int sizePercent;
     bool alwaysOnTop;
     bool clickThrough;
+    bool aiEnabled = false;
+
+    std::unique_ptr<AIBrain> aiBrain;
+    std::unique_ptr<ToolRegistry> aiToolRegistry;
 };
 
 #endif //DESKTOP_PET_PETWINDOW_H

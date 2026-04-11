@@ -46,6 +46,16 @@ struct PetStatistics {
     // 会话统计 - 使用记录
     int sessionCount = 0;            // 使用次数
 
+    // LLM 统计
+    qint64 llmCallCount = 0;
+    qint64 llmPromptTokens = 0;
+    qint64 llmCompletionTokens = 0;
+    qint64 llmTotalTokens = 0;
+    qint64 llmReasoningTokens = 0;
+    qint64 llmCachedTokens = 0;
+    qint64 llmPromptCacheHitTokens = 0;
+    qint64 llmPromptCacheMissTokens = 0;
+
     PetStatistics(const QString& name) : petName(name) {}
 };
 

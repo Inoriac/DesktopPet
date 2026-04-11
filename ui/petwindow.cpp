@@ -13,6 +13,8 @@
 
 #include "render_engine.h"
 #include "configLoader/config_manager.h"
+#include "ai/tools/animation_tools.h"
+#include "ai/tools/environment_tools.h"
 
 PetWindow::PetWindow(const QString modelName, QWidget *parent)
     : QWidget(parent)
@@ -27,6 +29,14 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     setupWindow();
     setupRenderViewport();
     setupContextMenu();
+
+    aiBrain = std::make_unique<AIBrain>(this);
+    connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
+        qDebug() << "[AIBrain] assistant response:" << content;
+    });
+    connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
+        qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
+    });
 }
 
 PetWindow::~PetWindow() {
@@ -38,10 +48,11 @@ PetWindow::~PetWindow() {
     }
 }
 
-void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough) {
+void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough, bool aiEnabled) {
     this->sizePercent = sizePercent;
     this->alwaysOnTop = alwaysOnTop;
     this->clickThrough = clickThrough;
+    this->aiEnabled = aiEnabled;
 
     // 更新窗口标志
     updateWindowFlags(alwaysOnTop, clickThrough);
@@ -52,6 +63,16 @@ void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrou
     resize(newSize, newSize);
 
     qDebug() << "PetWindow setting applied - size:" << newSize;
+    qDebug() << "AI enabled:" << this->aiEnabled;
+
+    if (aiBrain) {
+        aiBrain->setEnabled(this->aiEnabled);
+        if (this->aiEnabled) {
+            aiBrain->start();
+        } else {
+            aiBrain->stop();
+        }
+    }
 }
 
 void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
@@ -254,6 +275,9 @@ void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
 
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
+    if (aiBrain) {
+        aiBrain->stop();
+    }
     unloadModel();
     emit aboutToClose();  // 可以发送信号给 MainWindow
     event->accept();
@@ -341,7 +365,35 @@ void PetWindow::setupRenderViewport() {
         if (!renderViewport->loadModel(Pet::instance().getModelPath(modelName))) {
             qWarning() << "Failed to load model:" << Pet::instance().getModelPath(modelName);
         }
+
+        setupAiBrain();
     });
+}
+
+void PetWindow::setupAiBrain() {
+    if (!aiBrain || !renderViewport || !renderViewport->getRenderEngine()) {
+        return;
+    }
+
+    auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+    if (!player) {
+        qWarning() << "[AIBrain] AnimationPlayer not ready, skip setup";
+        return;
+    }
+
+    aiToolRegistry = std::make_unique<ToolRegistry>();
+    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
+    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
+    aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
+
+    aiBrain->setPetName(modelName);
+    aiBrain->setToolRegistry(aiToolRegistry.get());
+    aiBrain->setEnabled(aiEnabled);
+
+    if (aiEnabled) {
+        aiBrain->start();
+        qDebug() << "[AIBrain] started for pet:" << modelName;
+    }
 }
 
 void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {

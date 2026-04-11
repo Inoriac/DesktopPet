@@ -16,6 +16,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QCheckBox>
+#include <QString>
 
 #include "petwindow.h"
 
@@ -59,6 +60,7 @@ private:
 
     // PetWindow
     PetWindow *activePetWindow {nullptr};
+    QString activePetName;
 
     // 设置区域
     QGroupBox *settingsGroup{};
@@ -67,6 +69,7 @@ private:
     QSpinBox *sizeSpinBox{};
     QCheckBox *alwaysOnTopCheckBox{};
     QCheckBox *clickThroughCheckBox{};
+    QCheckBox *aiEnabledCheckBox{};
     QCheckBox *soundEnabledCheckBox{};
     QSlider *volumeSlider{};
     QLabel *volumeLabel{};

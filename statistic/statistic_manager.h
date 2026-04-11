@@ -15,6 +15,7 @@
 #include <functional>
 
 #include "../include/statistic_types.h"
+#include "../include/ai_types.h"
 
 class StatisticManager : public QObject {
     Q_OBJECT
@@ -40,6 +41,7 @@ public:
     void recordPetStart(const QString& petName);
     void recordPetStop(const QString& petName);
     void recordTouchInteraction(const QString& petName, const QString& areaName);
+    void recordLlmUsage(const QString& petName, const LlmUsage& usage);
     // void recordAnimationPlay(const QString& petName, const QString& animationName, qint64 durationMs = 0);
 
     // 数据查询接口

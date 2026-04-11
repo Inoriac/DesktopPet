@@ -5,6 +5,33 @@
 #include "config_manager.h"
 #include <QDir>
 #include <QJsonArray>
+#include <QFile>
+#include <QDebug>
+
+static QStringList jsonArrayToStringList(const QJsonArray& arr) {
+    QStringList list;
+    for (const auto& v : arr) {
+        const QString s = v.toString().trimmed();
+        if (!s.isEmpty()) {
+            list.append(s);
+        }
+    }
+    return list;
+}
+
+static AiTriggerConfig parseTriggerConfig(const QJsonObject& triggerObj,
+                                          int defaultMinMs,
+                                          int defaultMaxMs) {
+    AiTriggerConfig cfg;
+    cfg.enabled = triggerObj.value("enabled").toBool(true);
+    cfg.minIntervalMs = triggerObj.value("minIntervalMs").toInt(defaultMinMs);
+    cfg.maxIntervalMs = triggerObj.value("maxIntervalMs").toInt(defaultMaxMs);
+
+    if (cfg.minIntervalMs < 1000) cfg.minIntervalMs = 1000;
+    if (cfg.maxIntervalMs < cfg.minIntervalMs) cfg.maxIntervalMs = cfg.minIntervalMs;
+
+    return cfg;
+}
 
 ConfigManager::ConfigManager() {
     // 默认加载配置
@@ -99,6 +126,89 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
                 // 存入全局结构体
                 colliderConfigs.emplace_back(bone, r, offset, worldOffset, tag);
+            }
+        }
+    }
+
+    // 读取 AI 配置
+    // 支持两种格式：
+    // 1) aiSettings 直接包含字段
+    // 2) aiSettings.profiles + activeProfile
+    llmConfig = LlmConfig{};
+    aiBehaviorPolicy = AiBehaviorPolicy{};
+    aiBehaviorPolicy.idleActionWhitelist = {
+        "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
+    };
+    aiBehaviorPolicy.touchActionWhitelist = {
+        "TouchHead", "TouchBody", "TouchHandL", "TouchHandR", "Happy"
+    };
+    aiBehaviorPolicy.emotionActionWhitelist = {
+        "Happy", "Cry", "Angry", "Fear", "Talk"
+    };
+    aiBehaviorPolicy.forbiddenActions = {"Drag", "WindowSit"};
+
+    aiBehaviorPolicy.idleTrigger = AiTriggerConfig{true, 60000, 180000};
+    aiBehaviorPolicy.emotionTrigger = AiTriggerConfig{true, 120000, 300000};
+    aiBehaviorPolicy.proactiveChatTrigger = AiTriggerConfig{true, 180000, 300000};
+
+    if (configJson.contains("aiSettings")) {
+        const QJsonObject aiSettings = configJson.value("aiSettings").toObject();
+        QJsonObject aiRaw = aiSettings;
+
+        if (aiSettings.contains("profiles")) {
+            const QString activeProfile = aiSettings.value("activeProfile").toString("default");
+            const QJsonObject profiles = aiSettings.value("profiles").toObject();
+            if (profiles.contains(activeProfile)) {
+                aiRaw = profiles.value(activeProfile).toObject();
+            } else if (profiles.contains("default")) {
+                aiRaw = profiles.value("default").toObject();
+            }
+        }
+
+        llmConfig.enabled = aiRaw.value("enabled").toBool(false);
+        llmConfig.provider = aiRaw.value("provider").toString("openai-compatible");
+        llmConfig.baseUrl = aiRaw.value("baseUrl").toString("https://api.openai.com/v1");
+        llmConfig.apiKey = aiRaw.value("apiKey").toString("");
+        llmConfig.model = aiRaw.value("model").toString("gpt-4o-mini");
+
+        llmConfig.timeoutMs = aiRaw.value("timeoutMs").toInt(30000);
+        llmConfig.maxTokens = aiRaw.value("maxTokens").toInt(512);
+        llmConfig.temperature = aiRaw.value("temperature").toDouble(0.7);
+        llmConfig.retryCount = aiRaw.value("retryCount").toInt(1);
+        llmConfig.thinkIntervalMs = aiRaw.value("thinkIntervalMs").toInt(30000);
+
+        if (aiRaw.contains("extraParams") && aiRaw.value("extraParams").isObject()) {
+            llmConfig.extraParams = aiRaw.value("extraParams").toObject();
+        }
+
+        // 读取行为策略
+        if (aiRaw.contains("behaviorPolicy") && aiRaw.value("behaviorPolicy").isObject()) {
+            const QJsonObject policyObj = aiRaw.value("behaviorPolicy").toObject();
+
+            if (policyObj.contains("idleActionWhitelist")) {
+                aiBehaviorPolicy.idleActionWhitelist = jsonArrayToStringList(policyObj.value("idleActionWhitelist").toArray());
+            }
+            if (policyObj.contains("touchActionWhitelist")) {
+                aiBehaviorPolicy.touchActionWhitelist = jsonArrayToStringList(policyObj.value("touchActionWhitelist").toArray());
+            }
+            if (policyObj.contains("emotionActionWhitelist")) {
+                aiBehaviorPolicy.emotionActionWhitelist = jsonArrayToStringList(policyObj.value("emotionActionWhitelist").toArray());
+            }
+            if (policyObj.contains("forbiddenActions")) {
+                aiBehaviorPolicy.forbiddenActions = jsonArrayToStringList(policyObj.value("forbiddenActions").toArray());
+            }
+
+            if (policyObj.contains("triggers") && policyObj.value("triggers").isObject()) {
+                const QJsonObject triggersObj = policyObj.value("triggers").toObject();
+                if (triggersObj.contains("idleAction")) {
+                    aiBehaviorPolicy.idleTrigger = parseTriggerConfig(triggersObj.value("idleAction").toObject(), 60000, 180000);
+                }
+                if (triggersObj.contains("emotion")) {
+                    aiBehaviorPolicy.emotionTrigger = parseTriggerConfig(triggersObj.value("emotion").toObject(), 120000, 300000);
+                }
+                if (triggersObj.contains("proactiveChat")) {
+                    aiBehaviorPolicy.proactiveChatTrigger = parseTriggerConfig(triggersObj.value("proactiveChat").toObject(), 180000, 300000);
+                }
             }
         }
     }

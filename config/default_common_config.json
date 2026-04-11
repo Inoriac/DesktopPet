@@ -53,5 +53,70 @@
         "tag": "HandR"
       }
     ]
+  },
+  "aiSettings": {
+    "activeProfile": "default",
+    "profiles": {
+      "default": {
+        "enabled": true,
+        "provider": "openai-compatible",
+        "baseUrl": "https://api.siliconflow.cn/v1",
+        "apiKey": "sk-mhrkjzdfyzamtsgarzyagsotmqblgovbknvchfmwgyyrxgdn",
+        "model": "Qwen/Qwen2.5-72B-Instruct",
+        "timeoutMs": 30000,
+        "maxTokens": 512,
+        "temperature": 0.7,
+        "retryCount": 1,
+        "thinkIntervalMs": 30000,
+        "behaviorPolicy": {
+          "idleActionWhitelist": [
+            "Idle",
+            "Sitting",
+            "Sleeping",
+            "Happy",
+            "Talk",
+            "Dance"
+          ],
+          "touchActionWhitelist": [
+            "TouchHead",
+            "TouchBody",
+            "TouchHandL",
+            "TouchHandR",
+            "Happy"
+          ],
+          "emotionActionWhitelist": [
+            "Happy",
+            "Cry",
+            "Angry",
+            "Fear",
+            "Talk"
+          ],
+          "forbiddenActions": [
+            "Drag",
+            "WindowSit"
+          ],
+          "triggers": {
+            "idleAction": {
+              "enabled": true,
+              "minIntervalMs": 60000,
+              "maxIntervalMs": 180000
+            },
+            "emotion": {
+              "enabled": true,
+              "minIntervalMs": 120000,
+              "maxIntervalMs": 300000
+            },
+            "proactiveChat": {
+              "enabled": true,
+              "minIntervalMs": 180000,
+              "maxIntervalMs": 300000
+            }
+          }
+        },
+        "extraParams": {
+          "stream": false
+        }
+      }
+    }
   }
 }

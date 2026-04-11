@@ -27,6 +27,7 @@ find_package(Qt6 COMPONENTS
         Core
         Gui
         Widgets
+    Network
         OpenGL
         OpenGLWidgets
         Test
@@ -67,11 +68,24 @@ set(CORE_SOURCES
     core/animation/animation_player.h
     core/animation/animation_crossfader.cpp
     core/animation/animation_crossfader.h
-        core/ai/ai_tool.h
-        core/ai/tool_registry.cpp
-        core/ai/tool_registry.h
-        core/ai/tools/animation_tools.h
-        core/ai/tools/environment_tools.h
+    core/ai/llm/llm_client.h
+    core/ai/llm/openai_compatible_client.h
+    core/ai/llm/openai_compatible_client.cpp
+    core/ai/llm/llm_chat_service.h
+    core/ai/llm/llm_chat_service.cpp
+
+    core/ai/context_builder.h
+    core/ai/context_builder.cpp
+    core/ai/ai_call_logger.h
+    core/ai/ai_call_logger.cpp
+    core/ai/ai_brain.h
+    core/ai/ai_brain.cpp
+    
+    core/ai/ai_tool.h
+    core/ai/tool_registry.cpp
+    core/ai/tool_registry.h
+    core/ai/tools/animation_tools.h
+    core/ai/tools/environment_tools.h
 )
 
 set(ENGINE_SOURCES
@@ -155,6 +169,7 @@ target_link_libraries(Desktop_Pet
         Qt::Core
         Qt::Gui
         Qt::Widgets
+    Qt::Network
         Qt::OpenGL
         Qt::OpenGLWidgets
         psapi
@@ -189,6 +204,7 @@ target_link_libraries(statistic_tests
         Qt::Core
         Qt::Test
         Qt::Widgets
+    Qt::Network
         Qt::OpenGL
         Qt::OpenGLWidgets
         psapi
@@ -226,6 +242,40 @@ target_link_libraries(tool_tests
 )
 
 add_test(NAME ToolTests COMMAND tool_tests)
+
+# ---- LLM 异步服务测试 ----
+add_executable(llm_tests
+    tests/test_llm_chat_service.cpp
+    core/ai/llm/llm_chat_service.h
+    core/ai/llm/llm_chat_service.cpp
+    core/ai/llm/llm_client.h
+    core/ai/llm/openai_compatible_client.h
+    core/ai/llm/openai_compatible_client.cpp
+    core/configLoader/config_manager.h
+    core/configLoader/config_manager.cpp
+    statistic/statistic_manager.h
+    statistic/statistic_manager.cpp
+    include/statistic_types.h
+    include/ai_types.h
+    include/global_types.h
+)
+
+target_include_directories(llm_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/llm
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+
+target_link_libraries(llm_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Test
+)
+
+add_test(NAME LlmTests COMMAND llm_tests)
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----

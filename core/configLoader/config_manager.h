@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 
 #include "global_types.h"
+#include "ai_types.h"
 
 class ConfigManager {
 public:
@@ -39,6 +40,13 @@ public:
 
     // 获取碰撞配置列表
     const std::vector<BoneCollider>& getColliderConfigs() const { return colliderConfigs; }
+
+    // LLM 配置
+    const LlmConfig& getLlmConfig() const { return llmConfig; }
+    void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
+
+    // AI 行为策略
+    const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
     
 private:
     ConfigManager();
@@ -68,6 +76,9 @@ private:
     int clickTimeout = 200;
 
     std::vector<BoneCollider> colliderConfigs;
+
+    LlmConfig llmConfig;
+    AiBehaviorPolicy aiBehaviorPolicy;
 };
 
 #endif //DESKTOP_PET_CONFIG_MANAGER_H

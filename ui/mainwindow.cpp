@@ -5,6 +5,7 @@
 #include "mainwindow.h"
 #include "render_viewport.h"
 #include "pet.h"
+#include "configLoader/config_manager.h"
 
 #include <QApplication>
 #include <QMessageBox>
@@ -12,6 +13,8 @@
 #include <QStandardPaths>
 #include <QIcon>
 #include <QInputDialog>
+
+#include "statistic_manager.h"
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent){
     setWindowTitle("Desktop 3D Pet");
@@ -30,6 +33,10 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent){
 }
 
 MainWindow::~MainWindow() {
+    if (!activePetName.isEmpty()) {
+        StatisticManager::getInstance().recordPetStop(activePetName);
+    }
+
     if(activePetWindow){
         activePetWindow->close();
         delete activePetWindow;
@@ -135,6 +142,9 @@ void MainWindow::createCentralWidget() {
     clickThroughCheckBox = new QCheckBox("Click through");
     clickThroughCheckBox->setChecked(false);
 
+    aiEnabledCheckBox = new QCheckBox("AI enabled");
+    aiEnabledCheckBox->setChecked(ConfigManager::instance().getLlmConfig().enabled);
+
     soundEnabledCheckBox = new QCheckBox("Sound enabled");
     soundEnabledCheckBox->setChecked(false);
 
@@ -153,6 +163,7 @@ void MainWindow::createCentralWidget() {
     settingsLayout->addLayout(sizeLayout);
     settingsLayout->addWidget(alwaysOnTopCheckBox);
     settingsLayout->addWidget(clickThroughCheckBox);
+    settingsLayout->addWidget(aiEnabledCheckBox);
     settingsLayout->addWidget(soundEnabledCheckBox);
     settingsLayout->addLayout(volumeLayout);
 
@@ -172,6 +183,7 @@ void MainWindow::setupConnections() {
 
     connect(alwaysOnTopCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(clickThroughCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(aiEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(soundEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(volumeSlider, &QSlider::valueChanged, this, &MainWindow::OnSettingsChanged);
 }
@@ -207,6 +219,10 @@ void MainWindow::OnStartPet() {
     statusLabel->setText(QString("正在启动 %1...").arg(petName));
 
     activePetWindow = new PetWindow(petName, nullptr);
+    activePetName = petName;
+
+    // 记录桌宠启动统计
+    StatisticManager::getInstance().recordPetStart(activePetName);
 
     // 用于接收宠物窗口关闭信号
     connect(activePetWindow, &PetWindow::requestStop, this, &MainWindow::OnStopPet);
@@ -214,7 +230,9 @@ void MainWindow::OnStartPet() {
     int sizePercent = sizeSlider->value();
     bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
     bool clickThrough = clickThroughCheckBox->isChecked();
-    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough);
+    bool aiEnabled = aiEnabledCheckBox->isChecked();
+    ConfigManager::instance().setLlmEnabled(aiEnabled);
+    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled);
 
     activePetWindow->show();
 
@@ -226,12 +244,26 @@ void MainWindow::OnStartPet() {
 }
 
 void MainWindow::OnStopPet() {
-    QString petName = petListWidget->currentItem()->text();
+    QString petName = !activePetName.isEmpty()
+                        ? activePetName
+                        : (petListWidget->currentItem() ? petListWidget->currentItem()->text() : QString(""));
+
+    if (petName.isEmpty()) {
+        statusLabel->setText("就绪");
+        return;
+    }
+
     statusLabel->setText(QString("正在停止 %1...").arg(petName));
 
-    activePetWindow->close();
-    activePetWindow->deleteLater();
-    activePetWindow = nullptr;
+    // 记录桌宠停止统计
+    StatisticManager::getInstance().recordPetStop(petName);
+
+    if (activePetWindow) {
+        activePetWindow->close();
+        activePetWindow->deleteLater();
+        activePetWindow = nullptr;
+    }
+    activePetName.clear();
 
     startPetButton->setEnabled(true);
     stopPetButton->setEnabled(false);
@@ -244,11 +276,14 @@ void MainWindow::OnSettingsChanged() {
     statusLabel->setText("设置已更改");
 
     // 应用至桌宠界面
+    bool aiEnabled = aiEnabledCheckBox->isChecked();
+    ConfigManager::instance().setLlmEnabled(aiEnabled);
+
     if(activePetWindow){
         int sizePercent = sizeSlider->value();
         bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
         bool clickThrough = clickThroughCheckBox->isChecked();
-        activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough);
+        activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled);
     }
 }
 

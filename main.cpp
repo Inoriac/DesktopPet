@@ -3,6 +3,7 @@
 #include <QSurfaceFormat>
 
 #include "ui/mainwindow.h"
+#include "statistic_manager.h"
 
 int main(int argc, char *argv[])
 {
@@ -23,6 +24,9 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
 
     QDir::setCurrent(QCoreApplication::applicationDirPath() + "/..");
+
+    // 初始化统计系统，启用落盘（默认 log/statistics.json）。
+    StatisticManager::getInstance().initialize();
 
     MainWindow w;
     w.show();
