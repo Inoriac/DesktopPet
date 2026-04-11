@@ -12,6 +12,8 @@
 #include <random>
 #include <unordered_map>
 #include <vector>
+#include <QStringList>
+#include <QVector2D>
 
 #include "animation_types.h"
 #include "model_types.h"
@@ -54,6 +56,10 @@ public:
     std::string getCurrentStateName() const { return currentStateName; }
 
     std::string getCurrentClipName() const { return currentClip ? currentClip->name : "None"; }
+
+    // 鼠标追踪输入（屏幕空间方向，范围 [-1,1]，以头部中心->光标向量归一化得到）
+    void setScreenLookVector(const QVector2D& screenLookVector);
+    void setMouseTrackingEnabled(bool enabled) { mouseTrackingEnabled = enabled; }
     
     // 根据状态名切换动画
     void changeState(const std::string& targetState, double transitionDuration = 0.2);
@@ -71,6 +77,12 @@ private:
 
     // 随机挑�?clip
     void selectRandomClipForState(const AnimationState& state);
+
+    // 在动画采样后附加鼠标追踪旋转层
+    void applyMouseTracking(double deltaTime);
+    void resolveMouseTrackingBones();
+    int findBoneIndexByKeywords(const QStringList& keywords) const;
+    void applyLookOffsetToBone(int boneIndex, float yawDeg, float pitchDeg, float rollDeg = 0.0f, float blend = 1.0f);
 
 private:
     // 输入依赖
@@ -92,6 +104,25 @@ private:
 
     // 缓存每一帧计算出的全局变换
     std::vector<QMatrix4x4> cachedGlobalTransforms;
+
+    // 鼠标追踪状态
+    bool mouseTrackingEnabled = true;
+    QVector2D screenLookVector {0.0f, 0.0f};
+
+    int headBoneIndex = -1;
+    int spineBoneIndex = -1;
+    int chestBoneIndex = -1;
+    int upperChestBoneIndex = -1;
+    int leftEyeBoneIndex = -1;
+    int rightEyeBoneIndex = -1;
+
+    bool mouseTrackingBonesResolved = false;
+
+    float smoothedHeadYaw = 0.0f;
+    float smoothedHeadPitch = 0.0f;
+    float smoothedSpineYaw = 0.0f;
+    float smoothedEyeYaw = 0.0f;
+    float smoothedEyePitch = 0.0f;
 
     std::mt19937 rng { std::random_device{}() };    // 随机数生成器
 };

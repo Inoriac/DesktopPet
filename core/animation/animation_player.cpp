@@ -5,6 +5,8 @@
 #include "animation_player.h"
 
 #include <random>
+#include <algorithm>
+#include <cmath>
 
 AnimationPlayer::AnimationPlayer(Skeleton skeleton, const std::unordered_map<std::string, AnimationClip> *clips,
                                  const AnimationStateMachineDefinition *stateMachine)
@@ -26,6 +28,8 @@ AnimationPlayer::AnimationPlayer(Skeleton skeleton, const std::unordered_map<std
             selectRandomClipForState(st);
         }
     }
+
+    resolveMouseTrackingBones();
 }
 
 void AnimationPlayer::selectRandomClipForState(const AnimationState& state) {
@@ -120,6 +124,138 @@ void AnimationPlayer::update(double deltaTime) {
     } else {
         poseFinal = poseCurrent;
     }
+
+    applyMouseTracking(deltaTime);
+}
+
+void AnimationPlayer::setScreenLookVector(const QVector2D& lookVector) {
+    screenLookVector.setX(std::clamp(lookVector.x(), -1.0f, 1.0f));
+    screenLookVector.setY(std::clamp(lookVector.y(), -1.0f, 1.0f));
+}
+
+int AnimationPlayer::findBoneIndexByKeywords(const QStringList& keywords) const {
+    auto matches = [&](const std::string& boneName) -> bool {
+        QString lowered = QString::fromStdString(boneName).toLower();
+        for (const QString& key : keywords) {
+            if (lowered.contains(key)) return true;
+        }
+        return false;
+    };
+
+    // 优先精确匹配，尽量减少误识别。
+    for (size_t i = 0; i < mySkeleton.bones.size(); ++i) {
+        QString lowered = QString::fromStdString(mySkeleton.bones[i].name).toLower();
+        for (const QString& key : keywords) {
+            if (lowered == key) return static_cast<int>(i);
+        }
+    }
+
+    for (size_t i = 0; i < mySkeleton.bones.size(); ++i) {
+        if (matches(mySkeleton.bones[i].name)) {
+            return static_cast<int>(i);
+        }
+    }
+
+    return -1;
+}
+
+void AnimationPlayer::resolveMouseTrackingBones() {
+    if (mouseTrackingBonesResolved) return;
+
+    headBoneIndex = findBoneIndexByKeywords({"head", "j_bip_c_head"});
+    spineBoneIndex = findBoneIndexByKeywords({"spine", "j_bip_c_spine", "hips"});
+    chestBoneIndex = findBoneIndexByKeywords({"chest", "upperbody", "j_bip_c_chest"});
+    upperChestBoneIndex = findBoneIndexByKeywords({"upperchest", "spine2", "spine3"});
+    leftEyeBoneIndex = findBoneIndexByKeywords({"lefteye", "eye_l", "eye.l", "left_eye"});
+    rightEyeBoneIndex = findBoneIndexByKeywords({"righteye", "eye_r", "eye.r", "right_eye"});
+
+    mouseTrackingBonesResolved = true;
+}
+
+void AnimationPlayer::applyLookOffsetToBone(int boneIndex, float yawDeg, float pitchDeg, float rollDeg, float blend) {
+    if (boneIndex < 0 || boneIndex >= static_cast<int>(poseFinal.bonePoses.size())) return;
+    if (blend <= 0.0f) return;
+
+    const QQuaternion delta = QQuaternion::fromEulerAngles(-pitchDeg, yawDeg, rollDeg);
+    QQuaternion base = poseFinal.bonePoses[boneIndex].rotation;
+    QQuaternion target = delta * base;
+
+    if (blend >= 1.0f) {
+        poseFinal.bonePoses[boneIndex].rotation = target;
+    } else {
+        poseFinal.bonePoses[boneIndex].rotation = QQuaternion::slerp(base, target, blend);
+    }
+}
+
+void AnimationPlayer::applyMouseTracking(double deltaTime) {
+    if (!mouseTrackingEnabled) return;
+    if (poseFinal.bonePoses.empty()) return;
+    if (!mouseTrackingBonesResolved) resolveMouseTrackingBones();
+
+    const float dt = static_cast<float>(std::max(0.0, deltaTime));
+
+    // 约束策略：头部限制按需求调整为 Yaw 20 / Pitch 14。
+    constexpr float kHeadYawLimit = 20.0f;
+    constexpr float kHeadPitchLimit = 14.0f;
+    constexpr float kTorsoYawLimit = 10.0f;
+    constexpr float kEyeYawLimit = 10.0f;
+    constexpr float kEyePitchLimit = 10.0f;
+
+    constexpr float kHeadSmoothness = 8.0f;
+    constexpr float kSpineSmoothness = 16.0f;
+    constexpr float kEyeSmoothness = 12.0f;
+
+    // 输入由“头部中心->光标”屏幕向量提供。
+    // 使用一个朝前的 3D 向量做角度解算，避免线性映射导致的平面转动感。
+    QVector3D dir(screenLookVector.x(), screenLookVector.y(), 1.15f);
+    if (dir.lengthSquared() < 1e-6f) {
+        dir = QVector3D(0.0f, 0.0f, 1.0f);
+    } else {
+        dir.normalize();
+    }
+
+    const float yawDeg3D = std::atan2(dir.x(), dir.z()) * 57.2957795f;
+    const float pitchDeg3D = std::asin(std::clamp(dir.y(), -1.0f, 1.0f)) * 57.2957795f;
+
+    const float targetHeadYaw = std::clamp(yawDeg3D, -kHeadYawLimit, kHeadYawLimit);
+    const float targetHeadPitch = std::clamp(pitchDeg3D, -kHeadPitchLimit, kHeadPitchLimit);
+    const float targetTorsoYaw = std::clamp(yawDeg3D, -kTorsoYawLimit, kTorsoYawLimit);
+    const float targetEyeYaw = std::clamp(yawDeg3D, -kEyeYawLimit, kEyeYawLimit);
+    const float targetEyePitch = std::clamp(pitchDeg3D, -kEyePitchLimit, kEyePitchLimit);
+
+    const float headAlpha = 1.0f - std::exp(-kHeadSmoothness * dt);
+    const float spineAlpha = 1.0f - std::exp(-kSpineSmoothness * dt);
+    const float eyeAlpha = 1.0f - std::exp(-kEyeSmoothness * dt);
+
+    smoothedHeadYaw += (targetHeadYaw - smoothedHeadYaw) * headAlpha;
+    smoothedHeadPitch += (targetHeadPitch - smoothedHeadPitch) * headAlpha;
+    smoothedSpineYaw += (targetTorsoYaw - smoothedSpineYaw) * spineAlpha;
+    smoothedEyeYaw += (targetEyeYaw - smoothedEyeYaw) * eyeAlpha;
+    smoothedEyePitch += (targetEyePitch - smoothedEyePitch) * eyeAlpha;
+
+    // 躯干保持正立：仅进行 yaw 扭转，不做 pitch/roll 倾斜。
+    applyLookOffsetToBone(spineBoneIndex,
+                          smoothedSpineYaw * 0.12f,
+                          0.0f,
+                          0.0f,
+                          1.0f);
+    applyLookOffsetToBone(chestBoneIndex,
+                          smoothedSpineYaw * 0.10f,
+                          0.0f,
+                          0.0f,
+                          1.0f);
+    applyLookOffsetToBone(upperChestBoneIndex,
+                          smoothedSpineYaw * 0.08f,
+                          0.0f,
+                          0.0f,
+                          1.0f);
+
+    // 头部只做小范围补偿，避免“头拧太多”。
+    applyLookOffsetToBone(headBoneIndex, smoothedHeadYaw, smoothedHeadPitch, 0.0f, 1.0f);
+
+    // 眼球骨骼是可选项：不存在时自动忽略。
+    applyLookOffsetToBone(leftEyeBoneIndex, smoothedEyeYaw, smoothedEyePitch, 0.0f, 1.0f);
+    applyLookOffsetToBone(rightEyeBoneIndex, smoothedEyeYaw, smoothedEyePitch, 0.0f, 1.0f);
 }
 
 void AnimationPlayer::triggerEvent(const std::string &eventName) {

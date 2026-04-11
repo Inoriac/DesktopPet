@@ -14,6 +14,12 @@
 #include <QDir>
 #include <QCoreApplication>
 #include <QElapsedTimer>
+#include <QCursor>
+#include <QGuiApplication>
+#include <QScreen>
+
+#include <algorithm>
+#include <cmath>
 
 #include "model_loader.h"
 #include "../core/configLoader/config_manager.h"
@@ -122,6 +128,36 @@ void RenderViewport::paintGL() {
     if (renderEngine) {
         // 更新动画
         renderEngine->updateAnimation(deltaTime);
+
+        if (auto* player = renderEngine->getAnimationPlayer()) {
+            QVector2D lookVector(0.0f, 0.0f);
+            QVector2D headViewportPos;
+
+            if (renderEngine->getHeadScreenPosition(headViewportPos)) {
+                const QPoint cursorGlobal = QCursor::pos();
+                const QPoint headLocal(static_cast<int>(std::lround(headViewportPos.x())),
+                                       static_cast<int>(std::lround(headViewportPos.y())));
+                const QPoint headGlobal = mapToGlobal(headLocal);
+                const QPoint delta = cursorGlobal - headGlobal;
+
+                QScreen* screen = QGuiApplication::screenAt(cursorGlobal);
+                if (!screen) screen = QGuiApplication::primaryScreen();
+
+                if (screen) {
+                    const QRect g = screen->geometry();
+                    const float halfW = std::max(1.0f, g.width() * 0.5f);
+                    const float halfH = std::max(1.0f, g.height() * 0.5f);
+
+                    // 屏幕坐标系：右为 x 正；上为 y 正。
+                    lookVector.setX(std::clamp(delta.x() / halfW, -1.0f, 1.0f));
+                    lookVector.setY(std::clamp(-delta.y() / halfH, -1.0f, 1.0f));
+                }
+            }
+
+            player->setScreenLookVector(lookVector);
+            renderEngine->setTrackingYawInput(lookVector.x());
+        }
+
         renderEngine->render();
     }
 }

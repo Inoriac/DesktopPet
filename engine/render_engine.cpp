@@ -10,6 +10,7 @@
 #include <QElapsedTimer>
 #include <QMatrix4x4>
 #include <QVector3D>
+#include <QStringList>
 #include <set>
 #include <cmath>
 
@@ -112,6 +113,13 @@ void RenderEngine::render() {
     // 模型矩阵
     QMatrix4x4 model;
 
+    // 光标追踪驱动的整体 Y 轴旋转（平滑），用于保持正立并体现“向内/外”转向。
+    const float yawAlpha = 1.0f - std::exp(-8.0f * deltaSec);
+    trackingYawCurrentDeg += (trackingYawTargetDeg - trackingYawCurrentDeg) * yawAlpha;
+
+    // 先做绕世界 Y 轴转向，再做模型朝向修正，避免轴向错位导致的错误观感。
+    model.rotate(trackingYawCurrentDeg, 0.0f, 1.0f, 0.0f);
+
     // 姿态修正：把躺着的模型扶正
     model.rotate(90.0f, 1.0f, 0.0f, 0.0f);
 
@@ -120,7 +128,7 @@ void RenderEngine::render() {
     if (finalScale <= 0.0001f) finalScale = 1.0f;
     model.scale(finalScale);
 
-    // 绕 Y 轴旋转
+    // 兼容旧调试旋转（默认 angleDeg=0）
     model.rotate(angleDeg, 0.0f, 1.0f, 0.0f);
 
     // 应用中心偏移
@@ -230,6 +238,70 @@ void RenderEngine::render() {
     // 清理状态
     gl->glBindVertexArray(0);
     shader->release();
+}
+
+void RenderEngine::setTrackingYawInput(float normalizedX) {
+    const float x = std::clamp(normalizedX, -1.0f, 1.0f);
+    constexpr float kMaxTrackingYawDeg = 28.0f;
+    trackingYawTargetDeg = x * kMaxTrackingYawDeg;
+}
+
+int RenderEngine::findBoneIndexByKeywords(const Skeleton& skeleton, const QStringList& keywords) const {
+    for (const auto& pair : skeleton.nameToIndex) {
+        QString lowered = QString::fromStdString(pair.first).toLower();
+        for (const QString& key : keywords) {
+            if (lowered == key) return pair.second;
+        }
+    }
+
+    for (const auto& pair : skeleton.nameToIndex) {
+        QString lowered = QString::fromStdString(pair.first).toLower();
+        for (const QString& key : keywords) {
+            if (lowered.contains(key)) return pair.second;
+        }
+    }
+
+    return -1;
+}
+
+bool RenderEngine::getHeadScreenPosition(QVector2D& outViewportPos) {
+    if (!animationPlayer || viewportWidth <= 0 || viewportHeight <= 0) return false;
+
+    const Skeleton& skeleton = animationPlayer->getSkeleton();
+    const int headBoneIndex = findBoneIndexByKeywords(skeleton, {"head", "j_bip_c_head"});
+    if (headBoneIndex < 0) return false;
+
+    // 刷新一遍矩阵缓存，确保 getGlobalTransforms 返回本帧姿态。
+    (void)animationPlayer->getCurrentTransforms();
+    const auto& boneTransforms = animationPlayer->getGlobalTransforms();
+    if (headBoneIndex >= static_cast<int>(boneTransforms.size())) return false;
+
+    QMatrix4x4 proj;
+    float aspect = (viewportHeight > 0) ? float(viewportWidth) / float(viewportHeight) : 1.0f;
+    proj.perspective(45.0f, aspect, 0.1f, 100.0f);
+
+    QMatrix4x4 view;
+    view.lookAt(cameraEye, cameraCenter, QVector3D(0.0f, 1.0f, 0.0f));
+
+    QMatrix4x4 model;
+    model.rotate(trackingYawCurrentDeg, 0.0f, 1.0f, 0.0f);
+    model.rotate(90.0f, 1.0f, 0.0f, 0.0f);
+
+    float finalScale = modelScale;
+    if (finalScale <= 0.0001f) finalScale = 1.0f;
+    model.scale(finalScale);
+    model.rotate(angleDeg, 0.0f, 1.0f, 0.0f);
+
+    QVector4D headWorld = model * boneTransforms[headBoneIndex] * QVector4D(0.0f, 0.0f, 0.0f, 1.0f);
+    QVector4D clip = proj * view * headWorld;
+    if (std::fabs(clip.w()) < 1e-6f) return false;
+
+    QVector3D ndc = clip.toVector3D() / clip.w();
+    float sx = (ndc.x() * 0.5f + 0.5f) * viewportWidth;
+    float sy = (1.0f - (ndc.y() * 0.5f + 0.5f)) * viewportHeight;
+
+    outViewportPos = QVector2D(sx, sy);
+    return true;
 }
 
 void RenderEngine::addMeshFromData(const MeshData &meshData) {

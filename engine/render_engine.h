@@ -7,6 +7,8 @@
 
 #include <unordered_map>
 #include <memory>
+#include <QStringList>
+#include <QVector2D>
 
 #include "model_loader.h"
 #include "shader_manager.h"
@@ -57,6 +59,10 @@ public:
     void setAnimationPlayer(std::unique_ptr<AnimationPlayer> player);
     AnimationPlayer* getAnimationPlayer() const { return animationPlayer.get(); }
     void updateAnimation(float deltaTime);
+    void setTrackingYawInput(float normalizedX);
+
+    // 获取头部骨骼在当前 viewport 下的屏幕坐标（像素，左上为原点）
+    bool getHeadScreenPosition(QVector2D& outViewportPos);
 
     // 碰撞检测：根据屏幕坐标检测是否点击到模型，返回对应的交互标签
     std::string checkHit(int viewX, int viewY);
@@ -65,6 +71,8 @@ public:
     // bool intersectRayCapsule(const QVector3D& rayOrigin, const QVector3D& rayDir,
     //                          const QVector3D& capsuleA, const QVector3D& capsuleB,
     //                          float capsuleRadius, float& outDist);
+
+    int findBoneIndexByKeywords(const Skeleton& skeleton, const QStringList& keywords) const;
 
 private:
     QOpenGLFunctions_3_3_Core *gl {nullptr};    // 用于提供 OpenGL 的服务接口
@@ -80,6 +88,8 @@ private:
     int viewportWidth {0};
     int viewportHeight {0};
     float angleDeg {0.0f};  // 渲染对象旋转角度
+    float trackingYawCurrentDeg {0.0f};
+    float trackingYawTargetDeg {0.0f};
 
     GLuint defaultWhiteTex {0};
     const int targetSize = 1024;
