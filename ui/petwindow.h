@@ -8,6 +8,8 @@
 #include <QMenu>
 #include <QAction>
 #include <QElapsedTimer>
+#include <QTimer>
+#include <QRect>
 #include <memory>
 
 #include "ai/ai_brain.h"
@@ -31,6 +33,7 @@ public:
     void stopAnimation();
     void setAnimationSpeed(float speed);
     void setAnimationLoop(bool loop);
+    void setBigScreenAlarm(bool on);
 
 signals:
     void aboutToClose();  // 窗口即将关闭时发送
@@ -60,6 +63,28 @@ private:
     void setupAiBrain();
 
     void unloadModel();
+
+    // 窗口吸附
+    void setupWindowSnapping();
+    void updateCachedWindows();
+    void updateSnapZone();
+    bool trySnap();
+    bool isStillNearSnappedWindow() const;
+    void followSnappedWindowWhileDragging();
+    void followSnappedWindow();
+    void exitWindowSnapping(bool triggerWindowStand = true);
+    bool isWindowMaximized(void* hwnd) const;
+    bool isWindowFullscreen(const QRect& rect) const;
+    void refreshTopMostByState();
+    void applyTopMostRuntime(bool topMost);
+    QRect getNativeWindowRect() const;
+    QRect getMovementBounds() const;
+    void moveNativeWindow(int x, int y);
+    void setupDropAnimation();
+    void startDropAnimation(int targetX);
+    void stopDropAnimation();
+    void beginDragAnimation();
+    bool isDraggingAnyWindowSitState() const;
 
     // 辅助交互方法
     bool canTriggerTouch() const;   // 是否能够触发触摸反应，交互锁
@@ -91,6 +116,45 @@ private:
 
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
+
+    struct NativeWindowEntry {
+        void* hwnd = nullptr;
+        QRect rect;
+    };
+
+    std::vector<NativeWindowEntry> cachedWindows;
+    QTimer* snapFollowTimer = nullptr;
+    QTimer* snapScanTimer = nullptr;
+    QTimer* dropTimer = nullptr;
+
+    QRect pinkZoneDesktopRect;
+    void* snappedWindow = nullptr;
+    float snapFraction = 0.5f;
+    QPoint lastDesktopPosition;
+    int snapCursorY = 0;
+    bool wasDragging = false;
+    bool wasWindowSitting = false;
+    bool pendingSnapOnRelease = false;
+    void* pendingSnapTarget = nullptr;
+    float pendingSnapFraction = 0.5f;
+    bool isDropping = false;
+    float dropPosY = 0.0f;
+    float dropVelocity = 0.0f;
+    float dropAccel = 0.0f;
+    int dropTargetY = 0;
+    int dropFixedX = 0;
+    qint64 dropLastTickMs = 0;
+
+    int snapThreshold = 30;
+    int snapVerticalOffset = 0;
+    QPoint snapZoneOffset {0, -5};
+    QSize snapZoneSize {100, 10};
+    int snapFollowIntervalMs = 16;
+    int totalWindowSitAnimations = 0;
+
+    bool forceExitOnBigScreenAlarm = true;
+    bool isBigScreenAlarm = false;
+    QAction* toggleBigScreenAlarmAction = nullptr;
 };
 
 #endif //DESKTOP_PET_PETWINDOW_H

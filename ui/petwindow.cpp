@@ -10,11 +10,87 @@
 #include <qboxlayout.h>
 #include <QDebug>
 #include <QKeyEvent>
+#include <QContextMenuEvent>
+#include <QMouseEvent>
+#include <QScreen>
+#include <QGuiApplication>
+#include <QDateTime>
+#include <QRandomGenerator>
+#include <algorithm>
+#include <cmath>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <dwmapi.h>
+#pragma comment(lib, "dwmapi.lib")
+#endif
 
 #include "render_engine.h"
 #include "configLoader/config_manager.h"
 #include "ai/tools/animation_tools.h"
 #include "ai/tools/environment_tools.h"
+
+#ifdef Q_OS_WIN
+namespace {
+struct NativeWindowCandidate {
+    void* hwnd = nullptr;
+    QRect rect;
+};
+
+struct WinEnumContext {
+    HWND self = nullptr;
+    std::vector<NativeWindowCandidate>* out = nullptr;
+};
+
+bool isTaskbarClassName(const QString& cls) {
+    return cls == "Shell_TrayWnd" || cls == "Shell_SecondaryTrayWnd";
+}
+
+BOOL CALLBACK EnumWindowsProcForSnap(HWND hWnd, LPARAM lParam) {
+    auto* ctx = reinterpret_cast<WinEnumContext*>(lParam);
+    if (!ctx || !ctx->out) return TRUE;
+
+    if (!IsWindowVisible(hWnd)) return TRUE;
+
+    RECT r {};
+    if (!GetWindowRect(hWnd, &r)) return TRUE;
+
+    const int width = r.right - r.left;
+    const int height = r.bottom - r.top;
+
+    wchar_t className[256] = {0};
+    GetClassNameW(hWnd, className, 255);
+    const QString cls = QString::fromWCharArray(className);
+
+    const bool isTaskbar = isTaskbarClassName(cls);
+    if (!isTaskbar) {
+        if (width < 100 || height < 100) return TRUE;
+        if (GetParent(hWnd) != nullptr) return TRUE;
+        if (GetWindowTextLengthW(hWnd) == 0) return TRUE;
+        if (cls == "Progman" || cls == "WorkerW" || cls == "DV2ControlHost" || cls == "MsgrIMEWindowClass" ||
+            cls.startsWith('#') || cls.contains("Desktop", Qt::CaseInsensitive)) {
+            return TRUE;
+        }
+    }
+
+    if (hWnd == ctx->self) return TRUE;
+
+    NativeWindowCandidate entry;
+    entry.hwnd = reinterpret_cast<void*>(hWnd);
+    entry.rect = QRect(r.left, r.top, width, height);
+    ctx->out->push_back(entry);
+    return TRUE;
+}
+
+bool isWindowMaximizedByPlacement(HWND hwnd) {
+    WINDOWPLACEMENT placement {};
+    placement.length = sizeof(WINDOWPLACEMENT);
+    if (!GetWindowPlacement(hwnd, &placement)) return false;
+    return placement.showCmd == SW_MAXIMIZE;
+}
+
+}
+#endif
 
 PetWindow::PetWindow(const QString modelName, QWidget *parent)
     : QWidget(parent)
@@ -26,9 +102,20 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     , clickThrough(false)
     , contextMenu(nullptr)
     , closeAction(nullptr) {
+    ConfigManager& config = ConfigManager::instance();
+    snapThreshold = config.getWindowSnapThreshold();
+    snapVerticalOffset = config.getWindowSnapVerticalOffset();
+    snapZoneOffset = config.getWindowSnapZoneOffset();
+    snapZoneSize = config.getWindowSnapZoneSize();
+    snapFollowIntervalMs = config.getWindowSnapFollowIntervalMs();
+    forceExitOnBigScreenAlarm = config.getWindowSnapForceExitOnBigScreenAlarm();
+    totalWindowSitAnimations = config.getTotalWindowSitAnimations();
+
     setupWindow();
     setupRenderViewport();
     setupContextMenu();
+    setupWindowSnapping();
+    setupDropAnimation();
 
     aiBrain = std::make_unique<AIBrain>(this);
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
@@ -40,6 +127,15 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
 }
 
 PetWindow::~PetWindow() {
+    if (snapFollowTimer) {
+        snapFollowTimer->stop();
+    }
+    if (snapScanTimer) {
+        snapScanTimer->stop();
+    }
+    if (dropTimer) {
+        dropTimer->stop();
+    }
     if (renderViewport) {
         delete renderViewport;
     }
@@ -120,6 +216,15 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
 
     contextMenu->addSeparator();
 
+    toggleBigScreenAlarmAction = contextMenu->addAction(
+        isBigScreenAlarm ? "关闭 BigScreenAlarm(调试)" : "开启 BigScreenAlarm(调试)");
+    connect(toggleBigScreenAlarmAction, &QAction::triggered, this, [this]() {
+        setBigScreenAlarm(!isBigScreenAlarm);
+        qDebug() << "BigScreenAlarm toggled:" << isBigScreenAlarm;
+    });
+
+    contextMenu->addSeparator();
+
     closeAction = new QAction("关闭", this);
     contextMenu->addAction(closeAction);
 
@@ -196,11 +301,30 @@ void PetWindow::triggerTouchReaction(const std::string& tag) {
 
 void PetWindow::mousePressEvent(QMouseEvent *event) {
     if (event->button() == Qt::LeftButton) {
+        stopDropAnimation();
         // 初始化状态
         isDragging = false;
+        wasDragging = false;
         dragStartPosition = event->globalPosition().toPoint();
+#ifdef Q_OS_WIN
+        POINT cp {};
+        if (GetCursorPos(&cp)) {
+            dragStartPosition = QPoint(cp.x, cp.y);
+        }
+#endif
         pressLocalPosition = event->pos();
         pressTimer.start();
+        pendingSnapOnRelease = false;
+        pendingSnapTarget = nullptr;
+
+#ifdef Q_OS_WIN
+        if (snappedWindow && isDraggingAnyWindowSitState()) {
+            POINT cp {};
+            if (GetCursorPos(&cp)) {
+                snapCursorY = cp.y;
+            }
+        }
+#endif
     }
 
     // 射线检测
@@ -233,17 +357,41 @@ void PetWindow::mousePressEvent(QMouseEvent *event) {
 void PetWindow::mouseMoveEvent(QMouseEvent *event) {
     if (!clickThrough) {
         QPoint currentPosition = event->globalPosition().toPoint();
+#ifdef Q_OS_WIN
+        POINT cp {};
+        if (GetCursorPos(&cp)) {
+            currentPosition = QPoint(cp.x, cp.y);
+        }
+#endif
         int threshold = ConfigManager::instance().getDragThreshold();
 
         if (isDragging) {
-            move(pos() + (currentPosition - dragStartPosition));
+            const QPoint delta = currentPosition - dragStartPosition;
+            const QRect nativeRect = getNativeWindowRect();
+            moveNativeWindow(nativeRect.left() + delta.x(), nativeRect.top() + delta.y());
             dragStartPosition = currentPosition;
 
+            updateCachedWindows();
+            updateSnapZone();
+
+            if (!snappedWindow) {
+                pendingSnapOnRelease = trySnap();
+                if (!pendingSnapOnRelease) {
+                    pendingSnapTarget = nullptr;
+                }
+            } else {
+                if (!isStillNearSnappedWindow()) {
+                    exitWindowSnapping(false);
+                } else {
+                    followSnappedWindowWhileDragging();
+                }
+            }
+
             // TODO: 这里添加边界检查(防止拖到太边缘的位置)与打断现在的动作的逻辑
-            // TODO：吸附窗口部分的逻辑也可以在这里进行添加
         } else if ((currentPosition - dragStartPosition).manhattanLength() > threshold) {
             isDragging = true;
             isPressingModel = false;
+            beginDragAnimation();
         }
 
         event->accept();
@@ -266,7 +414,23 @@ void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
             }
         }
 
+        const bool wasDraggingThisRound = isDragging;
         isDragging = false;
+
+        if (wasDraggingThisRound && renderViewport && renderViewport->getRenderEngine() && renderViewport->getRenderEngine()->getAnimationPlayer()) {
+            renderViewport->getRenderEngine()->getAnimationPlayer()->triggerEvent("stop_drag");
+
+            if (pendingSnapOnRelease && pendingSnapTarget) {
+                snappedWindow = pendingSnapTarget;
+                snapFraction = pendingSnapFraction;
+                renderViewport->getRenderEngine()->getAnimationPlayer()->triggerEvent("window_sit");
+                refreshTopMostByState();
+                qDebug() << "[WindowSnap] committed on release, fraction=" << snapFraction;
+            }
+            pendingSnapOnRelease = false;
+            pendingSnapTarget = nullptr;
+        }
+
         isPressingModel = false;
         hitPartTag.clear();
         event->accept();
@@ -397,7 +561,11 @@ void PetWindow::setupAiBrain() {
 }
 
 void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
-    Qt::WindowFlags flags = Qt::FramelessWindowHint | Qt::WindowStaysOnTopHint;
+    Qt::WindowFlags flags = Qt::FramelessWindowHint;
+
+    if (alwaysOnTop) {
+        flags |= Qt::WindowStaysOnTopHint;
+    }
 
     if (clickThrough) {
         flags |= Qt::Tool;
@@ -412,6 +580,440 @@ void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
     if (isVisible()) {
         hide();
         show();
+    }
+}
+
+void PetWindow::setupWindowSnapping() {
+    snapFollowTimer = new QTimer(this);
+    connect(snapFollowTimer, &QTimer::timeout, this, [this]() {
+        updateCachedWindows();
+        updateSnapZone();
+
+        if (forceExitOnBigScreenAlarm && isBigScreenAlarm && snappedWindow) {
+            exitWindowSnapping(true);
+            return;
+        }
+
+        if (!snappedWindow) {
+            return;
+        }
+
+        bool found = false;
+        QRect snappedRect;
+        for (const auto& win : cachedWindows) {
+            if (win.hwnd == snappedWindow) {
+                found = true;
+                snappedRect = win.rect;
+                break;
+            }
+        }
+
+        if (!found) {
+            exitWindowSnapping(true);
+            return;
+        }
+
+        if (isWindowMaximized(snappedWindow) || isWindowFullscreen(snappedRect)) {
+            move(lastDesktopPosition);
+            exitWindowSnapping(true);
+            return;
+        }
+
+        if (isDragging) {
+            if (!isStillNearSnappedWindow()) {
+                exitWindowSnapping(false);
+                return;
+            }
+            followSnappedWindowWhileDragging();
+            return;
+        }
+
+        followSnappedWindow();
+    });
+    snapFollowTimer->start(snapFollowIntervalMs);
+
+    snapScanTimer = new QTimer(this);
+    connect(snapScanTimer, &QTimer::timeout, this, [this]() {
+        updateCachedWindows();
+        updateSnapZone();
+    });
+    snapScanTimer->start(std::max(100, snapFollowIntervalMs * 4));
+}
+
+void PetWindow::updateCachedWindows() {
+    cachedWindows.clear();
+
+#ifdef Q_OS_WIN
+    std::vector<NativeWindowCandidate> windows;
+    WinEnumContext ctx;
+    ctx.self = reinterpret_cast<HWND>(winId());
+    ctx.out = &windows;
+
+    EnumWindows(EnumWindowsProcForSnap, reinterpret_cast<LPARAM>(&ctx));
+
+    cachedWindows.reserve(windows.size());
+    for (const auto& w : windows) {
+        NativeWindowEntry e;
+        e.hwnd = w.hwnd;
+        e.rect = w.rect;
+        cachedWindows.push_back(e);
+    }
+#endif
+}
+
+void PetWindow::updateSnapZone() {
+    const QRect nativeRect = getNativeWindowRect();
+    const int cx = nativeRect.left() + nativeRect.width() / 2 + snapZoneOffset.x();
+    const int by = nativeRect.top() + nativeRect.height() + snapZoneOffset.y();
+
+    pinkZoneDesktopRect = QRect(
+        cx - snapZoneSize.width() / 2,
+        by,
+        snapZoneSize.width(),
+        snapZoneSize.height());
+}
+
+bool PetWindow::trySnap() {
+#ifdef Q_OS_WIN
+    const QRect nativeRect = getNativeWindowRect();
+    const int petCenterX = nativeRect.left() + nativeRect.width() / 2;
+
+    for (const auto& win : cachedWindows) {
+        if (!win.hwnd) continue;
+
+        const QRect& r = win.rect;
+        const int barMidX = r.left() + r.width() / 2;
+        const int barY = r.top() + 2;
+
+        POINT pt { barMidX, barY };
+        HWND hit = WindowFromPoint(pt);
+        HWND root = hit ? GetAncestor(hit, GA_ROOT) : nullptr;
+        if (root != reinterpret_cast<HWND>(win.hwnd)) {
+            continue;
+        }
+
+        const QRect topBar(r.left(), r.top(), r.width(), 5);
+        const QRect expandedTopBar = topBar.adjusted(-snapThreshold, -snapThreshold, snapThreshold, snapThreshold);
+        if (!pinkZoneDesktopRect.intersects(expandedTopBar)) {
+            continue;
+        }
+
+        lastDesktopPosition = nativeRect.topLeft();
+        pendingSnapTarget = win.hwnd;
+
+        const float winWidth = static_cast<float>(std::max(1, r.width()));
+        pendingSnapFraction = std::clamp((petCenterX - r.left()) / winWidth, 0.0f, 1.0f);
+
+        POINT cp {};
+        if (GetCursorPos(&cp)) {
+            snapCursorY = cp.y;
+        }
+
+        return true;
+    }
+#endif
+
+    return false;
+}
+
+bool PetWindow::isStillNearSnappedWindow() const {
+    if (!snappedWindow) {
+        return false;
+    }
+
+    for (const auto& win : cachedWindows) {
+        if (win.hwnd != snappedWindow) {
+            continue;
+        }
+
+        const QRect topBar(win.rect.left(), win.rect.top(), win.rect.width(), 5);
+
+#ifdef Q_OS_WIN
+        if (isDragging && isDraggingAnyWindowSitState()) {
+            POINT cp {};
+            if (!GetCursorPos(&cp)) {
+                return true;
+            }
+
+            const int vBand = std::max(4, snapZoneSize.height());
+            if (std::abs(cp.y - snapCursorY) > vBand) {
+                return false;
+            }
+        }
+#endif
+
+        return pinkZoneDesktopRect.intersects(topBar);
+    }
+
+    return false;
+}
+
+void PetWindow::followSnappedWindowWhileDragging() {
+    if (!snappedWindow) return;
+
+    for (const auto& win : cachedWindows) {
+        if (win.hwnd != snappedWindow) continue;
+
+        const QRect nativeRect = getNativeWindowRect();
+        const float petCenterX = static_cast<float>(nativeRect.left() + nativeRect.width() / 2);
+        const float winWidth = static_cast<float>(std::max(1, win.rect.width()));
+        snapFraction = std::clamp((petCenterX - win.rect.left()) / winWidth, 0.0f, 1.0f);
+
+        const int yOffset = nativeRect.height() + snapZoneOffset.y() + snapZoneSize.height() / 2;
+        int targetY = win.rect.top() - yOffset + snapVerticalOffset;
+        moveNativeWindow(nativeRect.left(), targetY);
+        return;
+    }
+}
+
+void PetWindow::followSnappedWindow() {
+    if (!snappedWindow) return;
+
+    for (const auto& win : cachedWindows) {
+        if (win.hwnd != snappedWindow) continue;
+
+        const float winWidth = static_cast<float>(std::max(1, win.rect.width()));
+        const float newCenterX = win.rect.left() + snapFraction * winWidth;
+        const QRect nativeRect = getNativeWindowRect();
+        const QRect bounds = getMovementBounds();
+        int targetX = static_cast<int>(std::lround(newCenterX - nativeRect.width() * 0.5f));
+
+        const int yOffset = nativeRect.height() + snapZoneOffset.y() + snapZoneSize.height() / 2;
+        const int targetY = win.rect.top() - yOffset + snapVerticalOffset;
+
+        // 已经顶到屏幕上边，且目标继续向上时，退出吸附并落到底部。
+        if (nativeRect.top() <= bounds.top() && targetY < bounds.top()) {
+            const int clampedX = std::clamp(targetX, bounds.left(), bounds.right() - nativeRect.width() + 1);
+            exitWindowSnapping(true);
+            startDropAnimation(clampedX);
+            return;
+        }
+
+        moveNativeWindow(targetX, targetY);
+        qDebug() << "[WindowSnap] follow target=" << QPoint(targetX, targetY);
+        return;
+    }
+
+    exitWindowSnapping(true);
+}
+
+void PetWindow::exitWindowSnapping(bool triggerWindowStand) {
+    if (!snappedWindow) return;
+
+    snappedWindow = nullptr;
+    pendingSnapOnRelease = false;
+    pendingSnapTarget = nullptr;
+    refreshTopMostByState();
+
+    if (triggerWindowStand && renderViewport && renderViewport->getRenderEngine() && renderViewport->getRenderEngine()->getAnimationPlayer()) {
+        renderViewport->getRenderEngine()->getAnimationPlayer()->triggerEvent("window_stand");
+    }
+}
+
+bool PetWindow::isWindowMaximized(void* hwnd) const {
+#ifdef Q_OS_WIN
+    return isWindowMaximizedByPlacement(reinterpret_cast<HWND>(hwnd));
+#else
+    Q_UNUSED(hwnd);
+    return false;
+#endif
+}
+
+bool PetWindow::isWindowFullscreen(const QRect& rect) const {
+    QScreen* screen = QGuiApplication::screenAt(rect.center());
+    if (!screen) {
+        screen = QGuiApplication::primaryScreen();
+    }
+    if (!screen) return false;
+
+    const QRect screenRect = screen->geometry();
+    const int tolerance = 2;
+    return std::abs(rect.width() - screenRect.width()) <= tolerance &&
+           std::abs(rect.height() - screenRect.height()) <= tolerance;
+}
+
+void PetWindow::refreshTopMostByState() {
+    const bool shouldTopMost = (!snappedWindow) && alwaysOnTop;
+    applyTopMostRuntime(shouldTopMost);
+}
+
+void PetWindow::applyTopMostRuntime(bool topMost) {
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (!hwnd) {
+        return;
+    }
+
+    SetWindowPos(
+        hwnd,
+        topMost ? HWND_TOPMOST : HWND_NOTOPMOST,
+        0,
+        0,
+        0,
+        0,
+        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+#else
+    updateWindowFlags(topMost, clickThrough);
+#endif
+}
+
+QRect PetWindow::getNativeWindowRect() const {
+#ifdef Q_OS_WIN
+    RECT r {};
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (hwnd && GetWindowRect(hwnd, &r)) {
+        return QRect(r.left, r.top, r.right - r.left, r.bottom - r.top);
+    }
+#endif
+    return frameGeometry();
+}
+
+QRect PetWindow::getMovementBounds() const {
+#ifdef Q_OS_WIN
+    const int left = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    const int top = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    const int widthPx = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    const int heightPx = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    if (widthPx > 0 && heightPx > 0) {
+        return QRect(left, top, widthPx, heightPx);
+    }
+#endif
+
+    QScreen* primary = QGuiApplication::primaryScreen();
+    if (!primary) {
+        return QRect(0, 0, width(), height());
+    }
+    return primary->virtualGeometry();
+}
+
+void PetWindow::moveNativeWindow(int x, int y) {
+    const QRect nativeRect = getNativeWindowRect();
+    const QRect bounds = getMovementBounds();
+
+    int clampedX = x;
+    int clampedY = y;
+
+    const int maxX = bounds.right() - nativeRect.width() + 1;
+    const int maxY = bounds.bottom() - nativeRect.height() + 1;
+    clampedX = std::clamp(clampedX, bounds.left(), maxX);
+    clampedY = std::clamp(clampedY, bounds.top(), maxY);
+
+#ifdef Q_OS_WIN
+    const HWND hwnd = reinterpret_cast<HWND>(winId());
+    if (hwnd) {
+        SetWindowPos(
+            hwnd,
+            nullptr,
+            clampedX,
+            clampedY,
+            nativeRect.width(),
+            nativeRect.height(),
+            SWP_NOZORDER | SWP_NOACTIVATE);
+        return;
+    }
+#endif
+    move(clampedX, clampedY);
+}
+
+void PetWindow::setupDropAnimation() {
+    dropTimer = new QTimer(this);
+    dropTimer->setInterval(16);
+
+    connect(dropTimer, &QTimer::timeout, this, [this]() {
+        if (!isDropping) {
+            return;
+        }
+
+        const qint64 nowMs = QDateTime::currentMSecsSinceEpoch();
+        float dt = 0.016f;
+        if (dropLastTickMs > 0) {
+            dt = static_cast<float>(nowMs - dropLastTickMs) / 1000.0f;
+            dt = std::clamp(dt, 0.005f, 0.05f);
+        }
+        dropLastTickMs = nowMs;
+
+        dropVelocity += dropAccel * dt;
+        dropPosY += dropVelocity * dt;
+
+        int currentY = static_cast<int>(std::lround(dropPosY));
+        if (currentY >= dropTargetY) {
+            currentY = dropTargetY;
+            moveNativeWindow(dropFixedX, currentY);
+            stopDropAnimation();
+            qDebug() << "[WindowSnap] drop finished at" << QPoint(dropFixedX, currentY);
+            return;
+        }
+
+        moveNativeWindow(dropFixedX, currentY);
+    });
+}
+
+void PetWindow::startDropAnimation(int targetX) {
+    const QRect nativeRect = getNativeWindowRect();
+    const QRect bounds = getMovementBounds();
+
+    dropFixedX = std::clamp(targetX, bounds.left(), bounds.right() - nativeRect.width() + 1);
+    dropTargetY = bounds.bottom() - nativeRect.height() + 1;
+    dropPosY = static_cast<float>(nativeRect.top());
+    dropVelocity = 0.0f;
+
+    const float distance = std::max(0.0f, static_cast<float>(dropTargetY) - dropPosY);
+    constexpr float kDropDurationSec = 2.0f;
+    dropAccel = (kDropDurationSec > 0.0f) ? (2.0f * distance) / (kDropDurationSec * kDropDurationSec) : 0.0f;
+
+    isDropping = true;
+    dropLastTickMs = QDateTime::currentMSecsSinceEpoch();
+    if (dropTimer) {
+        dropTimer->start();
+    }
+
+    qDebug() << "[WindowSnap] drop start from" << QPoint(nativeRect.left(), nativeRect.top())
+             << "to" << QPoint(dropFixedX, dropTargetY)
+             << "duration~2s accel=" << dropAccel;
+}
+
+void PetWindow::stopDropAnimation() {
+    isDropping = false;
+    dropVelocity = 0.0f;
+    dropAccel = 0.0f;
+    dropLastTickMs = 0;
+    if (dropTimer) {
+        dropTimer->stop();
+    }
+}
+
+void PetWindow::beginDragAnimation() {
+    if (!renderViewport || !renderViewport->getRenderEngine()) {
+        return;
+    }
+    auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+    if (!player) {
+        return;
+    }
+
+    const std::string before = player->getCurrentStateName();
+    player->triggerEvent("start_drag");
+    const std::string after = player->getCurrentStateName();
+
+    if (after == before || after != "Drag") {
+        player->changeState("Drag", 0.1);
+        qDebug() << "[WindowSnap] force change to Drag from" << before.c_str();
+    }
+}
+
+bool PetWindow::isDraggingAnyWindowSitState() const {
+    if (!renderViewport || !renderViewport->getRenderEngine() || !renderViewport->getRenderEngine()->getAnimationPlayer()) {
+        return false;
+    }
+
+    const std::string state = renderViewport->getRenderEngine()->getAnimationPlayer()->getCurrentStateName();
+    return state == "WindowSit" || state == "Drag";
+}
+
+void PetWindow::setBigScreenAlarm(bool on) {
+    isBigScreenAlarm = on;
+    if (forceExitOnBigScreenAlarm && isBigScreenAlarm && snappedWindow) {
+        exitWindowSnapping(true);
     }
 }
 

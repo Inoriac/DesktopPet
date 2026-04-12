@@ -128,6 +128,33 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                 colliderConfigs.emplace_back(bone, r, offset, worldOffset, tag);
             }
         }
+
+        if (interaction.contains("windowSnapping") && interaction["windowSnapping"].isObject()) {
+            QJsonObject windowSnapping = interaction["windowSnapping"].toObject();
+            windowSnapThreshold = windowSnapping["snapThreshold"].toInt(30);
+            windowSnapVerticalOffset = windowSnapping["verticalOffset"].toInt(0);
+            windowSnapFollowIntervalMs = windowSnapping["followIntervalMs"].toInt(16);
+            if (windowSnapFollowIntervalMs < 5) {
+                windowSnapFollowIntervalMs = 5;
+            }
+
+            if (windowSnapping.contains("snapZoneOffset") && windowSnapping["snapZoneOffset"].isArray()) {
+                QJsonArray zoneOffsetArr = windowSnapping["snapZoneOffset"].toArray();
+                if (zoneOffsetArr.size() >= 2) {
+                    windowSnapZoneOffset = QPoint(zoneOffsetArr[0].toInt(0), zoneOffsetArr[1].toInt(-5));
+                }
+            }
+
+            if (windowSnapping.contains("snapZoneSize") && windowSnapping["snapZoneSize"].isArray()) {
+                QJsonArray zoneSizeArr = windowSnapping["snapZoneSize"].toArray();
+                if (zoneSizeArr.size() >= 2) {
+                    windowSnapZoneSize = QSize(zoneSizeArr[0].toInt(100), zoneSizeArr[1].toInt(10));
+                }
+            }
+
+            windowSnapForceExitOnBigScreenAlarm = windowSnapping["forceExitOnBigScreenAlarm"].toBool(true);
+            totalWindowSitAnimations = windowSnapping["totalWindowSitAnimations"].toInt(0);
+        }
     }
 
     // 读取 AI 配置

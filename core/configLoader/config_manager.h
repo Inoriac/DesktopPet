@@ -8,6 +8,8 @@
 #include <QJsonObject>
 #include <QString>
 #include <QJsonDocument>
+#include <QPoint>
+#include <QSize>
 
 #include "global_types.h"
 #include "ai_types.h"
@@ -37,6 +39,15 @@ public:
 
     int getDragThreshold() const { return dragThreshold; }
     int getClickTimeout() const { return clickTimeout; }
+
+    // 窗口吸附参数
+    int getWindowSnapThreshold() const { return windowSnapThreshold; }
+    int getWindowSnapVerticalOffset() const { return windowSnapVerticalOffset; }
+    QPoint getWindowSnapZoneOffset() const { return windowSnapZoneOffset; }
+    QSize getWindowSnapZoneSize() const { return windowSnapZoneSize; }
+    int getWindowSnapFollowIntervalMs() const { return windowSnapFollowIntervalMs; }
+    bool getWindowSnapForceExitOnBigScreenAlarm() const { return windowSnapForceExitOnBigScreenAlarm; }
+    int getTotalWindowSitAnimations() const { return totalWindowSitAnimations; }
 
     // 获取碰撞配置列表
     const std::vector<BoneCollider>& getColliderConfigs() const { return colliderConfigs; }
@@ -74,6 +85,15 @@ private:
     // 触摸相关参数
     int dragThreshold = 5;
     int clickTimeout = 200;
+
+    // 窗口吸附参数
+    int windowSnapThreshold = 30;
+    int windowSnapVerticalOffset = 0;
+    QPoint windowSnapZoneOffset {0, -5};
+    QSize windowSnapZoneSize {100, 10};
+    int windowSnapFollowIntervalMs = 16;
+    bool windowSnapForceExitOnBigScreenAlarm = true;
+    int totalWindowSitAnimations = 0;
 
     std::vector<BoneCollider> colliderConfigs;
 

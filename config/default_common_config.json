@@ -16,6 +16,16 @@
   "interactionSettings": {
     "dragThreshold": 5,
     "clickTimeout": 500,
+    "windowSnapping": {
+      "enabled": true,
+      "snapThreshold": 30,
+      "verticalOffset": 0,
+      "snapZoneOffset": [0, -5],
+      "snapZoneSize": [100, 10],
+      "followIntervalMs": 16,
+      "forceExitOnBigScreenAlarm": true,
+      "totalWindowSitAnimations": 0
+    },
     "colliders": [
       {
         "bone": "Head",
