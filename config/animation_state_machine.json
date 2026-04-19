@@ -4,7 +4,7 @@
   "states": [
     { "name": "Intro", "loop": false, "clipOptions": [] },
     { "name": "Idle", "loop": true, "clipOptions": [] },
-    { "name": "Dance", "loop": true, "clipOptions": [] },
+    { "name": "Dance", "loop": false, "clipOptions": [] },
     { "name": "Sitting", "loop": true, "folder": "Sitting", "clipMatch": "SITTING|suwari|sippose", "clipOptions": [] },
     { "name": "Sleeping", "loop": true, "clipOptions": [] },
 

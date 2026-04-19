@@ -62,6 +62,8 @@ private:
     bool isToolCallAllowed(const QString& triggerTag,
                            const LlmToolCall& call,
                            QString& denialReason) const;
+    void scheduleIdleRetryIfBusyFailure(const QString& toolName,
+                                        const QString& toolPayload);
 
 private:
     QString m_petName;
@@ -77,6 +79,7 @@ private:
     bool m_enabled = true;
     bool m_running = false;
     bool m_busy = false;
+    bool m_idleRetryScheduled = false;
 
     int m_maxToolRounds = 3;
     int m_maxMemoryMessages = 20;

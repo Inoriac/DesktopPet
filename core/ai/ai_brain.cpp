@@ -54,6 +54,7 @@ void AIBrain::stop() {
     m_idleTriggerTimer.stop();
     m_emotionTriggerTimer.stop();
     m_chatTriggerTimer.stop();
+    m_idleRetryScheduled = false;
 }
 
 void AIBrain::triggerThink(const QString& reason,
@@ -204,6 +205,10 @@ void AIBrain::thinkInternal(const QString& reason,
                 ToolResult result = m_toolRegistry->executeTool(call.name, call.arguments);
                 const QString payload = QString::fromUtf8(QJsonDocument(result.toJson()).toJson(QJsonDocument::Compact));
 
+                if (!result.success) {
+                    scheduleIdleRetryIfBusyFailure(call.name, payload);
+                }
+
                 ChatMessage toolMessage;
                 toolMessage.role = "tool";
                 toolMessage.name = call.name;
@@ -296,13 +301,23 @@ bool AIBrain::isToolCallAllowed(const QString& triggerTag,
                                 const LlmToolCall& call,
                                 QString& denialReason) const {
     // 仅约束主动动作切换类 tool，其它 tool 默认允许。
-    if (call.name != "play_animation") {
+    if (call.name != "play_animation" && call.name != "request_idle_transition") {
         return true;
     }
 
-    const QString state = call.arguments.value("state").toString();
+    QString state;
+    if (call.name == "request_idle_transition") {
+        state = call.arguments.value("target_action").toString();
+    } else {
+        state = call.arguments.value("state").toString();
+    }
     if (state.isEmpty()) {
-        denialReason = "play_animation missing required field: state";
+        denialReason = QString("%1 missing required state field").arg(call.name);
+        return false;
+    }
+
+    if (state.startsWith("Touch", Qt::CaseInsensitive)) {
+        denialReason = QString("Action '%1' is touch-only and managed by local interaction pipeline").arg(state);
         return false;
     }
 
@@ -319,4 +334,45 @@ bool AIBrain::isToolCallAllowed(const QString& triggerTag,
     }
 
     return true;
+}
+
+void AIBrain::scheduleIdleRetryIfBusyFailure(const QString& toolName,
+                                             const QString& toolPayload) {
+    if (toolName != "play_animation" && toolName != "request_idle_transition") {
+        return;
+    }
+    if (m_idleRetryScheduled) {
+        return;
+    }
+
+    const QJsonDocument payloadDoc = QJsonDocument::fromJson(toolPayload.toUtf8());
+    if (!payloadDoc.isObject()) {
+        return;
+    }
+    const QJsonObject payloadObj = payloadDoc.object();
+    if (payloadObj.value("success").toBool(true)) {
+        return;
+    }
+
+    const QString errorMessage = payloadObj.value("error").toString();
+    if (!errorMessage.contains("busy", Qt::CaseInsensitive)) {
+        return;
+    }
+
+    m_idleRetryScheduled = true;
+    const int delayMs = QRandomGenerator::global()->bounded(3000, 8001);
+    QTimer::singleShot(delayMs, this, [this]() {
+        m_idleRetryScheduled = false;
+
+        if (!m_running || !m_enabled) {
+            return;
+        }
+
+        if (m_busy) {
+            scheduleTrigger("idle_action");
+            return;
+        }
+
+        triggerThink("busy_retry", "idle_action");
+    });
 }

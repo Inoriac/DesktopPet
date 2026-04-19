@@ -494,9 +494,9 @@ void PetWindow::keyPressEvent(QKeyEvent *event) {
 
 void PetWindow::setupWindow() {
     // 设置窗口属性
-    // setAttribute(Qt::WA_TranslucentBackground, true);
-    // setAttribute(Qt::WA_NoSystemBackground, true);
-    // setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    setAttribute(Qt::WA_TranslucentBackground, true);
+    setAttribute(Qt::WA_NoSystemBackground, true);
+    setAttribute(Qt::WA_TransparentForMouseEvents, true);
 
     // 设置窗口标志
     updateWindowFlags(alwaysOnTop, clickThrough);
@@ -540,14 +540,22 @@ void PetWindow::setupAiBrain() {
     }
 
     auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
+    auto* animationManager = renderViewport->getAnimationManager();
     if (!player) {
         qWarning() << "[AIBrain] AnimationPlayer not ready, skip setup";
+        return;
+    }
+    if (!animationManager) {
+        qWarning() << "[AIBrain] AnimationManager not ready, skip setup";
         return;
     }
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
     aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
+    aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));
+    aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(player));
+    aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
 
     aiBrain->setPetName(modelName);

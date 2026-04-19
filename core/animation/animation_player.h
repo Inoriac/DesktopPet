@@ -57,6 +57,9 @@ public:
 
     std::string getCurrentClipName() const { return currentClip ? currentClip->name : "None"; }
 
+    double getCurrentTimeSeconds() const { return currentTime; }
+    bool isCrossFading() const { return m_crossfader.isFading(); }
+
     // 鼠标追踪输入（屏幕空间方向，范围 [-1,1]，以头部中心->光标向量归一化得到）
     void setScreenLookVector(const QVector2D& screenLookVector);
     void setMouseTrackingEnabled(bool enabled) { mouseTrackingEnabled = enabled; }
