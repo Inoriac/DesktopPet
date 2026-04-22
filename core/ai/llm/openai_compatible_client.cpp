@@ -12,6 +12,7 @@
 
 OpenAICompatibleClient::OpenAICompatibleClient() = default;
 
+// 发送异步请求，回调在 Qt 事件循环中触发，统一返回成功结果或错误
 void OpenAICompatibleClient::sendChatCompletionAsync(const LlmConfig& config,
                                                      const QList<ChatMessage>& messages,
                                                      const QJsonArray& tools,
