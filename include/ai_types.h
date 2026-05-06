@@ -52,6 +52,7 @@ struct LlmConfig {
     QString baseUrl = "https://api.openai.com/v1";
     QString apiKey;
     QString model = "gpt-4o-mini";
+    QString visualModel = "Qwen/Qwen3-VL-32B-Thinking";
 
     int timeoutMs = 30000;
     int maxTokens = 512;
@@ -61,6 +62,22 @@ struct LlmConfig {
 
     // 为兼容不同网关保留扩展参数。
     QJsonObject extraParams;
+};
+
+// 屏幕识别对话配置
+struct ScreenChatConfig {
+    bool enabled = false;
+    int minIntervalMs = 8 * 60 * 1000;
+    int maxIntervalMs = 12 * 60 * 1000;
+
+    // 气泡样式和布局
+    int bubbleOpacityPercent = 80;
+    int bubbleFontSize = 14;
+    int bubbleOffsetX = 0;
+    int bubbleOffsetY = -20;
+    int bubbleDurationMs = 8000;
+
+    QString petGender = "female";
 };
 
 // 单个触发器的调度配置

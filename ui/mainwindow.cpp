@@ -148,6 +148,45 @@ void MainWindow::createCentralWidget() {
     soundEnabledCheckBox = new QCheckBox("Sound enabled");
     soundEnabledCheckBox->setChecked(false);
 
+    const ScreenChatConfig& defaultScreenChat = ConfigManager::instance().getScreenChatConfig();
+    autoScreenChatCheckBox = new QCheckBox("Auto screen chat (8-12 min)");
+    autoScreenChatCheckBox->setChecked(defaultScreenChat.enabled);
+
+    QHBoxLayout* bubbleOpacityLayout = new QHBoxLayout;
+    QLabel* bubbleOpacityLabel = new QLabel("气泡透明度:");
+    bubbleOpacitySlider = new QSlider(Qt::Horizontal);
+    bubbleOpacitySlider->setRange(10, 100);
+    bubbleOpacitySlider->setValue(defaultScreenChat.bubbleOpacityPercent);
+    bubbleOpacitySpinBox = new QSpinBox;
+    bubbleOpacitySpinBox->setRange(10, 100);
+    bubbleOpacitySpinBox->setValue(defaultScreenChat.bubbleOpacityPercent);
+    bubbleOpacitySpinBox->setSuffix("%");
+    bubbleOpacityLayout->addWidget(bubbleOpacityLabel);
+    bubbleOpacityLayout->addWidget(bubbleOpacitySlider);
+    bubbleOpacityLayout->addWidget(bubbleOpacitySpinBox);
+
+    QHBoxLayout* bubbleFontLayout = new QHBoxLayout;
+    QLabel* bubbleFontLabel = new QLabel("气泡字号:");
+    bubbleFontSizeSpinBox = new QSpinBox;
+    bubbleFontSizeSpinBox->setRange(10, 36);
+    bubbleFontSizeSpinBox->setValue(defaultScreenChat.bubbleFontSize);
+    bubbleFontSizeSpinBox->setSuffix("px");
+    bubbleFontLayout->addWidget(bubbleFontLabel);
+    bubbleFontLayout->addWidget(bubbleFontSizeSpinBox);
+    bubbleFontLayout->addStretch();
+
+    QHBoxLayout* bubbleOffsetLayout = new QHBoxLayout;
+    QLabel* bubbleOffsetLabel = new QLabel("气泡位置偏移(X/Y):");
+    bubbleOffsetXSpinBox = new QSpinBox;
+    bubbleOffsetXSpinBox->setRange(-300, 300);
+    bubbleOffsetXSpinBox->setValue(defaultScreenChat.bubbleOffsetX);
+    bubbleOffsetYSpinBox = new QSpinBox;
+    bubbleOffsetYSpinBox->setRange(-300, 300);
+    bubbleOffsetYSpinBox->setValue(defaultScreenChat.bubbleOffsetY);
+    bubbleOffsetLayout->addWidget(bubbleOffsetLabel);
+    bubbleOffsetLayout->addWidget(bubbleOffsetXSpinBox);
+    bubbleOffsetLayout->addWidget(bubbleOffsetYSpinBox);
+
     // 音量设置
     QHBoxLayout *volumeLayout = new QHBoxLayout;
     volumeLabel = new QLabel("Volume");
@@ -164,6 +203,10 @@ void MainWindow::createCentralWidget() {
     settingsLayout->addWidget(alwaysOnTopCheckBox);
     settingsLayout->addWidget(clickThroughCheckBox);
     settingsLayout->addWidget(aiEnabledCheckBox);
+    settingsLayout->addWidget(autoScreenChatCheckBox);
+    settingsLayout->addLayout(bubbleOpacityLayout);
+    settingsLayout->addLayout(bubbleFontLayout);
+    settingsLayout->addLayout(bubbleOffsetLayout);
     settingsLayout->addWidget(soundEnabledCheckBox);
     settingsLayout->addLayout(volumeLayout);
 
@@ -180,10 +223,17 @@ void MainWindow::setupConnections() {
 
     connect(sizeSlider, &QSlider::valueChanged, sizeSpinBox, &QSpinBox::setValue);
     connect(sizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), sizeSlider, &QSlider::setValue);
+    connect(bubbleOpacitySlider, &QSlider::valueChanged, bubbleOpacitySpinBox, &QSpinBox::setValue);
+    connect(bubbleOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged), bubbleOpacitySlider, &QSlider::setValue);
 
     connect(alwaysOnTopCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(clickThroughCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(aiEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(autoScreenChatCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(bubbleOpacitySlider, &QSlider::valueChanged, this, &MainWindow::OnBubbleAppearanceChanged);
+    connect(bubbleFontSizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
+    connect(bubbleOffsetXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
+    connect(bubbleOffsetYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
     connect(soundEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(volumeSlider, &QSlider::valueChanged, this, &MainWindow::OnSettingsChanged);
 }
@@ -231,13 +281,15 @@ void MainWindow::OnStartPet() {
     bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
     bool clickThrough = clickThroughCheckBox->isChecked();
     bool aiEnabled = aiEnabledCheckBox->isChecked();
+    const ScreenChatConfig screenChatConfig = buildScreenChatConfigFromUi();
     ConfigManager::instance().setLlmEnabled(aiEnabled);
-    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled);
+    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled, screenChatConfig);
 
     activePetWindow->show();
 
     startPetButton->setEnabled(false);
     stopPetButton->setEnabled(true);
+    setWindowFlagControlsLocked(true);
 
     // QMessageBox::information(this, "提示", QString("宠物 %1 已启动！").arg(petName));
     statusLabel->setText(QString("%1 正在运行").arg(petName));
@@ -267,6 +319,7 @@ void MainWindow::OnStopPet() {
 
     startPetButton->setEnabled(true);
     stopPetButton->setEnabled(false);
+    setWindowFlagControlsLocked(false);
 
     // QMessageBox::information(this, "提示", QString("宠物 %1 已停止！").arg(petName));
     statusLabel->setText("就绪");
@@ -281,10 +334,38 @@ void MainWindow::OnSettingsChanged() {
 
     if(activePetWindow){
         int sizePercent = sizeSlider->value();
-        bool alwaysOnTop = alwaysOnTopCheckBox->isChecked();
-        bool clickThrough = clickThroughCheckBox->isChecked();
-        activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled);
+        const ScreenChatConfig screenChatConfig = buildScreenChatConfigFromUi();
+        activePetWindow->applyRuntimeSettings(sizePercent, aiEnabled, screenChatConfig);
     }
+}
+
+void MainWindow::OnBubbleAppearanceChanged() {
+    OnSettingsChanged();
+    if (activePetWindow) {
+        activePetWindow->previewBubble();
+    }
+}
+
+void MainWindow::setWindowFlagControlsLocked(bool locked) {
+    if (alwaysOnTopCheckBox) {
+        alwaysOnTopCheckBox->setEnabled(!locked);
+    }
+    if (clickThroughCheckBox) {
+        clickThroughCheckBox->setEnabled(!locked);
+    }
+}
+
+ScreenChatConfig MainWindow::buildScreenChatConfigFromUi() const {
+    ScreenChatConfig cfg = ConfigManager::instance().getScreenChatConfig();
+    cfg.enabled = autoScreenChatCheckBox ? autoScreenChatCheckBox->isChecked() : cfg.enabled;
+    cfg.bubbleOpacityPercent = bubbleOpacitySlider ? bubbleOpacitySlider->value() : cfg.bubbleOpacityPercent;
+    cfg.bubbleFontSize = bubbleFontSizeSpinBox ? bubbleFontSizeSpinBox->value() : cfg.bubbleFontSize;
+    cfg.bubbleOffsetX = bubbleOffsetXSpinBox ? bubbleOffsetXSpinBox->value() : cfg.bubbleOffsetX;
+    cfg.bubbleOffsetY = bubbleOffsetYSpinBox ? bubbleOffsetYSpinBox->value() : cfg.bubbleOffsetY;
+    cfg.minIntervalMs = 8 * 60 * 1000;
+    cfg.maxIntervalMs = 12 * 60 * 1000;
+    cfg.petGender = "female";
+    return cfg;
 }
 
 void MainWindow::OnAbout() {

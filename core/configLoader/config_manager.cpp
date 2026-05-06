@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QFile>
 #include <QDebug>
+#include <algorithm>
 
 static QStringList jsonArrayToStringList(const QJsonArray& arr) {
     QStringList list;
@@ -31,6 +32,10 @@ static AiTriggerConfig parseTriggerConfig(const QJsonObject& triggerObj,
     if (cfg.maxIntervalMs < cfg.minIntervalMs) cfg.maxIntervalMs = cfg.minIntervalMs;
 
     return cfg;
+}
+
+static int clampInt(int value, int minValue, int maxValue) {
+    return std::max(minValue, std::min(value, maxValue));
 }
 
 ConfigManager::ConfigManager() {
@@ -162,6 +167,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     // 1) aiSettings 直接包含字段
     // 2) aiSettings.profiles + activeProfile
     llmConfig = LlmConfig{};
+    screenChatConfig = ScreenChatConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiBehaviorPolicy.idleActionWhitelist = {
         "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
@@ -197,6 +203,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         llmConfig.baseUrl = aiRaw.value("baseUrl").toString("https://api.openai.com/v1");
         llmConfig.apiKey = aiRaw.value("apiKey").toString("");
         llmConfig.model = aiRaw.value("model").toString("gpt-4o-mini");
+        llmConfig.visualModel = aiRaw.value("visual_model").toString(llmConfig.model);
 
         llmConfig.timeoutMs = aiRaw.value("timeoutMs").toInt(30000);
         llmConfig.maxTokens = aiRaw.value("maxTokens").toInt(512);
@@ -206,6 +213,42 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
         if (aiRaw.contains("extraParams") && aiRaw.value("extraParams").isObject()) {
             llmConfig.extraParams = aiRaw.value("extraParams").toObject();
+        }
+
+        if (aiRaw.contains("screenChat") && aiRaw.value("screenChat").isObject()) {
+            const QJsonObject screenChatObj = aiRaw.value("screenChat").toObject();
+            screenChatConfig.enabled = screenChatObj.value("enabled").toBool(false);
+            screenChatConfig.minIntervalMs = screenChatObj.value("minIntervalMs").toInt(8 * 60 * 1000);
+            screenChatConfig.maxIntervalMs = screenChatObj.value("maxIntervalMs").toInt(12 * 60 * 1000);
+
+            if (screenChatConfig.minIntervalMs < 1000) {
+                screenChatConfig.minIntervalMs = 1000;
+            }
+            if (screenChatConfig.maxIntervalMs < screenChatConfig.minIntervalMs) {
+                screenChatConfig.maxIntervalMs = screenChatConfig.minIntervalMs;
+            }
+
+            screenChatConfig.bubbleOpacityPercent = clampInt(
+                screenChatObj.value("bubbleOpacityPercent").toInt(80),
+                10,
+                100);
+            screenChatConfig.bubbleFontSize = clampInt(
+                screenChatObj.value("bubbleFontSize").toInt(14),
+                10,
+                36);
+            screenChatConfig.bubbleOffsetX = screenChatObj.value("bubbleOffsetX").toInt(0);
+            screenChatConfig.bubbleOffsetY = screenChatObj.value("bubbleOffsetY").toInt(-20);
+            screenChatConfig.bubbleDurationMs = clampInt(
+                screenChatObj.value("bubbleDurationMs").toInt(8000),
+                1000,
+                30000);
+
+            const QString gender = screenChatObj.value("petGender").toString("female").trimmed().toLower();
+            if (gender == "male" || gender == "female" || gender == "neutral") {
+                screenChatConfig.petGender = gender;
+            } else {
+                screenChatConfig.petGender = "female";
+            }
         }
 
         // 读取行为策略

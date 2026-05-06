@@ -71,13 +71,25 @@
         "enabled": true,
         "provider": "openai-compatible",
         "baseUrl": "https://api.siliconflow.cn/v1",
-        "apiKey": "sk-mhrkjzdfyzamtsgarzyagsotmqblgovbknvchfmwgyyrxgdn",
+        "apiKey": "sk-mlpqwojgwerjvktoexemixbjsnzakdyphynbypbbezzfgwse",
         "model": "Qwen/Qwen2.5-72B-Instruct",
+        "visual_model": "Qwen/Qwen3-VL-32B-Thinking",
         "timeoutMs": 30000,
         "maxTokens": 512,
         "temperature": 0.7,
         "retryCount": 1,
         "thinkIntervalMs": 30000,
+        "screenChat": {
+          "enabled": false,
+          "minIntervalMs": 480000,
+          "maxIntervalMs": 720000,
+          "bubbleOpacityPercent": 80,
+          "bubbleFontSize": 14,
+          "bubbleOffsetX": 0,
+          "bubbleOffsetY": -20,
+          "bubbleDurationMs": 8000,
+          "petGender": "female"
+        },
         "behaviorPolicy": {
           "idleActionWhitelist": [
             "Idle",

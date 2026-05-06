@@ -16,8 +16,21 @@
 #include <QGuiApplication>
 #include <QDateTime>
 #include <QRandomGenerator>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QNetworkReply>
+#include <QNetworkRequest>
+#include <QBuffer>
+#include <QDir>
+#include <QFile>
+#include <QRegularExpression>
+#include <QUrl>
+#include <QUuid>
 #include <algorithm>
 #include <cmath>
+#include <QFontMetrics>
+#include <QColor>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -89,8 +102,63 @@ bool isWindowMaximizedByPlacement(HWND hwnd) {
     return placement.showCmd == SW_MAXIMIZE;
 }
 
+void enableBlurBehindWindow(HWND hwnd) {
+    if (!hwnd) return;
+    HMODULE dwmapi = LoadLibraryW(L"dwmapi.dll");
+    if (!dwmapi) return;
+
+    using DwmEnableBlurBehindWindowFn = HRESULT (WINAPI*)(HWND, const DWM_BLURBEHIND*);
+    auto fn = reinterpret_cast<DwmEnableBlurBehindWindowFn>(
+        GetProcAddress(dwmapi, "DwmEnableBlurBehindWindow"));
+    if (!fn) {
+        FreeLibrary(dwmapi);
+        return;
+    }
+
+    DWM_BLURBEHIND bb {};
+    bb.dwFlags = DWM_BB_ENABLE;
+    bb.fEnable = TRUE;
+    bb.hRgnBlur = nullptr;
+    (void)fn(hwnd, &bb);
+
+    FreeLibrary(dwmapi);
+}
+
 }
 #endif
+
+namespace {
+QUrl buildCompletionsUrlFromBase(const QString& baseUrl) {
+    QString normalized = baseUrl.trimmed();
+    if (normalized.endsWith('/')) {
+        normalized.chop(1);
+    }
+    if (normalized.endsWith("/chat/completions")) {
+        return QUrl(normalized);
+    }
+    return QUrl(normalized + "/chat/completions");
+}
+
+QString extractJsonPayload(const QString& text) {
+    const QString trimmed = text.trimmed();
+    if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
+        return trimmed;
+    }
+
+    QRegularExpression fenced(R"(```(?:json)?\s*(\{[\s\S]*\})\s*```)");
+    QRegularExpressionMatch match = fenced.match(text);
+    if (match.hasMatch()) {
+        return match.captured(1);
+    }
+
+    const int start = text.indexOf('{');
+    const int end = text.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+        return text.mid(start, end - start + 1);
+    }
+    return {};
+}
+}
 
 PetWindow::PetWindow(const QString modelName, QWidget *parent)
     : QWidget(parent)
@@ -116,6 +184,7 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     setupContextMenu();
     setupWindowSnapping();
     setupDropAnimation();
+    setupScreenChat();
 
     aiBrain = std::make_unique<AIBrain>(this);
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
@@ -123,6 +192,9 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     });
     connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
         qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
+        Q_UNUSED(payload);
+        Q_UNUSED(success);
+        // No further action required here for now; keep as diagnostic hook.
     });
 }
 
@@ -139,35 +211,67 @@ PetWindow::~PetWindow() {
     if (renderViewport) {
         delete renderViewport;
     }
+    if (screenChatTimer) {
+        screenChatTimer->stop();
+    }
+    if (bubbleHideTimer) {
+        bubbleHideTimer->stop();
+    }
+    if (bubbleLabel) {
+        bubbleLabel->close();
+        bubbleLabel->deleteLater();
+        bubbleLabel = nullptr;
+    }
     if (contextMenu) {
         delete contextMenu;
     }
 }
 
-void PetWindow::applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough, bool aiEnabled) {
-    this->sizePercent = sizePercent;
+void PetWindow::applySettings(int sizePercent,
+                              bool alwaysOnTop,
+                              bool clickThrough,
+                              bool aiEnabled,
+                              const ScreenChatConfig& screenChatConfig) {
     this->alwaysOnTop = alwaysOnTop;
     this->clickThrough = clickThrough;
-    this->aiEnabled = aiEnabled;
 
     // 更新窗口标志
     updateWindowFlags(alwaysOnTop, clickThrough);
 
+    applyRuntimeSettings(sizePercent, aiEnabled, screenChatConfig);
+}
+
+void PetWindow::applyRuntimeSettings(int sizePercent,
+                                     bool aiEnabled,
+                                     const ScreenChatConfig& screenChatConfig) {
+    this->sizePercent = sizePercent;
+    this->aiEnabled = aiEnabled;
+    this->screenChatConfig = screenChatConfig;
+
     // 更新大小
     int baseSize = 400;
     int newSize = baseSize * sizePercent / 100;
-    resize(newSize, newSize);
+    if (size() != QSize(newSize, newSize)) {
+        resize(newSize, newSize);
+    }
 
-    qDebug() << "PetWindow setting applied - size:" << newSize;
+    qDebug() << "PetWindow runtime setting applied - size:" << newSize;
     qDebug() << "AI enabled:" << this->aiEnabled;
+    qDebug() << "Screen chat enabled:" << this->screenChatConfig.enabled;
 
-    if (aiBrain) {
-        aiBrain->setEnabled(this->aiEnabled);
-        if (this->aiEnabled) {
-            aiBrain->start();
-        } else {
-            aiBrain->stop();
-        }
+    refreshBubbleStyle();
+    updateBubblePosition();
+    updateScreenChatSchedule();
+}
+
+void PetWindow::previewBubble(const QString& message) {
+    const QString previewText = message.trimmed().isEmpty()
+        ? QStringLiteral("气泡预览：位置和样式会实时生效")
+        : message.trimmed();
+
+    showBubbleMessage(previewText);
+    if (bubbleHideTimer) {
+        bubbleHideTimer->start(2200);
     }
 }
 
@@ -221,6 +325,18 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
     connect(toggleBigScreenAlarmAction, &QAction::triggered, this, [this]() {
         setBigScreenAlarm(!isBigScreenAlarm);
         qDebug() << "BigScreenAlarm toggled:" << isBigScreenAlarm;
+    });
+
+    contextMenu->addSeparator();
+
+    manualScreenChatAction = contextMenu->addAction("手动触发屏幕识别对话(调试)");
+    connect(manualScreenChatAction, &QAction::triggered, this, [this]() {
+        triggerScreenChatNow("manual_menu");
+    });
+
+    debugCaptureOnlyAction = contextMenu->addAction("仅截图并保存到log(调试)");
+    connect(debugCaptureOnlyAction, &QAction::triggered, this, [this]() {
+        triggerScreenChat(true, "manual_capture_only");
     });
 
     contextMenu->addSeparator();
@@ -439,6 +555,7 @@ void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
 
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
+    hideBubbleMessage();
     if (aiBrain) {
         aiBrain->stop();
     }
@@ -566,6 +683,296 @@ void PetWindow::setupAiBrain() {
         aiBrain->start();
         qDebug() << "[AIBrain] started for pet:" << modelName;
     }
+}
+
+void PetWindow::setupScreenChat() {
+    screenChatTimer = new QTimer(this);
+    screenChatTimer->setSingleShot(true);
+    connect(screenChatTimer, &QTimer::timeout, this, [this]() {
+        triggerScreenChat(false, "timer");
+    });
+
+    bubbleHideTimer = new QTimer(this);
+    bubbleHideTimer->setSingleShot(true);
+    connect(bubbleHideTimer, &QTimer::timeout, this, &PetWindow::hideBubbleMessage);
+
+    bubbleLabel = new QLabel(nullptr);
+    bubbleLabel->setWindowFlag(Qt::FramelessWindowHint, true);
+    bubbleLabel->setWindowFlag(Qt::Tool, true);
+    bubbleLabel->setWindowFlag(Qt::WindowStaysOnTopHint, true);
+    bubbleLabel->setAttribute(Qt::WA_TranslucentBackground, true);
+    bubbleLabel->setAttribute(Qt::WA_StyledBackground, true);
+    bubbleLabel->setAttribute(Qt::WA_ShowWithoutActivating, true);
+    bubbleLabel->setAlignment(Qt::AlignCenter);
+    bubbleLabel->setWordWrap(true);
+    bubbleLabel->hide();
+
+#ifdef Q_OS_WIN
+    bubbleLabel->winId();
+    enableBlurBehindWindow(reinterpret_cast<HWND>(bubbleLabel->winId()));
+#endif
+
+    refreshBubbleStyle();
+}
+
+void PetWindow::updateScreenChatSchedule() {
+    if (!screenChatTimer) {
+        return;
+    }
+
+    if (!screenChatConfig.enabled) {
+        screenChatTimer->stop();
+        return;
+    }
+
+    scheduleNextScreenChat();
+}
+
+void PetWindow::scheduleNextScreenChat() {
+    if (!screenChatTimer || !screenChatConfig.enabled) {
+        return;
+    }
+
+    const int minMs = std::max(1000, screenChatConfig.minIntervalMs);
+    const int maxMs = std::max(minMs, screenChatConfig.maxIntervalMs);
+    const int nextMs = QRandomGenerator::global()->bounded(minMs, maxMs + 1);
+    screenChatTimer->start(nextMs);
+    qDebug() << "[ScreenChat] next trigger in ms:" << nextMs;
+}
+
+void PetWindow::triggerScreenChatNow(const QString& reason) {
+    triggerScreenChat(false, reason);
+}
+
+QString PetWindow::captureDesktopScreenshot(bool debugKeepCopy, QString* debugCopyPath) const {
+    QScreen* screen = QGuiApplication::primaryScreen();
+    if (!screen) {
+        qWarning() << "[ScreenChat] primary screen not found";
+        return {};
+    }
+
+    const QPixmap shot = screen->grabWindow(0);
+    if (shot.isNull()) {
+        qWarning() << "[ScreenChat] grabWindow failed";
+        return {};
+    }
+
+    const QString fileName = QString("desktop_pet_capture_%1.png").arg(QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const QString tempPath = QDir::temp().absoluteFilePath(fileName);
+    if (!shot.save(tempPath, "PNG")) {
+        qWarning() << "[ScreenChat] failed to save temp screenshot:" << tempPath;
+        return {};
+    }
+
+    if (debugKeepCopy && debugCopyPath) {
+        QDir logDir("log");
+        if (!logDir.exists()) {
+            logDir.mkpath(".");
+        }
+        const QString debugPath = logDir.absoluteFilePath(fileName);
+        if (QFile::copy(tempPath, debugPath)) {
+            *debugCopyPath = debugPath;
+        }
+    }
+
+    return tempPath;
+}
+
+void PetWindow::triggerScreenChat(bool debugSaveScreenshotOnly, const QString& reason) {
+    if (screenChatBusy) {
+        qDebug() << "[ScreenChat] skip, request already in-flight";
+        if (screenChatConfig.enabled) {
+            scheduleNextScreenChat();
+        }
+        return;
+    }
+
+    QString debugCopyPath;
+    const QString screenshotPath = captureDesktopScreenshot(debugSaveScreenshotOnly, &debugCopyPath);
+    if (screenshotPath.isEmpty()) {
+        if (screenChatConfig.enabled) {
+            scheduleNextScreenChat();
+        }
+        return;
+    }
+
+    if (debugSaveScreenshotOnly) {
+        QFile::remove(screenshotPath);
+        const QString message = debugCopyPath.isEmpty()
+            ? QString("截图已完成，但保存到log失败")
+            : QString("调试截图已保存: %1").arg(debugCopyPath);
+        showBubbleMessage(message);
+        return;
+    }
+
+    requestVisionSummary(screenshotPath, reason, false);
+}
+
+void PetWindow::requestVisionSummary(const QString& screenshotPath,
+                                     const QString& reason,
+                                     bool debugSaveScreenshotOnly) {
+    Q_UNUSED(debugSaveScreenshotOnly);
+
+    const LlmConfig& llmCfg = ConfigManager::instance().getLlmConfig();
+    if (!llmCfg.enabled) {
+        qWarning() << "[ScreenChat] skipped, LLM disabled";
+        QFile::remove(screenshotPath);
+        if (screenChatConfig.enabled) {
+            scheduleNextScreenChat();
+        }
+        return;
+    }
+
+    QFile imageFile(screenshotPath);
+    if (!imageFile.open(QIODevice::ReadOnly)) {
+        qWarning() << "[ScreenChat] failed to open screenshot" << screenshotPath;
+        QFile::remove(screenshotPath);
+        if (screenChatConfig.enabled) {
+            scheduleNextScreenChat();
+        }
+        return;
+    }
+
+    const QByteArray imageBytes = imageFile.readAll();
+    imageFile.close();
+    const QString imageDataUrl = QString("data:image/png;base64,%1").arg(QString::fromLatin1(imageBytes.toBase64()));
+
+    const QString selectedModel = llmCfg.visualModel.trimmed().isEmpty() ? llmCfg.model : llmCfg.visualModel;
+    const QString styleHint = QString("请根据宠物性别(%1)生成偏日常、自然口吻的一句话，不要过度夸张。")
+        .arg(screenChatConfig.petGender);
+
+    QJsonArray contentArr;
+    contentArr.append(QJsonObject{{"type", "text"}, {"text",
+        QString("你是桌宠视觉助手。请识别图片主要内容，并输出JSON，格式严格为"
+                " {\"main_content\":\"...\",\"pet_reply\":\"...\"}。"
+                "要求：main_content不超过20字；pet_reply不超过24字；仅输出JSON，无其它文字。%1")
+            .arg(styleHint)}});
+    contentArr.append(QJsonObject{{"type", "image_url"}, {"image_url", QJsonObject{{"url", imageDataUrl}}}});
+
+    QJsonArray messages;
+    messages.append(QJsonObject{{"role", "user"}, {"content", contentArr}});
+
+    QNetworkRequest request(buildCompletionsUrlFromBase(llmCfg.baseUrl));
+    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
+    request.setRawHeader("Authorization", QString("Bearer %1").arg(llmCfg.apiKey).toUtf8());
+    request.setTransferTimeout(llmCfg.timeoutMs);
+
+    QJsonObject payload;
+    payload["model"] = selectedModel;
+    payload["messages"] = messages;
+    payload["max_tokens"] = 300;
+    payload["temperature"] = 0.6;
+    payload["stream"] = false;
+
+    screenChatBusy = true;
+    QNetworkReply* reply = visionNetwork.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
+    connect(reply, &QNetworkReply::finished, this, [this, reply, screenshotPath, reason]() {
+        const QByteArray responseBytes = reply->readAll();
+        const QNetworkReply::NetworkError error = reply->error();
+        QString bubbleText;
+
+        if (error != QNetworkReply::NoError) {
+            qWarning() << "[ScreenChat] network error" << error << reply->errorString();
+            bubbleText = "刚刚看了一眼屏幕，网络有点忙呢";
+        } else {
+            const QJsonDocument responseDoc = QJsonDocument::fromJson(responseBytes);
+            const QJsonObject root = responseDoc.object();
+            const QJsonArray choices = root.value("choices").toArray();
+            if (!choices.isEmpty()) {
+                const QString content = choices.first().toObject().value("message").toObject().value("content").toString();
+                const QString jsonPayload = extractJsonPayload(content);
+                const QJsonDocument resultDoc = QJsonDocument::fromJson(jsonPayload.toUtf8());
+                if (resultDoc.isObject()) {
+                    const QJsonObject resultObj = resultDoc.object();
+                    bubbleText = resultObj.value("pet_reply").toString().trimmed();
+                    const QString mainContent = resultObj.value("main_content").toString().trimmed();
+                    qDebug() << "[ScreenChat] reason=" << reason << "main_content=" << mainContent << "pet_reply=" << bubbleText;
+                }
+            }
+        }
+
+        if (bubbleText.isEmpty()) {
+            bubbleText = "我看到你在忙，要记得休息呀";
+        }
+
+        showBubbleMessage(bubbleText);
+        QFile::remove(screenshotPath);
+        screenChatBusy = false;
+        if (screenChatConfig.enabled) {
+            scheduleNextScreenChat();
+        }
+
+        reply->deleteLater();
+    });
+}
+
+void PetWindow::showBubbleMessage(const QString& message) {
+    if (!bubbleLabel) {
+        return;
+    }
+
+    const QString safeText = message.trimmed().isEmpty() ? QString("...") : message.trimmed();
+    bubbleLabel->setText(safeText);
+    bubbleLabel->setFixedWidth(260);
+    bubbleLabel->adjustSize();
+    if (bubbleLabel->height() < 44) {
+        bubbleLabel->setFixedHeight(44);
+    }
+
+    refreshBubbleStyle();
+    bubbleLabel->show();
+#ifdef Q_OS_WIN
+    enableBlurBehindWindow(reinterpret_cast<HWND>(bubbleLabel->winId()));
+#endif
+    updateBubblePosition();
+
+    if (bubbleHideTimer) {
+        bubbleHideTimer->start(std::max(1000, screenChatConfig.bubbleDurationMs));
+    }
+}
+
+void PetWindow::hideBubbleMessage() {
+    if (bubbleLabel) {
+        bubbleLabel->hide();
+    }
+}
+
+void PetWindow::refreshBubbleStyle() {
+    if (!bubbleLabel) {
+        return;
+    }
+
+    const int alpha = std::clamp(static_cast<int>(screenChatConfig.bubbleOpacityPercent * 255 / 100), 10, 255);
+    const int fontSize = std::clamp(screenChatConfig.bubbleFontSize, 10, 36);
+    const int topAlpha = std::clamp(alpha + 25, 20, 255);
+    const int bottomAlpha = std::clamp(alpha - 20, 10, 235);
+    bubbleLabel->setStyleSheet(QString(
+        "QLabel {"
+        "background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
+        " stop:0 rgba(245, 248, 252, %1),"
+        " stop:1 rgba(228, 235, 242, %2));"
+        "color: #1f2630;"
+        "font-weight: 700;"
+        "border: 1px solid rgba(255, 255, 255, 185);"
+        "border-radius: 14px;"
+        "padding: 9px 12px;"
+        "font-size: %3px;"
+        "}")
+        .arg(topAlpha)
+        .arg(bottomAlpha)
+        .arg(fontSize));
+}
+
+void PetWindow::updateBubblePosition() {
+    if (!bubbleLabel) {
+        return;
+    }
+
+    const QRect rect = frameGeometry();
+    const QSize bubbleSize = bubbleLabel->sizeHint();
+    int targetX = rect.left() + (rect.width() - bubbleSize.width()) / 2 + screenChatConfig.bubbleOffsetX;
+    int targetY = rect.top() - bubbleSize.height() + screenChatConfig.bubbleOffsetY;
+    bubbleLabel->move(targetX, targetY);
 }
 
 void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
@@ -917,10 +1324,12 @@ void PetWindow::moveNativeWindow(int x, int y) {
             nativeRect.width(),
             nativeRect.height(),
             SWP_NOZORDER | SWP_NOACTIVATE);
+        updateBubblePosition();
         return;
     }
 #endif
     move(clampedX, clampedY);
+    updateBubblePosition();
 }
 
 void PetWindow::setupDropAnimation() {

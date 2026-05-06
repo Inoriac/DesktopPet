@@ -10,6 +10,9 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QRect>
+#include <QLabel>
+#include <QNetworkAccessManager>
+#include <QPointer>
 #include <memory>
 
 #include "ai/ai_brain.h"
@@ -24,7 +27,15 @@ public:
     explicit PetWindow(const QString modelName, QWidget *parent = nullptr);
     ~PetWindow();
 
-    void applySettings(int sizePercent, bool alwaysOnTop, bool clickThrough, bool aiEnabled = false);
+    void applySettings(int sizePercent,
+                       bool alwaysOnTop,
+                       bool clickThrough,
+                       bool aiEnabled = false,
+                       const ScreenChatConfig& screenChatConfig = ScreenChatConfig{});
+    void applyRuntimeSettings(int sizePercent,
+                              bool aiEnabled,
+                              const ScreenChatConfig& screenChatConfig = ScreenChatConfig{});
+    void previewBubble(const QString& message = QString());
     bool loadModel(const QString &modelPath);
     
     // 动画控制方法
@@ -61,6 +72,22 @@ private:
     void setupContextMenu();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
     void setupAiBrain();
+    void setupScreenChat();
+    void updateScreenChatSchedule();
+    void scheduleNextScreenChat();
+    void triggerScreenChatNow(const QString& reason);
+    void triggerScreenChat(bool debugSaveScreenshotOnly, const QString& reason);
+    QString captureDesktopScreenshot(bool debugKeepCopy, QString* debugCopyPath = nullptr) const;
+    void requestVisionSummary(const QString& screenshotPath,
+                              const QString& reason,
+                              bool debugSaveScreenshotOnly);
+    QSize measureBubbleSize(const QString& message) const;
+    QColor sampleBubbleTintColor() const;
+    QColor chooseBubbleTextColor(const QColor& bgColor) const;
+    void showBubbleMessage(const QString& message);
+    void hideBubbleMessage();
+    void refreshBubbleStyle();
+    void updateBubblePosition();
 
     void unloadModel();
 
@@ -103,6 +130,8 @@ private:
     // 右键菜单
     QMenu *contextMenu;
     QAction *closeAction;
+    QAction *manualScreenChatAction = nullptr;
+    QAction *debugCaptureOnlyAction = nullptr;
 
     // 渲染组件
     RenderViewport *renderViewport;
@@ -113,9 +142,15 @@ private:
     bool alwaysOnTop;
     bool clickThrough;
     bool aiEnabled = false;
+    ScreenChatConfig screenChatConfig;
 
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
+    QNetworkAccessManager visionNetwork;
+    QTimer* screenChatTimer = nullptr;
+    QTimer* bubbleHideTimer = nullptr;
+    QPointer<QLabel> bubbleLabel;
+    bool screenChatBusy = false;
 
     struct NativeWindowEntry {
         void* hwnd = nullptr;

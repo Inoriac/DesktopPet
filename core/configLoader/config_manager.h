@@ -55,6 +55,7 @@ public:
     // LLM 配置
     const LlmConfig& getLlmConfig() const { return llmConfig; }
     void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
+    const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
 
     // AI 行为策略
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
@@ -98,6 +99,7 @@ private:
     std::vector<BoneCollider> colliderConfigs;
 
     LlmConfig llmConfig;
+    ScreenChatConfig screenChatConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
 };
 

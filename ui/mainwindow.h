@@ -17,6 +17,7 @@
 #include <QSpinBox>
 #include <QCheckBox>
 #include <QString>
+#include "ai_types.h"
 
 #include "petwindow.h"
 
@@ -37,6 +38,7 @@ private slots:
     void OnStartPet();
     void OnStopPet();
     void OnSettingsChanged();
+    void OnBubbleAppearanceChanged();
     void OnAbout();
     void OnAddPet();
 
@@ -47,6 +49,7 @@ private:
     void createCentralWidget();
     void setupConnections();
     void loadPetList();
+    void setWindowFlagControlsLocked(bool locked);
 
     // UI组件
     QWidget *centralWidget{};
@@ -74,6 +77,13 @@ private:
     QSlider *volumeSlider{};
     QLabel *volumeLabel{};
 
+    QCheckBox *autoScreenChatCheckBox{};
+    QSlider *bubbleOpacitySlider{};
+    QSpinBox *bubbleOpacitySpinBox{};
+    QSpinBox *bubbleFontSizeSpinBox{};
+    QSpinBox *bubbleOffsetXSpinBox{};
+    QSpinBox *bubbleOffsetYSpinBox{};
+
     // 菜单和动作
     QMenu *fileMenu{};
     QMenu *settingsMenu{};
@@ -88,6 +98,8 @@ private:
     std::string const modelBasePath = "/assets/models/";
 
     RenderViewport *renderViewport{};
+
+    ScreenChatConfig buildScreenChatConfigFromUi() const;
 };
 
 
