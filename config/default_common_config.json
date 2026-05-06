@@ -71,7 +71,7 @@
         "enabled": true,
         "provider": "openai-compatible",
         "baseUrl": "https://api.siliconflow.cn/v1",
-        "apiKey": "sk-mlpqwojgwerjvktoexemixbjsnzakdyphynbypbbezzfgwse",
+        "apiKey": "",
         "model": "Qwen/Qwen2.5-72B-Instruct",
         "visual_model": "Qwen/Qwen3-VL-32B-Thinking",
         "timeoutMs": 30000,
