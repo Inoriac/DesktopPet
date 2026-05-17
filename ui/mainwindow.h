@@ -16,6 +16,7 @@
 #include <QSlider>
 #include <QSpinBox>
 #include <QCheckBox>
+#include <QLineEdit>
 #include <QString>
 #include "ai_types.h"
 
@@ -74,6 +75,9 @@ private:
     QCheckBox *clickThroughCheckBox{};
     QCheckBox *aiEnabledCheckBox{};
     QCheckBox *soundEnabledCheckBox{};
+    QCheckBox *musicEnabledCheckBox{};
+    QLineEdit *musicClientPathEdit{};
+    QLineEdit *musicServiceUrlEdit{};
     QSlider *volumeSlider{};
     QLabel *volumeLabel{};
 

@@ -80,6 +80,16 @@ struct ScreenChatConfig {
     QString petGender = "female";
 };
 
+// 本地音乐控制配置（当前仅 Windows 网易云）
+struct MusicControlConfig {
+    bool enabled = false;
+    QString provider = "netease_windows";
+    QString clientPath;
+    QString serviceBaseUrl = "http://127.0.0.1:5010";
+    int requestTimeoutMs = 3000;
+    QString concurrencyPolicy = "replace";
+};
+
 // 单个触发器的调度配置
 struct AiTriggerConfig {
     bool enabled = true;

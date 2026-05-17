@@ -42,6 +42,7 @@
 #include "configLoader/config_manager.h"
 #include "ai/tools/animation_tools.h"
 #include "ai/tools/environment_tools.h"
+#include "ai/tools/music_tools.h"
 
 #ifdef Q_OS_WIN
 namespace {
@@ -674,6 +675,9 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(player));
     aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
+    aiToolRegistry->registerTool(std::make_unique<MusicNextTrackTool>());
+    aiToolRegistry->registerTool(std::make_unique<MusicPlaySongTool>());
+    aiToolRegistry->registerTool(std::make_unique<MusicSwitchPlaylistTool>());
 
     aiBrain->setPetName(modelName);
     aiBrain->setToolRegistry(aiToolRegistry.get());

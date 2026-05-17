@@ -86,6 +86,7 @@ set(CORE_SOURCES
     core/ai/tool_registry.h
     core/ai/tools/animation_tools.h
     core/ai/tools/environment_tools.h
+    core/ai/tools/music_tools.h
 )
 
 set(ENGINE_SOURCES

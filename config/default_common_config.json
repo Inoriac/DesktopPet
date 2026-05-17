@@ -71,7 +71,7 @@
         "enabled": true,
         "provider": "openai-compatible",
         "baseUrl": "https://api.siliconflow.cn/v1",
-        "apiKey": "",
+        "apiKey": "sk-mlpqwojgwerjvktoexemixbjsnzakdyphynbypbbezzfgwse",
         "model": "Qwen/Qwen2.5-72B-Instruct",
         "visual_model": "Qwen/Qwen3-VL-32B-Thinking",
         "timeoutMs": 30000,
@@ -89,6 +89,14 @@
           "bubbleOffsetY": -20,
           "bubbleDurationMs": 8000,
           "petGender": "female"
+        },
+        "musicControl": {
+          "enabled": false,
+          "provider": "netease_windows",
+          "clientPath": "",
+          "serviceBaseUrl": "http://127.0.0.1:5010",
+          "requestTimeoutMs": 3000,
+          "concurrencyPolicy": "replace"
         },
         "behaviorPolicy": {
           "idleActionWhitelist": [
