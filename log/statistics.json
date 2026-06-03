@@ -1,0 +1,23 @@
+{
+    "lastSaved": "2026-05-17T20:00:27",
+    "pets": [
+        {
+            "lastActiveTime": "2026-05-17T20:00:18",
+            "llmCachedTokens": 39552,
+            "llmCallCount": 70,
+            "llmCompletionTokens": 1984,
+            "llmPromptCacheHitTokens": 39552,
+            "llmPromptCacheMissTokens": 43710,
+            "llmPromptTokens": 83262,
+            "llmReasoningTokens": 0,
+            "llmTotalTokens": 85246,
+            "petName": "milltina",
+            "sessionCount": 45,
+            "sessionRuntimeMs": 4557623,
+            "totalRuntimeMs": 4557623,
+            "touchAreaCount": {
+            }
+        }
+    ],
+    "version": "1.0"
+}
