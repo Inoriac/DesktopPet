@@ -1,4 +1,5 @@
 import sqlite3, sys, json, os, subprocess
+from urllib.parse import parse_qs, urlparse
 
 if sys.stdout.encoding != "utf-8":
     import io
@@ -21,6 +22,27 @@ def get_lx_data_path():
 LX_DATA = get_lx_data_path()
 
 
+def normalize_scheme_id(source, source_id):
+    if not source_id:
+        return None
+    sid = str(source_id).strip()
+    parsed = urlparse(sid)
+    if parsed.scheme in ("http", "https"):
+        query = parse_qs(parsed.query)
+        if source in ("wy", "tx") and query.get("id"):
+            return query["id"][0]
+        if query.get("playlistId"):
+            return query["playlistId"][0]
+    return sid
+
+
+def build_playlist_url(source, source_id):
+    sid = normalize_scheme_id(source, source_id)
+    if not source or not sid:
+        return None
+    return f"lxmusic://songlist/play/{source}/{sid}"
+
+
 def get_playlists():
     conn = sqlite3.connect(LX_DATA)
     conn.text_factory = str
@@ -28,9 +50,13 @@ def get_playlists():
     c.execute("SELECT id, name, source, sourceListId FROM my_list ORDER BY position")
     result = []
     for row in c.fetchall():
-        result.append(
-            {"id": row[0], "name": row[1], "source": row[2], "sourceId": row[3]}
-        )
+        result.append({
+            "id": row[0],
+            "name": row[1],
+            "source": row[2],
+            "sourceId": row[3],
+            "playUrl": build_playlist_url(row[2], row[3]),
+        })
     conn.close()
     return result
 
@@ -63,9 +89,10 @@ if __name__ == "__main__":
         conn.close()
         if row:
             source, sid = row
-            url = f"lxmusic://songlist/play/{source}/{sid}" if sid else None
+            url = build_playlist_url(source, sid)
             if url:
                 subprocess.run(["powershell", "-Command", f"Start-Process '{url}'"])
+                print(json.dumps({"opened": True, "url": url}, ensure_ascii=False))
             else:
                 print("No sourceId for this playlist")
         else:

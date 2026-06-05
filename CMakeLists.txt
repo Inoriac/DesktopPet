@@ -84,6 +84,32 @@ set(CORE_SOURCES
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
     core/ai/tool_registry.h
+    core/ai/agent/agent_state.h
+    core/ai/agent/agent_session.h
+    core/ai/agent/agent_session.cpp
+    core/ai/agent/agent_core.h
+    core/ai/agent/agent_core.cpp
+    core/ai/router/intent_types.h
+    core/ai/router/intent_router.h
+    core/ai/router/intent_router.cpp
+    core/ai/tools/runtime/tool_policy.h
+    core/ai/tools/runtime/tool_policy.cpp
+    core/ai/tools/runtime/tool_result_sanitizer.h
+    core/ai/tools/runtime/tool_result_sanitizer.cpp
+    core/ai/tools/runtime/tool_runtime.h
+    core/ai/tools/runtime/tool_runtime.cpp
+    core/ai/context/context_budget.h
+    core/ai/context/context_manager.h
+    core/ai/context/context_manager.cpp
+    core/ai/memory/memory_types.h
+    core/ai/memory/memory_store.h
+    core/ai/memory/memory_store.cpp
+    core/ai/mcp/mcp_client.h
+    core/ai/mcp/mcp_client.cpp
+    core/ai/mcp/mcp_server_process.h
+    core/ai/mcp/mcp_server_process.cpp
+    core/ai/mcp/mcp_tool_adapter.h
+    core/ai/mcp/mcp_tool_adapter.cpp
     core/ai/tools/animation_tools.h
     core/ai/tools/environment_tools.h
     core/ai/tools/music_tools.h
@@ -221,6 +247,12 @@ add_executable(tool_tests
         core/ai/tool_registry.cpp
         core/ai/tool_registry.h
         core/ai/ai_tool.h
+        core/ai/tools/runtime/tool_policy.h
+        core/ai/tools/runtime/tool_policy.cpp
+        core/ai/tools/runtime/tool_result_sanitizer.h
+        core/ai/tools/runtime/tool_result_sanitizer.cpp
+        core/ai/tools/runtime/tool_runtime.h
+        core/ai/tools/runtime/tool_runtime.cpp
         core/ai/tools/environment_tools.h
         core/ai/tools/animation_tools.h
         include/ai_types.h

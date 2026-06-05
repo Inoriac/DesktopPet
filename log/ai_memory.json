@@ -1,0 +1,113 @@
+[
+    {
+        "created_at": "2026-06-05T13:38:28Z",
+        "id": "ac5dfa8c-0aa4-4f7c-8c2e-00e420be3db8",
+        "key": "tool_execution",
+        "tags": [
+            "idle_action",
+            "llm",
+            "get_idle_transition_candidates"
+        ],
+        "type": "event",
+        "updated_at": "2026-06-05T13:38:28Z",
+        "value": {
+            "executed": true,
+            "policy_action": "Allow",
+            "policy_reason": "safe read-only tool",
+            "request_id": "019e9801ac4b744b46a74e3649328bbb",
+            "risk_level": "L0",
+            "success": true,
+            "tool_name": "get_idle_transition_candidates"
+        }
+    },
+    {
+        "created_at": "2026-06-05T13:38:29Z",
+        "id": "bcc35b4a-778c-4ac4-9d3f-1844260d3bb9",
+        "key": "tool_execution",
+        "tags": [
+            "idle_action",
+            "llm",
+            "request_idle_transition"
+        ],
+        "type": "event",
+        "updated_at": "2026-06-05T13:38:29Z",
+        "value": {
+            "executed": true,
+            "policy_action": "Allow",
+            "policy_reason": "low risk desktop-pet action",
+            "request_id": "019e9801b332ee36bd2cbe2e5ec0df4f",
+            "risk_level": "L2",
+            "success": true,
+            "tool_name": "request_idle_transition"
+        }
+    },
+    {
+        "created_at": "2026-06-05T13:38:30Z",
+        "id": "312ee630-ad8e-459d-8d0c-1698c9100bcd",
+        "key": "assistant_response",
+        "tags": [
+            "idle_action",
+            "assistant"
+        ],
+        "type": "short_term",
+        "updated_at": "2026-06-05T13:38:30Z",
+        "value": "好的，milltina 开始跳舞了。"
+    },
+    {
+        "created_at": "2026-06-05T13:40:23Z",
+        "id": "30da40a2-9c65-4046-a5b2-e2bf72672487",
+        "key": "assistant_response",
+        "tags": [
+            "emotion",
+            "assistant"
+        ],
+        "type": "short_term",
+        "updated_at": "2026-06-05T13:40:23Z",
+        "value": "晚上好，milltina 现在是待机状态。根据你的情绪，可以选择开心、哭泣、生气、害怕或说话的动作。想要尝试哪个呢？"
+    },
+    {
+        "created_at": "2026-06-05T13:41:02Z",
+        "id": "87983d2c-60eb-45bb-9057-bcc8603f235a",
+        "key": "tool_execution",
+        "tags": [
+            "idle_action",
+            "llm",
+            "get_idle_transition_candidates"
+        ],
+        "type": "event",
+        "updated_at": "2026-06-05T13:41:02Z",
+        "value": {
+            "executed": true,
+            "policy_action": "Allow",
+            "policy_reason": "safe read-only tool",
+            "request_id": "019e9804058d772bba4df8cf771e059f",
+            "risk_level": "L0",
+            "success": true,
+            "tool_name": "get_idle_transition_candidates"
+        }
+    },
+    {
+        "created_at": "2026-06-05T13:41:03Z",
+        "id": "ec441bff-fb28-45ff-9ee4-dc98786a4044",
+        "key": "assistant_response",
+        "tags": [
+            "idle_action",
+            "assistant"
+        ],
+        "type": "short_term",
+        "updated_at": "2026-06-05T13:41:03Z",
+        "value": "好的，根据当前时间，milltina 可以选择跳舞、坐下、睡觉或开心的动作。你想让 milltina 跳舞吗？"
+    },
+    {
+        "created_at": "2026-06-05T13:41:20Z",
+        "id": "12b61258-6192-41b4-ab64-4567489e44c5",
+        "key": "assistant_response",
+        "tags": [
+            "proactive_chat",
+            "assistant"
+        ],
+        "type": "short_term",
+        "updated_at": "2026-06-05T13:41:20Z",
+        "value": "晚上好，milltina 现在是待机状态。想要尝试跳舞、坐下、睡觉或开心的动作吗？或者有其他事情想要和我聊聊？"
+    }
+]

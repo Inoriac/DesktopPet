@@ -1,20 +1,20 @@
 {
-    "lastSaved": "2026-05-17T20:00:27",
+    "lastSaved": "2026-06-05T21:41:35",
     "pets": [
         {
-            "lastActiveTime": "2026-05-17T20:00:18",
-            "llmCachedTokens": 39552,
-            "llmCallCount": 70,
-            "llmCompletionTokens": 1984,
-            "llmPromptCacheHitTokens": 39552,
-            "llmPromptCacheMissTokens": 43710,
-            "llmPromptTokens": 83262,
+            "lastActiveTime": "2026-06-05T21:41:29",
+            "llmCachedTokens": 44000,
+            "llmCallCount": 77,
+            "llmCompletionTokens": 2222,
+            "llmPromptCacheHitTokens": 44000,
+            "llmPromptCacheMissTokens": 48555,
+            "llmPromptTokens": 92555,
             "llmReasoningTokens": 0,
-            "llmTotalTokens": 85246,
+            "llmTotalTokens": 94777,
             "petName": "milltina",
-            "sessionCount": 45,
-            "sessionRuntimeMs": 4557623,
-            "totalRuntimeMs": 4557623,
+            "sessionCount": 46,
+            "sessionRuntimeMs": 4813993,
+            "totalRuntimeMs": 4813993,
             "touchAreaCount": {
             }
         }

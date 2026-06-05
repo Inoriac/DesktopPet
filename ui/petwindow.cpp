@@ -678,6 +678,17 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<MusicNextTrackTool>());
     aiToolRegistry->registerTool(std::make_unique<MusicPlaySongTool>());
     aiToolRegistry->registerTool(std::make_unique<MusicSwitchPlaylistTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicStatusTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicPlayTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicPauseTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicSkipNextTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicSkipPrevTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicLyricTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicVolumeTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicSearchPlayTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicListPlaylistsTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicPlaylistSongsTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicPlayPlaylistTool>());
 
     aiBrain->setPetName(modelName);
     aiBrain->setToolRegistry(aiToolRegistry.get());

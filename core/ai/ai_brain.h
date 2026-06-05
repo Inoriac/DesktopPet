@@ -15,7 +15,10 @@
 #include "ai_call_logger.h"
 #include "context_builder.h"
 #include "llm/llm_chat_service.h"
+#include "memory/memory_store.h"
+#include "router/intent_router.h"
 #include "tool_registry.h"
+#include "tools/runtime/tool_runtime.h"
 
 class AIBrain : public QObject {
     Q_OBJECT
@@ -52,6 +55,18 @@ private:
                       int toolRound,
                       const QList<ChatMessage>& workingMessages);
 
+    bool tryHandleRoutedIntent(const QString& reason,
+                               const QString& triggerTag);
+    bool shouldUseLocalRouter(const QString& triggerTag) const;
+    ToolPolicyContext buildToolPolicyContext(const QString& triggerTag,
+                                             const QString& userInput,
+                                             bool initiatedByLlm) const;
+    void rememberAssistantResponse(const QString& content,
+                                   const QString& triggerTag);
+    void rememberToolOutcome(const QString& toolName,
+                             const QString& triggerTag,
+                             bool initiatedByLlm,
+                             const ToolExecutionOutcome& outcome);
     QList<ChatMessage> buildBaseMessages(const QString& reason,
                                          const QString& triggerTag) const;
     void appendToMemory(const ChatMessage& message);
@@ -71,6 +86,9 @@ private:
 
     ContextBuilder m_contextBuilder;
     LlmChatService m_chatService;
+    IntentRouter m_intentRouter;
+    ToolRuntime m_toolRuntime;
+    MemoryStore m_memoryStore;
 
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;

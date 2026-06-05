@@ -11,6 +11,7 @@
 
 #include "tool_registry.h"
 #include "tools/environment_tools.h"
+#include "tools/runtime/tool_runtime.h"
 
 // ================================================================
 // 用于测试的 Mock Tool
@@ -75,6 +76,60 @@ public:
     }
 };
 
+class MockSensitiveQueryTool : public AITool {
+public:
+    MockSensitiveQueryTool()
+        : AITool("mock_sensitive_query", "A query tool returning sensitive fields", ToolCategory::Query) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        QJsonObject result;
+        result["api_key"] = "should-not-leak";
+        result["message"] = "safe";
+        return ToolResult::ok(result);
+    }
+};
+
+class MockShellTool : public AITool {
+public:
+    MockShellTool()
+        : AITool("shell_execute", "A high risk shell tool", ToolCategory::Action) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        return ToolResult::ok(QJsonObject{{"executed", true}});
+    }
+};
+
+class MockDeleteTool : public AITool {
+public:
+    MockDeleteTool()
+        : AITool("delete_file", "A dangerous delete tool", ToolCategory::Action) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        return ToolResult::ok(QJsonObject{{"deleted", true}});
+    }
+};
+
 // ================================================================
 // 测试类
 // ================================================================
@@ -102,6 +157,13 @@ private slots:
     void testExecuteUnknownTool();
     void testExecuteWithInvalidParams();
     void testAllToolSchemas();
+
+    // --- ToolRuntime / PolicyEngine 测试 ---
+    void testPolicyAllowsSafeQuery();
+    void testRuntimeBlocksUnknownTool();
+    void testRuntimeRequiresConfirmationForHighRiskTool();
+    void testRuntimeDeniesDangerousTool();
+    void testRuntimeSanitizesSensitiveOutput();
 
     // --- 真实 Tool 测试 ---
     void testGetCurrentTimeTool();
@@ -304,6 +366,84 @@ void TestToolRegistry::testAllToolSchemas() {
     // 打印完整 schemas 供目视检查（这就是将来发给 LLM 的 tools 参数）
     qDebug() << "All Tool Schemas:"
              << QJsonDocument(schemas).toJson(QJsonDocument::Indented);
+}
+
+// ============================================================
+// ToolRuntime / PolicyEngine 测试
+// ============================================================
+
+void TestToolRegistry::testPolicyAllowsSafeQuery() {
+    MockQueryTool tool;
+    PolicyEngine policy;
+    const ToolPolicyDecision decision = policy.evaluate(tool, QJsonObject{}, ToolPolicyContext{});
+
+    QVERIFY(decision.isAllowed());
+    QCOMPARE(decision.riskLevel, ToolRiskLevel::L0SafeRead);
+}
+
+void TestToolRegistry::testRuntimeBlocksUnknownTool() {
+    ToolRegistry registry;
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.toolName = "missing_tool";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(!outcome.executed);
+    QVERIFY(!outcome.result.success);
+    QVERIFY(outcome.policyDecision.isDenied());
+}
+
+void TestToolRegistry::testRuntimeRequiresConfirmationForHighRiskTool() {
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<MockShellTool>());
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.toolName = "shell_execute";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(!outcome.executed);
+    QVERIFY(!outcome.result.success);
+    QVERIFY(outcome.policyDecision.needsConfirmation());
+    QCOMPARE(outcome.policyDecision.riskLevel, ToolRiskLevel::L3HighRiskAction);
+}
+
+void TestToolRegistry::testRuntimeDeniesDangerousTool() {
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<MockDeleteTool>());
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.toolName = "delete_file";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(!outcome.executed);
+    QVERIFY(!outcome.result.success);
+    QVERIFY(outcome.policyDecision.isDenied());
+    QCOMPARE(outcome.policyDecision.riskLevel, ToolRiskLevel::L4Dangerous);
+}
+
+void TestToolRegistry::testRuntimeSanitizesSensitiveOutput() {
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<MockSensitiveQueryTool>());
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.toolName = "mock_sensitive_query";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(outcome.executed);
+    QVERIFY(outcome.result.success);
+    QCOMPARE(outcome.result.data.value("api_key").toString(), QString("[REDACTED]"));
+    QCOMPARE(outcome.result.data.value("message").toString(), QString("safe"));
 }
 
 // ============================================================
