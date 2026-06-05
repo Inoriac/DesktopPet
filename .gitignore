@@ -1,0 +1,14 @@
+# Local config / secrets
+config/default_common_config.json
+.env
+.env.*
+!.env.example
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE / local generated files
+.vscode/
+.idea/
+cmake-build-*/
