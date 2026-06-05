@@ -3,6 +3,7 @@
 //
 
 #include "petwindow.h"
+#include "liquidglasschatbubble.h"
 #include "render_viewport.h"
 #include "pet.h"
 
@@ -29,8 +30,6 @@
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
-#include <QFontMetrics>
-#include <QColor>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -188,8 +187,12 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     setupScreenChat();
 
     aiBrain = std::make_unique<AIBrain>(this);
-    connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
+    connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [](const QString& content) {
         qDebug() << "[AIBrain] assistant response:" << content;
+    });
+    connect(aiBrain.get(), &AIBrain::proactiveResponseReady, this, [this](const QString& content) {
+        qDebug() << "[AIBrain] proactive response:" << content;
+        showBubbleMessage(content);
     });
     connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
         qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
@@ -218,10 +221,15 @@ PetWindow::~PetWindow() {
     if (bubbleHideTimer) {
         bubbleHideTimer->stop();
     }
-    if (bubbleLabel) {
-        bubbleLabel->close();
-        bubbleLabel->deleteLater();
-        bubbleLabel = nullptr;
+    if (outputBubble) {
+        outputBubble->close();
+        outputBubble->deleteLater();
+        outputBubble = nullptr;
+    }
+    if (inputBubble) {
+        inputBubble->close();
+        inputBubble->deleteLater();
+        inputBubble = nullptr;
     }
     if (contextMenu) {
         delete contextMenu;
@@ -260,8 +268,13 @@ void PetWindow::applyRuntimeSettings(int sizePercent,
     qDebug() << "AI enabled:" << this->aiEnabled;
     qDebug() << "Screen chat enabled:" << this->screenChatConfig.enabled;
 
-    refreshBubbleStyle();
-    updateBubblePosition();
+    if (outputBubble) {
+        outputBubble->applyScreenChatConfig(this->screenChatConfig);
+    }
+    if (inputBubble) {
+        inputBubble->applyScreenChatConfig(this->screenChatConfig);
+    }
+    updateBubblePositions();
     updateScreenChatSchedule();
 }
 
@@ -333,6 +346,11 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
     manualScreenChatAction = contextMenu->addAction("手动触发屏幕识别对话(调试)");
     connect(manualScreenChatAction, &QAction::triggered, this, [this]() {
         triggerScreenChatNow("manual_menu");
+    });
+
+    QAction* manualChatInputAction = contextMenu->addAction("聚焦聊天输入框");
+    connect(manualChatInputAction, &QAction::triggered, this, [this]() {
+        showBubbleInput();
     });
 
     debugCaptureOnlyAction = contextMenu->addAction("仅截图并保存到log(调试)");
@@ -711,23 +729,27 @@ void PetWindow::setupScreenChat() {
     bubbleHideTimer->setSingleShot(true);
     connect(bubbleHideTimer, &QTimer::timeout, this, &PetWindow::hideBubbleMessage);
 
-    bubbleLabel = new QLabel(nullptr);
-    bubbleLabel->setWindowFlag(Qt::FramelessWindowHint, true);
-    bubbleLabel->setWindowFlag(Qt::Tool, true);
-    bubbleLabel->setWindowFlag(Qt::WindowStaysOnTopHint, true);
-    bubbleLabel->setAttribute(Qt::WA_TranslucentBackground, true);
-    bubbleLabel->setAttribute(Qt::WA_StyledBackground, true);
-    bubbleLabel->setAttribute(Qt::WA_ShowWithoutActivating, true);
-    bubbleLabel->setAlignment(Qt::AlignCenter);
-    bubbleLabel->setWordWrap(true);
-    bubbleLabel->hide();
+    outputBubble = new LiquidGlassChatBubble(nullptr);
+    outputBubble->applyScreenChatConfig(screenChatConfig);
+    outputBubble->hide();
+
+    inputBubble = new LiquidGlassChatBubble(nullptr);
+    inputBubble->applyScreenChatConfig(screenChatConfig);
+    inputBubble->showInput("输入后按 Enter 发送...", false);
+    updateInputBubblePosition();
+    inputBubble->refreshGlass();
+    connect(inputBubble, &LiquidGlassChatBubble::messageSubmitted, this, [this](const QString& text) {
+        if (!aiBrain || !aiBrain->isEnabled()) {
+            qWarning() << "[AIBrain] user input ignored, AI disabled";
+            return;
+        }
+        aiBrain->triggerThink(text, "user_request");
+    });
 
 #ifdef Q_OS_WIN
-    bubbleLabel->winId();
-    enableBlurBehindWindow(reinterpret_cast<HWND>(bubbleLabel->winId()));
+    outputBubble->winId();
+    inputBubble->winId();
 #endif
-
-    refreshBubbleStyle();
 }
 
 void PetWindow::updateScreenChatSchedule() {
@@ -922,72 +944,67 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
 }
 
 void PetWindow::showBubbleMessage(const QString& message) {
-    if (!bubbleLabel) {
+    if (!outputBubble) {
         return;
     }
 
-    const QString safeText = message.trimmed().isEmpty() ? QString("...") : message.trimmed();
-    bubbleLabel->setText(safeText);
-    bubbleLabel->setFixedWidth(260);
-    bubbleLabel->adjustSize();
-    if (bubbleLabel->height() < 44) {
-        bubbleLabel->setFixedHeight(44);
-    }
-
-    refreshBubbleStyle();
-    bubbleLabel->show();
-#ifdef Q_OS_WIN
-    enableBlurBehindWindow(reinterpret_cast<HWND>(bubbleLabel->winId()));
-#endif
-    updateBubblePosition();
+    outputBubble->applyScreenChatConfig(screenChatConfig);
+    outputBubble->setMessage(message);
+    updateOutputBubblePosition();
+    outputBubble->refreshGlass();
+    outputBubble->showMessage(message);
 
     if (bubbleHideTimer) {
         bubbleHideTimer->start(std::max(1000, screenChatConfig.bubbleDurationMs));
     }
 }
 
-void PetWindow::hideBubbleMessage() {
-    if (bubbleLabel) {
-        bubbleLabel->hide();
-    }
-}
-
-void PetWindow::refreshBubbleStyle() {
-    if (!bubbleLabel) {
+void PetWindow::showBubbleInput() {
+    if (!inputBubble) {
         return;
     }
 
-    const int alpha = std::clamp(static_cast<int>(screenChatConfig.bubbleOpacityPercent * 255 / 100), 10, 255);
-    const int fontSize = std::clamp(screenChatConfig.bubbleFontSize, 10, 36);
-    const int topAlpha = std::clamp(alpha + 25, 20, 255);
-    const int bottomAlpha = std::clamp(alpha - 20, 10, 235);
-    bubbleLabel->setStyleSheet(QString(
-        "QLabel {"
-        "background-color: qlineargradient(x1:0, y1:0, x2:1, y2:1,"
-        " stop:0 rgba(245, 248, 252, %1),"
-        " stop:1 rgba(228, 235, 242, %2));"
-        "color: #1f2630;"
-        "font-weight: 700;"
-        "border: 1px solid rgba(255, 255, 255, 185);"
-        "border-radius: 14px;"
-        "padding: 9px 12px;"
-        "font-size: %3px;"
-        "}")
-        .arg(topAlpha)
-        .arg(bottomAlpha)
-        .arg(fontSize));
+    inputBubble->applyScreenChatConfig(screenChatConfig);
+    updateInputBubblePosition();
+    inputBubble->refreshGlass();
+    inputBubble->showInput("输入后按 Enter 发送...");
 }
 
-void PetWindow::updateBubblePosition() {
-    if (!bubbleLabel) {
+void PetWindow::hideBubbleMessage() {
+    if (outputBubble) {
+        outputBubble->hideBubble();
+    }
+}
+
+void PetWindow::updateBubblePositions() {
+    updateOutputBubblePosition();
+    updateInputBubblePosition();
+}
+
+void PetWindow::updateOutputBubblePosition() {
+    if (!outputBubble) {
         return;
     }
 
     const QRect rect = frameGeometry();
-    const QSize bubbleSize = bubbleLabel->sizeHint();
+    const QSize bubbleSize = outputBubble->sizeHint();
     int targetX = rect.left() + (rect.width() - bubbleSize.width()) / 2 + screenChatConfig.bubbleOffsetX;
     int targetY = rect.top() - bubbleSize.height() + screenChatConfig.bubbleOffsetY;
-    bubbleLabel->move(targetX, targetY);
+    outputBubble->resize(bubbleSize);
+    outputBubble->move(targetX, targetY);
+}
+
+void PetWindow::updateInputBubblePosition() {
+    if (!inputBubble) {
+        return;
+    }
+
+    const QRect rect = frameGeometry();
+    const QSize bubbleSize = inputBubble->sizeHint();
+    int targetX = rect.left() + (rect.width() - bubbleSize.width()) / 2 + screenChatConfig.bubbleOffsetX;
+    int targetY = rect.bottom() + 8;
+    inputBubble->resize(bubbleSize);
+    inputBubble->move(targetX, targetY);
 }
 
 void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
@@ -1339,12 +1356,12 @@ void PetWindow::moveNativeWindow(int x, int y) {
             nativeRect.width(),
             nativeRect.height(),
             SWP_NOZORDER | SWP_NOACTIVATE);
-        updateBubblePosition();
+        updateBubblePositions();
         return;
     }
 #endif
     move(clampedX, clampedY);
-    updateBubblePosition();
+    updateBubblePositions();
 }
 
 void PetWindow::setupDropAnimation() {

@@ -47,6 +47,7 @@ signals:
     void thinkingStarted(const QString& reason);
     void thinkingFinished(bool success, const QString& errorMessage);
     void assistantResponseReady(const QString& content);
+    void proactiveResponseReady(const QString& content);
     void toolExecuted(const QString& toolName, bool success, const QString& payload);
 
 private:

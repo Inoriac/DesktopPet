@@ -329,6 +329,9 @@ void AIBrain::thinkInternal(const QString& reason,
                 appendToMemory(assistantMessage);
                 if (!response.content.isEmpty()) {
                     emit assistantResponseReady(response.content);
+                    if (triggerTag == "proactive_chat") {
+                        emit proactiveResponseReady(response.content);
+                    }
                     rememberAssistantResponse(response.content, triggerTag);
                 }
 

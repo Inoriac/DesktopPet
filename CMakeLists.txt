@@ -37,6 +37,8 @@ find_package(Qt6 COMPONENTS
 set(UI_SOURCES
     ui/mainwindow.cpp
     ui/mainwindow.h
+    ui/liquidglasschatbubble.cpp
+    ui/liquidglasschatbubble.h
     ui/petwindow.cpp
     ui/petwindow.h
     ui/trayicon.cpp

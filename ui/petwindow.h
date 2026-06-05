@@ -10,13 +10,14 @@
 #include <QElapsedTimer>
 #include <QTimer>
 #include <QRect>
-#include <QLabel>
 #include <QNetworkAccessManager>
 #include <QPointer>
 #include <memory>
 
 #include "ai/ai_brain.h"
 #include "ai/tool_registry.h"
+
+class LiquidGlassChatBubble;
 
 class RenderViewport;
 
@@ -81,13 +82,12 @@ private:
     void requestVisionSummary(const QString& screenshotPath,
                               const QString& reason,
                               bool debugSaveScreenshotOnly);
-    QSize measureBubbleSize(const QString& message) const;
-    QColor sampleBubbleTintColor() const;
-    QColor chooseBubbleTextColor(const QColor& bgColor) const;
     void showBubbleMessage(const QString& message);
+    void showBubbleInput();
     void hideBubbleMessage();
-    void refreshBubbleStyle();
-    void updateBubblePosition();
+    void updateBubblePositions();
+    void updateOutputBubblePosition();
+    void updateInputBubblePosition();
 
     void unloadModel();
 
@@ -149,7 +149,8 @@ private:
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;
     QTimer* bubbleHideTimer = nullptr;
-    QPointer<QLabel> bubbleLabel;
+    QPointer<LiquidGlassChatBubble> outputBubble;
+    QPointer<LiquidGlassChatBubble> inputBubble;
     bool screenChatBusy = false;
 
     struct NativeWindowEntry {
