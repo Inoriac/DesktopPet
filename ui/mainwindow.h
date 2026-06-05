@@ -75,9 +75,6 @@ private:
     QCheckBox *clickThroughCheckBox{};
     QCheckBox *aiEnabledCheckBox{};
     QCheckBox *soundEnabledCheckBox{};
-    QCheckBox *musicEnabledCheckBox{};
-    QLineEdit *musicClientPathEdit{};
-    QLineEdit *musicServiceUrlEdit{};
     QSlider *volumeSlider{};
     QLabel *volumeLabel{};
 

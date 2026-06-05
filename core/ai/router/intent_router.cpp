@@ -47,7 +47,7 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
     }
 
     if (containsAny(normalized, {"下一首", "下首歌", "切歌", "换首歌"})) {
-        return IntentRoute::directToolCall("music_next_track", {}, "music_next_track", 0.9);
+        return IntentRoute::directToolCall("lx_music_skip_next", {}, "lx_music_skip_next", 0.9);
     }
 
     if (containsAny(normalized, {"你好", "hello", "嗨"}) && normalized.size() <= 12) {

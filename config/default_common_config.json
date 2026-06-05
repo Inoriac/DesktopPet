@@ -90,14 +90,6 @@
           "bubbleDurationMs": 8000,
           "petGender": "female"
         },
-        "musicControl": {
-          "enabled": false,
-          "provider": "netease_windows",
-          "clientPath": "",
-          "serviceBaseUrl": "http://127.0.0.1:5010",
-          "requestTimeoutMs": 3000,
-          "concurrencyPolicy": "replace"
-        },
         "behaviorPolicy": {
           "idleActionWhitelist": [
             "Idle",

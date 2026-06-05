@@ -693,9 +693,6 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(player));
     aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
-    aiToolRegistry->registerTool(std::make_unique<MusicNextTrackTool>());
-    aiToolRegistry->registerTool(std::make_unique<MusicPlaySongTool>());
-    aiToolRegistry->registerTool(std::make_unique<MusicSwitchPlaylistTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicStatusTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPlayTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPauseTool>());

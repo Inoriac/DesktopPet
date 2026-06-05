@@ -149,26 +149,6 @@ void MainWindow::createCentralWidget() {
     soundEnabledCheckBox = new QCheckBox("Sound enabled");
     soundEnabledCheckBox->setChecked(false);
 
-    const MusicControlConfig& musicCfg = ConfigManager::instance().getMusicControlConfig();
-    musicEnabledCheckBox = new QCheckBox("Music control enabled (Windows/网易云)");
-    musicEnabledCheckBox->setChecked(musicCfg.enabled);
-
-    QHBoxLayout* musicPathLayout = new QHBoxLayout;
-    QLabel* musicPathLabel = new QLabel("网易云路径:");
-    musicClientPathEdit = new QLineEdit(musicCfg.clientPath);
-    musicClientPathEdit->setPlaceholderText("CloudMusic.exe 绝对路径（未配置则禁用）");
-    QPushButton* browseMusicPathButton = new QPushButton("浏览...");
-    musicPathLayout->addWidget(musicPathLabel);
-    musicPathLayout->addWidget(musicClientPathEdit);
-    musicPathLayout->addWidget(browseMusicPathButton);
-
-    QHBoxLayout* musicServiceLayout = new QHBoxLayout;
-    QLabel* musicServiceLabel = new QLabel("本地音乐服务:");
-    musicServiceUrlEdit = new QLineEdit(musicCfg.serviceBaseUrl);
-    musicServiceUrlEdit->setPlaceholderText("http://127.0.0.1:5010");
-    musicServiceLayout->addWidget(musicServiceLabel);
-    musicServiceLayout->addWidget(musicServiceUrlEdit);
-
     const ScreenChatConfig& defaultScreenChat = ConfigManager::instance().getScreenChatConfig();
     autoScreenChatCheckBox = new QCheckBox("Auto screen chat (8-12 min)");
     autoScreenChatCheckBox->setChecked(defaultScreenChat.enabled);
@@ -229,23 +209,7 @@ void MainWindow::createCentralWidget() {
     settingsLayout->addLayout(bubbleFontLayout);
     settingsLayout->addLayout(bubbleOffsetLayout);
     settingsLayout->addWidget(soundEnabledCheckBox);
-    settingsLayout->addWidget(musicEnabledCheckBox);
-    settingsLayout->addLayout(musicPathLayout);
-    settingsLayout->addLayout(musicServiceLayout);
     settingsLayout->addLayout(volumeLayout);
-
-    connect(browseMusicPathButton, &QPushButton::clicked, this, [this]() {
-        const QString path = QFileDialog::getOpenFileName(
-            this,
-            "选择网易云音乐客户端",
-            "",
-            "Executable (*.exe)"
-        );
-        if (!path.isEmpty() && musicClientPathEdit) {
-            musicClientPathEdit->setText(path);
-            OnSettingsChanged();
-        }
-    });
 
     // 添加到主布局
     mainLayout->addWidget(characterSelectionGroup);
@@ -272,9 +236,6 @@ void MainWindow::setupConnections() {
     connect(bubbleOffsetXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
     connect(bubbleOffsetYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
     connect(soundEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
-    connect(musicEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
-    connect(musicClientPathEdit, &QLineEdit::editingFinished, this, &MainWindow::OnSettingsChanged);
-    connect(musicServiceUrlEdit, &QLineEdit::editingFinished, this, &MainWindow::OnSettingsChanged);
     connect(volumeSlider, &QSlider::valueChanged, this, &MainWindow::OnSettingsChanged);
 }
 
@@ -371,16 +332,6 @@ void MainWindow::OnSettingsChanged() {
     // 应用至桌宠界面
     bool aiEnabled = aiEnabledCheckBox->isChecked();
     ConfigManager::instance().setLlmEnabled(aiEnabled);
-    ConfigManager::instance().setMusicControlEnabled(musicEnabledCheckBox && musicEnabledCheckBox->isChecked());
-    ConfigManager::instance().setMusicClientPath(musicClientPathEdit ? musicClientPathEdit->text().trimmed() : QString());
-    QString serviceUrl = musicServiceUrlEdit ? musicServiceUrlEdit->text().trimmed() : QString();
-    if (serviceUrl.endsWith('/')) {
-        serviceUrl.chop(1);
-    }
-    if (serviceUrl.isEmpty()) {
-        serviceUrl = "http://127.0.0.1:5010";
-    }
-    ConfigManager::instance().setMusicServiceBaseUrl(serviceUrl);
 
     if(activePetWindow){
         int sizePercent = sizeSlider->value();

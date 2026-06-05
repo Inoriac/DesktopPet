@@ -168,7 +168,6 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     // 2) aiSettings.profiles + activeProfile
     llmConfig = LlmConfig{};
     screenChatConfig = ScreenChatConfig{};
-    musicControlConfig = MusicControlConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiBehaviorPolicy.idleActionWhitelist = {
         "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
@@ -283,25 +282,6 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             }
         }
 
-        if (aiRaw.contains("musicControl") && aiRaw.value("musicControl").isObject()) {
-            const QJsonObject musicObj = aiRaw.value("musicControl").toObject();
-            musicControlConfig.enabled = musicObj.value("enabled").toBool(false);
-            musicControlConfig.provider = musicObj.value("provider").toString("netease_windows");
-            musicControlConfig.clientPath = musicObj.value("clientPath").toString("");
-            musicControlConfig.serviceBaseUrl = musicObj.value("serviceBaseUrl").toString("http://127.0.0.1:5010");
-            musicControlConfig.requestTimeoutMs = musicObj.value("requestTimeoutMs").toInt(3000);
-            musicControlConfig.concurrencyPolicy = musicObj.value("concurrencyPolicy").toString("replace").trimmed().toLower();
-
-            if (musicControlConfig.serviceBaseUrl.endsWith('/')) {
-                musicControlConfig.serviceBaseUrl.chop(1);
-            }
-            if (musicControlConfig.requestTimeoutMs < 500) {
-                musicControlConfig.requestTimeoutMs = 500;
-            }
-            if (musicControlConfig.concurrencyPolicy != "replace" && musicControlConfig.concurrencyPolicy != "reject") {
-                musicControlConfig.concurrencyPolicy = "replace";
-            }
-        }
     }
     
     qDebug() << "配置文件加载成功:" << configPath;

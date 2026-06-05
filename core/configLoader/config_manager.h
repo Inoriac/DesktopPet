@@ -56,10 +56,6 @@ public:
     const LlmConfig& getLlmConfig() const { return llmConfig; }
     void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
-    const MusicControlConfig& getMusicControlConfig() const { return musicControlConfig; }
-    void setMusicControlEnabled(bool enabled) { musicControlConfig.enabled = enabled; }
-    void setMusicClientPath(const QString& path) { musicControlConfig.clientPath = path; }
-    void setMusicServiceBaseUrl(const QString& baseUrl) { musicControlConfig.serviceBaseUrl = baseUrl; }
 
     // AI 行为策略
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
@@ -104,7 +100,6 @@ private:
 
     LlmConfig llmConfig;
     ScreenChatConfig screenChatConfig;
-    MusicControlConfig musicControlConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
 };
 
