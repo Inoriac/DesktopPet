@@ -1,5 +1,8 @@
 # Local config / secrets
 config/default_common_config.json
+docs/
+log/
+reference/
 .env
 .env.*
 !.env.example
