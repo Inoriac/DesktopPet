@@ -115,6 +115,10 @@ set(CORE_SOURCES
     core/ai/tools/animation_tools.h
     core/ai/tools/environment_tools.h
     core/ai/tools/music_tools.h
+    core/ai/tools/file_tools.h
+    core/ai/tools/file_tools.cpp
+    core/ai/tools/web_tools.h
+    core/ai/tools/web_tools.cpp
 )
 
 set(ENGINE_SOURCES
@@ -311,6 +315,38 @@ target_link_libraries(llm_tests
 )
 
 add_test(NAME LlmTests COMMAND llm_tests)
+
+# ---- 文件和网络工具测试 ----
+add_executable(file_web_tool_tests
+    tests/test_file_and_web_tools.cpp
+    core/ai/tools/file_tools.cpp
+    core/ai/tools/web_tools.cpp
+    core/ai/tool_registry.cpp
+    core/ai/ai_tool.h
+    core/ai/tools/runtime/tool_policy.h
+    core/ai/tools/runtime/tool_policy.cpp
+    core/ai/tools/runtime/tool_result_sanitizer.h
+    core/ai/tools/runtime/tool_result_sanitizer.cpp
+    core/ai/tools/runtime/tool_runtime.h
+    core/ai/tools/runtime/tool_runtime.cpp
+    core/ai/tools/environment_tools.h
+    include/ai_types.h
+)
+
+target_include_directories(file_web_tool_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/tools
+)
+
+target_link_libraries(file_web_tool_tests
+    Qt::Core
+    Qt::Network
+    Qt::Test
+)
+
+add_test(NAME FileWebToolTests COMMAND file_web_tool_tests)
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----

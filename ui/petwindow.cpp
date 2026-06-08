@@ -42,6 +42,8 @@
 #include "ai/tools/animation_tools.h"
 #include "ai/tools/environment_tools.h"
 #include "ai/tools/music_tools.h"
+#include "ai/tools/file_tools.h"
+#include "ai/tools/web_tools.h"
 
 #ifdef Q_OS_WIN
 namespace {
@@ -686,6 +688,11 @@ void PetWindow::setupAiBrain() {
         return;
     }
 
+    // 设置文件工具允许的根目录
+    m_allowedRoots.clear();
+    m_allowedRoots.append(QCoreApplication::applicationDirPath());
+    m_allowedRoots.append(QDir::currentPath());
+
     aiToolRegistry = std::make_unique<ToolRegistry>();
     aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
@@ -704,6 +711,14 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<LxMusicListPlaylistsTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPlaylistSongsTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPlayPlaylistTool>());
+
+    // 注册文件工具
+    aiToolRegistry->registerTool(std::make_unique<ReadTextFileTool>(m_allowedRoots));
+    aiToolRegistry->registerTool(std::make_unique<ListDirectoryTool>(m_allowedRoots));
+
+    // 注册网络工具
+    aiToolRegistry->registerTool(std::make_unique<WebFetchTool>());
+    aiToolRegistry->registerTool(std::make_unique<WebSearchTool>());
 
     aiBrain->setPetName(modelName);
     aiBrain->setToolRegistry(aiToolRegistry.get());

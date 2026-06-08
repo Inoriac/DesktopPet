@@ -146,6 +146,7 @@ private:
 
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
+    QStringList m_allowedRoots;  // 文件工具允许的根目录
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;
     QTimer* bubbleHideTimer = nullptr;
