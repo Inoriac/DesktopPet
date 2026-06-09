@@ -56,6 +56,8 @@ public:
     const LlmConfig& getLlmConfig() const { return llmConfig; }
     void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
+    const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
+    void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
 
     // AI 行为策略
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
@@ -100,6 +102,7 @@ private:
 
     LlmConfig llmConfig;
     ScreenChatConfig screenChatConfig;
+    VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
 };
 

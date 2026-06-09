@@ -1,0 +1,245 @@
+//
+// Created by Inoriac on 2025/10/15.
+//
+
+#include "model_loader.h"
+
+#include <QDebug>
+
+#include <algorithm>
+#include <cstdint>
+
+void ModelLoader::extractMeshData(const tinygltf::Model &model, const tinygltf::Mesh &mesh) {
+    for (const auto& primitive : mesh.primitives) {
+        MeshData meshData;
+        meshData.materialName = mesh.name;
+        meshData.materialIndex = -1;
+
+        // 提取顶点数据
+        extractVertexData(model, primitive, meshData);
+
+        // 提取索引数据
+        extractIndexData(model, primitive, meshData);
+
+        // 提取材质索引
+        if (primitive.material >= 0) {
+            meshData.materialIndex = primitive.material;
+        }
+
+        extractSkinningData(model, primitive, meshData);
+
+        // 存入当前 meshData
+        meshes.push_back(meshData);
+
+        for (auto& attr : primitive.attributes) {
+            qDebug() << "Attribute:" << QString::fromStdString(attr.first);
+        }
+    }
+}
+
+void ModelLoader::extractVertexData(const tinygltf::Model &model, const tinygltf::Primitive &primitive,
+    MeshData &meshData) {
+    // 提取位置信息
+    if (primitive.attributes.find("POSITION") != primitive.attributes.end()) {
+        const auto& accessor = model.accessors[primitive.attributes.at("POSITION")];    // 数据的结构
+        const auto& bufferView = model.bufferViews[accessor.bufferView];                     // 中转站，获取目标数据的起始偏移量
+        const auto& buffer = model.buffers[bufferView.buffer];                               // 原始字节数据区
+
+        // 获取每个顶点的字节跨度
+        size_t stride = accessor.ByteStride(bufferView);
+        if (stride == 0) stride = sizeof(float) * 3;
+
+        // 依据偏移量，获取 buffer 的起始指针
+        const unsigned char *dataPtr = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
+
+        for (size_t i = 0; i < accessor.count; i++) {
+            const float *pos = reinterpret_cast<const float *>(dataPtr + i * stride);
+            meshData.vertices.insert(meshData.vertices.end(), {pos[0], pos[1], pos[2]});
+        }
+
+    }
+
+    // 提取法线数据
+    if (primitive.attributes.find("NORMAL") != primitive.attributes.end()) {
+        const auto& accessor = model.accessors[primitive.attributes.at("NORMAL")];
+        const auto& bufferView = model.bufferViews[accessor.bufferView];
+        const auto& buffer = model.buffers[bufferView.buffer];
+
+        size_t stride = accessor.ByteStride(bufferView);
+        if (stride == 0) stride = sizeof(float) * 3;
+
+        const unsigned char *dataPtr = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
+
+        for (size_t i = 0; i < accessor.count; i++) {
+            const float *n = reinterpret_cast<const float *>(dataPtr + i * stride);
+            meshData.normals.insert(meshData.normals.end(), {n[0], n[1], n[2]});
+        }
+    }
+
+    // 提取UV数据
+    if (primitive.attributes.find("TEXCOORD_0") != primitive.attributes.end()) {
+        const auto& accessor = model.accessors[primitive.attributes.at("TEXCOORD_0")];
+        const auto& bufferView = model.bufferViews[accessor.bufferView];
+        const auto& buffer = model.buffers[bufferView.buffer];
+
+        size_t stride = accessor.ByteStride(bufferView);
+        if (stride == 0) stride = sizeof(float) * 2;
+
+        const unsigned char *dataPtr = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
+
+        for (size_t i = 0; i < accessor.count; i++) {
+            const float *uv = reinterpret_cast<const float *>(dataPtr + i * stride);
+            meshData.uvs.insert(meshData.uvs.end(), {uv[0], uv[1]});
+        }
+    }
+}
+
+void ModelLoader::extractIndexData(const tinygltf::Model &model, const tinygltf::Primitive &primitive,
+    MeshData &meshData) {
+
+    if (primitive.indices < 0) return;
+
+    const auto& accessor = model.accessors[primitive.indices];
+    const auto& bufferView = model.bufferViews[accessor.bufferView];
+    const auto& buffer = model.buffers[bufferView.buffer];
+
+    const unsigned char *dataPtr = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
+
+    // 根据索引类型读取
+    switch (accessor.componentType) {
+        case TINYGLTF_COMPONENT_TYPE_BYTE: {
+            const uint8_t *indices = reinterpret_cast<const uint8_t *>(dataPtr);
+            meshData.indices.assign(indices, indices + accessor.count);
+            break;
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
+            const uint16_t *indices = reinterpret_cast<const uint16_t *>(dataPtr);
+            meshData.indices.assign(indices, indices + accessor.count);
+            break;
+        }
+        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
+            const uint32_t *indices = reinterpret_cast<const uint32_t *>(dataPtr);
+            meshData.indices.assign(indices, indices + accessor.count);
+            break;
+        }
+        default:
+            qWarning() << "Unsupported component type:" << accessor.componentType;
+            break;
+    }
+}
+
+MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, const tinygltf::Model& model) {
+    MaterialData material;
+    material.name = mat.name;
+
+    // 基础色因子
+    if (mat.pbrMetallicRoughness.baseColorFactor.size() == 4) {
+        material.baseColorFactor = QVector3D(
+            mat.pbrMetallicRoughness.baseColorFactor[0],
+            mat.pbrMetallicRoughness.baseColorFactor[1],
+            mat.pbrMetallicRoughness.baseColorFactor[2]);
+        material.alphaFactor = static_cast<float>(mat.pbrMetallicRoughness.baseColorFactor[3]);
+    }
+
+    material.metallicFactor = static_cast<float>(mat.pbrMetallicRoughness.metallicFactor);
+    material.roughnessFactor = static_cast<float>(mat.pbrMetallicRoughness.roughnessFactor);
+
+    // 加载贴图
+    auto loadTexture = [&](int texIndex,
+                           std::string &outPath,
+                           std::vector<unsigned char> &outImageData,
+                           int &outWidth,
+                           int &outHeight) {
+        if (texIndex < 0 || texIndex >= model.textures.size())
+            return;
+
+        const tinygltf::Texture &tex = model.textures[texIndex];
+        const tinygltf::Image &img = model.images[tex.source];
+
+        if (!img.uri.empty()) {
+            // 外部图片文件路径
+            outPath = modelDirectory + "/" + img.uri;
+        } else if (!img.image.empty()) {
+            // 内嵌图像（glb bufferView 或 base64）
+            outImageData = img.image;
+            outWidth = img.width;
+            outHeight = img.height;
+        }
+    };
+
+    // === 基础色贴图 ===
+    loadTexture(mat.pbrMetallicRoughness.baseColorTexture.index,
+                material.albedoTexPath,
+                material.albedoImageData,
+                material.albedoWidth,
+                material.albedoHeight);
+
+    // === 金属度/粗糙度贴图 ===
+    loadTexture(mat.pbrMetallicRoughness.metallicRoughnessTexture.index,
+                material.metallicRoughnessTexPath,
+                material.metallicRoughnessImageData,
+                material.metallicRoughnessWidth,
+                material.metallicRoughnessHeight);
+
+    // === 法线贴图 ===
+    loadTexture(mat.normalTexture.index,
+                material.normalTexPath,
+                material.normalImageData,
+                material.normalWidth,
+                material.normalHeight);
+
+    // === 环境光 AO 贴图 ===
+    loadTexture(mat.occlusionTexture.index,
+                material.aoTexPath,
+                material.aoImageData,
+                material.aoWidth,
+                material.aoHeight);
+
+    return material;
+}
+
+void ModelLoader::calculateBoundingBox(const tinygltf::Model &model) {
+    QVector3D minBox(1e9, 1e9, 1e9);
+    QVector3D maxBox(-1e9, -1e9, -1e9);
+    bool valid = false;
+
+    // 遍历所有 mesh 的 POSITION 属性，更新包围盒
+    for (const auto& mesh : model.meshes) {
+        for (const auto& primitive : mesh.primitives) {
+            auto it = primitive.attributes.find("POSITION");
+            if (it != primitive.attributes.end()) {
+                const auto& accessor = model.accessors[it->second];
+
+                if (accessor.minValues.size() == 3 && accessor.maxValues.size() == 3) {
+                    minBox.setX(std::min(minBox.x(), (float)accessor.minValues[0]));
+                    minBox.setY(std::min(minBox.y(), (float)accessor.minValues[1]));
+                    minBox.setZ(std::min(minBox.z(), (float)accessor.minValues[2]));
+
+                    maxBox.setX(std::max(maxBox.x(), (float)accessor.maxValues[0]));
+                    maxBox.setY(std::max(maxBox.y(), (float)accessor.maxValues[1]));
+                    maxBox.setZ(std::max(maxBox.z(), (float)accessor.maxValues[2]));
+                    valid = true;
+                }
+            }
+        }
+    }
+
+    if (valid) {
+        // 计算尺寸
+        QVector3D size = maxBox - minBox;
+        float maxDim = std::max({size.x(), size.y(), size.z()});
+
+        // 目标大小，将模型归一化到 3.0 个单位
+        constexpr float TARGET_SIZE = 3.0f;
+
+        if (maxDim > 0.001f) {
+            normalizationScale = TARGET_SIZE / maxDim;
+            centerOffset = -(minBox + size * 0.5f) * normalizationScale;
+        }
+
+        qDebug() << "Model Bounding Box: Min" << minBox << "Max" << maxBox;
+        qDebug() << "Original Size:" << maxDim;
+        qDebug() << "Auto Normalization Scale:" << normalizationScale;
+    }
+}
+

@@ -14,6 +14,7 @@
 #include <QIcon>
 #include <QInputDialog>
 #include <QLineEdit>
+#include <QSignalBlocker>
 
 #include "statistic_manager.h"
 
@@ -149,6 +150,26 @@ void MainWindow::createCentralWidget() {
     soundEnabledCheckBox = new QCheckBox("Sound enabled");
     soundEnabledCheckBox->setChecked(false);
 
+    const VoiceConfig& defaultVoice = ConfigManager::instance().getVoiceConfig();
+    voiceEnabledCheckBox = new QCheckBox("Voice synthesis (GENIE / Python)");
+    voiceEnabledCheckBox->setChecked(defaultVoice.enabled);
+
+    QHBoxLayout* voiceSpeakerLayout = new QHBoxLayout;
+    QLabel* voiceSpeakerLabel = new QLabel("语音角色:");
+    voiceSpeakerComboBox = new QComboBox;
+    voiceSpeakerComboBox->addItem("Feibi / 菲比（中文）", "feibi");
+    voiceSpeakerComboBox->addItem("Mika / 聖園ミカ（日语）", "mika");
+    voiceSpeakerComboBox->addItem("ThirtySeven / 37（英语）", "thirtyseven");
+    voiceSpeakerComboBox->addItem("自定义角色（按配置加载）", "custom");
+    const QString selectedVoice = defaultVoice.speakerMode == "custom"
+        ? QStringLiteral("custom")
+        : defaultVoice.selectedSpeaker;
+    const int selectedVoiceIndex = voiceSpeakerComboBox->findData(selectedVoice);
+    voiceSpeakerComboBox->setCurrentIndex(selectedVoiceIndex >= 0 ? selectedVoiceIndex : 0);
+    voiceSpeakerComboBox->setEnabled(defaultVoice.enabled);
+    voiceSpeakerLayout->addWidget(voiceSpeakerLabel);
+    voiceSpeakerLayout->addWidget(voiceSpeakerComboBox);
+
     const ScreenChatConfig& defaultScreenChat = ConfigManager::instance().getScreenChatConfig();
     autoScreenChatCheckBox = new QCheckBox("Auto screen chat (8-12 min)");
     autoScreenChatCheckBox->setChecked(defaultScreenChat.enabled);
@@ -209,6 +230,8 @@ void MainWindow::createCentralWidget() {
     settingsLayout->addLayout(bubbleFontLayout);
     settingsLayout->addLayout(bubbleOffsetLayout);
     settingsLayout->addWidget(soundEnabledCheckBox);
+    settingsLayout->addWidget(voiceEnabledCheckBox);
+    settingsLayout->addLayout(voiceSpeakerLayout);
     settingsLayout->addLayout(volumeLayout);
 
     // 添加到主布局
@@ -231,6 +254,13 @@ void MainWindow::setupConnections() {
     connect(clickThroughCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(aiEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
     connect(autoScreenChatCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(voiceEnabledCheckBox, &QCheckBox::toggled, this, [this](bool enabled) {
+        if (voiceSpeakerComboBox) {
+            voiceSpeakerComboBox->setEnabled(enabled);
+        }
+        OnSettingsChanged();
+    });
+    connect(voiceSpeakerComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::OnSettingsChanged);
     connect(bubbleOpacitySlider, &QSlider::valueChanged, this, &MainWindow::OnBubbleAppearanceChanged);
     connect(bubbleFontSizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
     connect(bubbleOffsetXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
@@ -283,8 +313,10 @@ void MainWindow::OnStartPet() {
     bool clickThrough = clickThroughCheckBox->isChecked();
     bool aiEnabled = aiEnabledCheckBox->isChecked();
     const ScreenChatConfig screenChatConfig = buildScreenChatConfigFromUi();
+    const VoiceConfig voiceConfig = buildVoiceConfigFromUi();
     ConfigManager::instance().setLlmEnabled(aiEnabled);
-    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled, screenChatConfig);
+    ConfigManager::instance().setVoiceConfig(voiceConfig);
+    activePetWindow->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled, screenChatConfig, voiceConfig);
 
     activePetWindow->show();
 
@@ -331,12 +363,14 @@ void MainWindow::OnSettingsChanged() {
 
     // 应用至桌宠界面
     bool aiEnabled = aiEnabledCheckBox->isChecked();
+    const VoiceConfig voiceConfig = buildVoiceConfigFromUi();
     ConfigManager::instance().setLlmEnabled(aiEnabled);
+    ConfigManager::instance().setVoiceConfig(voiceConfig);
 
     if(activePetWindow){
         int sizePercent = sizeSlider->value();
         const ScreenChatConfig screenChatConfig = buildScreenChatConfigFromUi();
-        activePetWindow->applyRuntimeSettings(sizePercent, aiEnabled, screenChatConfig);
+        activePetWindow->applyRuntimeSettings(sizePercent, aiEnabled, screenChatConfig, voiceConfig);
     }
 }
 
@@ -366,6 +400,24 @@ ScreenChatConfig MainWindow::buildScreenChatConfigFromUi() const {
     cfg.minIntervalMs = 8 * 60 * 1000;
     cfg.maxIntervalMs = 12 * 60 * 1000;
     cfg.petGender = "female";
+    return cfg;
+}
+
+VoiceConfig MainWindow::buildVoiceConfigFromUi() const {
+    VoiceConfig cfg = ConfigManager::instance().getVoiceConfig();
+    cfg.enabled = voiceEnabledCheckBox ? voiceEnabledCheckBox->isChecked() : cfg.enabled;
+    cfg.preloadOnStart = cfg.enabled;
+
+    const QString selected = voiceSpeakerComboBox
+        ? voiceSpeakerComboBox->currentData().toString().trimmed().toLower()
+        : cfg.selectedSpeaker;
+    if (selected == "custom") {
+        cfg.speakerMode = "custom";
+    } else if (selected == "feibi" || selected == "mika" || selected == "thirtyseven") {
+        cfg.speakerMode = "predefined";
+        cfg.selectedSpeaker = selected;
+    }
+
     return cfg;
 }
 

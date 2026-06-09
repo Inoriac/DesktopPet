@@ -38,6 +38,63 @@ static int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
 }
 
+static VoiceConfig parseVoiceConfig(const QJsonObject& voiceObj) {
+    VoiceConfig cfg;
+    cfg.enabled = voiceObj.value("enabled").toBool(false);
+    cfg.backend = voiceObj.value("backend").toString("genie-tts").trimmed();
+    if (cfg.backend.isEmpty()) cfg.backend = "genie-tts";
+
+    cfg.pythonExecutable = voiceObj.value("pythonExecutable").toString().trimmed();
+    cfg.venvPath = voiceObj.value("venvPath").toString(".venv").trimmed();
+    if (cfg.venvPath.isEmpty()) cfg.venvPath = ".venv";
+    cfg.workerScript = voiceObj.value("workerScript").toString("tools/voice/genie_worker.py").trimmed();
+    if (cfg.workerScript.isEmpty()) cfg.workerScript = "tools/voice/genie_worker.py";
+    cfg.preloadOnStart = voiceObj.value("preloadOnStart").toBool(true);
+    cfg.allowAutoDownload = voiceObj.value("allowAutoDownload").toBool(false);
+
+    cfg.genieDataDir = voiceObj.value("genieDataDir").toString("runtime/voice/GenieData").trimmed();
+    cfg.characterModelsDir = voiceObj.value("characterModelsDir").toString("runtime/voice/CharacterModels").trimmed();
+    cfg.customCharactersDir = voiceObj.value("customCharactersDir").toString("runtime/voice/custom_characters").trimmed();
+    if (cfg.genieDataDir.isEmpty()) cfg.genieDataDir = "runtime/voice/GenieData";
+    if (cfg.characterModelsDir.isEmpty()) cfg.characterModelsDir = "runtime/voice/CharacterModels";
+    if (cfg.customCharactersDir.isEmpty()) cfg.customCharactersDir = "runtime/voice/custom_characters";
+
+    cfg.speakerMode = voiceObj.value("speakerMode").toString("predefined").trimmed().toLower();
+    if (cfg.speakerMode != "predefined" && cfg.speakerMode != "custom") {
+        cfg.speakerMode = "predefined";
+    }
+    cfg.selectedSpeaker = voiceObj.value("selectedSpeaker").toString("feibi").trimmed().toLower();
+    if (cfg.selectedSpeaker != "feibi" && cfg.selectedSpeaker != "mika" && cfg.selectedSpeaker != "thirtyseven") {
+        cfg.selectedSpeaker = "feibi";
+    }
+
+    if (voiceObj.contains("customSpeaker") && voiceObj.value("customSpeaker").isObject()) {
+        const QJsonObject customObj = voiceObj.value("customSpeaker").toObject();
+        cfg.customSpeaker.name = customObj.value("name").toString().trimmed();
+        cfg.customSpeaker.language = customObj.value("language").toString("zh").trimmed().toLower();
+        if (cfg.customSpeaker.language.isEmpty()) cfg.customSpeaker.language = "zh";
+        cfg.customSpeaker.onnxModelDir = customObj.value("onnxModelDir").toString().trimmed();
+        cfg.customSpeaker.referenceAudioPath = customObj.value("referenceAudioPath").toString().trimmed();
+        cfg.customSpeaker.referenceAudioText = customObj.value("referenceAudioText").toString().trimmed();
+    }
+
+    cfg.saveAudio = voiceObj.value("saveAudio").toBool(false);
+    cfg.outputDir = voiceObj.value("outputDir").toString("runtime/voice/outputs").trimmed();
+    if (cfg.outputDir.isEmpty()) cfg.outputDir = "runtime/voice/outputs";
+
+    if (voiceObj.contains("sources") && voiceObj.value("sources").isObject()) {
+        const QJsonObject sourcesObj = voiceObj.value("sources").toObject();
+        cfg.sources.assistant = sourcesObj.value("assistant").toBool(true);
+        cfg.sources.proactive = sourcesObj.value("proactive").toBool(true);
+        cfg.sources.screenChat = sourcesObj.value("screenChat").toBool(true);
+        cfg.sources.fallback = sourcesObj.value("fallback").toBool(true);
+        cfg.sources.toolBubble = sourcesObj.value("toolBubble").toBool(false);
+    }
+
+    cfg.maxTextChars = clampInt(voiceObj.value("maxTextChars").toInt(350), 20, 2000);
+    return cfg;
+}
+
 ConfigManager::ConfigManager() {
     // 默认加载配置
     loadConfig();
@@ -168,6 +225,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     // 2) aiSettings.profiles + activeProfile
     llmConfig = LlmConfig{};
     screenChatConfig = ScreenChatConfig{};
+    voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiBehaviorPolicy.idleActionWhitelist = {
         "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
@@ -249,6 +307,10 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             } else {
                 screenChatConfig.petGender = "female";
             }
+        }
+
+        if (aiRaw.contains("voice") && aiRaw.value("voice").isObject()) {
+            voiceConfig = parseVoiceConfig(aiRaw.value("voice").toObject());
         }
 
         // 读取行为策略

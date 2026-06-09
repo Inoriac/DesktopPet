@@ -90,6 +90,36 @@
           "bubbleDurationMs": 8000,
           "petGender": "female"
         },
+        "voice": {
+          "enabled": false,
+          "backend": "genie-tts",
+          "venvPath": ".venv",
+          "workerScript": "tools/voice/genie_worker.py",
+          "preloadOnStart": true,
+          "allowAutoDownload": false,
+          "genieDataDir": "runtime/voice/GenieData",
+          "characterModelsDir": "runtime/voice/CharacterModels",
+          "customCharactersDir": "runtime/voice/custom_characters",
+          "speakerMode": "predefined",
+          "selectedSpeaker": "feibi",
+          "customSpeaker": {
+            "name": "custom_voice",
+            "language": "zh",
+            "onnxModelDir": "runtime/voice/custom_characters/custom_voice/tts_models",
+            "referenceAudioPath": "runtime/voice/custom_characters/custom_voice/reference.wav",
+            "referenceAudioText": ""
+          },
+          "saveAudio": false,
+          "outputDir": "runtime/voice/outputs",
+          "maxTextChars": 350,
+          "sources": {
+            "assistant": true,
+            "proactive": true,
+            "screenChat": true,
+            "fallback": true,
+            "toolBubble": false
+          }
+        },
         "behaviorPolicy": {
           "idleActionWhitelist": [
             "Idle",

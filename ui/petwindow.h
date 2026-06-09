@@ -12,12 +12,15 @@
 #include <QRect>
 #include <QNetworkAccessManager>
 #include <QPointer>
+#include <QDateTime>
 #include <memory>
 
 #include "ai/ai_brain.h"
 #include "ai/scheduler/agent_scheduler.h"
 #include "ai/tool_registry.h"
+#include "voice/voice_synthesis_service.h"
 
+class ChatHistoryWindow;
 class LiquidGlassChatBubble;
 
 class RenderViewport;
@@ -33,10 +36,12 @@ public:
                        bool alwaysOnTop,
                        bool clickThrough,
                        bool aiEnabled = false,
-                       const ScreenChatConfig& screenChatConfig = ScreenChatConfig{});
+                       const ScreenChatConfig& screenChatConfig = ScreenChatConfig{},
+                       const VoiceConfig& voiceConfig = VoiceConfig{});
     void applyRuntimeSettings(int sizePercent,
                               bool aiEnabled,
-                              const ScreenChatConfig& screenChatConfig = ScreenChatConfig{});
+                              const ScreenChatConfig& screenChatConfig = ScreenChatConfig{},
+                              const VoiceConfig& voiceConfig = VoiceConfig{});
     void previewBubble(const QString& message = QString());
     bool loadModel(const QString &modelPath);
     
@@ -84,8 +89,30 @@ private:
                               const QString& reason,
                               bool debugSaveScreenshotOnly);
     void showBubbleMessage(const QString& message, int durationMs = -1);
+    void showBubbleMessageNow(const QString& message, int durationMs = -1, bool forceRefreshGlass = true);
+    void showBubbleMessageAnimated(const QString& message, int durationMs = -1);
     void showBubbleInput();
     void hideBubbleMessage();
+    void startThinkingBubble(const QString& reason);
+    void stopThinkingBubble(bool keepCurrentBubble = false);
+    void updateThinkingBubble();
+    void stopTypewriterBubble();
+    void updateTypewriterBubble();
+    QStringList splitBubbleTextIntoPages(const QString& message) const;
+    bool hasMoreBubblePages() const;
+    void showCurrentBubblePageAnimated(int durationMs = -1);
+    void showNextBubblePage();
+    void openChatHistoryWindow();
+    void appendChatHistoryMessage(const QString& role,
+                                  const QString& content,
+                                  const QDateTime& timestamp = QDateTime::currentDateTime(),
+                                  bool persist = true);
+    void loadChatHistory();
+    void saveChatHistoryMessage(const QString& role,
+                                const QString& content,
+                                const QDateTime& timestamp) const;
+    QString chatHistoryFilePath() const;
+    void speakPetReply(const QString& text, const QString& source);
     void updateBubblePositions();
     void updateOutputBubblePosition();
     void updateInputBubblePosition();
@@ -133,6 +160,7 @@ private:
     QAction *closeAction;
     QAction *manualScreenChatAction = nullptr;
     QAction *debugCaptureOnlyAction = nullptr;
+    QAction *openChatHistoryAction = nullptr;
 
     // 渲染组件
     RenderViewport *renderViewport;
@@ -144,7 +172,9 @@ private:
     bool clickThrough;
     bool aiEnabled = false;
     ScreenChatConfig screenChatConfig;
+    VoiceConfig voiceConfig;
 
+    VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
     std::unique_ptr<AgentScheduler> agentScheduler;
@@ -152,9 +182,29 @@ private:
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;
     QTimer* bubbleHideTimer = nullptr;
+    QTimer* thinkingBubbleTimer = nullptr;
+    QTimer* typewriterBubbleTimer = nullptr;
     QPointer<LiquidGlassChatBubble> outputBubble;
     QPointer<LiquidGlassChatBubble> inputBubble;
+    QPointer<ChatHistoryWindow> chatHistoryWindow;
     bool screenChatBusy = false;
+    bool thinkingBubbleActive = false;
+    bool thinkingHadAssistantResponse = false;
+    int thinkingDotCount = 1;
+    QString thinkingBubbleTextBase;
+    bool typewriterBubbleActive = false;
+    QString typewriterTargetText;
+    int typewriterVisibleChars = 0;
+    int typewriterFinalDurationMs = -1;
+    QStringList bubblePages;
+    int bubblePageIndex = 0;
+
+    struct ChatHistoryEntry {
+        QString role;
+        QString content;
+        QDateTime timestamp;
+    };
+    QList<ChatHistoryEntry> chatHistoryEntries;
 
     struct NativeWindowEntry {
         void* hwnd = nullptr;

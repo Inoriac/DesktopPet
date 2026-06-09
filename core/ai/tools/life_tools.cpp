@@ -127,22 +127,22 @@ QStringList briefingTips(const QJsonObject& weatherData) {
 WeatherQueryTool::WeatherQueryTool()
     : AITool(
           "weather_query",
-          "查询指定城市的当前天气和简要预报。用于出门提醒、穿衣建议和每日简报。",
+          "查询指定城市或地点的当前天气和简要预报。调用前必须已经知道用户要查的城市或地点；如果用户没有说明地点，应先追问地点，不要默认使用 auto:ip。",
           ToolCategory::Query) {}
 
 QJsonObject WeatherQueryTool::parameterSchema() const {
     QJsonObject schema;
     schema["type"] = "object";
     QJsonObject properties;
-    properties["location"] = makeStringProperty("城市或地点，如 Beijing、Shanghai、北京；默认 auto:ip", "auto:ip");
+    properties["location"] = makeStringProperty("必填。用户明确指定的城市或地点，如 Beijing、Shanghai、北京。未说明地点时先询问用户。", {});
     properties["language"] = makeStringProperty("返回语言，默认 zh", "zh");
     schema["properties"] = properties;
+    schema["required"] = QJsonArray{QStringLiteral("location")};
     return schema;
 }
 
 bool WeatherQueryTool::validate(const QJsonObject& params) const {
-    Q_UNUSED(params)
-    return true;
+    return params.contains("location") && !params.value("location").toString().trimmed().isEmpty();
 }
 
 ToolResult WeatherQueryTool::execute(const QJsonObject& params) {

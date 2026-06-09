@@ -4,10 +4,15 @@
 #include <QColor>
 #include <QImage>
 #include <QLineEdit>
+#include <QPropertyAnimation>
 #include <QPointer>
 #include <QWidget>
 
 struct ScreenChatConfig;
+
+class QEnterEvent;
+class QEvent;
+class QMouseEvent;
 
 class LiquidGlassChatBubble : public QWidget {
     Q_OBJECT
@@ -16,6 +21,8 @@ public:
     explicit LiquidGlassChatBubble(QWidget* parent = nullptr);
 
     void setMessage(const QString& message);
+    void setHasMorePages(bool hasMore);
+    void setInputAutoFadeEnabled(bool enabled);
     void showMessage(const QString& message);
     void showInput(const QString& placeholder = QString(), bool focusInput = true);
     void hideBubble();
@@ -27,17 +34,23 @@ public:
 
 signals:
     void messageSubmitted(const QString& text);
+    void morePagesRequested();
     void dismissed();
 
 protected:
     void paintEvent(QPaintEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void mousePressEvent(QMouseEvent* event) override;
+    void enterEvent(QEnterEvent* event) override;
+    void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
     QImage captureBackground(const QRect& globalRect) const;
     QImage makeBlurredGlass(const QImage& source) const;
     QColor chooseReadableTextColor(const QImage& glassImage) const;
+    QRect moreIndicatorRect() const;
+    void setInputRevealed(bool revealed);
     void updateTextPalette(const QColor& color);
     void updateInputGeometry();
     int contentWidth() const;
@@ -45,7 +58,11 @@ private:
 private:
     QString m_text;
     bool m_inputMode = false;
+    bool m_hasMorePages = false;
+    bool m_inputAutoFadeEnabled = false;
+    bool m_inputRevealed = true;
     QPointer<QLineEdit> m_input;
+    QPointer<QPropertyAnimation> m_opacityAnimation;
     QImage m_glassCache;
     QColor m_textColor = Qt::black;
 

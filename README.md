@@ -77,6 +77,7 @@
 * **图形/模型**: OpenGL, TinyGLTF
 * **网络 / LLM**: Qt Network, OpenAI-compatible Chat Completion
 * **音频 / 外部播放控制**: OpenAL / Qt Multimedia, LX Music API
+* **可选语音合成**: Python 虚拟环境 + GENIE / `genie-tts`（GPT-SoVITS 轻量推理）
 
 ---
 
@@ -156,6 +157,7 @@ Desktop-Pet/
 * `visual_model`: 视觉模型预留字段。
 * `timeoutMs` / `maxTokens` / `temperature` / `retryCount`: 请求超时、生成长度、温度和重试次数。
 * `screenChat`: 屏幕观察/主动气泡聊天相关配置，默认关闭。
+* `voice`: 可选 Python / GENIE 语音合成配置，默认关闭。
 * `behaviorPolicy`: Agent 主动行为白名单、禁止动作与触发间隔配置。
 
 当前主动触发策略包括：
@@ -165,6 +167,43 @@ Desktop-Pet/
 * `proactiveChat`: 主动聊天触发。
 
 主动触发会受白名单和禁止动作限制，避免 LLM 直接触发拖拽、窗口吸附等应由本地交互管线管理的动作。
+
+### 可选语音合成（GENIE / GPT-SoVITS）
+
+语音功能默认不启动。启用后，桌宠在展示 AI 回复气泡时，会把同一段文本交给 Python 侧 `genie-tts` worker 播放。
+
+1. 准备 Python 虚拟环境：
+
+  ```powershell
+  .\tools\voice\setup_voice_env.ps1
+  ```
+
+2. 下载 GENIE 基础资源和预设说话人，例如中文菲比：
+
+  ```powershell
+  .\.venv\Scripts\python.exe tools\voice\download_genie_assets.py --preset feibi --with-roberta
+  ```
+
+  也可以一次准备全部内置预设：
+
+  ```powershell
+  .\.venv\Scripts\python.exe tools\voice\download_genie_assets.py --all --with-roberta
+  ```
+
+3. 在 UI 中勾选 `Voice synthesis (GENIE / Python)`，并选择预设角色：
+  * `feibi`: 中文
+  * `mika`: 日语
+  * `thirtyseven`: 英语
+
+4. 自定义角色请先按 GENIE 文档将 GPT-SoVITS 模型转换为 ONNX，然后放入：
+
+  ```text
+  runtime/voice/custom_characters/<角色名>/tts_models/
+  ```
+
+  并在 `aiSettings.profiles.<profile>.voice.customSpeaker` 中配置 `name`、`language`、`onnxModelDir`、可选 `referenceAudioPath` 与 `referenceAudioText`，再在 UI 中选择“自定义角色”。
+
+语音运行文件位于 `runtime/voice/`，虚拟环境位于 `.venv/`，这些本地资源默认不会提交到 Git。
 
 ### 窗口吸附相关配置
 

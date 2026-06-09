@@ -1,6 +1,7 @@
 #include "intent_router.h"
 
 #include <QRegularExpression>
+#include <QSet>
 #include <QStringList>
 
 namespace {
@@ -8,6 +9,50 @@ int firstCapturedInt(const QString& input, int fallback = 0) {
     const QRegularExpression re("(\\d+)");
     const QRegularExpressionMatch match = re.match(input);
     return match.hasMatch() ? match.captured(1).toInt() : fallback;
+}
+
+QString extractLocationFromLifeAssistantQuery(const QString& normalizedInput) {
+    QString candidate = normalizedInput;
+    candidate.replace(QRegularExpression("[\\s，,。.!！?？；;：:、]+"), "");
+
+    const QStringList removablePhrases = {
+        "天气预报", "天气怎么样", "天气如何", "会不会下雨", "会下雨吗", "下不下雨", "多少度", "几度",
+        "今日简报", "每日简报", "今天简报", "生成简报", "查看简报", "早报",
+        "查看一下", "查询一下", "查一下", "看一下", "帮我看看", "帮我查查", "帮我查询",
+        "帮我", "帮忙", "请问", "我想知道", "我要", "查询", "查看", "查查", "看看", "看下",
+        "你好", "hello", "hi", "嗨", "在吗", "在不在",
+        "现在", "当前", "今天", "今日", "明天", "明日", "最近", "本地", "当地",
+        "天气", "气温", "温度", "下雨", "有雨", "降雨", "预报", "简报",
+        "会不会", "是不是", "怎么样", "如何", "怎样", "多少", "什么", "会", "有", "的", "了", "吗", "呢", "呀", "吧"
+    };
+
+    for (const QString& phrase : removablePhrases) {
+        candidate.replace(phrase, "", Qt::CaseInsensitive);
+    }
+
+    candidate = candidate.trimmed();
+    return candidate;
+}
+
+bool isPureGreeting(const QString& normalizedInput) {
+    QString compact = normalizedInput.trimmed().toLower();
+    compact.replace(QRegularExpression("[\\s，,。.!！?？；;：:、~～]+"), "");
+
+    static const QSet<QString> greetings = {
+        QStringLiteral("你好"),
+        QStringLiteral("你好呀"),
+        QStringLiteral("你好啊"),
+        QStringLiteral("您好"),
+        QStringLiteral("嗨"),
+        QStringLiteral("嗨嗨"),
+        QStringLiteral("hi"),
+        QStringLiteral("hello"),
+        QStringLiteral("hey"),
+        QStringLiteral("在吗"),
+        QStringLiteral("在不在")
+    };
+
+    return greetings.contains(compact);
 }
 }
 
@@ -39,15 +84,19 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         return IntentRoute::directToolCall("get_network_status", {}, "network_status", 0.9);
     }
 
-    if (containsAny(normalized, {"天气", "下雨", "气温", "温度"})) {
+    if (containsAny(normalized, {"天气", "下雨", "有雨", "降雨", "气温", "温度"})) {
+        const QString location = extractLocationFromLifeAssistantQuery(normalized);
+        if (location.isEmpty()) {
+            return IntentRoute::needClarification("你想查询哪个城市或地点的天气？", "weather_missing_location");
+        }
         QJsonObject args;
-        args["location"] = "auto:ip";
+        args["location"] = location;
         return IntentRoute::directToolCall("weather_query", args, "weather_query", 0.82);
     }
 
     if (containsAny(normalized, {"今日简报", "每日简报", "今天简报", "早报"})) {
         QJsonObject args;
-        args["location"] = "auto:ip";
+        args["location"] = extractLocationFromLifeAssistantQuery(normalized);
         return IntentRoute::directToolCall("daily_briefing", args, "daily_briefing", 0.86);
     }
 
@@ -132,7 +181,7 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         return IntentRoute::directToolCall("lx_music_skip_next", {}, "lx_music_skip_next", 0.9);
     }
 
-    if (containsAny(normalized, {"你好", "hello", "嗨"}) && normalized.size() <= 12) {
+    if (isPureGreeting(normalized)) {
         return IntentRoute::directReply("在哦。", "simple_greeting");
     }
 

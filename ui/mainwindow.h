@@ -17,6 +17,7 @@
 #include <QSpinBox>
 #include <QCheckBox>
 #include <QLineEdit>
+#include <QComboBox>
 #include <QString>
 #include "ai_types.h"
 
@@ -75,6 +76,8 @@ private:
     QCheckBox *clickThroughCheckBox{};
     QCheckBox *aiEnabledCheckBox{};
     QCheckBox *soundEnabledCheckBox{};
+    QCheckBox *voiceEnabledCheckBox{};
+    QComboBox *voiceSpeakerComboBox{};
     QSlider *volumeSlider{};
     QLabel *volumeLabel{};
 
@@ -101,6 +104,7 @@ private:
     RenderViewport *renderViewport{};
 
     ScreenChatConfig buildScreenChatConfigFromUi() const;
+    VoiceConfig buildVoiceConfigFromUi() const;
 };
 
 

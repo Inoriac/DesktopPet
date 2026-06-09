@@ -80,6 +80,48 @@ struct ScreenChatConfig {
     QString petGender = "female";
 };
 
+// 自定义语音角色配置
+struct CustomVoiceConfig {
+    QString name;
+    QString language = "zh";
+    QString onnxModelDir;
+    QString referenceAudioPath;
+    QString referenceAudioText;
+};
+
+// 语音播报来源开关
+struct VoiceSourceConfig {
+    bool assistant = true;
+    bool proactive = true;
+    bool screenChat = true;
+    bool fallback = true;
+    bool toolBubble = false;
+};
+
+// Python / GENIE 语音合成配置
+struct VoiceConfig {
+    bool enabled = false;
+    QString backend = "genie-tts";
+    QString pythonExecutable;
+    QString venvPath = ".venv";
+    QString workerScript = "tools/voice/genie_worker.py";
+    bool preloadOnStart = true;
+    bool allowAutoDownload = false;
+
+    QString genieDataDir = "runtime/voice/GenieData";
+    QString characterModelsDir = "runtime/voice/CharacterModels";
+    QString customCharactersDir = "runtime/voice/custom_characters";
+
+    QString speakerMode = "predefined";
+    QString selectedSpeaker = "feibi";
+    CustomVoiceConfig customSpeaker;
+
+    bool saveAudio = false;
+    QString outputDir = "runtime/voice/outputs";
+    VoiceSourceConfig sources;
+    int maxTextChars = 350;
+};
+
 // 单个触发器的调度配置
 struct AiTriggerConfig {
     bool enabled = true;

@@ -2,19 +2,23 @@
 
 #include <QFontMetrics>
 #include <QGuiApplication>
+#include <QEnterEvent>
+#include <QMouseEvent>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
 #include <QPalette>
 #include <QScreen>
+#include <QAbstractAnimation>
 #include <algorithm>
 #include <cmath>
 
 #include "ai_types.h"
 
 namespace {
-constexpr int kMaxBubbleWidth = 300;
+constexpr int kMaxBubbleWidth = 380;
+constexpr int kMaxBubbleHeight = 400;
 constexpr int kMinBubbleHeight = 48;
 constexpr int kBlurRadius = 12;
 
@@ -99,6 +103,7 @@ LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
     setAttribute(Qt::WA_NoSystemBackground, true);
     setAttribute(Qt::WA_ShowWithoutActivating, true);
     setFocusPolicy(Qt::StrongFocus);
+    setWindowOpacity(1.0);
     hide();
 
     m_input = new QLineEdit(this);
@@ -109,6 +114,10 @@ LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
         if (!value.isEmpty()) {
             emit messageSubmitted(value);
             m_input->clear();
+            m_input->clearFocus();
+            if (m_inputAutoFadeEnabled && !underMouse()) {
+                setInputRevealed(false);
+            }
         }
     });
 }
@@ -123,6 +132,27 @@ void LiquidGlassChatBubble::setMessage(const QString& message) {
     update();
 }
 
+void LiquidGlassChatBubble::setHasMorePages(bool hasMore) {
+    if (m_hasMorePages == hasMore) {
+        return;
+    }
+    m_hasMorePages = hasMore;
+    update();
+}
+
+void LiquidGlassChatBubble::setInputAutoFadeEnabled(bool enabled) {
+    m_inputAutoFadeEnabled = enabled;
+    setMouseTracking(enabled);
+    if (m_input) {
+        m_input->setMouseTracking(enabled);
+    }
+    if (enabled) {
+        setInputRevealed(false);
+    } else {
+        setInputRevealed(true);
+    }
+}
+
 void LiquidGlassChatBubble::showMessage(const QString& message) {
     setMessage(message);
     show();
@@ -132,6 +162,7 @@ void LiquidGlassChatBubble::showMessage(const QString& message) {
 void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInput) {
     m_text.clear();
     m_inputMode = true;
+    m_hasMorePages = false;
     resize(QSize(kMaxBubbleWidth, kMinBubbleHeight));
     updateInputGeometry();
     if (m_input) {
@@ -140,6 +171,9 @@ void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInpu
         if (focusInput) {
             m_input->setFocus(Qt::PopupFocusReason);
         }
+    }
+    if (m_inputAutoFadeEnabled) {
+        setInputRevealed(focusInput || underMouse());
     }
     show();
     raise();
@@ -192,8 +226,9 @@ QSize LiquidGlassChatBubble::sizeHint() const {
     const QRect textRect = fm.boundingRect(QRect(0, 0, contentWidth(), 1000),
                                            Qt::TextWordWrap | Qt::AlignCenter,
                                            m_text.isEmpty() ? QStringLiteral("...") : m_text);
+    const int indicatorPadding = m_hasMorePages ? 16 : 0;
     return QSize(kMaxBubbleWidth,
-                 std::max(kMinBubbleHeight, textRect.height() + m_paddingV * 2));
+                 std::clamp(textRect.height() + m_paddingV * 2 + indicatorPadding, kMinBubbleHeight, kMaxBubbleHeight));
 }
 
 void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
@@ -227,18 +262,58 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
         f.setWeight(QFont::DemiBold);
         p.setFont(f);
 
-        const QRect textRect = localRect.adjusted(m_paddingH, m_paddingV, -m_paddingH, -m_paddingV);
+        QRect textRect = localRect.adjusted(m_paddingH, m_paddingV, -m_paddingH, -m_paddingV);
+        if (m_hasMorePages) {
+            textRect.adjust(0, 0, 0, -16);
+        }
         const QColor shadow = m_textColor == Qt::white ? QColor(0, 0, 0, 130) : QColor(255, 255, 255, 120);
         p.setPen(shadow);
         p.drawText(textRect.translated(0, m_shadowOffset), Qt::TextWordWrap | Qt::AlignCenter, m_text);
         p.setPen(m_textColor);
         p.drawText(textRect, Qt::TextWordWrap | Qt::AlignCenter, m_text);
+
+        if (m_hasMorePages) {
+            const QRect indicator = moreIndicatorRect();
+            QPainterPath triangle;
+            triangle.moveTo(indicator.left(), indicator.top());
+            triangle.lineTo(indicator.right(), indicator.top());
+            triangle.lineTo(indicator.center().x(), indicator.bottom());
+            triangle.closeSubpath();
+
+            p.setRenderHint(QPainter::Antialiasing, true);
+            p.setBrush(m_textColor);
+            p.setPen(Qt::NoPen);
+            p.drawPath(triangle);
+        }
     }
 }
 
 void LiquidGlassChatBubble::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     updateInputGeometry();
+}
+
+void LiquidGlassChatBubble::mousePressEvent(QMouseEvent* event) {
+    if (!m_inputMode && m_hasMorePages && moreIndicatorRect().adjusted(-8, -8, 8, 8).contains(event->pos())) {
+        emit morePagesRequested();
+        event->accept();
+        return;
+    }
+    QWidget::mousePressEvent(event);
+}
+
+void LiquidGlassChatBubble::enterEvent(QEnterEvent* event) {
+    if (m_inputMode && m_inputAutoFadeEnabled) {
+        setInputRevealed(true);
+    }
+    QWidget::enterEvent(event);
+}
+
+void LiquidGlassChatBubble::leaveEvent(QEvent* event) {
+    if (m_inputMode && m_inputAutoFadeEnabled) {
+        setInputRevealed(false);
+    }
+    QWidget::leaveEvent(event);
 }
 
 void LiquidGlassChatBubble::keyPressEvent(QKeyEvent* event) {
@@ -307,6 +382,35 @@ QColor LiquidGlassChatBubble::chooseReadableTextColor(const QImage& glassImage) 
     const qreal blackContrast = contrastRatio(Qt::black, avg);
     const qreal whiteContrast = contrastRatio(Qt::white, avg);
     return whiteContrast >= blackContrast ? Qt::white : Qt::black;
+}
+
+QRect LiquidGlassChatBubble::moreIndicatorRect() const {
+    return QRect(width() - m_paddingH - 14, height() - m_paddingV - 10, 14, 10);
+}
+
+void LiquidGlassChatBubble::setInputRevealed(bool revealed) {
+    if (m_inputRevealed == revealed && m_opacityAnimation && m_opacityAnimation->state() == QAbstractAnimation::Stopped) {
+        return;
+    }
+
+    m_inputRevealed = revealed;
+    const qreal targetOpacity = revealed ? 1.0 : 0.0;
+    if (!isVisible()) {
+        if (m_opacityAnimation) {
+            m_opacityAnimation->stop();
+        }
+        setWindowOpacity(targetOpacity);
+        return;
+    }
+
+    if (!m_opacityAnimation) {
+        m_opacityAnimation = new QPropertyAnimation(this, "windowOpacity", this);
+        m_opacityAnimation->setDuration(200);
+    }
+    m_opacityAnimation->stop();
+    m_opacityAnimation->setStartValue(windowOpacity());
+    m_opacityAnimation->setEndValue(targetOpacity);
+    m_opacityAnimation->start();
 }
 
 void LiquidGlassChatBubble::updateTextPalette(const QColor& color) {

@@ -11,6 +11,21 @@ reference/
 # Python cache
 __pycache__/
 *.py[cod]
+.cache/
+.venv/
+venv/
+ENV/
+
+# Optional Python / GENIE voice runtime assets
+runtime/voice/*
+!runtime/voice/README.md
+GenieData/
+CharacterModels/
+*.wav
+*.mp3
+*.onnx
+*.pth
+*.ckpt
 
 # IDE / local generated files
 .vscode/

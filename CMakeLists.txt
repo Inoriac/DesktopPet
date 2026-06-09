@@ -37,9 +37,17 @@ find_package(Qt6 COMPONENTS
 set(UI_SOURCES
     ui/mainwindow.cpp
     ui/mainwindow.h
+    ui/chat_history_window.cpp
+    ui/chat_history_window.h
     ui/liquidglasschatbubble.cpp
     ui/liquidglasschatbubble.h
     ui/petwindow.cpp
+    ui/petwindow_interaction.cpp
+    ui/petwindow_ai.cpp
+    ui/petwindow_screen_chat.cpp
+    ui/petwindow_bubble.cpp
+    ui/petwindow_native.cpp
+    ui/petwindow_snap.cpp
     ui/petwindow.h
     ui/trayicon.cpp
     ui/trayicon.h
@@ -66,6 +74,9 @@ set(CORE_SOURCES
     core/reminder/pet_reminder_manager.cpp
     core/reminder/pet_reminder_manager.h
 
+    core/voice/voice_synthesis_service.cpp
+    core/voice/voice_synthesis_service.h
+
     core/animation/animation_player.cpp
     core/animation/animation_player.h
     core/animation/animation_crossfader.cpp
@@ -82,7 +93,9 @@ set(CORE_SOURCES
     core/ai/ai_call_logger.cpp
     core/ai/ai_brain.h
     core/ai/ai_brain.cpp
-    
+    core/ai/ai_brain_router.cpp
+    core/ai/ai_brain_loop.cpp
+
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
     core/ai/tool_registry.h
@@ -134,10 +147,14 @@ set(CORE_SOURCES
 
 set(ENGINE_SOURCES
     engine/model_loader.cpp
+    engine/model_loader_geometry.cpp
+    engine/model_loader_skeleton.cpp
     engine/model_loader.h
     engine/platform_utils.cpp
     engine/platform_utils.h
     engine/render_engine.cpp
+    engine/render_engine_resources.cpp
+    engine/render_engine_interaction.cpp
     engine/render_engine.h
     engine/shader_manager.cpp
     engine/shader_manager.h
@@ -294,6 +311,27 @@ target_link_libraries(tool_tests
 )
 
 add_test(NAME ToolTests COMMAND tool_tests)
+
+# ---- Intent 路由测试 ----
+add_executable(intent_router_tests
+        tests/test_intent_router.cpp
+        core/ai/router/intent_router.h
+        core/ai/router/intent_router.cpp
+        core/ai/router/intent_types.h
+)
+
+target_include_directories(intent_router_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+)
+
+target_link_libraries(intent_router_tests
+        Qt::Core
+        Qt::Test
+)
+
+add_test(NAME IntentRouterTests COMMAND intent_router_tests)
 
 # ---- LLM 异步服务测试 ----
 add_executable(llm_tests
