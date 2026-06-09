@@ -15,6 +15,7 @@
 #include <memory>
 
 #include "ai/ai_brain.h"
+#include "ai/scheduler/agent_scheduler.h"
 #include "ai/tool_registry.h"
 
 class LiquidGlassChatBubble;
@@ -82,7 +83,7 @@ private:
     void requestVisionSummary(const QString& screenshotPath,
                               const QString& reason,
                               bool debugSaveScreenshotOnly);
-    void showBubbleMessage(const QString& message);
+    void showBubbleMessage(const QString& message, int durationMs = -1);
     void showBubbleInput();
     void hideBubbleMessage();
     void updateBubblePositions();
@@ -146,6 +147,7 @@ private:
 
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
+    std::unique_ptr<AgentScheduler> agentScheduler;
     QStringList m_allowedRoots;  // 文件工具允许的根目录
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;

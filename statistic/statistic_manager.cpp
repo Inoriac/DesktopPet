@@ -116,7 +116,7 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
             stats->touchAreaCount.insert(event.areaName, 0);
         }
         stats->touchAreaCount[event.areaName] += 1;
-        qDebug() << "Touch:" << event.areaName << " for " << stats->petName << " area";
+        // qDebug() << "Touch:" << event.areaName << " for " << stats->petName << " area";
 
         emit statisticsUpdated(event.petName, *stats);
     });

@@ -1,5 +1,6 @@
 # Local config / secrets
 config/default_common_config.json
+config/scheduled_tasks.json
 docs/
 log/
 reference/

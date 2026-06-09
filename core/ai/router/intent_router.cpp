@@ -1,6 +1,15 @@
 #include "intent_router.h"
 
+#include <QRegularExpression>
 #include <QStringList>
+
+namespace {
+int firstCapturedInt(const QString& input, int fallback = 0) {
+    const QRegularExpression re("(\\d+)");
+    const QRegularExpressionMatch match = re.match(input);
+    return match.hasMatch() ? match.captured(1).toInt() : fallback;
+}
+}
 
 IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag) const {
     Q_UNUSED(triggerTag)
@@ -16,6 +25,79 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
 
     if (containsAny(normalized, {"几点", "现在时间", "当前时间", "今天几号", "星期几"})) {
         return IntentRoute::directToolCall("get_current_time", {}, "time_query", 0.95);
+    }
+
+    if (containsAny(normalized, {"我空闲了吗", "我离开多久", "空闲状态", "多久没操作"})) {
+        return IntentRoute::directToolCall("get_user_idle_state", {}, "user_idle_state", 0.9);
+    }
+
+    if (containsAny(normalized, {"电量", "电池", "低电量", "充电"})) {
+        return IntentRoute::directToolCall("get_battery_status", {}, "battery_status", 0.9);
+    }
+
+    if (containsAny(normalized, {"网络状态", "网络正常", "联网了吗", "能不能联网"})) {
+        return IntentRoute::directToolCall("get_network_status", {}, "network_status", 0.9);
+    }
+
+    if (containsAny(normalized, {"天气", "下雨", "气温", "温度"})) {
+        QJsonObject args;
+        args["location"] = "auto:ip";
+        return IntentRoute::directToolCall("weather_query", args, "weather_query", 0.82);
+    }
+
+    if (containsAny(normalized, {"今日简报", "每日简报", "今天简报", "早报"})) {
+        QJsonObject args;
+        args["location"] = "auto:ip";
+        return IntentRoute::directToolCall("daily_briefing", args, "daily_briefing", 0.86);
+    }
+
+    if (containsAny(normalized, {"今天节日", "节假日", "今天放假吗", "是不是周末"})) {
+        return IntentRoute::directToolCall("holiday_query", {}, "holiday_query", 0.84);
+    }
+
+    if (containsAny(normalized, {"提醒列表", "查看提醒", "列出提醒", "日程列表", "查看日程"})) {
+        return IntentRoute::directToolCall("schedule_list", {}, "schedule_list", 0.9);
+    }
+
+    if (containsAny(normalized, {"安静一点", "别打扰", "勿扰", "专注模式"})) {
+        QJsonObject args;
+        args["mode"] = "focus";
+        return IntentRoute::directToolCall("set_proactive_mode", args, "set_focus_mode", 0.9);
+    }
+
+    if (containsAny(normalized, {"活泼一点", "多陪我", "主动一点"})) {
+        QJsonObject args;
+        args["mode"] = "lively";
+        return IntentRoute::directToolCall("set_proactive_mode", args, "set_lively_mode", 0.85);
+    }
+
+    if (containsAny(normalized, {"普通模式", "正常模式", "恢复主动"})) {
+        QJsonObject args;
+        args["mode"] = "normal";
+        return IntentRoute::directToolCall("set_proactive_mode", args, "set_normal_mode", 0.85);
+    }
+
+    if (containsAny(normalized, {"提醒我", "叫我", "提醒一下"}) && containsAny(normalized, {"分钟后", "分后"})) {
+        const int minutes = firstCapturedInt(normalized, 10);
+        QJsonObject args;
+        args["type"] = "once_at";
+        args["title"] = "提醒";
+        args["message"] = normalized;
+        args["delay_minutes"] = minutes;
+        return IntentRoute::directToolCall("schedule_create", args, "schedule_delay_minutes", 0.8);
+    }
+
+    if (containsAny(normalized, {"每隔", "每"}) && containsAny(normalized, {"提醒我", "提醒一下"}) && containsAny(normalized, {"分钟", "小时"})) {
+        int minutes = firstCapturedInt(normalized, 60);
+        if (normalized.contains("小时")) {
+            minutes *= 60;
+        }
+        QJsonObject args;
+        args["type"] = "interval";
+        args["title"] = "周期提醒";
+        args["message"] = normalized;
+        args["interval_minutes"] = minutes;
+        return IntentRoute::directToolCall("schedule_create", args, "schedule_interval", 0.75);
     }
 
     if (containsAny(normalized, {"lx music下一首", "lxmusic下一首", "lx下一首", "lx music切歌", "lxmusic切歌"})) {

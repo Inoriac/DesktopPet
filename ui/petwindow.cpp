@@ -40,8 +40,11 @@
 #include "render_engine.h"
 #include "configLoader/config_manager.h"
 #include "ai/tools/animation_tools.h"
+#include "ai/tools/companion_tools.h"
 #include "ai/tools/environment_tools.h"
+#include "ai/tools/life_tools.h"
 #include "ai/tools/music_tools.h"
+#include "ai/tools/schedule_tools.h"
 #include "ai/tools/file_tools.h"
 #include "ai/tools/web_tools.h"
 
@@ -205,6 +208,12 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
 }
 
 PetWindow::~PetWindow() {
+    if (agentScheduler) {
+        agentScheduler->stop();
+    }
+    if (aiBrain) {
+        aiBrain->stop();
+    }
     if (snapFollowTimer) {
         snapFollowTimer->stop();
     }
@@ -394,7 +403,7 @@ bool PetWindow::canTriggerTouch() const {
 
 void PetWindow::triggerTouchReaction(const std::string& tag) {
     if (!canTriggerTouch()) {
-        qDebug() << "Touch ignored: reaction playing";
+        // qDebug() << "Touch ignored: reaction playing";
         return;
     }
 
@@ -404,17 +413,17 @@ void PetWindow::triggerTouchReaction(const std::string& tag) {
             std::string targetState = "Touch" + tag;
 
             // === DEBUG: 暂时禁用状态转换，仅输出诊断信息 ===
-            qDebug() << "=== Touch Debug Info ===";
-            qDebug() << "  Hit tag:" << tag.c_str();
-            qDebug() << "  Would transition to:" << targetState.c_str();
-            qDebug() << "  Current state:" << player->getCurrentStateName().c_str();
-            qDebug() << "  Current clip:" << player->getCurrentClipName().c_str();
+            // qDebug() << "=== Touch Debug Info ===";
+            // qDebug() << "  Hit tag:" << tag.c_str();
+            // qDebug() << "  Would transition to:" << targetState.c_str();
+            // qDebug() << "  Current state:" << player->getCurrentStateName().c_str();
+            // qDebug() << "  Current clip:" << player->getCurrentClipName().c_str();
 
             // 打印所有碰撞体的骨骼绑定情况
             auto* engine = renderViewport->getRenderEngine();
             const auto& skeleton = player->getSkeleton();
-            qDebug() << "  --- Bone binding check ---";
-            qDebug() << "  Total bones in skeleton:" << skeleton.bones.size();
+            // qDebug() << "  --- Bone binding check ---";
+            // qDebug() << "  Total bones in skeleton:" << skeleton.bones.size();
             for (const auto& pair : skeleton.nameToIndex) {
                 // 只打印可能相关的骨骼（包含配置中常用关键词的）
                 const std::string& name = pair.first;
@@ -425,10 +434,10 @@ void PetWindow::triggerTouchReaction(const std::string& tag) {
                     name.find("head") != std::string::npos ||
                     name.find("spine") != std::string::npos ||
                     name.find("hand") != std::string::npos) {
-                    qDebug() << "    Bone:" << name.c_str() << " -> index:" << pair.second;
+                    // qDebug() << "    Bone:" << name.c_str() << " -> index:" << pair.second;
                 }
             }
-            qDebug() << "=== End Touch Debug ===";
+            // qDebug() << "=== End Touch Debug ===";
 
             // TODO: 调试完毕后取消下面的注释以恢复状态转换
             // player->changeState(targetState);
@@ -482,7 +491,7 @@ void PetWindow::mousePressEvent(QMouseEvent *event) {
         isPressingModel = !hitPartTag.empty();
 
         if (isPressingModel) {
-            qDebug() << "Pressed on part:" << hitPartTag.c_str();
+            // qDebug() << "Pressed on part:" << hitPartTag.c_str();
         }
     } else {
         isPressingModel = false;
@@ -544,10 +553,10 @@ void PetWindow::mouseReleaseEvent(QMouseEvent *event) {
                 if (isPressingModel && !hitPartTag.empty()) {
                     triggerTouchReaction(hitPartTag);
                 } else {
-                    qDebug() << "Short press (no model hit)";
+                    // qDebug() << "Short press (no model hit)";
                 }
             } else {
-                qDebug() << "Long press (ignored or open menu)";
+                // qDebug() << "Long press (ignored or open menu)";
             }
         }
 
@@ -579,6 +588,9 @@ void PetWindow::closeEvent(QCloseEvent *event) {
     hideBubbleMessage();
     if (aiBrain) {
         aiBrain->stop();
+    }
+    if (agentScheduler) {
+        agentScheduler->stop();
     }
     unloadModel();
     emit aboutToClose();  // 可以发送信号给 MainWindow
@@ -694,12 +706,42 @@ void PetWindow::setupAiBrain() {
     m_allowedRoots.append(QDir::currentPath());
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
+    agentScheduler = std::make_unique<AgentScheduler>(this);
+    aiToolRegistry->registerTool(std::make_unique<ShowChatBubbleTool>([this](const QString& text, int durationMs) {
+        QMetaObject::invokeMethod(this, [this, text, durationMs]() {
+            showBubbleMessage(text, durationMs);
+        }, Qt::QueuedConnection);
+    }));
+    aiToolRegistry->registerTool(std::make_unique<NotifyUserTool>([this](const QString& title, const QString& message, int durationMs) {
+        const QString bubbleText = title.trimmed().isEmpty()
+            ? message
+            : QString("%1：%2").arg(title, message);
+        QMetaObject::invokeMethod(this, [this, bubbleText, durationMs]() {
+            showBubbleMessage(bubbleText, durationMs);
+        }, Qt::QueuedConnection);
+    }));
+    aiToolRegistry->registerTool(std::make_unique<SetProactiveModeTool>([this](const QString& mode, int quietMinutes) {
+        Q_UNUSED(quietMinutes)
+        const QString text = mode == "focus"
+            ? QStringLiteral("好，我会安静一点。")
+            : QStringLiteral("主动模式已切换为 %1。").arg(mode);
+        QMetaObject::invokeMethod(this, [this, text]() {
+            showBubbleMessage(text, 3000);
+        }, Qt::QueuedConnection);
+    }));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleCreateTool>(agentScheduler.get()));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleListTool>(agentScheduler.get()));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get()));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleSnoozeTool>(agentScheduler.get()));
     aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(player));
     aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
+    aiToolRegistry->registerTool(std::make_unique<GetUserIdleStateTool>());
+    aiToolRegistry->registerTool(std::make_unique<GetBatteryStatusTool>());
+    aiToolRegistry->registerTool(std::make_unique<GetNetworkStatusTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicStatusTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPlayTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPauseTool>());
@@ -719,6 +761,21 @@ void PetWindow::setupAiBrain() {
     // 注册网络工具
     aiToolRegistry->registerTool(std::make_unique<WebFetchTool>());
     aiToolRegistry->registerTool(std::make_unique<WebSearchTool>());
+
+    // 注册生活助理工具
+    aiToolRegistry->registerTool(std::make_unique<WeatherQueryTool>());
+    aiToolRegistry->registerTool(std::make_unique<HolidayQueryTool>());
+    aiToolRegistry->registerTool(std::make_unique<DailyBriefingTool>());
+
+    agentScheduler->setToolRegistry(aiToolRegistry.get());
+    agentScheduler->load();
+    connect(agentScheduler.get(), &AgentScheduler::taskTriggered, this, [](const QString& id, const QString& title) {
+        qDebug() << "[AgentScheduler] task triggered:" << id << title;
+    });
+    connect(agentScheduler.get(), &AgentScheduler::taskFailed, this, [](const QString& id, const QString& errorMessage) {
+        qWarning() << "[AgentScheduler] task failed:" << id << errorMessage;
+    });
+    agentScheduler->start();
 
     aiBrain->setPetName(modelName);
     aiBrain->setToolRegistry(aiToolRegistry.get());
@@ -955,7 +1012,7 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
     });
 }
 
-void PetWindow::showBubbleMessage(const QString& message) {
+void PetWindow::showBubbleMessage(const QString& message, int durationMs) {
     if (!outputBubble) {
         return;
     }
@@ -967,7 +1024,8 @@ void PetWindow::showBubbleMessage(const QString& message) {
     outputBubble->showMessage(message);
 
     if (bubbleHideTimer) {
-        bubbleHideTimer->start(std::max(1000, screenChatConfig.bubbleDurationMs));
+        const int resolvedDuration = durationMs > 0 ? durationMs : screenChatConfig.bubbleDurationMs;
+        bubbleHideTimer->start(std::max(1000, resolvedDuration));
     }
 }
 

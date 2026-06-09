@@ -67,7 +67,7 @@ void RenderEngine::initColliders() {
         BoneCollider collider = config; // 复制配置
         boneColliders.push_back(collider);
     }
-    qDebug() << "Initialized" << boneColliders.size() << "runtime colliders (Radius fixed, no scale applied)";
+    // qDebug() << "Initialized" << boneColliders.size() << "runtime colliders (Radius fixed, no scale applied)";
 }
 
 void RenderEngine::setMaterials(std::vector<MaterialData> materialDatas) {
@@ -711,18 +711,18 @@ std::string RenderEngine::checkHit(int viewX, int viewY) {
         float dist2 = (mouseScreen - boneScreen).lengthSquared();
 
         // === DEBUG: 打印每个碰撞体的投影信息 ===
-        float screenRadius = std::sqrt(screenRadius2);
-        float dist = std::sqrt(dist2);
-        qDebug().noquote() << QString("  [HitCheck] %1 (tag:%2) boneIdx:%3 worldPos:(%4,%5,%6) screenPos:(%7,%8) mouse:(%9,%10) screenR:%11px dist:%12px %13")
-            .arg(collider.boneName.c_str())
-            .arg(collider.tag.c_str())
-            .arg(boneIndex)
-            .arg(boneWorldPos.x(), 0, 'f', 3).arg(boneWorldPos.y(), 0, 'f', 3).arg(boneWorldPos.z(), 0, 'f', 3)
-            .arg(boneScreen.x(), 0, 'f', 1).arg(boneScreen.y(), 0, 'f', 1)
-            .arg(mouseScreen.x(), 0, 'f', 1).arg(mouseScreen.y(), 0, 'f', 1)
-            .arg(screenRadius, 0, 'f', 1)
-            .arg(dist, 0, 'f', 1)
-            .arg(dist2 <= screenRadius2 ? "HIT" : "miss");
+        // float screenRadius = std::sqrt(screenRadius2);
+        // float dist = std::sqrt(dist2);
+        // qDebug().noquote() << QString("  [HitCheck] %1 (tag:%2) boneIdx:%3 worldPos:(%4,%5,%6) screenPos:(%7,%8) mouse:(%9,%10) screenR:%11px dist:%12px %13")
+        //     .arg(collider.boneName.c_str())
+        //     .arg(collider.tag.c_str())
+        //     .arg(boneIndex)
+        //     .arg(boneWorldPos.x(), 0, 'f', 3).arg(boneWorldPos.y(), 0, 'f', 3).arg(boneWorldPos.z(), 0, 'f', 3)
+        //     .arg(boneScreen.x(), 0, 'f', 1).arg(boneScreen.y(), 0, 'f', 1)
+        //     .arg(mouseScreen.x(), 0, 'f', 1).arg(mouseScreen.y(), 0, 'f', 1)
+        //     .arg(screenRadius, 0, 'f', 1)
+        //     .arg(dist, 0, 'f', 1)
+        //     .arg(dist2 <= screenRadius2 ? "HIT" : "miss");
 
         if (dist2 <= screenRadius2) {
             // 命中，取最近的（屏幕距离最近 = 最精确匹配）

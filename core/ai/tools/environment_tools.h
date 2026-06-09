@@ -60,4 +60,28 @@ public:
     }
 };
 
+class GetUserIdleStateTool : public AITool {
+public:
+    GetUserIdleStateTool();
+
+    QJsonObject parameterSchema() const override;
+    ToolResult execute(const QJsonObject& params) override;
+};
+
+class GetBatteryStatusTool : public AITool {
+public:
+    GetBatteryStatusTool();
+
+    QJsonObject parameterSchema() const override;
+    ToolResult execute(const QJsonObject& params) override;
+};
+
+class GetNetworkStatusTool : public AITool {
+public:
+    GetNetworkStatusTool();
+
+    QJsonObject parameterSchema() const override;
+    ToolResult execute(const QJsonObject& params) override;
+};
+
 #endif // DESKTOP_PET_ENVIRONMENT_TOOLS_H

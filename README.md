@@ -5,6 +5,7 @@
 
 一个基于 C++ 和 Qt 6 开发的高性能、高可定制化的桌面宠物系统。
 本项目旨在提供一个生动、智能且具有“灵魂”的桌面伴侣，支持 GLTF 模型热加载、复杂的动画状态机、情绪系统以及丰富的桌面交互功能。
+近期开发重心已转向 **Agent 框架**：在保留桌宠表现力的同时，引入本地意图路由、安全工具运行时、LLM 对话循环、短期记忆与外部工具接入原型，让桌宠逐步从“会动会聊”升级为“有边界的陪伴型生活助理”。
 
 > **⚠️ 重要声明 / Important Notice**
 > 
@@ -36,6 +37,15 @@
 * **生活功能**
   * **智能闹钟**：不仅仅是提醒。宠物有一定概率（基于性格）“忘记”提醒，并在事后表现出懊恼或敷衍的反应。
   * **统计系统**：记录互动次数、情绪变化、运行时间等数据，让宠物的成长有迹可循。
+* **AI / Agent 框架**
+  * **OpenAI-compatible LLM 接入**：支持异步请求、失败重试、Token 统计与调用日志记录。
+  * **本地意图路由 `IntentRouter`**：时间查询、简单问候、LX Music 播放控制等高频低风险指令可绕过 LLM 直接执行，降低延迟。
+  * **统一工具体系**：基于 `AITool + ToolRegistry` 注册工具，支持函数 Schema 导出与参数校验。
+  * **安全工具运行时 `ToolRuntime + PolicyEngine`**：按 L0-L4 风险等级执行工具，支持确认/拒绝策略、敏感字段脱敏与工具结果摘要。
+  * **上下文与记忆骨架**：`ContextManager / ContextBudget / MemoryStore` 用于按需构建 LLM 上下文，并将短期回复和工具事件写入 `log/ai_memory.json`。
+  * **AgentCore 原型**：已具备 `AgentSession` 状态流转、LLM 规划、工具观察与多轮工具调用循环的框架。
+  * **MCP 外部工具接入原型**：包含 `McpClient`、`McpServerProcess` 与 `McpToolAdapter`，后续可将外部工具统一纳入安全运行时。
+  * **已注册工具组**：桌宠动画、当前时间、文件读取/目录查看（限定根目录）、网页获取/搜索（SSRF 防护）、LX Music 播放/暂停/切歌/歌词/歌单等。
 * **个性化与多配置兼容**
   * **动画表现分离**：`animation_state_machine.json` 结合 `state_machine_define.json` 管理动作表现与业务逻辑，提高定制灵活性。
   * **自定义主题**：支持修改 UI 主题颜色与样式。
@@ -46,7 +56,11 @@
 * **情绪系统**：包含开心、害羞、难过、愤怒四种基础情绪，随互动衰减或增强，影响对话与动作。
 * **聊天系统**：
   * 本地简易对话（基于情绪的语义映射）。
-  * 接入 AI 大模型 API 进行自由对话。
+  * 基于大模型的自由对话体验、语气一致性与工具调用反馈仍在持续完善。
+* **陪伴 / 生活助理 Agent**：
+  * 计划引入 `AgentScheduler`，将主动触发从多个定时器升级为 `Trigger + Policy + Action` 调度模型。
+  * 优先支持一次性提醒、每日提醒、固定间隔提醒、稍后提醒、勿扰时间与主动冷却。
+  * 后续接入天气、节假日、电量、网络状态、用户空闲状态等低风险生活感知工具。
 * **物理系统**：全局物理模拟（重力、头发飘动等）。
 * **视觉增强**：
   * **特殊节日皮肤**：圣诞帽、南瓜头等节日限定饰品自动渲染。
@@ -61,7 +75,8 @@
 * **UI 框架**: Qt 6 (Widgets & Core)
 * **构建系统**: CMake
 * **图形/模型**: OpenGL, TinyGLTF
-* **音频**: OpenAL / Qt Multimedia
+* **网络 / LLM**: Qt Network, OpenAI-compatible Chat Completion
+* **音频 / 外部播放控制**: OpenAL / Qt Multimedia, LX Music API
 
 ---
 
@@ -72,10 +87,13 @@ Desktop-Pet/
 ├── assets/             # 资源文件 (模型, 动画, 配置, 图标)
 ├── config/             # 配置文件 (状态机定义, 个性设置)
 ├── core/               # 核心逻辑 (动画控制, 行为树, 事件处理)
+│   └── ai/             # AI 与 Agent 框架 (LLM, Router, Tools, Memory, MCP)
+├── docs/               # 架构文档与 Agent 方案草案
 ├── engine/             # 渲染引擎 (OpenGL封装, 模型加载, 音频)
 ├── entity/             # 实体逻辑 (宠物类, 个性化数据)
 ├── ui/                 # 界面实现 (主窗口, 托盘, 菜单)
 ├── statistic/          # 数据统计模块
+├── tests/              # Qt Test 单元测试与工具测试
 └── third_party/        # 第三方库 (TinyGLTF等)
 ```
 
@@ -124,6 +142,30 @@ Desktop-Pet/
 1. **`default_common_config.json`**: 系统默认配置，用于初始化或恢复出厂设置。
 2. **`userConfig.json`** (生成): 用户自定义配置，保存界面风格、功能开关等。
 
+### AI / Agent 相关配置
+
+`config/default_common_config.example.json` 提供安全示例；实际密钥请放入本地配置，不建议提交到仓库。
+
+`aiSettings.profiles.<profile>` 主要字段：
+
+* `enabled`: 是否启用 AI。
+* `provider`: 当前为 `openai-compatible`。
+* `baseUrl`: OpenAI-compatible API 地址，例如 `https://api.example.com/v1`。
+* `apiKey`: API Key，仅用于本地配置。
+* `model`: 文本对话模型。
+* `visual_model`: 视觉模型预留字段。
+* `timeoutMs` / `maxTokens` / `temperature` / `retryCount`: 请求超时、生成长度、温度和重试次数。
+* `screenChat`: 屏幕观察/主动气泡聊天相关配置，默认关闭。
+* `behaviorPolicy`: Agent 主动行为白名单、禁止动作与触发间隔配置。
+
+当前主动触发策略包括：
+
+* `idleAction`: 空闲动作触发。
+* `emotion`: 情绪表现触发。
+* `proactiveChat`: 主动聊天触发。
+
+主动触发会受白名单和禁止动作限制，避免 LLM 直接触发拖拽、窗口吸附等应由本地交互管线管理的动作。
+
 ### 窗口吸附相关配置
 
 在 `config/default_common_config.json` 的 `interactionSettings.windowSnapping` 下可配置：
@@ -144,6 +186,65 @@ Desktop-Pet/
 * 退出吸附时触发 `window_stand`，恢复为普通状态。
 * 拖拽开始优先触发 `start_drag`；若状态机未成功切入 `Drag`，会做兜底切换。
 * 窗口层级切换使用运行时方式（避免通过重建窗口导致闪烁/消失）。
+
+---
+
+## 🧠 Agent 框架说明
+
+当前 AI 入口仍以 `AIBrain` 为主，新增 Agent 模块作为后续演进骨架。整体思路是：**简单任务本地快速执行，复杂任务才进入 LLM；所有工具调用统一经过安全策略。**
+
+### 当前调用链
+
+```text
+用户输入 / 定时事件
+  -> IntentRouter 本地意图路由
+  -> DirectReply / DirectToolCall / NeedLLM
+  -> ToolRuntime + PolicyEngine
+  -> AITool / ToolRegistry
+  -> LLM 观察结果并继续或结束
+```
+
+### 核心目录
+
+```text
+core/ai/
+├── ai_brain.*              # 当前 AI 入口，负责主动触发、LLM 循环和工具调度
+├── agent/                  # AgentCore、AgentSession、AgentState
+├── router/                 # IntentRouter 与路由结果类型
+├── tools/runtime/          # ToolRuntime、PolicyEngine、结果脱敏
+├── tools/                  # 动画、环境、文件、网络、LX Music 工具
+├── context/                # ContextManager 与上下文预算
+├── memory/                 # MemoryStore 与记忆类型
+├── mcp/                    # MCP Client / Server Process / Tool Adapter 原型
+└── llm/                    # OpenAI-compatible LLM Client 与异步 ChatService
+```
+
+### 安全边界
+
+工具按风险等级处理：
+
+| 等级 | 类型 | 当前策略 |
+|---|---|---|
+| L0 | 安全只读查询，如当前时间 | 允许 |
+| L1 | 本地查询，如文件读取、目录查看 | 需限制访问根目录 |
+| L2 | 低风险动作，如播放动画、切歌 | 允许或按配置限制 |
+| L3 | 高风险动作，如 Shell、写文件、启动程序 | 需要用户确认 |
+| L4 | 危险动作，如删除文件、读取密码/密钥 | 默认拒绝 |
+
+工具结果会通过 `ToolResultSanitizer` 脱敏，`api_key`、`token`、`password`、`secret`、`credential`、`authorization` 等字段不会直接进入 LLM 上下文。
+
+### 相关日志与测试
+
+* `log/ai_calls.jsonl`: LLM 请求与响应日志。
+* `log/ai_memory.json`: 短期回复和工具事件记忆。
+* `tool_tests`: 工具注册、策略、脱敏等测试。
+* `llm_tests`: 异步 LLM 请求与重试测试。
+* `file_web_tool_tests`: 文件工具、网络工具与安全校验测试。
+
+### 当前规划文档
+
+* `docs/agent_architecture.md`: Agent 总体架构草案。
+* `docs/companion_life_assistant_agent_plan.md`: 陪伴型与生活助理型 Agent 路线。
 
 ---
 
