@@ -27,6 +27,10 @@ CharacterModels/
 *.pth
 *.ckpt
 
+# Local model assets
+assets/models/*
+!assets/models/README.md
+
 # IDE / local generated files
 .vscode/
 .idea/
