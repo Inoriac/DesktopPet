@@ -1,6 +1,7 @@
 #include "theme_manager.h"
 
 #include <QApplication>
+#include <QPalette>
 #include <QStyle>
 #include <QWidget>
 
@@ -39,6 +40,19 @@ void ThemeManager::applyTo(QApplication* app) {
     if (!app) {
         return;
     }
+    QPalette palette = app->palette();
+    if (isDarkTheme()) {
+        palette.setColor(QPalette::Window, QColor(QStringLiteral("#0f1117")));
+        palette.setColor(QPalette::Base, QColor(QStringLiteral("#111827")));
+        palette.setColor(QPalette::Text, QColor(QStringLiteral("#edf2f7")));
+        palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#edf2f7")));
+    } else {
+        palette.setColor(QPalette::Window, QColor(QStringLiteral("#f4f7fb")));
+        palette.setColor(QPalette::Base, QColor(QStringLiteral("#ffffff")));
+        palette.setColor(QPalette::Text, QColor(QStringLiteral("#202124")));
+        palette.setColor(QPalette::WindowText, QColor(QStringLiteral("#202124")));
+    }
+    app->setPalette(palette);
     app->setStyleSheet(styleSheet());
 }
 
@@ -61,14 +75,39 @@ QString ThemeManager::lightStyleSheet() const {
     font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
     font-size: 14px;
 }
-QMainWindow, QWidget#AppRoot, QScrollArea#PageScrollArea {
+QMainWindow, QMainWindow#MainWindowRoot, QWidget#AppRoot, QScrollArea#PageScrollArea {
     background: #f4f7fb;
     color: #202124;
+}
+QMainWindow#MainWindowRoot {
+    border: 1px solid rgba(32, 33, 36, 0.10);
+}
+QScrollArea#PageScrollArea QWidget#qt_scrollarea_viewport, QWidget#PageContent {
+    background: #f4f7fb;
+    color: #202124;
+}
+QWidget#PageHeader {
+    background: rgba(255, 255, 255, 0.62);
+    border: 1px solid rgba(32, 33, 36, 0.06);
+    border-radius: 16px;
 }
 QMenuBar {
     background: #f4f7fb;
     color: #202124;
     padding: 4px;
+    border: none;
+    border-bottom: 1px solid rgba(32, 33, 36, 0.08);
+}
+QMenu {
+    background: #ffffff;
+    color: #202124;
+    border: 1px solid rgba(32, 33, 36, 0.10);
+    border-radius: 10px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 7px 22px;
+    border-radius: 8px;
 }
 QMenuBar::item:selected, QMenu::item:selected {
     background: rgba(0, 102, 204, 0.10);
@@ -78,6 +117,10 @@ QStatusBar {
     background: #f4f7fb;
     color: #667085;
     border-top: 1px solid rgba(32, 33, 36, 0.08);
+}
+QStatusBar QLabel {
+    color: #667085;
+    background: transparent;
 }
 QWidget#HeroBanner[theme="light"] {
     border-radius: 16px;
@@ -117,6 +160,10 @@ QWidget#NavigationWidget {
     border: 1px solid rgba(32, 33, 36, 0.08);
     border-radius: 16px;
 }
+QFrame#NavSelectionPill {
+    background: rgba(0, 102, 204, 0.16);
+    border-radius: 12px;
+}
 QPushButton#NavButton {
     background: transparent;
     border: none;
@@ -131,7 +178,7 @@ QPushButton#NavButton:hover {
     color: #0b5cad;
 }
 QPushButton#NavButton:checked {
-    background: rgba(0, 102, 204, 0.16);
+    background: transparent;
     color: #005fb8;
 }
 QWidget#CardWidget, QWidget#PreviewSurface {
@@ -272,14 +319,39 @@ QString ThemeManager::darkStyleSheet() const {
     font-family: "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei";
     font-size: 14px;
 }
-QMainWindow, QWidget#AppRoot, QScrollArea#PageScrollArea {
+QMainWindow, QMainWindow#MainWindowRoot, QWidget#AppRoot, QScrollArea#PageScrollArea {
     background: #0f1117;
     color: #edf2f7;
+}
+QMainWindow#MainWindowRoot {
+    border: 1px solid rgba(255, 255, 255, 0.08);
+}
+QScrollArea#PageScrollArea QWidget#qt_scrollarea_viewport, QWidget#PageContent {
+    background: #0f1117;
+    color: #edf2f7;
+}
+QWidget#PageHeader {
+    background: rgba(24, 28, 38, 0.62);
+    border: 1px solid rgba(255, 255, 255, 0.07);
+    border-radius: 16px;
 }
 QMenuBar {
     background: #0f1117;
     color: #d8dee9;
     padding: 4px;
+    border: none;
+    border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+}
+QMenu {
+    background: #171c27;
+    color: #edf2f7;
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 10px;
+    padding: 6px;
+}
+QMenu::item {
+    padding: 7px 22px;
+    border-radius: 8px;
 }
 QMenuBar::item:selected, QMenu::item:selected {
     background: rgba(96, 165, 250, 0.14);
@@ -289,6 +361,10 @@ QStatusBar {
     background: #0f1117;
     color: #9aa4b2;
     border-top: 1px solid rgba(255, 255, 255, 0.07);
+}
+QStatusBar QLabel {
+    color: #9aa4b2;
+    background: transparent;
 }
 QWidget#HeroBanner[theme="light"] {
     border-radius: 16px;
@@ -328,6 +404,10 @@ QWidget#NavigationWidget {
     border: 1px solid rgba(255, 255, 255, 0.07);
     border-radius: 16px;
 }
+QFrame#NavSelectionPill {
+    background: rgba(96, 165, 250, 0.18);
+    border-radius: 12px;
+}
 QPushButton#NavButton {
     background: transparent;
     border: none;
@@ -342,7 +422,7 @@ QPushButton#NavButton:hover {
     color: #f8fafc;
 }
 QPushButton#NavButton:checked {
-    background: rgba(96, 165, 250, 0.18);
+    background: transparent;
     color: #93c5fd;
 }
 QWidget#CardWidget, QWidget#PreviewSurface {

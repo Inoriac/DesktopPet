@@ -63,6 +63,7 @@ private:
     QWidget* createAdvancedPage();
 
     void navigateToPage(const QString& pageId);
+    void toggleThemeWithTransition();
     void updateCharacterPreview();
     void updateThemeButtonText();
     QString currentPetName() const;

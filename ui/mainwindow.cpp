@@ -12,6 +12,7 @@
 #include "theme_manager.h"
 
 #include <QAction>
+#include <QAbstractAnimation>
 #include <QApplication>
 #include <QCheckBox>
 #include <QColor>
@@ -20,6 +21,7 @@
 #include <QFileDialog>
 #include <QFrame>
 #include <QGraphicsDropShadowEffect>
+#include <QGraphicsOpacityEffect>
 #include <QHBoxLayout>
 #include <QIcon>
 #include <QInputDialog>
@@ -29,6 +31,9 @@
 #include <QMenu>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QParallelAnimationGroup>
+#include <QPropertyAnimation>
+#include <QEasingCurve>
 #include <QPushButton>
 #include <QScrollArea>
 #include <QSignalBlocker>
@@ -63,17 +68,28 @@ QWidget* createPageShell(const QString& title, const QString& subtitle, QVBoxLay
     scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
 
     auto* content = new QWidget(scrollArea);
+    content->setObjectName(QStringLiteral("PageContent"));
+    content->setAttribute(Qt::WA_StyledBackground, true);
     auto* contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(4, 2, 16, 18);
     contentLayout->setSpacing(18);
 
+    auto* header = new QWidget(content);
+    header->setObjectName(QStringLiteral("PageHeader"));
+    header->setAttribute(Qt::WA_StyledBackground, true);
+    auto* headerLayout = new QVBoxLayout(header);
+    headerLayout->setContentsMargins(20, 18, 20, 18);
+    headerLayout->setSpacing(8);
+
     auto* headerTitle = new QLabel(title, content);
     headerTitle->setObjectName(QStringLiteral("SectionTitle"));
-    contentLayout->addWidget(headerTitle);
+    headerLayout->addWidget(headerTitle);
 
     auto* headerSubtitle = createMetaLabel(subtitle, content);
     headerSubtitle->setObjectName(QStringLiteral("SectionSubtitle"));
-    contentLayout->addWidget(headerSubtitle);
+    headerLayout->addWidget(headerSubtitle);
+
+    contentLayout->addWidget(header);
 
     scrollArea->setWidget(content);
     pageLayout->addWidget(scrollArea);
@@ -139,6 +155,8 @@ QWidget* createHorizontalControls(std::initializer_list<QWidget*> widgets) {
 } // namespace
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+    setObjectName(QStringLiteral("MainWindowRoot"));
+    setAttribute(Qt::WA_StyledBackground, true);
     setWindowTitle(QStringLiteral("Desktop 3D Pet"));
     setMinimumSize(980, 720);
     resize(1120, 760);
@@ -613,9 +631,7 @@ void MainWindow::setupConnections() {
     connect(bubbleOffsetXSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
     connect(bubbleOffsetYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
 
-    connect(themeToggleButton, &QPushButton::clicked, this, []() {
-        ThemeManager::instance().toggleTheme();
-    });
+    connect(themeToggleButton, &QPushButton::clicked, this, &MainWindow::toggleThemeWithTransition);
 }
 
 void MainWindow::loadPetList() {
@@ -646,10 +662,93 @@ void MainWindow::navigateToPage(const QString& pageId) {
     if (!pageStack || !pageIndexById.contains(pageId)) {
         return;
     }
-    pageStack->setCurrentIndex(pageIndexById.value(pageId));
+    const int targetIndex = pageIndexById.value(pageId);
+    if (pageStack->currentIndex() == targetIndex) {
+        if (navigationWidget) {
+            navigationWidget->setCurrentItem(pageId);
+        }
+        return;
+    }
+
+    const QPixmap previousPage = pageStack->grab();
+    pageStack->setCurrentIndex(targetIndex);
+
+    QWidget* targetPage = pageStack->currentWidget();
+    auto* pageOpacity = new QGraphicsOpacityEffect(targetPage);
+    pageOpacity->setOpacity(0.0);
+    targetPage->setGraphicsEffect(pageOpacity);
+
+    auto* overlay = new QLabel(pageStack);
+    overlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    overlay->setScaledContents(true);
+    overlay->setPixmap(previousPage);
+    overlay->setGeometry(pageStack->rect());
+    overlay->show();
+    overlay->raise();
+
+    auto* overlayOpacity = new QGraphicsOpacityEffect(overlay);
+    overlayOpacity->setOpacity(1.0);
+    overlay->setGraphicsEffect(overlayOpacity);
+
+    auto* group = new QParallelAnimationGroup(this);
+    auto* fadeOut = new QPropertyAnimation(overlayOpacity, "opacity", group);
+    fadeOut->setDuration(280);
+    fadeOut->setStartValue(1.0);
+    fadeOut->setEndValue(0.0);
+    fadeOut->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(fadeOut);
+
+    auto* fadeIn = new QPropertyAnimation(pageOpacity, "opacity", group);
+    fadeIn->setDuration(280);
+    fadeIn->setStartValue(0.0);
+    fadeIn->setEndValue(1.0);
+    fadeIn->setEasingCurve(QEasingCurve::OutCubic);
+    group->addAnimation(fadeIn);
+
+    connect(group, &QParallelAnimationGroup::finished, this, [group, overlay, targetPage]() {
+        if (targetPage) {
+            targetPage->setGraphicsEffect(nullptr);
+        }
+        overlay->deleteLater();
+        group->deleteLater();
+    });
+    group->start();
+
     if (navigationWidget) {
         navigationWidget->setCurrentItem(pageId);
     }
+}
+
+void MainWindow::toggleThemeWithTransition() {
+    if (!centralWidget) {
+        ThemeManager::instance().toggleTheme();
+        return;
+    }
+
+    const QPixmap previousWindow = grab();
+
+    auto* overlay = new QLabel(this);
+    overlay->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    overlay->setScaledContents(true);
+    overlay->setPixmap(previousWindow);
+    overlay->setGeometry(rect());
+    overlay->show();
+    overlay->raise();
+
+    ThemeManager::instance().toggleTheme();
+    overlay->raise();
+
+    auto* opacityEffect = new QGraphicsOpacityEffect(overlay);
+    opacityEffect->setOpacity(1.0);
+    overlay->setGraphicsEffect(opacityEffect);
+
+    auto* animation = new QPropertyAnimation(opacityEffect, "opacity", overlay);
+    animation->setDuration(600);
+    animation->setStartValue(1.0);
+    animation->setEndValue(0.0);
+    animation->setEasingCurve(QEasingCurve::InOutCubic);
+    connect(animation, &QPropertyAnimation::finished, overlay, &QLabel::deleteLater);
+    animation->start(QAbstractAnimation::DeleteWhenStopped);
 }
 
 QString MainWindow::currentPetName() const {

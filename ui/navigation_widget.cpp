@@ -3,9 +3,12 @@
 #include <QButtonGroup>
 #include <QEasingCurve>
 #include <QEvent>
+#include <QFrame>
 #include <QPushButton>
 #include <QPropertyAnimation>
+#include <QResizeEvent>
 #include <QSizePolicy>
+#include <QTimer>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -24,6 +27,17 @@ NavigationWidget::NavigationWidget(QWidget* parent)
     m_widthAnimation = new QPropertyAnimation(this, "railWidth", this);
     m_widthAnimation->setDuration(180);
     m_widthAnimation->setEasingCurve(QEasingCurve::OutCubic);
+
+    m_selectionPill = new QFrame(this);
+    m_selectionPill->setObjectName(QStringLiteral("NavSelectionPill"));
+    m_selectionPill->setAttribute(Qt::WA_StyledBackground, true);
+    m_selectionPill->setAttribute(Qt::WA_TransparentForMouseEvents, true);
+    m_selectionPill->hide();
+    m_selectionPill->lower();
+
+    m_selectionAnimation = new QPropertyAnimation(m_selectionPill, "geometry", this);
+    m_selectionAnimation->setDuration(260);
+    m_selectionAnimation->setEasingCurve(QEasingCurve::OutCubic);
 
     m_layout = new QVBoxLayout(this);
     m_layout->setContentsMargins(12, 14, 12, 14);
@@ -52,13 +66,16 @@ void NavigationWidget::addItem(const QString& id, const QString& text) {
     });
 
     if (m_buttons.size() == 1) {
-        button->setChecked(true);
+        setCurrentItem(id);
     }
 }
 
 void NavigationWidget::setCurrentItem(const QString& id) {
     if (QPushButton* button = m_buttons.value(id, nullptr)) {
         button->setChecked(true);
+        const bool changed = m_currentId != id;
+        m_currentId = id;
+        moveSelectionTo(id, changed);
     }
 }
 
@@ -70,6 +87,13 @@ void NavigationWidget::enterEvent(QEnterEvent* event) {
 void NavigationWidget::leaveEvent(QEvent* event) {
     QWidget::leaveEvent(event);
     animateRailWidth(168);
+}
+
+void NavigationWidget::resizeEvent(QResizeEvent* event) {
+    QWidget::resizeEvent(event);
+    if (!m_currentId.isEmpty()) {
+        moveSelectionTo(m_currentId, false);
+    }
 }
 
 QPushButton* NavigationWidget::createButton(const QString& id, const QString& text) {
@@ -92,4 +116,35 @@ void NavigationWidget::animateRailWidth(int targetWidth) {
     m_widthAnimation->setStartValue(m_railWidth);
     m_widthAnimation->setEndValue(targetWidth);
     m_widthAnimation->start();
+}
+
+void NavigationWidget::moveSelectionTo(const QString& id, bool animated) {
+    QPushButton* button = m_buttons.value(id, nullptr);
+    if (!button || !m_selectionPill) {
+        return;
+    }
+
+    const QRect target = button->geometry().adjusted(0, 1, 0, -1);
+    if (target.width() <= 0 || target.height() <= 0) {
+        QTimer::singleShot(0, this, [this, id, animated]() {
+            moveSelectionTo(id, animated);
+        });
+        return;
+    }
+
+    m_selectionPill->show();
+    m_selectionPill->lower();
+
+    if (!animated || !m_selectionPill->geometry().isValid() || m_selectionPill->geometry().isNull()) {
+        if (m_selectionAnimation) {
+            m_selectionAnimation->stop();
+        }
+        m_selectionPill->setGeometry(target);
+        return;
+    }
+
+    m_selectionAnimation->stop();
+    m_selectionAnimation->setStartValue(m_selectionPill->geometry());
+    m_selectionAnimation->setEndValue(target);
+    m_selectionAnimation->start();
 }
