@@ -16,7 +16,6 @@
 
 QT_BEGIN_NAMESPACE
 class QAction;
-class QCheckBox;
 class QComboBox;
 class QLabel;
 class QMenu;
@@ -29,6 +28,7 @@ class QWidget;
 QT_END_NAMESPACE
 
 class NavigationWidget;
+class SwitchButton;
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -85,17 +85,17 @@ private:
     QLabel *sizeValueLabel{};
     QSlider *sizeSlider{};
     QSpinBox *sizeSpinBox{};
-    QCheckBox *alwaysOnTopCheckBox{};
-    QCheckBox *clickThroughCheckBox{};
+    SwitchButton *alwaysOnTopCheckBox{};
+    SwitchButton *clickThroughCheckBox{};
 
     // AI page
-    QCheckBox *aiEnabledCheckBox{};
-    QCheckBox *autoScreenChatCheckBox{};
+    SwitchButton *aiEnabledCheckBox{};
+    SwitchButton *autoScreenChatCheckBox{};
     QSpinBox *chatIntervalSpinBox{};
 
     // Voice page
-    QCheckBox *soundEnabledCheckBox{};
-    QCheckBox *voiceEnabledCheckBox{};
+    SwitchButton *soundEnabledCheckBox{};
+    SwitchButton *voiceEnabledCheckBox{};
     QComboBox *voiceSpeakerComboBox{};
     QSlider *volumeSlider{};
     QLabel *volumeValueLabel{};

@@ -1,6 +1,7 @@
 #include "card_widget.h"
 
 #include <QColor>
+#include <QFrame>
 #include <QGraphicsDropShadowEffect>
 #include <QLabel>
 #include <QVBoxLayout>
@@ -17,30 +18,36 @@ CardWidget::CardWidget(const QString& title, const QString& subtitle, QWidget* p
     setGraphicsEffect(shadow);
 
     auto* outerLayout = new QVBoxLayout(this);
-    outerLayout->setContentsMargins(22, 20, 22, 22);
-    outerLayout->setSpacing(16);
+    outerLayout->setContentsMargins(0, 0, 0, 0);
+    outerLayout->setSpacing(0);
 
-    auto* headerLayout = new QVBoxLayout;
-    headerLayout->setContentsMargins(0, 0, 0, 0);
+    m_headerWidget = new QWidget(this);
+    m_headerWidget->setObjectName(QStringLiteral("CardHeader"));
+    m_headerWidget->setAttribute(Qt::WA_StyledBackground, true);
+    auto* headerLayout = new QVBoxLayout(m_headerWidget);
+    headerLayout->setContentsMargins(22, 18, 22, 16);
     headerLayout->setSpacing(4);
 
-    m_titleLabel = new QLabel(title, this);
+    m_titleLabel = new QLabel(title, m_headerWidget);
     m_titleLabel->setObjectName(QStringLiteral("CardTitle"));
     headerLayout->addWidget(m_titleLabel);
 
     if (!subtitle.trimmed().isEmpty()) {
-        m_subtitleLabel = new QLabel(subtitle, this);
+        m_subtitleLabel = new QLabel(subtitle, m_headerWidget);
         m_subtitleLabel->setObjectName(QStringLiteral("CardSubtitle"));
         m_subtitleLabel->setWordWrap(true);
         headerLayout->addWidget(m_subtitleLabel);
     }
 
-    outerLayout->addLayout(headerLayout);
+    outerLayout->addWidget(m_headerWidget);
 
-    m_contentLayout = new QVBoxLayout;
-    m_contentLayout->setContentsMargins(0, 0, 0, 0);
-    m_contentLayout->setSpacing(12);
-    outerLayout->addLayout(m_contentLayout);
+    m_bodyWidget = new QWidget(this);
+    m_bodyWidget->setObjectName(QStringLiteral("CardBody"));
+    m_bodyWidget->setAttribute(Qt::WA_StyledBackground, true);
+    m_contentLayout = new QVBoxLayout(m_bodyWidget);
+    m_contentLayout->setContentsMargins(22, 16, 22, 20);
+    m_contentLayout->setSpacing(0);
+    outerLayout->addWidget(m_bodyWidget);
 }
 
 QVBoxLayout* CardWidget::contentLayout() const {
@@ -49,6 +56,16 @@ QVBoxLayout* CardWidget::contentLayout() const {
 
 void CardWidget::addWidget(QWidget* widget) {
     if (m_contentLayout && widget) {
+        if (m_hasContent) {
+            auto* separator = new QFrame(m_bodyWidget ? m_bodyWidget : this);
+            separator->setObjectName(QStringLiteral("SettingSeparator"));
+            separator->setFrameShape(QFrame::NoFrame);
+            separator->setFixedHeight(1);
+            m_contentLayout->addSpacing(14);
+            m_contentLayout->addWidget(separator);
+            m_contentLayout->addSpacing(14);
+        }
         m_contentLayout->addWidget(widget);
+        m_hasContent = true;
     }
 }

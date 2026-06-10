@@ -25,6 +25,7 @@ public:
     void toggleTheme();
     void applyTo(QApplication* app);
     void applyHeroPalette(QWidget* hero) const;
+    QString comboArrowColor() const;
 
 signals:
     void themeChanged(Theme theme);

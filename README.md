@@ -48,7 +48,9 @@
   * **已注册工具组**：桌宠动画、当前时间、文件读取/目录查看（限定根目录）、网页获取/搜索（SSRF 防护）、LX Music 播放/暂停/切歌/歌词/歌单等。
 * **个性化与多配置兼容**
   * **动画表现分离**：`animation_state_machine.json` 结合 `state_machine_define.json` 管理动作表现与业务逻辑，提高定制灵活性。
-  * **自定义主题**：支持修改 UI 主题颜色与样式。
+  * **现代化设置界面**：主设置窗口已重构为 Dashboard 风格，采用 Hero Banner、左侧导航、右侧卡片页和页面淡入淡出切换，避免传统 `GroupBox + FormLayout` 堆叠式界面。
+  * **Light / Dark 主题**：由 `ThemeManager` 统一管理，支持约 0.6 秒的整窗平滑过渡，菜单栏、状态栏、页面、卡片与边框颜色保持一致。
+  * **现代控件组件**：内置自绘 `SwitchButton`、`RoundSlider`、`AnimatedComboBox` 与 `AnimatedScrollBar`。开关采用 Android WLAN 风格；角色大小、音量和透明度滑块使用圆形手柄；当前角色、说话人角色和模型选择下拉框支持三角箭头展开/收起旋转；右侧滚动条在空闲时保持细胶囊，悬停或拖动时平滑展开。
   * **配置热加载**：无需重启即可应用部分功能开关与参数调整。
 
 ### 🚧 开发中 / In Progress
@@ -72,7 +74,7 @@
 ## 🛠️ 技术栈 (Tech Stack)
 
 * **语言**: C++ 20
-* **UI 框架**: Qt 6 (Widgets & Core)
+* **UI 框架**: Qt 6 (Widgets & Core，自绘控件 + QSS 主题系统)
 * **构建系统**: CMake
 * **图形/模型**: OpenGL, TinyGLTF
 * **网络 / LLM**: Qt Network, OpenAI-compatible Chat Completion
@@ -92,7 +94,7 @@ Desktop-Pet/
 ├── docs/               # 架构文档与 Agent 方案草案
 ├── engine/             # 渲染引擎 (OpenGL封装, 模型加载, 音频)
 ├── entity/             # 实体逻辑 (宠物类, 个性化数据)
-├── ui/                 # 界面实现 (主窗口, 托盘, 菜单)
+├── ui/                 # 界面实现 (现代设置窗口, 自绘控件, 托盘, 菜单)
 ├── statistic/          # 数据统计模块
 ├── tests/              # Qt Test 单元测试与工具测试
 └── third_party/        # 第三方库 (TinyGLTF等)
@@ -142,6 +144,20 @@ Desktop-Pet/
 
 1. **`default_common_config.json`**: 系统默认配置，用于初始化或恢复出厂设置。
 2. **`userConfig.json`** (生成): 用户自定义配置，保存界面风格、功能开关等。
+
+### 主窗口与外观
+
+主设置窗口使用 Qt Widgets 实现现代 Dashboard 布局，主要 UI 组件位于 `ui/`：
+
+* `ThemeManager`: 统一维护 Light / Dark 全局 QSS、窗口调色板与 Hero Banner 主题属性。
+* `NavigationWidget`: 左侧导航栏，支持选中胶囊动画和页面切换。
+* `CardWidget`: 设置页卡片容器，区分标题区、内容区和配置项分隔线。
+* `SwitchButton`: 自绘开关控件，替代传统复选框，用于 AI、语音、置顶、鼠标穿透等启用项。
+* `RoundSlider`: 自绘圆形手柄滑块，用于角色大小、音量与气泡透明度。
+* `AnimatedComboBox`: 自绘下拉箭头，列表展开时三角形平滑旋转 180°，收起时自动复位。
+* `AnimatedScrollBar`: Web 风格胶囊滚动条，空闲时细窄，悬停、滚动或拖动时平滑展开。
+
+这些控件保持原有 Qt 控件 API 和信号兼容，功能逻辑仍由 `MainWindow`、`PetWindow` 和配置管理模块处理。
 
 ### AI / Agent 相关配置
 

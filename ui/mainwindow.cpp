@@ -4,17 +4,20 @@
 
 #include "mainwindow.h"
 
+#include "animated_combo_box.h"
+#include "animated_scrollbar.h"
 #include "card_widget.h"
 #include "configLoader/config_manager.h"
 #include "navigation_widget.h"
 #include "pet.h"
+#include "round_slider.h"
 #include "statistic_manager.h"
+#include "switch_button.h"
 #include "theme_manager.h"
 
 #include <QAction>
 #include <QAbstractAnimation>
 #include <QApplication>
-#include <QCheckBox>
 #include <QColor>
 #include <QComboBox>
 #include <QDebug>
@@ -66,6 +69,7 @@ QWidget* createPageShell(const QString& title, const QString& subtitle, QVBoxLay
     scrollArea->setFrameShape(QFrame::NoFrame);
     scrollArea->setWidgetResizable(true);
     scrollArea->setHorizontalScrollBarPolicy(Qt::ScrollBarAlwaysOff);
+    scrollArea->setVerticalScrollBar(new AnimatedScrollBar(Qt::Vertical, scrollArea));
 
     auto* content = new QWidget(scrollArea);
     content->setObjectName(QStringLiteral("PageContent"));
@@ -325,7 +329,7 @@ QWidget* MainWindow::createPetPage() {
     auto* characterCard = new CardWidget(QStringLiteral("角色选择"),
                                          QStringLiteral("从已登记模型中选择一个桌宠角色。"),
                                          page);
-    characterComboBox = new QComboBox(characterCard);
+    characterComboBox = new AnimatedComboBox(characterCard);
     characterComboBox->setMinimumWidth(240);
     characterCard->addWidget(createSettingRow(QStringLiteral("当前角色"),
                                               QStringLiteral("角色来自 pet_info.json，可通过高级页添加新模型。"),
@@ -355,6 +359,7 @@ QWidget* MainWindow::createPetPage() {
     stopPetButton = new QPushButton(QStringLiteral("停止桌宠"), runtimeCard);
     stopPetButton->setObjectName(QStringLiteral("DangerButton"));
     stopPetButton->setEnabled(false);
+    stopPetButton->setCursor(Qt::ForbiddenCursor);
     runtimeCard->addWidget(createSettingRow(QStringLiteral("桌宠进程"),
                                             QStringLiteral("启动后可继续调整 AI、语音和气泡设置。"),
                                             createHorizontalControls({startPetButton, stopPetButton})));
@@ -363,7 +368,7 @@ QWidget* MainWindow::createPetPage() {
     auto* displayCard = new CardWidget(QStringLiteral("显示与窗口行为"),
                                        QStringLiteral("大小可以实时调整；置顶与穿透在桌宠运行时会锁定。"),
                                        page);
-    sizeSlider = new QSlider(Qt::Horizontal, displayCard);
+    sizeSlider = new RoundSlider(Qt::Horizontal, displayCard);
     sizeSlider->setRange(50, 200);
     sizeSlider->setValue(100);
     sizeSlider->setMinimumWidth(220);
@@ -377,13 +382,13 @@ QWidget* MainWindow::createPetPage() {
                                             createHorizontalControls({sizeSlider, sizeSpinBox}),
                                             sizeValueLabel));
 
-    alwaysOnTopCheckBox = new QCheckBox(QStringLiteral("启用"), displayCard);
+    alwaysOnTopCheckBox = new SwitchButton(QStringLiteral("窗口置顶"), displayCard);
     alwaysOnTopCheckBox->setChecked(true);
     displayCard->addWidget(createSettingRow(QStringLiteral("窗口置顶"),
                                             QStringLiteral("让桌宠保持在其他窗口上方。"),
                                             alwaysOnTopCheckBox));
 
-    clickThroughCheckBox = new QCheckBox(QStringLiteral("启用"), displayCard);
+    clickThroughCheckBox = new SwitchButton(QStringLiteral("鼠标穿透"), displayCard);
     clickThroughCheckBox->setChecked(false);
     displayCard->addWidget(createSettingRow(QStringLiteral("鼠标穿透"),
                                             QStringLiteral("启用后鼠标事件会穿过桌宠窗口。"),
@@ -406,13 +411,13 @@ QWidget* MainWindow::createAiPage() {
     auto* aiCard = new CardWidget(QStringLiteral("智能行为"),
                                   QStringLiteral("这些开关会同步到已运行的桌宠。"),
                                   page);
-    aiEnabledCheckBox = new QCheckBox(QStringLiteral("启用"), aiCard);
+    aiEnabledCheckBox = new SwitchButton(QStringLiteral("AI 回复"), aiCard);
     aiEnabledCheckBox->setChecked(llmConfig.enabled);
     aiCard->addWidget(createSettingRow(QStringLiteral("AI 回复"),
                                        QStringLiteral("允许桌宠调用配置中的大语言模型生成回复。"),
                                        aiEnabledCheckBox));
 
-    autoScreenChatCheckBox = new QCheckBox(QStringLiteral("启用"), aiCard);
+    autoScreenChatCheckBox = new SwitchButton(QStringLiteral("自动屏幕聊天"), aiCard);
     autoScreenChatCheckBox->setChecked(screenChat.enabled);
     aiCard->addWidget(createSettingRow(QStringLiteral("自动屏幕聊天"),
                                        QStringLiteral("桌宠会周期性观察屏幕并主动聊天。"),
@@ -430,7 +435,7 @@ QWidget* MainWindow::createAiPage() {
     auto* modelCard = new CardWidget(QStringLiteral("模型与提示词"),
                                      QStringLiteral("当前项目仍使用原有 JSON 配置；这里提供可视化入口占位，不改变配置来源。"),
                                      page);
-    auto* modelComboBox = new QComboBox(modelCard);
+    auto* modelComboBox = new AnimatedComboBox(modelCard);
     modelComboBox->addItem(QStringLiteral("OpenAI Compatible / JSON 配置"));
     modelComboBox->setEnabled(false);
     modelCard->addWidget(createSettingRow(QStringLiteral("模型选择"),
@@ -459,19 +464,19 @@ QWidget* MainWindow::createVoicePage() {
     auto* voiceCard = new CardWidget(QStringLiteral("语音播报"),
                                      QStringLiteral("开启后，桌宠展示回复气泡的同时会把同一文本发送给语音合成。"),
                                      page);
-    soundEnabledCheckBox = new QCheckBox(QStringLiteral("启用"), voiceCard);
+    soundEnabledCheckBox = new SwitchButton(QStringLiteral("音效"), voiceCard);
     soundEnabledCheckBox->setChecked(false);
     voiceCard->addWidget(createSettingRow(QStringLiteral("音效"),
                                           QStringLiteral("保留原音效开关。"),
                                           soundEnabledCheckBox));
 
-    voiceEnabledCheckBox = new QCheckBox(QStringLiteral("启用"), voiceCard);
+    voiceEnabledCheckBox = new SwitchButton(QStringLiteral("语音合成"), voiceCard);
     voiceEnabledCheckBox->setChecked(voice.enabled);
     voiceCard->addWidget(createSettingRow(QStringLiteral("语音合成"),
                                           QStringLiteral("可选启动 Python worker，不需要时不会预加载。"),
                                           voiceEnabledCheckBox));
 
-    voiceSpeakerComboBox = new QComboBox(voiceCard);
+    voiceSpeakerComboBox = new AnimatedComboBox(voiceCard);
     voiceSpeakerComboBox->addItem(QStringLiteral("Feibi / 菲比（中文）"), QStringLiteral("feibi"));
     voiceSpeakerComboBox->addItem(QStringLiteral("Mika / 聖園ミカ（日语）"), QStringLiteral("mika"));
     voiceSpeakerComboBox->addItem(QStringLiteral("ThirtySeven / 37（英语）"), QStringLiteral("thirtyseven"));
@@ -481,12 +486,12 @@ QWidget* MainWindow::createVoicePage() {
         : voice.selectedSpeaker;
     const int selectedVoiceIndex = voiceSpeakerComboBox->findData(selectedVoice);
     voiceSpeakerComboBox->setCurrentIndex(selectedVoiceIndex >= 0 ? selectedVoiceIndex : 0);
-    voiceSpeakerComboBox->setEnabled(voice.enabled);
+    voiceSpeakerComboBox->setMinimumWidth(260);
     voiceCard->addWidget(createSettingRow(QStringLiteral("说话人角色"),
                                           QStringLiteral("预设角色与自定义角色目录沿用现有语音配置。"),
                                           voiceSpeakerComboBox));
 
-    volumeSlider = new QSlider(Qt::Horizontal, voiceCard);
+    volumeSlider = new RoundSlider(Qt::Horizontal, voiceCard);
     volumeSlider->setRange(0, 100);
     volumeSlider->setValue(75);
     volumeSlider->setMinimumWidth(220);
@@ -511,7 +516,7 @@ QWidget* MainWindow::createBubblePage() {
     auto* bubbleCard = new CardWidget(QStringLiteral("气泡外观"),
                                       QStringLiteral("运行中修改会立即预览到桌宠气泡。"),
                                       page);
-    bubbleOpacitySlider = new QSlider(Qt::Horizontal, bubbleCard);
+    bubbleOpacitySlider = new RoundSlider(Qt::Horizontal, bubbleCard);
     bubbleOpacitySlider->setRange(10, 100);
     bubbleOpacitySlider->setValue(screenChat.bubbleOpacityPercent);
     bubbleOpacitySlider->setMinimumWidth(220);
@@ -605,20 +610,18 @@ void MainWindow::setupConnections() {
     connect(bubbleOpacitySlider, &QSlider::valueChanged, bubbleOpacitySpinBox, &QSpinBox::setValue);
     connect(bubbleOpacitySpinBox, QOverload<int>::of(&QSpinBox::valueChanged), bubbleOpacitySlider, &QSlider::setValue);
 
-    connect(alwaysOnTopCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
-    connect(clickThroughCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
-    connect(aiEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
-    connect(autoScreenChatCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(alwaysOnTopCheckBox, &SwitchButton::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(clickThroughCheckBox, &SwitchButton::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(aiEnabledCheckBox, &SwitchButton::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(autoScreenChatCheckBox, &SwitchButton::toggled, this, &MainWindow::OnSettingsChanged);
     connect(chatIntervalSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnSettingsChanged);
 
-    connect(voiceEnabledCheckBox, &QCheckBox::toggled, this, [this](bool enabled) {
-        if (voiceSpeakerComboBox) {
-            voiceSpeakerComboBox->setEnabled(enabled);
-        }
+    connect(voiceEnabledCheckBox, &SwitchButton::toggled, this, [this](bool enabled) {
+        Q_UNUSED(enabled)
         OnSettingsChanged();
     });
     connect(voiceSpeakerComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::OnSettingsChanged);
-    connect(soundEnabledCheckBox, &QCheckBox::toggled, this, &MainWindow::OnSettingsChanged);
+    connect(soundEnabledCheckBox, &SwitchButton::toggled, this, &MainWindow::OnSettingsChanged);
     connect(volumeSlider, &QSlider::valueChanged, this, [this](int value) {
         if (volumeValueLabel) {
             volumeValueLabel->setText(QStringLiteral("%1%").arg(value));
@@ -649,7 +652,9 @@ void MainWindow::loadPetList() {
 
     characterComboBox->setEnabled(characterComboBox->count() > 0);
     if (startPetButton) {
-        startPetButton->setEnabled(characterComboBox->count() > 0 && !activePetWindow);
+        const bool canStart = characterComboBox->count() > 0 && !activePetWindow;
+        startPetButton->setEnabled(canStart);
+        startPetButton->setCursor(canStart ? Qt::PointingHandCursor : Qt::ForbiddenCursor);
     }
 
     if (characterComboBox->count() > 0) {
@@ -835,7 +840,9 @@ void MainWindow::OnStartPet() {
     activePetWindow->show();
 
     startPetButton->setEnabled(false);
+    startPetButton->setCursor(Qt::ForbiddenCursor);
     stopPetButton->setEnabled(true);
+    stopPetButton->setCursor(Qt::PointingHandCursor);
     setWindowFlagControlsLocked(true);
 
     statusLabel->setText(QStringLiteral("%1 正在运行").arg(petName));
@@ -860,8 +867,11 @@ void MainWindow::OnStopPet() {
     }
     activePetName.clear();
 
-    startPetButton->setEnabled(characterComboBox && characterComboBox->count() > 0);
+    const bool canStart = characterComboBox && characterComboBox->count() > 0;
+    startPetButton->setEnabled(canStart);
+    startPetButton->setCursor(canStart ? Qt::PointingHandCursor : Qt::ForbiddenCursor);
     stopPetButton->setEnabled(false);
+    stopPetButton->setCursor(Qt::ForbiddenCursor);
     setWindowFlagControlsLocked(false);
 
     statusLabel->setText(QStringLiteral("就绪"));

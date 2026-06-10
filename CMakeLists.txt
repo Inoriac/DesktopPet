@@ -37,10 +37,18 @@ find_package(Qt6 COMPONENTS
 set(UI_SOURCES
     ui/mainwindow.cpp
     ui/mainwindow.h
+    ui/animated_combo_box.cpp
+    ui/animated_combo_box.h
+    ui/animated_scrollbar.cpp
+    ui/animated_scrollbar.h
     ui/card_widget.cpp
     ui/card_widget.h
     ui/navigation_widget.cpp
     ui/navigation_widget.h
+    ui/round_slider.cpp
+    ui/round_slider.h
+    ui/switch_button.cpp
+    ui/switch_button.h
     ui/theme_manager.cpp
     ui/theme_manager.h
     ui/chat_history_window.cpp
