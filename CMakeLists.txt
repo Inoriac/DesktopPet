@@ -37,6 +37,12 @@ find_package(Qt6 COMPONENTS
 set(UI_SOURCES
     ui/mainwindow.cpp
     ui/mainwindow.h
+    ui/card_widget.cpp
+    ui/card_widget.h
+    ui/navigation_widget.cpp
+    ui/navigation_widget.h
+    ui/theme_manager.cpp
+    ui/theme_manager.h
     ui/chat_history_window.cpp
     ui/chat_history_window.h
     ui/liquidglasschatbubble.cpp

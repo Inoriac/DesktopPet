@@ -3,6 +3,7 @@
 #include <QSurfaceFormat>
 
 #include "ui/mainwindow.h"
+#include "ui/theme_manager.h"
 #include "statistic_manager.h"
 
 int main(int argc, char *argv[])
@@ -22,6 +23,7 @@ int main(int argc, char *argv[])
     app.setApplicationName("Desktop Pet");
     app.setOrganizationName("Desktop Pet Team");
     app.setApplicationVersion("1.0.0");
+    ThemeManager::instance().applyTo(&app);
 
     QDir::setCurrent(QCoreApplication::applicationDirPath() + "/..");
 

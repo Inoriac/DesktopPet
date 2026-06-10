@@ -19,6 +19,21 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 
+def configure_standard_streams() -> None:
+    """Use UTF-8 pipes explicitly so Chinese bubble text survives Windows stdio."""
+    try:
+        sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+        sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+        sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+    except AttributeError:
+        # Python < 3.7 has no reconfigure(); the C++ process environment still
+        # requests UTF-8 mode for normal supported runtimes.
+        pass
+
+
+configure_standard_streams()
+
+
 genie = None
 CONFIG: Dict[str, Any] = {}
 CHARACTER_NAME = ""
@@ -58,7 +73,10 @@ CHINESE_UNITS = ["", "十", "百", "千"]
 
 
 def emit(event: Dict[str, Any]) -> None:
-    print(json.dumps(event, ensure_ascii=False), flush=True)
+    # Keep stdout ASCII-only JSON. This prevents diagnostic/codepage text from
+    # corrupting the JSON-lines protocol even if the parent process locale varies.
+    sys.stdout.write(json.dumps(event, ensure_ascii=True) + "\n")
+    sys.stdout.flush()
 
 
 def log(message: str) -> None:

@@ -10,6 +10,7 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QProcessEnvironment>
 #include <QUuid>
 #include <QDebug>
 
@@ -142,6 +143,12 @@ bool VoiceSynthesisService::ensureStarted() {
     process->setArguments({scriptPath});
     process->setWorkingDirectory(QDir::currentPath());
     process->setProcessChannelMode(QProcess::SeparateChannels);
+    QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+    env.insert(QStringLiteral("PYTHONUTF8"), QStringLiteral("1"));
+    env.insert(QStringLiteral("PYTHONIOENCODING"), QStringLiteral("utf-8"));
+    env.insert(QStringLiteral("PYTHONLEGACYWINDOWSSTDIO"), QStringLiteral("0"));
+    env.insert(QStringLiteral("PYTHONUNBUFFERED"), QStringLiteral("1"));
+    process->setProcessEnvironment(env);
 
     connect(process, &QProcess::readyReadStandardOutput, this, &VoiceSynthesisService::handleStdout);
     connect(process, &QProcess::readyReadStandardError, this, &VoiceSynthesisService::handleStderr);

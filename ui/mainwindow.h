@@ -5,35 +5,37 @@
 #ifndef DESKTOP_PET_MAINWINDOW_H
 #define DESKTOP_PET_MAINWINDOW_H
 
+#include <QHash>
 #include <QMainWindow>
-#include <QMenuBar>
-#include <QStatusBar>
-#include <QHBoxLayout>
-#include <QPushButton>
-#include <QLabel>
-#include <QListWidget>
-#include <QGroupBox>
-#include <QSlider>
-#include <QSpinBox>
-#include <QCheckBox>
-#include <QLineEdit>
-#include <QComboBox>
 #include <QString>
-#include "ai_types.h"
 
+#include <string>
+
+#include "ai_types.h"
 #include "petwindow.h"
 
 QT_BEGIN_NAMESPACE
 class QAction;
+class QCheckBox;
+class QComboBox;
+class QLabel;
 class QMenu;
-class RenderViewport;
+class QPushButton;
+class QSlider;
+class QSpinBox;
+class QStackedWidget;
+class QVBoxLayout;
+class QWidget;
+QT_END_NAMESPACE
 
-class MainWindow : public QMainWindow{
+class NavigationWidget;
+
+class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    MainWindow(QWidget *parent = nullptr);
-    ~MainWindow();
+    explicit MainWindow(QWidget *parent = nullptr);
+    ~MainWindow() override;
 
 private slots:
     void OnPetSelected();
@@ -53,42 +55,65 @@ private:
     void loadPetList();
     void setWindowFlagControlsLocked(bool locked);
 
-    // UI组件
-    QWidget *centralWidget{};
-    QVBoxLayout *mainLayout{};
+    QWidget* createHeroBanner();
+    QWidget* createPetPage();
+    QWidget* createAiPage();
+    QWidget* createVoicePage();
+    QWidget* createBubblePage();
+    QWidget* createAdvancedPage();
 
-    // 宠物选择区域
-    QGroupBox *characterSelectionGroup{};
-    QListWidget *petListWidget{};
+    void navigateToPage(const QString& pageId);
+    void updateCharacterPreview();
+    void updateThemeButtonText();
+    QString currentPetName() const;
+
+    // UI shell
+    QWidget *centralWidget{};
+    QWidget *heroBanner{};
+    QVBoxLayout *mainLayout{};
+    NavigationWidget *navigationWidget{};
+    QStackedWidget *pageStack{};
+    QHash<QString, int> pageIndexById;
+
+    // Pet page
+    QComboBox *characterComboBox{};
+    QLabel *characterPreviewTitle{};
+    QLabel *characterPreviewMeta{};
     QPushButton *startPetButton{};
     QPushButton *stopPetButton{};
-
-    // PetWindow
-    PetWindow *activePetWindow {nullptr};
-    QString activePetName;
-
-    // 设置区域
-    QGroupBox *settingsGroup{};
-    QLabel *sizeLabel{};
+    QLabel *sizeValueLabel{};
     QSlider *sizeSlider{};
     QSpinBox *sizeSpinBox{};
     QCheckBox *alwaysOnTopCheckBox{};
     QCheckBox *clickThroughCheckBox{};
+
+    // AI page
     QCheckBox *aiEnabledCheckBox{};
+    QCheckBox *autoScreenChatCheckBox{};
+    QSpinBox *chatIntervalSpinBox{};
+
+    // Voice page
     QCheckBox *soundEnabledCheckBox{};
     QCheckBox *voiceEnabledCheckBox{};
     QComboBox *voiceSpeakerComboBox{};
     QSlider *volumeSlider{};
-    QLabel *volumeLabel{};
+    QLabel *volumeValueLabel{};
 
-    QCheckBox *autoScreenChatCheckBox{};
+    // Bubble page
     QSlider *bubbleOpacitySlider{};
     QSpinBox *bubbleOpacitySpinBox{};
     QSpinBox *bubbleFontSizeSpinBox{};
     QSpinBox *bubbleOffsetXSpinBox{};
     QSpinBox *bubbleOffsetYSpinBox{};
 
-    // 菜单和动作
+    // Advanced page
+    QPushButton *themeToggleButton{};
+
+    // PetWindow
+    PetWindow *activePetWindow {nullptr};
+    QString activePetName;
+
+    // Menus and actions
     QMenu *fileMenu{};
     QMenu *settingsMenu{};
     QMenu *helpMenu{};
@@ -96,16 +121,13 @@ private:
     QAction *preferencesAction{};
     QAction *aboutAction{};
 
-    // 状态栏
+    // Status bar
     QLabel *statusLabel{};
 
     std::string const modelBasePath = "/assets/models/";
-
-    RenderViewport *renderViewport{};
 
     ScreenChatConfig buildScreenChatConfigFromUi() const;
     VoiceConfig buildVoiceConfigFromUi() const;
 };
 
-
-#endif //DESKTOP_PET_MAINWINDOW_H
+#endif // DESKTOP_PET_MAINWINDOW_H
