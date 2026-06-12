@@ -120,6 +120,25 @@
             "toolBubble": false
           }
         },
+        "toolAccessPolicy": {
+          "allowedRoots": [
+            ".",
+            "runtime/agent_workspace"
+          ],
+          "allowFileWrite": false,
+          "allowCommandExecution": false,
+          "commandWhitelist": [
+            "git",
+            "cmake",
+            "ctest"
+          ],
+          "autoGrantedTools": [
+            "read_text_file",
+            "list_directory"
+          ],
+          "commandTimeoutMs": 5000,
+          "maxWriteBytes": 65536
+        },
         "behaviorPolicy": {
           "idleActionWhitelist": [
             "Idle",

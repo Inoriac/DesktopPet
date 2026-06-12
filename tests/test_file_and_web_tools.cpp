@@ -6,11 +6,15 @@
 #include <QtTest>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 #include <QJsonObject>
 #include <QJsonArray>
 
+#include "ai/tool_registry.h"
 #include "ai/tools/file_tools.h"
+#include "ai/tools/runtime/tool_runtime.h"
 #include "ai/tools/web_tools.h"
 
 class TestFileAndWebTools : public QObject {
@@ -23,6 +27,19 @@ private slots:
     void test_read_text_file_path_traversal();
     void test_list_directory_success();
     void test_list_directory_not_found();
+    void test_write_text_file_success();
+    void test_write_text_file_no_overwrite_by_default();
+    void test_write_text_file_overwrite_when_explicit();
+    void test_write_text_file_rejects_outside_root();
+    void test_write_text_file_rejects_oversized_content();
+    void test_write_text_file_blocks_sensitive_target();
+    void test_execute_whitelisted_command_success();
+    void test_execute_whitelisted_command_rejects_unlisted();
+    void test_execute_whitelisted_command_rejects_shell();
+    void test_execute_whitelisted_command_rejects_shell_tokens();
+    void test_execute_whitelisted_command_rejects_outside_path_arg();
+    void test_tool_runtime_requires_confirmation_for_write();
+    void test_tool_runtime_executes_confirmed_write();
 
     // 网络工具测试 (验证参数和本地逻辑)
     void test_web_fetch_validate_params();
@@ -146,6 +163,257 @@ void TestFileAndWebTools::test_list_directory_not_found() {
     ToolResult result = tool.execute(params);
 
     QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_write_text_file_success() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    WriteTextFileTool tool(QStringList{tempDir.path()}, 1024);
+
+    const QString filePath = tempDir.filePath("notes/output.txt");
+    QJsonObject params;
+    params["path"] = filePath;
+    params["content"] = "hello safe write";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QVERIFY(QFileInfo::exists(filePath));
+
+    QFile written(filePath);
+    QVERIFY(written.open(QIODevice::ReadOnly | QIODevice::Text));
+    QCOMPARE(QString::fromUtf8(written.readAll()), QString("hello safe write"));
+}
+
+void TestFileAndWebTools::test_write_text_file_no_overwrite_by_default() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    const QString filePath = tempDir.filePath("existing.txt");
+    QFile existing(filePath);
+    QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Text));
+    existing.write("original");
+    existing.close();
+
+    WriteTextFileTool tool(QStringList{tempDir.path()}, 1024);
+
+    QJsonObject params;
+    params["path"] = filePath;
+    params["content"] = "changed";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+
+    QFile check(filePath);
+    QVERIFY(check.open(QIODevice::ReadOnly | QIODevice::Text));
+    QCOMPARE(QString::fromUtf8(check.readAll()), QString("original"));
+}
+
+void TestFileAndWebTools::test_write_text_file_overwrite_when_explicit() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    const QString filePath = tempDir.filePath("existing.txt");
+    QFile existing(filePath);
+    QVERIFY(existing.open(QIODevice::WriteOnly | QIODevice::Text));
+    existing.write("original");
+    existing.close();
+
+    WriteTextFileTool tool(QStringList{tempDir.path()}, 1024);
+
+    QJsonObject params;
+    params["path"] = filePath;
+    params["content"] = "changed";
+    params["overwrite"] = true;
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+
+    QFile check(filePath);
+    QVERIFY(check.open(QIODevice::ReadOnly | QIODevice::Text));
+    QCOMPARE(QString::fromUtf8(check.readAll()), QString("changed"));
+}
+
+void TestFileAndWebTools::test_write_text_file_rejects_outside_root() {
+    QTemporaryDir allowedDir;
+    QTemporaryDir outsideDir;
+    QVERIFY(allowedDir.isValid());
+    QVERIFY(outsideDir.isValid());
+
+    WriteTextFileTool tool(QStringList{allowedDir.path()}, 1024);
+
+    const QString outsidePath = outsideDir.filePath("outside.txt");
+    QJsonObject params;
+    params["path"] = outsidePath;
+    params["content"] = "nope";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+    QVERIFY(!QFileInfo::exists(outsidePath));
+}
+
+void TestFileAndWebTools::test_write_text_file_rejects_oversized_content() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    WriteTextFileTool tool(QStringList{tempDir.path()}, 8);
+
+    QJsonObject params;
+    params["path"] = tempDir.filePath("large.txt");
+    params["content"] = "this content is too large";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_write_text_file_blocks_sensitive_target() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    WriteTextFileTool tool(QStringList{tempDir.path()}, 1024);
+
+    QJsonObject params;
+    params["path"] = tempDir.filePath(".env");
+    params["content"] = "TOKEN=bad";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_execute_whitelisted_command_success() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    policy.commandWhitelist = {QCoreApplication::applicationFilePath()};
+    policy.timeoutMs = 5000;
+
+    ExecuteWhitelistedCommandTool tool(policy);
+    QJsonObject params;
+    params["working_directory"] = tempDir.path();
+    params["command"] = QCoreApplication::applicationFilePath();
+    params["args"] = QJsonArray{"test_execute_whitelisted_command_rejects_shell"};
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY2(result.success, qPrintable(result.errorMessage));
+    QCOMPARE(result.data.value("exit_code").toInt(-1), 0);
+}
+
+void TestFileAndWebTools::test_execute_whitelisted_command_rejects_unlisted() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    policy.commandWhitelist = {"some-other-command"};
+
+    ExecuteWhitelistedCommandTool tool(policy);
+    QJsonObject params;
+    params["working_directory"] = tempDir.path();
+    params["command"] = QCoreApplication::applicationFilePath();
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_execute_whitelisted_command_rejects_shell() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    policy.commandWhitelist = {"cmd.exe"};
+
+    ExecuteWhitelistedCommandTool tool(policy);
+    QJsonObject params;
+    params["working_directory"] = tempDir.path();
+    params["command"] = "cmd.exe";
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_execute_whitelisted_command_rejects_shell_tokens() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    policy.commandWhitelist = {QCoreApplication::applicationFilePath()};
+
+    ExecuteWhitelistedCommandTool tool(policy);
+    QJsonObject params;
+    params["working_directory"] = tempDir.path();
+    params["command"] = QCoreApplication::applicationFilePath();
+    params["args"] = QJsonArray{"safe", "&&", "unsafe"};
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_execute_whitelisted_command_rejects_outside_path_arg() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    policy.commandWhitelist = {"git"};
+
+    ExecuteWhitelistedCommandTool tool(policy);
+    QJsonObject params;
+    params["working_directory"] = tempDir.path();
+    params["command"] = "git";
+    params["args"] = QJsonArray{"status", "C:/Windows"};
+
+    const ToolResult result = tool.execute(params);
+    QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_tool_runtime_requires_confirmation_for_write() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.toolName = "write_text_file";
+    request.policyContext.allowedRootPaths = {tempDir.path()};
+    request.arguments["path"] = tempDir.filePath("runtime.txt");
+    request.arguments["content"] = "runtime write";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(!outcome.executed);
+    QVERIFY(outcome.policyDecision.needsConfirmation());
+    QVERIFY(!QFileInfo::exists(tempDir.filePath("runtime.txt")));
+}
+
+void TestFileAndWebTools::test_tool_runtime_executes_confirmed_write() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    const QString filePath = tempDir.filePath("runtime.txt");
+    ToolExecutionRequest request;
+    request.toolName = "write_text_file";
+    request.policyContext.allowedRootPaths = {tempDir.path()};
+    request.arguments["path"] = filePath;
+    request.arguments["content"] = "runtime write";
+    request.userConfirmed = true;
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY2(outcome.executed, qPrintable(outcome.policyDecision.reason));
+    QVERIFY2(outcome.result.success, qPrintable(outcome.result.errorMessage));
+    QVERIFY(QFileInfo::exists(filePath));
 }
 
 void TestFileAndWebTools::test_web_fetch_validate_params() {

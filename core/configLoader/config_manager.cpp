@@ -38,6 +38,19 @@ static int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
 }
 
+static QString cleanConfigPath(const QString& path) {
+    const QString trimmed = path.trimmed();
+    if (trimmed.isEmpty()) {
+        return QString();
+    }
+
+    const QString cleaned = QDir::cleanPath(trimmed);
+    if (QDir::isAbsolutePath(cleaned)) {
+        return cleaned;
+    }
+    return QDir::cleanPath(QDir::current().absoluteFilePath(cleaned));
+}
+
 static VoiceConfig parseVoiceConfig(const QJsonObject& voiceObj) {
     VoiceConfig cfg;
     cfg.enabled = voiceObj.value("enabled").toBool(false);
@@ -227,6 +240,14 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     screenChatConfig = ScreenChatConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
+    aiToolAccessPolicy = AiToolAccessPolicy{};
+    aiToolAccessPolicy.allowedRoots = {
+        QDir::cleanPath(QDir::currentPath())
+    };
+    aiToolAccessPolicy.autoGrantedTools = {
+        "read_text_file",
+        "list_directory"
+    };
     aiBehaviorPolicy.idleActionWhitelist = {
         "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
     };
@@ -311,6 +332,40 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
         if (aiRaw.contains("voice") && aiRaw.value("voice").isObject()) {
             voiceConfig = parseVoiceConfig(aiRaw.value("voice").toObject());
+        }
+
+        // 读取工具访问策略。默认只允许读当前工作目录；写文件和命令执行必须显式开启。
+        if (aiRaw.contains("toolAccessPolicy") && aiRaw.value("toolAccessPolicy").isObject()) {
+            const QJsonObject toolPolicyObj = aiRaw.value("toolAccessPolicy").toObject();
+
+            if (toolPolicyObj.contains("allowedRoots")) {
+                QStringList roots;
+                for (const QString& root : jsonArrayToStringList(toolPolicyObj.value("allowedRoots").toArray())) {
+                    const QString cleaned = cleanConfigPath(root);
+                    if (!cleaned.isEmpty()) {
+                        roots.append(cleaned);
+                    }
+                }
+                if (!roots.isEmpty()) {
+                    aiToolAccessPolicy.allowedRoots = roots;
+                }
+            }
+
+            aiToolAccessPolicy.allowFileWrite = toolPolicyObj.value("allowFileWrite").toBool(false);
+            aiToolAccessPolicy.allowCommandExecution = toolPolicyObj.value("allowCommandExecution").toBool(false);
+            aiToolAccessPolicy.commandWhitelist = jsonArrayToStringList(toolPolicyObj.value("commandWhitelist").toArray());
+            aiToolAccessPolicy.autoGrantedTools = jsonArrayToStringList(toolPolicyObj.value("autoGrantedTools").toArray());
+            if (aiToolAccessPolicy.autoGrantedTools.isEmpty()) {
+                aiToolAccessPolicy.autoGrantedTools = {"read_text_file", "list_directory"};
+            }
+            aiToolAccessPolicy.commandTimeoutMs = clampInt(
+                toolPolicyObj.value("commandTimeoutMs").toInt(5000),
+                500,
+                30000);
+            aiToolAccessPolicy.maxWriteBytes = clampInt(
+                toolPolicyObj.value("maxWriteBytes").toInt(64 * 1024),
+                1,
+                1024 * 1024);
         }
 
         // 读取行为策略

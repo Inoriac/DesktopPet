@@ -1,5 +1,32 @@
 #include "tool_policy.h"
 
+#include <QDir>
+#include <QFileInfo>
+
+static QString normalizePolicyPath(const QString& path) {
+    QString absolute = QFileInfo(path).absoluteFilePath();
+    absolute = QDir::cleanPath(absolute);
+    absolute.replace('\\', '/');
+    if (!absolute.endsWith('/')) {
+        absolute += '/';
+    }
+    return absolute;
+}
+
+static QStringList normalizePolicyRoots(const QStringList& roots) {
+    QStringList normalized;
+    for (const QString& root : roots) {
+        QString absolute = QFileInfo(root).absoluteFilePath();
+        absolute = QDir::cleanPath(absolute);
+        absolute.replace('\\', '/');
+        if (!absolute.endsWith('/')) {
+            absolute += '/';
+        }
+        normalized.append(absolute);
+    }
+    return normalized;
+}
+
 QString toolRiskLevelToString(ToolRiskLevel level) {
     switch (level) {
     case ToolRiskLevel::L0SafeRead:
@@ -79,13 +106,21 @@ ToolRiskLevel PolicyEngine::riskLevelForTool(const AITool& tool) const {
 ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
                                           const QJsonObject& arguments,
                                           const ToolPolicyContext& context) const {
-    Q_UNUSED(arguments)
+    const ToolRiskLevel level = riskLevelForTool(tool);
 
-    if (context.grantedToolNames.contains(tool.name())) {
-        return ToolPolicyDecision::allow(riskLevelForTool(tool), "tool explicitly granted");
+    if (level == ToolRiskLevel::L4Dangerous) {
+        return ToolPolicyDecision::deny(level, "dangerous tool is denied by default");
     }
 
-    const ToolRiskLevel level = riskLevelForTool(tool);
+    QString scopeReason;
+    if (!scopedArgumentsAllowed(tool.name().toLower(), arguments, context, scopeReason)) {
+        return ToolPolicyDecision::deny(level, scopeReason);
+    }
+
+    if (context.grantedToolNames.contains(tool.name())) {
+        return ToolPolicyDecision::allow(level, "tool explicitly granted");
+    }
+
     switch (level) {
     case ToolRiskLevel::L0SafeRead:
         return ToolPolicyDecision::allow(level, "safe read-only tool");
@@ -136,8 +171,11 @@ bool PolicyEngine::isSensitiveOrDangerousName(const QString& toolName) const {
 bool PolicyEngine::isHighRiskName(const QString& toolName) const {
     return toolName.contains("shell")
         || toolName.contains("execute")
+    || toolName.contains("command")
         || toolName.contains("run_process")
         || toolName.contains("launch")
+    || toolName.contains("write_text_file")
+    || toolName.contains("write")
         || toolName.contains("file_write")
         || toolName.contains("write_file");
 }
@@ -146,4 +184,43 @@ bool PolicyEngine::isLocalFileName(const QString& toolName) const {
     return toolName.startsWith("file_")
         || toolName.contains("list_directory")
         || toolName.contains("read_text");
+}
+
+bool PolicyEngine::isScopedLocalToolName(const QString& toolName) const {
+    return isLocalFileName(toolName)
+        || toolName == "write_text_file"
+        || toolName == "execute_whitelisted_command";
+}
+
+bool PolicyEngine::scopedArgumentsAllowed(const QString& toolName,
+                                          const QJsonObject& arguments,
+                                          const ToolPolicyContext& context,
+                                          QString& reason) const {
+    if (!isScopedLocalToolName(toolName)) {
+        return true;
+    }
+
+    if (context.allowedRootPaths.isEmpty()) {
+        reason = "local tool requires scoped roots";
+        return false;
+    }
+
+    const QString path = toolName == "execute_whitelisted_command"
+        ? arguments.value("working_directory").toString().trimmed()
+        : arguments.value("path").toString().trimmed();
+    if (path.isEmpty()) {
+        reason = "local tool path argument is missing";
+        return false;
+    }
+
+    const QString normalizedPath = normalizePolicyPath(path);
+    const QStringList roots = normalizePolicyRoots(context.allowedRootPaths);
+    for (const QString& root : roots) {
+        if (normalizedPath == root || normalizedPath.startsWith(root, Qt::CaseInsensitive)) {
+            return true;
+        }
+    }
+
+    reason = QString("path is outside allowed roots: %1").arg(path);
+    return false;
 }

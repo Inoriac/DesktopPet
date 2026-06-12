@@ -130,6 +130,23 @@ public:
     }
 };
 
+class MockWhitelistedCommandTool : public AITool {
+public:
+    MockWhitelistedCommandTool()
+        : AITool("execute_whitelisted_command", "A scoped command tool", ToolCategory::Action) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        return ToolResult::ok(QJsonObject{{"executed", true}});
+    }
+};
+
 // ================================================================
 // 测试类
 // ================================================================
@@ -164,6 +181,7 @@ private slots:
     void testRuntimeRequiresConfirmationForHighRiskTool();
     void testRuntimeDeniesDangerousTool();
     void testRuntimeSanitizesSensitiveOutput();
+    void testPolicyDeniesScopedToolOutsideAllowedRoots();
 
     // --- 真实 Tool 测试 ---
     void testGetCurrentTimeTool();
@@ -444,6 +462,20 @@ void TestToolRegistry::testRuntimeSanitizesSensitiveOutput() {
     QVERIFY(outcome.result.success);
     QCOMPARE(outcome.result.data.value("api_key").toString(), QString("[REDACTED]"));
     QCOMPARE(outcome.result.data.value("message").toString(), QString("safe"));
+}
+
+void TestToolRegistry::testPolicyDeniesScopedToolOutsideAllowedRoots() {
+    MockWhitelistedCommandTool tool;
+    PolicyEngine policy;
+
+    ToolPolicyContext context;
+    context.allowedRootPaths = {"C:/Allowed"};
+
+    QJsonObject args;
+    args["working_directory"] = "C:/Windows";
+
+    const ToolPolicyDecision decision = policy.evaluate(tool, args, context);
+    QVERIFY(decision.isDenied());
 }
 
 // ============================================================

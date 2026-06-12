@@ -12,6 +12,7 @@
 #include "ai/tools/music_tools.h"
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/web_tools.h"
+#include "configLoader/config_manager.h"
 #include "render_engine.h"
 #include "render_viewport.h"
 
@@ -36,10 +37,14 @@ void PetWindow::setupAiBrain() {
         return;
     }
 
-    // 设置文件工具允许的根目录
+    // 设置文件/命令工具允许的根目录。默认来自配置，未配置时退回到应用目录和当前工作目录。
+    const AiToolAccessPolicy& toolAccessPolicy = ConfigManager::instance().getAiToolAccessPolicy();
     m_allowedRoots.clear();
-    m_allowedRoots.append(QCoreApplication::applicationDirPath());
-    m_allowedRoots.append(QDir::currentPath());
+    m_allowedRoots.append(toolAccessPolicy.allowedRoots);
+    if (m_allowedRoots.isEmpty()) {
+        m_allowedRoots.append(QCoreApplication::applicationDirPath());
+        m_allowedRoots.append(QDir::currentPath());
+    }
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
     agentScheduler = std::make_unique<AgentScheduler>(this);
@@ -96,6 +101,16 @@ void PetWindow::setupAiBrain() {
     // 注册文件工具
     aiToolRegistry->registerTool(std::make_unique<ReadTextFileTool>(m_allowedRoots));
     aiToolRegistry->registerTool(std::make_unique<ListDirectoryTool>(m_allowedRoots));
+    if (toolAccessPolicy.allowFileWrite) {
+        aiToolRegistry->registerTool(std::make_unique<WriteTextFileTool>(m_allowedRoots, toolAccessPolicy.maxWriteBytes));
+    }
+    if (toolAccessPolicy.allowCommandExecution && !toolAccessPolicy.commandWhitelist.isEmpty()) {
+        CommandExecutionPolicy commandPolicy;
+        commandPolicy.allowedRoots = m_allowedRoots;
+        commandPolicy.commandWhitelist = toolAccessPolicy.commandWhitelist;
+        commandPolicy.timeoutMs = toolAccessPolicy.commandTimeoutMs;
+        aiToolRegistry->registerTool(std::make_unique<ExecuteWhitelistedCommandTool>(commandPolicy));
+    }
 
     // 注册网络工具
     aiToolRegistry->registerTool(std::make_unique<WebFetchTool>());

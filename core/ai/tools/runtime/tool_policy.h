@@ -64,6 +64,11 @@ private:
     bool isSensitiveOrDangerousName(const QString& toolName) const;
     bool isHighRiskName(const QString& toolName) const;
     bool isLocalFileName(const QString& toolName) const;
+    bool isScopedLocalToolName(const QString& toolName) const;
+    bool scopedArgumentsAllowed(const QString& toolName,
+                                const QJsonObject& arguments,
+                                const ToolPolicyContext& context,
+                                QString& reason) const;
 
 private:
     QHash<QString, ToolRiskLevel> m_toolRiskOverrides;

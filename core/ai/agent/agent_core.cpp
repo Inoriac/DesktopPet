@@ -4,6 +4,7 @@
 #include "ai/memory/memory_store.h"
 #include "ai/tools/runtime/tool_runtime.h"
 #include "ai/llm/llm_chat_service.h"
+#include "configLoader/config_manager.h"
 
 #include <QJsonDocument>
 #include <QUuid>
@@ -185,6 +186,8 @@ void AgentCore::continuePlanning(const QString& sessionId, int toolRound) {
                 request.policyContext.triggerTag = session->triggerTag();
                 request.policyContext.userInput = session->input();
                 request.policyContext.initiatedByLlm = true;
+                request.policyContext.allowedRootPaths = ConfigManager::instance().getAiToolAccessPolicy().allowedRoots;
+                request.policyContext.grantedToolNames = ConfigManager::instance().getAiToolAccessPolicy().autoGrantedTools;
 
                 const ToolExecutionOutcome outcome = m_toolRuntime->execute(request);
                 const QString payload = QString::fromUtf8(QJsonDocument(outcome.result.toJson()).toJson(QJsonDocument::Compact));

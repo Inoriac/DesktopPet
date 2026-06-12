@@ -11,6 +11,7 @@
 #include <QJsonObject>
 #include <QUuid>
 
+#include "configLoader/config_manager.h"
 #include "tools/runtime/tool_policy.h"
 
 bool AIBrain::tryHandleRoutedIntent(const QString& reason,
@@ -155,12 +156,18 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
 ToolPolicyContext AIBrain::buildToolPolicyContext(const QString& triggerTag,
                                                   const QString& userInput,
                                                   bool initiatedByLlm) const {
+    const AiToolAccessPolicy& toolAccessPolicy = ConfigManager::instance().getAiToolAccessPolicy();
+
     ToolPolicyContext context;
     context.triggerTag = triggerTag;
     context.userInput = userInput;
     context.initiatedByLlm = initiatedByLlm;
-    context.allowedRootPaths.append(QCoreApplication::applicationDirPath());
-    context.allowedRootPaths.append(QDir::currentPath());
+    context.allowedRootPaths = toolAccessPolicy.allowedRoots;
+    context.grantedToolNames = toolAccessPolicy.autoGrantedTools;
+    if (context.allowedRootPaths.isEmpty()) {
+        context.allowedRootPaths.append(QCoreApplication::applicationDirPath());
+        context.allowedRootPaths.append(QDir::currentPath());
+    }
     return context;
 }
 

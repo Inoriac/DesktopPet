@@ -61,6 +61,7 @@ public:
 
     // AI 行为策略
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
+    const AiToolAccessPolicy& getAiToolAccessPolicy() const { return aiToolAccessPolicy; }
     
 private:
     ConfigManager();
@@ -104,6 +105,7 @@ private:
     ScreenChatConfig screenChatConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
+    AiToolAccessPolicy aiToolAccessPolicy;
 };
 
 #endif //DESKTOP_PET_CONFIG_MANAGER_H

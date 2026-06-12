@@ -141,6 +141,17 @@ struct AiBehaviorPolicy {
     AiTriggerConfig proactiveChatTrigger;
 };
 
+// AI 工具访问策略：限制文件根目录、文件写入和命令执行白名单。
+struct AiToolAccessPolicy {
+    QStringList allowedRoots;
+    bool allowFileWrite = false;
+    bool allowCommandExecution = false;
+    QStringList commandWhitelist;
+    QStringList autoGrantedTools;
+    int commandTimeoutMs = 5000;
+    int maxWriteBytes = 64 * 1024;
+};
+
 // 发送给 LLM 的单条消息
 struct ChatMessage {
     QString role;       // system / user / assistant / tool
