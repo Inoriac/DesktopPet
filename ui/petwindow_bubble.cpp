@@ -309,6 +309,7 @@ void PetWindow::updateOutputBubblePosition() {
     }
     outputBubble->resize(bubbleSize);
     outputBubble->move(targetX, targetY);
+    outputBubble->scheduleDynamicRefresh(false);
 }
 
 void PetWindow::updateInputBubblePosition() {
@@ -322,4 +323,5 @@ void PetWindow::updateInputBubblePosition() {
     int targetY = rect.bottom() + 8;
     inputBubble->resize(bubbleSize);
     inputBubble->move(targetX, targetY);
+    inputBubble->scheduleDynamicRefresh(false);
 }

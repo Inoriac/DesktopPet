@@ -6,6 +6,8 @@
 #include <QLineEdit>
 #include <QPropertyAnimation>
 #include <QPointer>
+#include <QTimer>
+#include <QVariantAnimation>
 #include <QWidget>
 
 struct ScreenChatConfig;
@@ -13,6 +15,8 @@ struct ScreenChatConfig;
 class QEnterEvent;
 class QEvent;
 class QMouseEvent;
+class QMoveEvent;
+class QShowEvent;
 
 class LiquidGlassChatBubble : public QWidget {
     Q_OBJECT
@@ -29,6 +33,7 @@ public:
     void hideBubble();
     void applyScreenChatConfig(const ScreenChatConfig& config);
     void refreshGlass();
+    void scheduleDynamicRefresh(bool immediate = false);
 
     QString text() const { return m_text; }
     QSize sizeHint() const override;
@@ -40,16 +45,17 @@ signals:
 
 protected:
     void paintEvent(QPaintEvent* event) override;
+    void showEvent(QShowEvent* event) override;
     void resizeEvent(QResizeEvent* event) override;
+    void moveEvent(QMoveEvent* event) override;
     void mousePressEvent(QMouseEvent* event) override;
     void enterEvent(QEnterEvent* event) override;
     void leaveEvent(QEvent* event) override;
     void keyPressEvent(QKeyEvent* event) override;
 
 private:
-    QImage captureBackground(const QRect& globalRect) const;
-    QImage makeBlurredGlass(const QImage& source) const;
-    QColor chooseReadableTextColor(const QImage& glassImage) const;
+    void analyzeAndApplyBackground();
+    void animateMaterialTo(const QColor& materialColor, const QColor& textColor);
     QRect moreIndicatorRect() const;
     void setInputRevealed(bool revealed);
     void updateTextPalette(const QColor& color);
@@ -63,10 +69,19 @@ private:
     bool m_hasMorePages = false;
     bool m_inputAutoFadeEnabled = false;
     bool m_inputRevealed = true;
+    bool m_refreshPending = false;
     QPointer<QLineEdit> m_input;
     QPointer<QPropertyAnimation> m_opacityAnimation;
-    QImage m_glassCache;
+    QTimer m_refreshTimer;
+    QPointer<QVariantAnimation> m_materialAnimation;
+    QImage m_backgroundCache;
+    QColor m_materialColor = QColor(245, 248, 252, 178);
     QColor m_textColor = Qt::black;
+    QColor m_animationStartMaterial;
+    QColor m_animationEndMaterial;
+    QColor m_animationStartText;
+    QColor m_animationEndText;
+    mutable WId m_captureExcludedWindowId = 0;
 
     int m_fontSize = 14;
     int m_opacityPercent = 80;

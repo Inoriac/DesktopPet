@@ -1,18 +1,19 @@
 #include "liquidglasschatbubble.h"
 
+#include "liquidglassmaterial.h"
+
 #include <QFontMetrics>
-#include <QGuiApplication>
 #include <QEnterEvent>
 #include <QMouseEvent>
 #include <QKeyEvent>
 #include <QLinearGradient>
 #include <QPainter>
 #include <QPainterPath>
-#include <QPalette>
-#include <QScreen>
-#include <QAbstractAnimation>
+#include <QMoveEvent>
+#include <QShowEvent>
+#include <QTimer>
+#include <QVariantAnimation>
 #include <algorithm>
-#include <cmath>
 
 #include "ai_types.h"
 
@@ -20,78 +21,7 @@ namespace {
 constexpr int kMaxBubbleWidth = 380;
 constexpr int kMaxBubbleHeight = 400;
 constexpr int kMinBubbleHeight = 48;
-constexpr int kBlurRadius = 12;
-
-qreal srgbToLinear(qreal channel) {
-    channel /= 255.0;
-    return channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
-}
-
-qreal relativeLuminance(const QColor& color) {
-    return 0.2126 * srgbToLinear(color.red())
-         + 0.7152 * srgbToLinear(color.green())
-         + 0.0722 * srgbToLinear(color.blue());
-}
-
-qreal contrastRatio(const QColor& a, const QColor& b) {
-    const qreal l1 = relativeLuminance(a);
-    const qreal l2 = relativeLuminance(b);
-    const qreal lighter = std::max(l1, l2);
-    const qreal darker = std::min(l1, l2);
-    return (lighter + 0.05) / (darker + 0.05);
-}
-
-QImage boxBlur(const QImage& src, int radius) {
-    if (src.isNull() || radius <= 0) {
-        return src;
-    }
-
-    const QImage input = src.convertToFormat(QImage::Format_ARGB32_Premultiplied);
-    QImage temp(input.size(), input.format());
-    QImage out(input.size(), input.format());
-    const int w = input.width();
-    const int h = input.height();
-
-    for (int y = 0; y < h; ++y) {
-        const QRgb* inLine = reinterpret_cast<const QRgb*>(input.constScanLine(y));
-        QRgb* tempLine = reinterpret_cast<QRgb*>(temp.scanLine(y));
-        int a = 0, r = 0, g = 0, b = 0;
-        for (int x = -radius; x <= radius; ++x) {
-            const QRgb px = inLine[std::clamp(x, 0, w - 1)];
-            a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
-        }
-        const int count = radius * 2 + 1;
-        for (int x = 0; x < w; ++x) {
-            tempLine[x] = qRgba(r / count, g / count, b / count, a / count);
-            const QRgb remove = inLine[std::clamp(x - radius, 0, w - 1)];
-            const QRgb add = inLine[std::clamp(x + radius + 1, 0, w - 1)];
-            a += qAlpha(add) - qAlpha(remove);
-            r += qRed(add) - qRed(remove);
-            g += qGreen(add) - qGreen(remove);
-            b += qBlue(add) - qBlue(remove);
-        }
-    }
-
-    for (int x = 0; x < w; ++x) {
-        int a = 0, r = 0, g = 0, b = 0;
-        for (int y = -radius; y <= radius; ++y) {
-            const QRgb px = reinterpret_cast<const QRgb*>(temp.constScanLine(std::clamp(y, 0, h - 1)))[x];
-            a += qAlpha(px); r += qRed(px); g += qGreen(px); b += qBlue(px);
-        }
-        const int count = radius * 2 + 1;
-        for (int y = 0; y < h; ++y) {
-            reinterpret_cast<QRgb*>(out.scanLine(y))[x] = qRgba(r / count, g / count, b / count, a / count);
-            const QRgb remove = reinterpret_cast<const QRgb*>(temp.constScanLine(std::clamp(y - radius, 0, h - 1)))[x];
-            const QRgb add = reinterpret_cast<const QRgb*>(temp.constScanLine(std::clamp(y + radius + 1, 0, h - 1)))[x];
-            a += qAlpha(add) - qAlpha(remove);
-            r += qRed(add) - qRed(remove);
-            g += qGreen(add) - qGreen(remove);
-            b += qBlue(add) - qBlue(remove);
-        }
-    }
-
-    return out;
-}
+constexpr int kRefreshThrottleMs = 96;
 } // namespace
 
 LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
@@ -105,6 +35,13 @@ LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
     setFocusPolicy(Qt::StrongFocus);
     setWindowOpacity(1.0);
     hide();
+
+    m_refreshTimer.setSingleShot(true);
+    m_refreshTimer.setInterval(kRefreshThrottleMs);
+    connect(&m_refreshTimer, &QTimer::timeout, this, [this]() {
+        m_refreshPending = false;
+        analyzeAndApplyBackground();
+    });
 
     m_input = new QLineEdit(this);
     m_input->hide();
@@ -129,6 +66,7 @@ void LiquidGlassChatBubble::setMessage(const QString& message) {
         m_input->hide();
     }
     resize(sizeHint());
+    scheduleDynamicRefresh(true);
     update();
 }
 
@@ -164,6 +102,7 @@ void LiquidGlassChatBubble::showMessage(const QString& message) {
     setMessage(message);
     show();
     raise();
+    scheduleDynamicRefresh(true);
 }
 
 void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInput) {
@@ -185,6 +124,7 @@ void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInpu
     }
     show();
     raise();
+    scheduleDynamicRefresh(true);
     update();
 }
 
@@ -206,20 +146,31 @@ void LiquidGlassChatBubble::applyScreenChatConfig(const ScreenChatConfig& config
     }
     resize(sizeHint());
     updateInputGeometry();
+    scheduleDynamicRefresh(true);
     update();
 }
 
 void LiquidGlassChatBubble::refreshGlass() {
-    if (size().isEmpty()) {
+    scheduleDynamicRefresh(true);
+}
+
+void LiquidGlassChatBubble::scheduleDynamicRefresh(bool immediate) {
+    if (size().isEmpty() || (!immediate && !isVisible())) {
         return;
     }
 
-    m_glassCache = makeBlurredGlass(QRect(mapToGlobal(QPoint(0, 0)), size()).isEmpty()
-        ? QImage()
-        : captureBackground(QRect(mapToGlobal(QPoint(0, 0)), size())));
-    m_textColor = chooseReadableTextColor(m_glassCache);
-    updateTextPalette(m_textColor);
-    update();
+    if (immediate) {
+        m_refreshPending = false;
+        m_refreshTimer.stop();
+        analyzeAndApplyBackground();
+        return;
+    }
+
+    if (!m_refreshTimer.isActive()) {
+        m_refreshTimer.start();
+    } else {
+        m_refreshPending = true;
+    }
 }
 
 QSize LiquidGlassChatBubble::sizeHint() const {
@@ -244,10 +195,10 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
     Q_UNUSED(event);
 
     const QRect localRect = rect().adjusted(1, 1, -1, -1);
-    QImage glass = m_glassCache;
-    if (glass.isNull()) {
-        glass = QImage(size(), QImage::Format_ARGB32_Premultiplied);
-        glass.fill(QColor(245, 248, 252, 210));
+    QImage background = m_backgroundCache;
+    if (background.isNull()) {
+        background = QImage(size(), QImage::Format_ARGB32_Premultiplied);
+        background.fill(QColor(245, 248, 252, 190));
     }
 
     QPainter p(this);
@@ -259,7 +210,14 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
     QPainterPath path;
     path.addRoundedRect(localRect, m_radius, m_radius);
     p.setClipPath(path);
-    p.drawImage(rect(), glass);
+    p.drawImage(rect(), background);
+    p.fillRect(rect(), m_materialColor);
+
+    QLinearGradient shine(0, 0, 0, height());
+    shine.setColorAt(0.0, QColor(255, 255, 255, 30));
+    shine.setColorAt(0.45, QColor(255, 255, 255, 10));
+    shine.setColorAt(1.0, QColor(255, 255, 255, 4));
+    p.fillRect(rect(), shine);
 
     p.setClipping(false);
     p.setPen(QColor(255, 255, 255, 90));
@@ -275,7 +233,7 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
         if (m_hasMorePages) {
             textRect.adjust(0, 0, 0, -16);
         }
-        const QColor shadow = m_textColor == Qt::white ? QColor(0, 0, 0, 130) : QColor(255, 255, 255, 120);
+        const QColor shadow = m_textColor.lightness() > 127 ? QColor(0, 0, 0, 130) : QColor(255, 255, 255, 120);
         p.setPen(shadow);
         p.drawText(textRect.translated(0, m_shadowOffset), Qt::TextWordWrap | Qt::AlignCenter, m_text);
         p.setPen(m_textColor);
@@ -297,9 +255,21 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
     }
 }
 
+void LiquidGlassChatBubble::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    LiquidGlassMaterialAnalyzer::excludeFromCapture(this, m_captureExcludedWindowId);
+    scheduleDynamicRefresh(true);
+}
+
 void LiquidGlassChatBubble::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     updateInputGeometry();
+    scheduleDynamicRefresh(true);
+}
+
+void LiquidGlassChatBubble::moveEvent(QMoveEvent* event) {
+    QWidget::moveEvent(event);
+    scheduleDynamicRefresh(false);
 }
 
 void LiquidGlassChatBubble::mousePressEvent(QMouseEvent* event) {
@@ -333,113 +303,62 @@ void LiquidGlassChatBubble::keyPressEvent(QKeyEvent* event) {
     QWidget::keyPressEvent(event);
 }
 
-QImage LiquidGlassChatBubble::captureBackground(const QRect& globalRect) const {
-    QScreen* screen = QGuiApplication::screenAt(globalRect.center());
-    if (!screen) {
-        screen = QGuiApplication::primaryScreen();
-    }
-    if (!screen) {
-        return QImage(size(), QImage::Format_ARGB32_Premultiplied);
+void LiquidGlassChatBubble::analyzeAndApplyBackground() {
+    if (size().isEmpty()) {
+        return;
     }
 
-    const QPixmap pixmap = screen->grabWindow(0,
-                                              globalRect.x(),
-                                              globalRect.y(),
-                                              globalRect.width(),
-                                              globalRect.height());
-
-    if (pixmap.isNull()) {
-        return QImage(size(), QImage::Format_ARGB32_Premultiplied);
-    }
-    return pixmap.toImage();
-}
-
-QImage LiquidGlassChatBubble::makeBlurredGlass(const QImage& source) const {
-    QImage blurred = boxBlur(source, kBlurRadius);
-    QPainter painter(&blurred);
-    painter.setCompositionMode(QPainter::CompositionMode_SourceOver);
-
-    const QColor avg = chooseReadableTextColor(blurred) == Qt::white
-        ? QColor(0, 0, 0, std::clamp(65 + (100 - m_opacityPercent), 45, 110))
-        : QColor(255, 255, 255, std::clamp(55 + m_opacityPercent / 2, 55, 115));
-    painter.fillRect(blurred.rect(), avg);
-
-    QLinearGradient shine(0, 0, 0, blurred.height());
-    shine.setColorAt(0.0, QColor(255, 255, 255, 42));
-    shine.setColorAt(1.0, QColor(255, 255, 255, 8));
-    painter.fillRect(blurred.rect(), shine);
-    return blurred;
-}
-
-QColor LiquidGlassChatBubble::chooseReadableTextColor(const QImage& glassImage) const {
-    if (glassImage.isNull()) {
-        return Qt::black;
+    LiquidGlassMaterialAnalyzer::excludeFromCapture(this, m_captureExcludedWindowId);
+    const LiquidGlassMaterialSample sample = LiquidGlassMaterialAnalyzer::analyze(this, m_opacityPercent, m_textColor);
+    if (!sample.valid) {
+        return;
     }
 
-    qint64 r = 0, g = 0, b = 0, count = 0;
-    const int step = std::max(1, std::min(glassImage.width(), glassImage.height()) / 48);
-    for (int y = 0; y < glassImage.height(); y += step) {
-        for (int x = 0; x < glassImage.width(); x += step) {
-            const QColor c = QColor::fromRgb(glassImage.pixel(x, y));
-            r += c.red(); g += c.green(); b += c.blue(); ++count;
+    m_backgroundCache = sample.background;
+
+    if (LiquidGlassMaterialAnalyzer::colorDistance(sample.materialColor, m_materialColor) < 4.0
+        && sample.textColor == m_textColor) {
+        update();
+        if (m_refreshPending) {
+            m_refreshPending = false;
+            m_refreshTimer.start();
         }
-    }
-
-    const QColor avg(static_cast<int>(r / std::max<qint64>(1, count)),
-                     static_cast<int>(g / std::max<qint64>(1, count)),
-                     static_cast<int>(b / std::max<qint64>(1, count)));
-    const qreal blackContrast = contrastRatio(Qt::black, avg);
-    const qreal whiteContrast = contrastRatio(Qt::white, avg);
-    return whiteContrast >= blackContrast ? Qt::white : Qt::black;
-}
-
-QRect LiquidGlassChatBubble::moreIndicatorRect() const {
-    return QRect(width() - m_paddingH - 14, height() - m_paddingV - 10, 14, 10);
-}
-
-void LiquidGlassChatBubble::setInputRevealed(bool revealed) {
-    if (m_inputRevealed == revealed && m_opacityAnimation && m_opacityAnimation->state() == QAbstractAnimation::Stopped) {
         return;
     }
 
-    m_inputRevealed = revealed;
-    const qreal targetOpacity = revealed ? 1.0 : 0.0;
-    if (!isVisible()) {
-        if (m_opacityAnimation) {
-            m_opacityAnimation->stop();
-        }
-        setWindowOpacity(targetOpacity);
-        return;
+    animateMaterialTo(sample.materialColor, sample.textColor);
+    if (m_refreshPending) {
+        m_refreshPending = false;
+        m_refreshTimer.start();
     }
-
-    if (!m_opacityAnimation) {
-        m_opacityAnimation = new QPropertyAnimation(this, "windowOpacity", this);
-        m_opacityAnimation->setDuration(200);
-    }
-    m_opacityAnimation->stop();
-    m_opacityAnimation->setStartValue(windowOpacity());
-    m_opacityAnimation->setEndValue(targetOpacity);
-    m_opacityAnimation->start();
 }
 
-void LiquidGlassChatBubble::updateTextPalette(const QColor& color) {
-    if (!m_input) {
-        return;
+void LiquidGlassChatBubble::animateMaterialTo(const QColor& materialColor, const QColor& textColor) {
+    if (!m_materialAnimation) {
+        m_materialAnimation = new QVariantAnimation(this);
+        m_materialAnimation->setDuration(180);
+        connect(m_materialAnimation, &QVariantAnimation::valueChanged, this, [this](const QVariant& value) {
+            const qreal t = value.toReal();
+            m_materialColor = LiquidGlassMaterialAnalyzer::blendColors(m_animationStartMaterial, m_animationEndMaterial, t);
+            m_textColor = LiquidGlassMaterialAnalyzer::blendColors(m_animationStartText, m_animationEndText, t);
+            updateTextPalette(m_textColor);
+            update();
+        });
+        connect(m_materialAnimation, &QVariantAnimation::finished, this, [this]() {
+            m_materialColor = m_animationEndMaterial;
+            m_textColor = m_animationEndText;
+            updateTextPalette(m_textColor);
+            update();
+        });
     }
-    QPalette pal = m_input->palette();
-    pal.setColor(QPalette::Text, color);
-    pal.setColor(QPalette::PlaceholderText, QColor(color.red(), color.green(), color.blue(), 150));
-    m_input->setPalette(pal);
-    m_input->setStyleSheet(QStringLiteral("QLineEdit { background: transparent; border: none; }") );
+
+    m_materialAnimation->stop();
+    m_animationStartMaterial = m_materialColor;
+    m_animationEndMaterial = materialColor;
+    m_animationStartText = m_textColor;
+    m_animationEndText = textColor;
+    m_materialAnimation->setStartValue(0.0);
+    m_materialAnimation->setEndValue(1.0);
+    m_materialAnimation->start();
 }
 
-void LiquidGlassChatBubble::updateInputGeometry() {
-    if (!m_input) {
-        return;
-    }
-    m_input->setGeometry(rect().adjusted(m_paddingH, 8, -m_paddingH, -8));
-}
-
-int LiquidGlassChatBubble::contentWidth() const {
-    return kMaxBubbleWidth - m_paddingH * 2;
-}

@@ -55,6 +55,9 @@ set(UI_SOURCES
     ui/chat_history_window.h
     ui/liquidglasschatbubble.cpp
     ui/liquidglasschatbubble.h
+    ui/liquidglasschatbubble_utils.cpp
+    ui/liquidglassmaterial.cpp
+    ui/liquidglassmaterial.h
     ui/petwindow.cpp
     ui/petwindow_interaction.cpp
     ui/petwindow_ai.cpp
