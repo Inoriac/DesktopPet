@@ -1,4 +1,4 @@
-import sqlite3, sys, json, os, subprocess
+import sqlite3, sys, json, os
 from urllib.parse import parse_qs, urlparse
 
 if sys.stdout.encoding != "utf-8":
@@ -79,7 +79,7 @@ if __name__ == "__main__":
         print(json.dumps(get_playlists(), ensure_ascii=False, indent=2))
     elif sys.argv[1] == "songs" and len(sys.argv) >= 3:
         print(json.dumps(get_playlist_songs(sys.argv[2]), ensure_ascii=False, indent=2))
-    elif sys.argv[1] == "play" and len(sys.argv) >= 3:
+    elif sys.argv[1] in ("url", "play") and len(sys.argv) >= 3:
         list_id = sys.argv[2]
         conn = sqlite3.connect(LX_DATA)
         conn.text_factory = str
@@ -91,8 +91,13 @@ if __name__ == "__main__":
             source, sid = row
             url = build_playlist_url(source, sid)
             if url:
-                subprocess.run(["powershell", "-Command", f"Start-Process '{url}'"])
-                print(json.dumps({"opened": True, "url": url}, ensure_ascii=False))
+                if sys.argv[1] == "play" and sys.platform == "win32":
+                    os.startfile(url)
+                    print(json.dumps({"opened": True, "url": url}, ensure_ascii=False))
+                elif sys.argv[1] == "play":
+                    print(json.dumps({"opened": False, "url": url, "error": "play is only supported on Windows"}, ensure_ascii=False))
+                else:
+                    print(json.dumps({"url": url}, ensure_ascii=False))
             else:
                 print("No sourceId for this playlist")
         else:

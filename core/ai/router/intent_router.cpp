@@ -169,6 +169,10 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         return IntentRoute::directToolCall("lx_music_status", {}, "lx_music_status", 0.95);
     }
 
+    if (containsAny(normalized, {"启动lx", "打开lx", "拉起lx", "启动 lx music", "打开 lx music", "拉起 lx music"})) {
+        return IntentRoute::directToolCall("lx_music_launch", {}, "lx_music_launch", 0.95);
+    }
+
     if (containsAny(normalized, {"lx music歌词", "lxmusic歌词", "lx当前歌词"})) {
         return IntentRoute::directToolCall("lx_music_lyric", {}, "lx_music_lyric", 0.95);
     }

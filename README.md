@@ -45,7 +45,7 @@
   * **上下文与记忆骨架**：`ContextManager / ContextBudget / MemoryStore` 用于按需构建 LLM 上下文，并将短期回复和工具事件写入 `log/ai_memory.json`。
   * **AgentCore 原型**：已具备 `AgentSession` 状态流转、LLM 规划、工具观察与多轮工具调用循环的框架。
   * **MCP 外部工具接入原型**：包含 `McpClient`、`McpServerProcess` 与 `McpToolAdapter`，后续可将外部工具统一纳入安全运行时。
-  * **已注册工具组**：桌宠动画、当前时间、文件读取/目录查看（限定根目录）、网页获取/搜索（SSRF 防护）、LX Music 播放/暂停/切歌/歌词/歌单等。
+  * **已注册工具组**：桌宠动画、当前时间、安全文件读取/目录查看/文本写入（限定根目录）、受控白名单命令执行（默认关闭）、网页获取/搜索（SSRF 防护）、LX Music 播放/暂停/切歌/歌词/歌单等。
 * **个性化与多配置兼容**
   * **动画表现分离**：`animation_state_machine.json` 结合 `state_machine_define.json` 管理动作表现与业务逻辑，提高定制灵活性。
   * **现代化设置界面**：主设置窗口已重构为 Dashboard 风格，采用 Hero Banner、左侧导航、右侧卡片页和页面淡入淡出切换，避免传统 `GroupBox + FormLayout` 堆叠式界面。
@@ -174,7 +174,37 @@ Desktop-Pet/
 * `timeoutMs` / `maxTokens` / `temperature` / `retryCount`: 请求超时、生成长度、温度和重试次数。
 * `screenChat`: 屏幕观察/主动气泡聊天相关配置，默认关闭。
 * `voice`: 可选 Python / GENIE 语音合成配置，默认关闭。
+* `toolAccessPolicy`: Agent 工具访问权限策略，用于控制文件读写和受控命令执行。
 * `behaviorPolicy`: Agent 主动行为白名单、禁止动作与触发间隔配置。
+
+#### 文件与命令行工具权限
+
+Agent 文件和命令行能力默认遵循“最小权限 + 白名单 + 安全根目录”原则，相关配置位于：
+
+```text
+aiSettings.profiles.<profile>.toolAccessPolicy
+```
+
+主要字段：
+
+* `allowedRoots`: 允许 Agent 访问的安全根目录。`read_text_file`、`list_directory`、`write_text_file` 和 `execute_whitelisted_command` 都必须在这些目录内工作。
+* `allowFileWrite`: 是否注册 `write_text_file`。默认 `false`，未开启时 Agent 只能读文件和列目录。
+* `allowCommandExecution`: 是否注册 `execute_whitelisted_command`。默认 `false`。
+* `commandWhitelist`: 命令白名单。命令必须精确匹配白名单项，且不会通过 `cmd.exe` 或 PowerShell 拼接执行。
+* `autoGrantedTools`: 自动授权工具列表。默认只建议包含 `read_text_file` 和 `list_directory`。
+* `commandTimeoutMs`: 白名单命令执行超时，默认 5000ms。
+* `maxWriteBytes`: 单次文本写入最大字节数，默认 65536。
+
+当前内置文件/命令工具：
+
+| 工具名 | 功能 | 默认状态 | 安全限制 |
+|---|---|---|---|
+| `read_text_file` | 读取文本文件 | 可自动授权 | 仅允许读取 `allowedRoots` 内文件，限制文件大小和最大行数 |
+| `list_directory` | 列出目录内容 | 可自动授权 | 仅允许列出 `allowedRoots` 内目录，限制返回数量 |
+| `write_text_file` | 写入 UTF-8 文本文件 | 默认不注册 | 需 `allowFileWrite=true`，默认不覆盖，限制大小，拒绝敏感文件名和危险扩展名 |
+| `execute_whitelisted_command` | 在安全目录执行白名单程序 | 默认不注册 | 需 `allowCommandExecution=true` 且白名单非空；工作目录和路径型参数必须在 `allowedRoots` 内 |
+
+命令执行不是“打开 CMD 任意执行”。实现上使用 `QProcess` 直接启动白名单程序，并显式拒绝 `cmd.exe`、PowerShell、bash、Python、Node、npm、Java 等通用 Shell/解释器，避免通过解释器绕过白名单。
 
 当前主动触发策略包括：
 
@@ -286,6 +316,14 @@ core/ai/
 | L3 | 高风险动作，如 Shell、写文件、启动程序 | 需要用户确认 |
 | L4 | 危险动作，如删除文件、读取密码/密钥 | 默认拒绝 |
 
+文件与命令行工具的额外边界：
+
+* LLM 不能绕过 `ToolRuntime + PolicyEngine` 直接访问文件系统或执行进程。
+* 所有文件路径、命令工作目录和路径型命令参数都会先检查是否位于 `allowedRoots`。
+* `write_text_file` 默认不覆盖已有文件，必须显式传入 `overwrite=true`。
+* `execute_whitelisted_command` 只执行 `commandWhitelist` 中的程序，不支持 shell 管道、重定向或命令串联。
+* 即使某工具被加入 `autoGrantedTools`，路径越界仍会被拒绝。
+
 工具结果会通过 `ToolResultSanitizer` 脱敏，`api_key`、`token`、`password`、`secret`、`credential`、`authorization` 等字段不会直接进入 LLM 上下文。
 
 ### 相关日志与测试
@@ -294,7 +332,7 @@ core/ai/
 * `log/ai_memory.json`: 短期回复和工具事件记忆。
 * `tool_tests`: 工具注册、策略、脱敏等测试。
 * `llm_tests`: 异步 LLM 请求与重试测试。
-* `file_web_tool_tests`: 文件工具、网络工具与安全校验测试。
+* `file_web_tool_tests`: 文件读取/目录查看/文本写入、白名单命令执行、网络工具与安全校验测试。
 
 ### 当前规划文档
 

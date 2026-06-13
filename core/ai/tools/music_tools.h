@@ -10,18 +10,26 @@
 #include <QEventLoop>
 #include <QCoreApplication>
 #include <QDir>
+#include <QDesktopServices>
 #include <QFile>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
 #include <QNetworkReply>
 #include <QNetworkRequest>
 #include <QProcess>
+#include <QStandardPaths>
 #include <QTimer>
 #include <QUrl>
 #include <QUrlQuery>
 
 namespace {
-inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {}) {
+inline void waitForLxMusicMs(int timeoutMs) {
+    QEventLoop loop;
+    QTimer::singleShot(timeoutMs, &loop, &QEventLoop::quit);
+    loop.exec();
+}
+
+inline ToolResult callLxMusicApiRaw(const QString& path, const QUrlQuery& query = {}, int timeoutMs = 3000) {
     QUrl url(QString("http://127.0.0.1:23330") + path);
     if (!query.isEmpty()) {
         url.setQuery(query);
@@ -40,7 +48,7 @@ inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {
     QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
     QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
 
-    timer.start(3000);
+    timer.start(timeoutMs);
     loop.exec();
 
     if (timer.isActive()) {
@@ -74,18 +82,212 @@ inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {
     return ToolResult::ok(data);
 }
 
-inline ToolResult openLxMusicScheme(const QString& schemeUrl) {
+inline QStringList lxMusicExecutableCandidates() {
+    QStringList candidates;
+    const QString localAppData = qEnvironmentVariable("LOCALAPPDATA");
+    const QString appData = qEnvironmentVariable("APPDATA");
+    const QString programFiles = qEnvironmentVariable("ProgramFiles");
+    const QString programFilesX86 = qEnvironmentVariable("ProgramFiles(x86)");
+    const QString home = QDir::homePath();
+
+    candidates << localAppData + "/Programs/lx-music-desktop/lx-music-desktop.exe"
+               << localAppData + "/Programs/lx-music-desktop/LX Music.exe"
+               << localAppData + "/Programs/lx-music-desktop/LX Music Desktop.exe"
+               << appData + "/lx-music-desktop/lx-music-desktop.exe"
+               << appData + "/lx-music-desktop/LX Music.exe"
+               << home + "/AppData/Local/Programs/lx-music-desktop/lx-music-desktop.exe"
+               << home + "/AppData/Local/Programs/lx-music-desktop/LX Music.exe"
+               << programFiles + "/lx-music-desktop/lx-music-desktop.exe"
+               << programFiles + "/lx-music-desktop/LX Music.exe"
+               << programFilesX86 + "/lx-music-desktop/lx-music-desktop.exe"
+               << programFilesX86 + "/lx-music-desktop/LX Music.exe";
+    candidates.removeDuplicates();
+    candidates.removeAll("");
+    return candidates;
+}
+
+inline QString findLxMusicExecutable() {
+    for (const QString& candidate : lxMusicExecutableCandidates()) {
+        if (QFile::exists(candidate)) {
+            return candidate;
+        }
+    }
+    return {};
+}
+
+inline bool startDetachedQuiet(const QString& program, const QStringList& args = {}) {
+    QProcess process;
+    process.setProgram(program);
+    process.setArguments(args);
+    process.setStandardInputFile(QProcess::nullDevice());
+    process.setStandardOutputFile(QProcess::nullDevice());
+    process.setStandardErrorFile(QProcess::nullDevice());
+    return process.startDetached();
+}
+
+inline ToolResult launchLxMusicDesktop() {
+    const QString executable = findLxMusicExecutable();
+    if (!executable.isEmpty() && startDetachedQuiet(executable)) {
+        return ToolResult::ok(QJsonObject{{"launched", true}, {"method", "executable"}, {"path", executable}});
+    }
+
+    if (executable.isEmpty()) {
+        return ToolResult::fail("lx_music_executable_not_found");
+    }
+    return ToolResult::fail("failed_to_launch_lx_music_executable");
+}
+
+inline ToolResult waitForLxMusicApiReady(int timeoutMs = 12000) {
+    const int stepMs = 600;
+    int elapsed = 0;
+    ToolResult last = ToolResult::fail("lx_music_api_not_checked");
+    while (elapsed <= timeoutMs) {
+        last = callLxMusicApiRaw("/status", {}, 1200);
+        if (last.success) {
+            last.data["api_ready"] = true;
+            return last;
+        }
+        waitForLxMusicMs(stepMs);
+        elapsed += stepMs;
+    }
+    return ToolResult::fail(QString("lx_music_api_not_ready_after_launch: %1").arg(last.errorMessage));
+}
+
+inline ToolResult ensureLxMusicApiReady() {
+    ToolResult status = callLxMusicApiRaw("/status", {}, 1200);
+    if (status.success) {
+        status.data["api_ready"] = true;
+        return status;
+    }
+
+    ToolResult launch = launchLxMusicDesktop();
+    if (!launch.success) {
+        return launch;
+    }
+
+    ToolResult ready = waitForLxMusicApiReady();
+    if (ready.success) {
+        ready.data["auto_launched"] = true;
+        ready.data["launch"] = launch.data;
+    }
+    return ready;
+}
+
+inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {}) {
+    ToolResult result = callLxMusicApiRaw(path, query);
+    if (result.success) {
+        return result;
+    }
+
+    ToolResult ready = ensureLxMusicApiReady();
+    if (!ready.success) {
+        return ready;
+    }
+
+    result = callLxMusicApiRaw(path, query);
+    if (result.success) {
+        result.data["auto_launched"] = ready.data.value("auto_launched").toBool(false);
+    }
+    return result;
+}
+
+inline bool lxMusicTextMatches(const QString& actual, const QString& expected) {
+    const QString trimmed = expected.trimmed();
+    const QString current = actual.trimmed();
+    if (trimmed.isEmpty()) {
+        return true;
+    }
+    if (current.isEmpty()) {
+        return false;
+    }
+    return current.contains(trimmed, Qt::CaseInsensitive) || trimmed.contains(current, Qt::CaseInsensitive);
+}
+
+inline ToolResult waitForLxMusicPlayback(const QString& expectedSong = {}, const QString& expectedArtist = {}, int timeoutMs = 15000) {
+    const int stepMs = 700;
+    int elapsed = 0;
+    ToolResult last = ToolResult::fail("lx_music_playback_not_checked");
+    while (elapsed <= timeoutMs) {
+        last = callLxMusicApiRaw("/status", {}, 1200);
+        if (last.success) {
+            const QString status = last.data.value("status").toString();
+            const QString name = last.data.value("name").toString();
+            const QString singer = last.data.value("singer").toString();
+            const bool playing = status.compare("playing", Qt::CaseInsensitive) == 0;
+            const bool songMatches = lxMusicTextMatches(name, expectedSong);
+            const bool artistMatches = lxMusicTextMatches(singer, expectedArtist);
+            if (playing && songMatches && artistMatches) {
+                last.data["playback_verified"] = true;
+                return last;
+            }
+        }
+        waitForLxMusicMs(stepMs);
+        elapsed += stepMs;
+    }
+
+    if (last.success) {
+        const QString status = last.data.value("status").toString();
+        const QString name = last.data.value("name").toString();
+        const QString singer = last.data.value("singer").toString();
+        return ToolResult::fail(QString("lx_music_playback_not_verified: status=%1, current=%2 - %3")
+            .arg(status, name, singer));
+    }
+    return ToolResult::fail(QString("lx_music_playback_not_verified: %1").arg(last.errorMessage));
+}
+
+inline ToolResult openLxMusicScheme(const QString& schemeUrl, bool verifyPlayback = false, const QString& expectedSong = {}, const QString& expectedArtist = {}) {
     if (schemeUrl.trimmed().isEmpty() || !schemeUrl.startsWith("lxmusic://")) {
         return ToolResult::fail("invalid_lx_music_scheme_url");
     }
 
-    const QString command = QString("Start-Process '%1'").arg(schemeUrl);
-    const bool started = QProcess::startDetached("powershell", {"-NoProfile", "-Command", command});
-    if (!started) {
+    QJsonObject launchInfo;
+    bool apiReadyBeforeOpen = callLxMusicApiRaw("/status", {}, 1200).success;
+    const QString executable = findLxMusicExecutable();
+    if (!apiReadyBeforeOpen && !executable.isEmpty()) {
+        if (!startDetachedQuiet(executable)) {
+            return ToolResult::fail("failed_to_launch_lx_music_executable");
+        }
+        ToolResult ready = waitForLxMusicApiReady();
+        if (ready.success) {
+            apiReadyBeforeOpen = true;
+            launchInfo = QJsonObject{{"auto_launched", true}, {"method", "executable"}, {"path", executable}};
+        } else if (verifyPlayback) {
+            return ready;
+        }
+    }
+
+    bool opened = false;
+    QString openMethod;
+    if (!executable.isEmpty()) {
+        opened = startDetachedQuiet(executable, {schemeUrl});
+        openMethod = "executable_argument";
+    }
+    if (!opened) {
+        opened = QDesktopServices::openUrl(QUrl(schemeUrl));
+        openMethod = "scheme";
+    }
+    if (!opened) {
         return ToolResult::fail("failed_to_open_lx_music_scheme");
     }
 
-    return ToolResult::ok(QJsonObject{{"url", schemeUrl}, {"opened", true}});
+    QJsonObject openedData{{"url", schemeUrl}, {"opened", true}, {"open_method", openMethod}};
+    if (apiReadyBeforeOpen) {
+        openedData["api_ready_before_open"] = true;
+    }
+    if (!launchInfo.isEmpty()) {
+        openedData["launch"] = launchInfo;
+    }
+    if (!verifyPlayback) {
+        return ToolResult::ok(openedData);
+    }
+
+    ToolResult verified = waitForLxMusicPlayback(expectedSong, expectedArtist);
+    if (!verified.success) {
+        return verified;
+    }
+    openedData["playback_verified"] = true;
+    openedData["status"] = verified.data;
+    return ToolResult::ok(openedData);
 }
 
 inline QString lxPlaylistScriptPath() {
@@ -151,6 +353,23 @@ public:
 
     ToolResult execute(const QJsonObject& /*params*/) override {
         return callLxMusicApi("/status");
+    }
+};
+
+class LxMusicLaunchTool : public AITool {
+public:
+    LxMusicLaunchTool()
+        : AITool("lx_music_launch", "自动启动 LX Music 桌面版并等待开放 API 服务可用。", ToolCategory::Action) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        return ensureLxMusicApiReady();
     }
 };
 
@@ -292,7 +511,11 @@ public:
             return ToolResult::fail("missing song");
         }
         const QString keyword = artist.isEmpty() ? song : QString("%1-%2").arg(song, artist);
-        return openLxMusicScheme("lxmusic://music/searchPlay/" + QString::fromUtf8(QUrl::toPercentEncoding(keyword)));
+        return openLxMusicScheme(
+            "lxmusic://music/searchPlay/" + QString::fromUtf8(QUrl::toPercentEncoding(keyword)),
+            true,
+            song,
+            artist);
     }
 };
 
@@ -361,7 +584,16 @@ public:
         if (playlistId.isEmpty()) {
             return ToolResult::fail("missing playlist_id");
         }
-        return runLxPlaylistScript({"play", playlistId});
+        ToolResult result = runLxPlaylistScript({"url", playlistId});
+        if (!result.success) {
+            return result;
+        }
+        const QString url = result.data.value("url").toString().trimmed();
+        if (url.isEmpty()) {
+            return ToolResult::fail("lx_music_playlist_url_not_found");
+        }
+
+        return openLxMusicScheme(url, true);
     }
 };
 

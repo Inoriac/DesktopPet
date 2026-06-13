@@ -132,6 +132,13 @@ void LiquidGlassChatBubble::setMessage(const QString& message) {
     update();
 }
 
+void LiquidGlassChatBubble::setLayoutReserveText(const QString& text) {
+    m_layoutReserveText = text.trimmed();
+    resize(sizeHint());
+    updateInputGeometry();
+    update();
+}
+
 void LiquidGlassChatBubble::setHasMorePages(bool hasMore) {
     if (m_hasMorePages == hasMore) {
         return;
@@ -161,6 +168,7 @@ void LiquidGlassChatBubble::showMessage(const QString& message) {
 
 void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInput) {
     m_text.clear();
+    m_layoutReserveText.clear();
     m_inputMode = true;
     m_hasMorePages = false;
     resize(QSize(kMaxBubbleWidth, kMinBubbleHeight));
@@ -223,9 +231,10 @@ QSize LiquidGlassChatBubble::sizeHint() const {
     f.setPointSize(m_fontSize);
     f.setWeight(QFont::DemiBold);
     const QFontMetrics fm(f);
+    const QString layoutText = m_layoutReserveText.isEmpty() ? m_text : m_layoutReserveText;
     const QRect textRect = fm.boundingRect(QRect(0, 0, contentWidth(), 1000),
                                            Qt::TextWordWrap | Qt::AlignCenter,
-                                           m_text.isEmpty() ? QStringLiteral("...") : m_text);
+                                           layoutText.isEmpty() ? QStringLiteral("...") : layoutText);
     const int indicatorPadding = m_hasMorePages ? 16 : 0;
     return QSize(kMaxBubbleWidth,
                  std::clamp(textRect.height() + m_paddingV * 2 + indicatorPadding, kMinBubbleHeight, kMaxBubbleHeight));
@@ -236,7 +245,7 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
 
     const QRect localRect = rect().adjusted(1, 1, -1, -1);
     QImage glass = m_glassCache;
-    if (glass.isNull() || glass.size() != size()) {
+    if (glass.isNull()) {
         glass = QImage(size(), QImage::Format_ARGB32_Premultiplied);
         glass.fill(QColor(245, 248, 252, 210));
     }
