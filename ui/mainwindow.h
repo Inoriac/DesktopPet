@@ -66,6 +66,7 @@ private:
     void toggleThemeWithTransition();
     void updateCharacterPreview();
     void updateThemeButtonText();
+    void updateRunButtonState();
     QString currentPetName() const;
 
     // UI shell
@@ -80,8 +81,7 @@ private:
     QComboBox *characterComboBox{};
     QLabel *characterPreviewTitle{};
     QLabel *characterPreviewMeta{};
-    QPushButton *startPetButton{};
-    QPushButton *stopPetButton{};
+    QPushButton *runPetButton{};
     QLabel *sizeValueLabel{};
     QSlider *sizeSlider{};
     QSpinBox *sizeSpinBox{};

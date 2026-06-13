@@ -43,12 +43,14 @@ void PetWindow::showBubbleMessageNow(const QString& message, int durationMs, boo
     }
 
     outputBubble->applyScreenChatConfig(screenChatConfig);
-    const QSize oldSize = outputBubble->size();
+    if (!typewriterBubbleActive) {
+        outputBubble->setLayoutReserveText(QString());
+    }
     const bool wasVisible = outputBubble->isVisible();
     outputBubble->setHasMorePages(hasMoreBubblePages() && !typewriterBubbleActive);
     outputBubble->setMessage(message);
     updateOutputBubblePosition();
-    if (forceRefreshGlass || !wasVisible || oldSize != outputBubble->size()) {
+    if (forceRefreshGlass || !wasVisible) {
         outputBubble->refreshGlass();
     }
     outputBubble->show();
@@ -87,6 +89,7 @@ void PetWindow::showCurrentBubblePageAnimated(int durationMs) {
     typewriterFinalDurationMs = durationMs;
     typewriterBubbleActive = true;
     outputBubble->setHasMorePages(false);
+    outputBubble->setLayoutReserveText(typewriterTargetText);
 
     if (!typewriterBubbleTimer) {
         typewriterBubbleTimer = new QTimer(this);
@@ -214,6 +217,9 @@ void PetWindow::stopTypewriterBubble() {
     typewriterTargetText.clear();
     typewriterVisibleChars = 0;
     typewriterFinalDurationMs = -1;
+    if (outputBubble) {
+        outputBubble->setLayoutReserveText(QString());
+    }
 }
 
 void PetWindow::updateTypewriterBubble() {
@@ -242,7 +248,7 @@ void PetWindow::updateTypewriterBubble() {
             const bool hasMore = hasMoreBubblePages();
             outputBubble->setHasMorePages(hasMore);
             updateOutputBubblePosition();
-            outputBubble->refreshGlass();
+            outputBubble->update();
             if (hasMore && bubbleHideTimer) {
                 bubbleHideTimer->stop();
             }

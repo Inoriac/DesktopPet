@@ -2,6 +2,7 @@
 
 #include <QApplication>
 #include <QPalette>
+#include <QSettings>
 #include <QStyle>
 #include <QWidget>
 
@@ -11,7 +12,9 @@ ThemeManager& ThemeManager::instance() {
 }
 
 ThemeManager::ThemeManager(QObject* parent)
-    : QObject(parent) {}
+    : QObject(parent) {
+    loadPersistedTheme();
+}
 
 ThemeManager::Theme ThemeManager::currentTheme() const {
     return m_theme;
@@ -26,6 +29,7 @@ void ThemeManager::setTheme(Theme theme) {
         return;
     }
     m_theme = theme;
+    persistTheme();
     if (auto* app = qobject_cast<QApplication*>(QApplication::instance())) {
         applyTo(app);
     }
@@ -73,6 +77,15 @@ QString ThemeManager::styleSheet() const {
     return isDarkTheme() ? darkStyleSheet() : lightStyleSheet();
 }
 
+void ThemeManager::loadPersistedTheme() {
+    const QString value = QSettings().value(QStringLiteral("ui/theme"), QStringLiteral("light")).toString().trimmed().toLower();
+    m_theme = value == QStringLiteral("dark") ? Theme::Dark : Theme::Light;
+}
+
+void ThemeManager::persistTheme() const {
+    QSettings().setValue(QStringLiteral("ui/theme"), isDarkTheme() ? QStringLiteral("dark") : QStringLiteral("light"));
+}
+
 QString ThemeManager::lightStyleSheet() const {
     return QStringLiteral(R"qss(
 * {
@@ -89,6 +102,10 @@ QMainWindow#MainWindowRoot {
 QScrollArea#PageScrollArea QWidget#qt_scrollarea_viewport, QWidget#PageContent {
     background: #f4f7fb;
     color: #202124;
+}
+QWidget#PageActionBar {
+    background: #f4f7fb;
+    border-top: 1px solid rgba(32, 33, 36, 0.08);
 }
 QWidget#PageHeader {
     background: rgba(255, 255, 255, 0.62);
@@ -403,6 +420,10 @@ QMainWindow#MainWindowRoot {
 QScrollArea#PageScrollArea QWidget#qt_scrollarea_viewport, QWidget#PageContent {
     background: #0f1117;
     color: #edf2f7;
+}
+QWidget#PageActionBar {
+    background: #0f1117;
+    border-top: 1px solid rgba(255, 255, 255, 0.07);
 }
 QWidget#PageHeader {
     background: rgba(24, 28, 38, 0.62);

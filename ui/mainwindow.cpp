@@ -44,6 +44,7 @@
 #include <QSpinBox>
 #include <QStackedWidget>
 #include <QStatusBar>
+#include <QStyle>
 #include <QStringList>
 #include <QVBoxLayout>
 
@@ -59,6 +60,9 @@ QLabel* createMetaLabel(const QString& text, QWidget* parent = nullptr) {
 }
 
 QWidget* createPageShell(const QString& title, const QString& subtitle, QVBoxLayout** contentLayoutOut) {
+    Q_UNUSED(title);
+    Q_UNUSED(subtitle);
+
     auto* page = new QWidget;
     auto* pageLayout = new QVBoxLayout(page);
     pageLayout->setContentsMargins(0, 0, 0, 0);
@@ -77,23 +81,6 @@ QWidget* createPageShell(const QString& title, const QString& subtitle, QVBoxLay
     auto* contentLayout = new QVBoxLayout(content);
     contentLayout->setContentsMargins(4, 2, 16, 18);
     contentLayout->setSpacing(18);
-
-    auto* header = new QWidget(content);
-    header->setObjectName(QStringLiteral("PageHeader"));
-    header->setAttribute(Qt::WA_StyledBackground, true);
-    auto* headerLayout = new QVBoxLayout(header);
-    headerLayout->setContentsMargins(20, 18, 20, 18);
-    headerLayout->setSpacing(8);
-
-    auto* headerTitle = new QLabel(title, content);
-    headerTitle->setObjectName(QStringLiteral("SectionTitle"));
-    headerLayout->addWidget(headerTitle);
-
-    auto* headerSubtitle = createMetaLabel(subtitle, content);
-    headerSubtitle->setObjectName(QStringLiteral("SectionSubtitle"));
-    headerLayout->addWidget(headerSubtitle);
-
-    contentLayout->addWidget(header);
 
     scrollArea->setWidget(content);
     pageLayout->addWidget(scrollArea);
@@ -325,6 +312,7 @@ QWidget* MainWindow::createPetPage() {
     QWidget* page = createPageShell(QStringLiteral("桌宠"),
                                     QStringLiteral("选择角色、启动桌宠，并配置窗口行为。"),
                                     &contentLayout);
+    auto* pageLayout = qobject_cast<QVBoxLayout*>(page->layout());
 
     auto* characterCard = new CardWidget(QStringLiteral("角色选择"),
                                          QStringLiteral("从已登记模型中选择一个桌宠角色。"),
@@ -350,20 +338,6 @@ QWidget* MainWindow::createPetPage() {
     previewLayout->addWidget(characterPreviewMeta);
     characterCard->addWidget(previewSurface);
     contentLayout->addWidget(characterCard);
-
-    auto* runtimeCard = new CardWidget(QStringLiteral("运行控制"),
-                                       QStringLiteral("启动或停止桌宠窗口。"),
-                                       page);
-    startPetButton = new QPushButton(QStringLiteral("启动桌宠"), runtimeCard);
-    startPetButton->setObjectName(QStringLiteral("PrimaryButton"));
-    stopPetButton = new QPushButton(QStringLiteral("停止桌宠"), runtimeCard);
-    stopPetButton->setObjectName(QStringLiteral("DangerButton"));
-    stopPetButton->setEnabled(false);
-    stopPetButton->setCursor(Qt::ForbiddenCursor);
-    runtimeCard->addWidget(createSettingRow(QStringLiteral("桌宠进程"),
-                                            QStringLiteral("启动后可继续调整 AI、语音和气泡设置。"),
-                                            createHorizontalControls({startPetButton, stopPetButton})));
-    contentLayout->addWidget(runtimeCard);
 
     auto* displayCard = new CardWidget(QStringLiteral("显示与窗口行为"),
                                        QStringLiteral("大小可以实时调整；置顶与穿透在桌宠运行时会锁定。"),
@@ -395,6 +369,23 @@ QWidget* MainWindow::createPetPage() {
                                             clickThroughCheckBox));
     contentLayout->addWidget(displayCard);
     contentLayout->addStretch();
+
+    if (pageLayout) {
+        auto* actionBar = new QWidget(page);
+        actionBar->setObjectName(QStringLiteral("PageActionBar"));
+        actionBar->setAttribute(Qt::WA_StyledBackground, true);
+        auto* actionLayout = new QHBoxLayout(actionBar);
+        actionLayout->setContentsMargins(16, 12, 16, 0);
+        actionLayout->addStretch();
+
+        runPetButton = new QPushButton(QStringLiteral("启动桌宠"), actionBar);
+        runPetButton->setObjectName(QStringLiteral("PrimaryButton"));
+        runPetButton->setMinimumWidth(132);
+        runPetButton->setFixedHeight(42);
+        actionLayout->addWidget(runPetButton, 0, Qt::AlignRight | Qt::AlignBottom);
+        pageLayout->addWidget(actionBar, 0);
+        updateRunButtonState();
+    }
     return page;
 }
 
@@ -595,9 +586,6 @@ void MainWindow::setupConnections() {
     });
 
     connect(characterComboBox, QOverload<int>::of(&QComboBox::currentIndexChanged), this, &MainWindow::OnPetSelected);
-    connect(startPetButton, &QPushButton::clicked, this, &MainWindow::OnStartPet);
-    connect(stopPetButton, &QPushButton::clicked, this, &MainWindow::OnStopPet);
-
     connect(sizeSlider, &QSlider::valueChanged, sizeSpinBox, &QSpinBox::setValue);
     connect(sizeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), sizeSlider, &QSlider::setValue);
     connect(sizeSlider, &QSlider::valueChanged, this, [this](int value) {
@@ -635,6 +623,13 @@ void MainWindow::setupConnections() {
     connect(bubbleOffsetYSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, &MainWindow::OnBubbleAppearanceChanged);
 
     connect(themeToggleButton, &QPushButton::clicked, this, &MainWindow::toggleThemeWithTransition);
+    connect(runPetButton, &QPushButton::clicked, this, [this]() {
+        if (activePetWindow) {
+            OnStopPet();
+        } else {
+            OnStartPet();
+        }
+    });
 }
 
 void MainWindow::loadPetList() {
@@ -651,16 +646,12 @@ void MainWindow::loadPetList() {
     }
 
     characterComboBox->setEnabled(characterComboBox->count() > 0);
-    if (startPetButton) {
-        const bool canStart = characterComboBox->count() > 0 && !activePetWindow;
-        startPetButton->setEnabled(canStart);
-        startPetButton->setCursor(canStart ? Qt::PointingHandCursor : Qt::ForbiddenCursor);
-    }
 
     if (characterComboBox->count() > 0) {
         characterComboBox->setCurrentIndex(0);
     }
     updateCharacterPreview();
+    updateRunButtonState();
 }
 
 void MainWindow::navigateToPage(const QString& pageId) {
@@ -786,8 +777,26 @@ void MainWindow::updateThemeButtonText() {
         : QStringLiteral("切换到 Dark Theme"));
 }
 
+
+void MainWindow::updateRunButtonState() {
+    if (!runPetButton) {
+        return;
+    }
+
+    const bool running = activePetWindow != nullptr;
+    const bool canStart = characterComboBox && characterComboBox->count() > 0;
+    runPetButton->setText(running ? QStringLiteral("停止桌宠") : QStringLiteral("启动桌宠"));
+    runPetButton->setObjectName(running ? QStringLiteral("DangerButton") : QStringLiteral("PrimaryButton"));
+    runPetButton->setEnabled(running || canStart);
+    runPetButton->setCursor((running || canStart) ? Qt::PointingHandCursor : Qt::ForbiddenCursor);
+    runPetButton->style()->unpolish(runPetButton);
+    runPetButton->style()->polish(runPetButton);
+    runPetButton->update();
+}
+
 void MainWindow::OnPetSelected() {
     updateCharacterPreview();
+    updateRunButtonState();
     const QString petName = currentPetName();
     if (statusLabel) {
         statusLabel->setText(petName.isEmpty()
@@ -839,10 +848,7 @@ void MainWindow::OnStartPet() {
 
     activePetWindow->show();
 
-    startPetButton->setEnabled(false);
-    startPetButton->setCursor(Qt::ForbiddenCursor);
-    stopPetButton->setEnabled(true);
-    stopPetButton->setCursor(Qt::PointingHandCursor);
+    updateRunButtonState();
     setWindowFlagControlsLocked(true);
 
     statusLabel->setText(QStringLiteral("%1 正在运行").arg(petName));
@@ -867,11 +873,7 @@ void MainWindow::OnStopPet() {
     }
     activePetName.clear();
 
-    const bool canStart = characterComboBox && characterComboBox->count() > 0;
-    startPetButton->setEnabled(canStart);
-    startPetButton->setCursor(canStart ? Qt::PointingHandCursor : Qt::ForbiddenCursor);
-    stopPetButton->setEnabled(false);
-    stopPetButton->setCursor(Qt::ForbiddenCursor);
+    updateRunButtonState();
     setWindowFlagControlsLocked(false);
 
     statusLabel->setText(QStringLiteral("就绪"));

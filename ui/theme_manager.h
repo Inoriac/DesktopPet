@@ -32,11 +32,13 @@ signals:
 
 private:
     explicit ThemeManager(QObject* parent = nullptr);
+    void loadPersistedTheme();
+    void persistTheme() const;
     QString styleSheet() const;
     QString lightStyleSheet() const;
     QString darkStyleSheet() const;
 
-    Theme m_theme = Theme::Dark;
+    Theme m_theme = Theme::Light;
 };
 
 #endif // DESKTOP_PET_THEME_MANAGER_H

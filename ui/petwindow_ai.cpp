@@ -87,6 +87,7 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<GetBatteryStatusTool>());
     aiToolRegistry->registerTool(std::make_unique<GetNetworkStatusTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicStatusTool>());
+    aiToolRegistry->registerTool(std::make_unique<LxMusicLaunchTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPlayTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicPauseTool>());
     aiToolRegistry->registerTool(std::make_unique<LxMusicSkipNextTool>());

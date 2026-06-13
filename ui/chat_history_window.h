@@ -8,6 +8,7 @@ class QScrollArea;
 class QVBoxLayout;
 class QTextEdit;
 class QPushButton;
+class QLabel;
 
 class ChatHistoryWindow : public QWidget {
     Q_OBJECT
@@ -27,11 +28,15 @@ protected:
 private:
     void sendCurrentMessage();
     void scrollToBottom();
+    void applyThemeStyle();
+    QString messageBubbleStyle(const QString& role) const;
 
 private:
+    QLabel* m_titleBar = nullptr;
     QScrollArea* m_scrollArea = nullptr;
     QWidget* m_messageContainer = nullptr;
     QVBoxLayout* m_messageLayout = nullptr;
+    QWidget* m_inputPanel = nullptr;
     QTextEdit* m_inputEdit = nullptr;
     QPushButton* m_sendButton = nullptr;
 };
