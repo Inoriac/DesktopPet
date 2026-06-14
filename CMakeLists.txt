@@ -138,6 +138,12 @@ set(CORE_SOURCES
     core/ai/context/context_manager.h
     core/ai/context/context_manager.cpp
     core/ai/memory/memory_types.h
+    core/ai/memory/memory_extractor.h
+    core/ai/memory/memory_extractor.cpp
+    core/ai/memory/memory_policy.h
+    core/ai/memory/memory_policy.cpp
+    core/ai/memory/memory_retriever.h
+    core/ai/memory/memory_retriever.cpp
     core/ai/memory/memory_store.h
     core/ai/memory/memory_store.cpp
     core/ai/mcp/mcp_client.h
@@ -349,6 +355,33 @@ target_link_libraries(intent_router_tests
 )
 
 add_test(NAME IntentRouterTests COMMAND intent_router_tests)
+
+# ---- Memory 写入策略测试 ----
+add_executable(memory_strategy_tests
+    tests/test_memory_strategy.cpp
+    core/ai/memory/memory_types.h
+    core/ai/memory/memory_extractor.h
+    core/ai/memory/memory_extractor.cpp
+    core/ai/memory/memory_policy.h
+    core/ai/memory/memory_policy.cpp
+    core/ai/memory/memory_retriever.h
+    core/ai/memory/memory_retriever.cpp
+    core/ai/memory/memory_store.h
+    core/ai/memory/memory_store.cpp
+)
+
+target_include_directories(memory_strategy_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+)
+
+target_link_libraries(memory_strategy_tests
+    Qt::Core
+    Qt::Test
+)
+
+add_test(NAME MemoryStrategyTests COMMAND memory_strategy_tests)
 
 # ---- LLM 异步服务测试 ----
 add_executable(llm_tests

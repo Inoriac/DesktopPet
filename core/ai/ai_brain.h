@@ -15,6 +15,9 @@
 #include "ai_call_logger.h"
 #include "context_builder.h"
 #include "llm/llm_chat_service.h"
+#include "memory/memory_extractor.h"
+#include "memory/memory_policy.h"
+#include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "router/intent_router.h"
 #include "tool_registry.h"
@@ -42,6 +45,8 @@ public:
     void onUserInteraction(const QString& eventName, const QString& detail = QString());
 
     void clearMemory();
+    MemoryStore* memoryStore() { return &m_memoryStore; }
+    const MemoryStore* memoryStore() const { return &m_memoryStore; }
 
 signals:
     void thinkingStarted(const QString& reason);
@@ -68,8 +73,13 @@ private:
                              const QString& triggerTag,
                              bool initiatedByLlm,
                              const ToolExecutionOutcome& outcome);
+    void processUserMemoryWrite(const QString& input,
+                                const QString& triggerTag);
     QList<ChatMessage> buildBaseMessages(const QString& reason,
                                          const QString& triggerTag) const;
+    QStringList retrieveMemoryHints(const QString& reason,
+                                    const QString& triggerTag,
+                                    int limit = 8) const;
     void appendToMemory(const ChatMessage& message);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
@@ -90,6 +100,9 @@ private:
     IntentRouter m_intentRouter;
     ToolRuntime m_toolRuntime;
     MemoryStore m_memoryStore;
+    MemoryExtractor m_memoryExtractor;
+    MemoryPolicy m_memoryPolicy;
+    MemoryRetriever m_memoryRetriever;
 
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;

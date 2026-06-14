@@ -67,6 +67,8 @@ void AIBrain::triggerThink(const QString& reason,
         return;
     }
 
+    processUserMemoryWrite(reason, triggerTag);
+
     if (shouldUseLocalRouter(triggerTag) && tryHandleRoutedIntent(reason, triggerTag)) {
         return;
     }
@@ -96,5 +98,19 @@ void AIBrain::clearMemory() {
 
 bool AIBrain::shouldUseLocalRouter(const QString& triggerTag) const {
     return triggerTag == "manual" || triggerTag == "user_request";
+}
+
+void AIBrain::processUserMemoryWrite(const QString& input,
+                                     const QString& triggerTag) {
+    if (!shouldUseLocalRouter(triggerTag)) {
+        return;
+    }
+
+    const QList<MemoryCandidate> candidates = m_memoryExtractor.extractFromUserInput(input, triggerTag);
+    if (candidates.isEmpty()) {
+        return;
+    }
+
+    m_memoryPolicy.applyCandidates(candidates, &m_memoryStore);
 }
 
