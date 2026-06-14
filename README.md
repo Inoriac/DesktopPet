@@ -42,7 +42,13 @@
   * **本地意图路由 `IntentRouter`**：时间查询、简单问候、LX Music 播放控制等高频低风险指令可绕过 LLM 直接执行，降低延迟。
   * **统一工具体系**：基于 `AITool + ToolRegistry` 注册工具，支持函数 Schema 导出与参数校验。
   * **安全工具运行时 `ToolRuntime + PolicyEngine`**：按 L0-L4 风险等级执行工具，支持确认/拒绝策略、敏感字段脱敏与工具结果摘要。
-  * **上下文与记忆骨架**：`ContextManager / ContextBudget / MemoryStore` 用于按需构建 LLM 上下文，并将短期回复和工具事件写入 `log/ai_memory.json`。
+  * **上下文与记忆系统**：
+    * **SQLite 主存储**：长期记忆持久化到 `runtime/memory/memory.db`，JSON 降级为调试快照与旧数据迁移。
+    * **知识图谱**：`MemoryRelationGraph` 管理记忆间关系（Supersedes / ConflictsWith / Related / MentionedWith / DerivedFrom），写入时由 `MemoryPolicy` 基于规则自动发现。
+    * **人类感记忆模型**：遗忘曲线（strength 随时间指数衰减）、情感增强（同类情感记忆优先浮现）、巩固反馈（被检索的记忆 strength 自动增强）、首因效应（首次提及的主题 importance 加成）。
+    * **Working Memory Cache**：短期上下文缓存，支持 TTL 过期、容量上限、重复合并；过期时自动检查巩固条件（重复提及 ≥ 2 次或情感强度 ≥ 0.7），满足则沉淀为长期记忆。
+    * **图谱感知检索 Pipeline**：Working Memory → 关键词/类型直接候选 → Embedding 候选（当前 no-op）→ Graph Expansion（前 3 候选扩展 1 层邻居）→ 重排 → 上下文裁剪。
+    * **Embedding 预留接口**：`EmbeddingProvider` / `EmbeddingIndex` 已定义，当前使用 `NoopEmbeddingIndex`，后续可替换为真实向量检索。
   * **AgentCore 原型**：已具备 `AgentSession` 状态流转、LLM 规划、工具观察与多轮工具调用循环的框架。
   * **MCP 外部工具接入原型**：包含 `McpClient`、`McpServerProcess` 与 `McpToolAdapter`，后续可将外部工具统一纳入安全运行时。
   * **已注册工具组**：桌宠动画、当前时间、安全文件读取/目录查看/文本写入（限定根目录）、受控白名单命令执行（默认关闭）、网页获取/搜索（SSRF 防护）、LX Music 播放/暂停/切歌/歌词/歌单等。
@@ -75,6 +81,7 @@
 
 * **语言**: C++ 20
 * **UI 框架**: Qt 6 (Widgets & Core，自绘控件 + QSS 主题系统)
+* **数据存储**: Qt Sql + SQLite (记忆系统)
 * **构建系统**: CMake
 * **图形/模型**: OpenGL, TinyGLTF
 * **网络 / LLM**: Qt Network, OpenAI-compatible Chat Completion
@@ -299,7 +306,7 @@ core/ai/
 ├── tools/runtime/          # ToolRuntime、PolicyEngine、结果脱敏
 ├── tools/                  # 动画、环境、文件、网络、LX Music 工具
 ├── context/                # ContextManager 与上下文预算
-├── memory/                 # MemoryStore 与记忆类型
+├── memory/                 # 记忆系统 (SQLite存储, 知识图谱, 遗忘曲线, Working Memory, Embedding接口)
 ├── mcp/                    # MCP Client / Server Process / Tool Adapter 原型
 └── llm/                    # OpenAI-compatible LLM Client 与异步 ChatService
 ```
@@ -329,15 +336,18 @@ core/ai/
 ### 相关日志与测试
 
 * `log/ai_calls.jsonl`: LLM 请求与响应日志。
-* `log/ai_memory.json`: 短期回复和工具事件记忆。
+* `log/ai_memory.json`: JSON 调试快照（主存储已迁移至 `runtime/memory/memory.db`）。
+* `runtime/memory/memory.db`: SQLite 长期记忆主存储（含记忆项、标签、证据、关系图谱等 6 张表）。
 * `tool_tests`: 工具注册、策略、脱敏等测试。
 * `llm_tests`: 异步 LLM 请求与重试测试。
+* `memory_strategy_tests`: 记忆提取、策略、关系发现、遗忘曲线、情感增强、Working Memory 等测试。
 * `file_web_tool_tests`: 文件读取/目录查看/文本写入、白名单命令执行、网络工具与安全校验测试。
 
 ### 当前规划文档
 
 * `docs/agent_architecture.md`: Agent 总体架构草案。
 * `docs/companion_life_assistant_agent_plan.md`: 陪伴型与生活助理型 Agent 路线。
+* `docs/memory_system_development_plan.md`: 记忆系统长期架构开发方案（含人类感记忆模型、SQLite Schema、分阶段计划）。
 
 ---
 
