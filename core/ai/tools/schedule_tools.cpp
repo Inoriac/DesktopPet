@@ -4,6 +4,10 @@
 
 #include "schedule_tools.h"
 
+#include "ai/memory/memory_store.h"
+
+#include <QDateTime>
+#include <QDebug>
 #include <QJsonArray>
 #include <QJsonObject>
 
@@ -36,14 +40,75 @@ QJsonObject taskSummary(const ScheduledTask& task) {
     obj["last_triggered_at"] = task.lastTriggeredAt.isValid() ? task.lastTriggeredAt.toString(Qt::ISODate) : QString();
     return obj;
 }
+
+QString dateTimeText(const QDateTime& value) {
+    return value.isValid() ? value.toUTC().toString(Qt::ISODate) : QString();
 }
 
-ScheduleCreateTool::ScheduleCreateTool(AgentScheduler* scheduler)
+MemoryEntry taskShadowMemoryEntry(const ScheduledTask& task, const QJsonObject& createParams) {
+    const QString message = task.message.trimmed();
+    const QString title = task.title.trimmed();
+    const QString summary = message.isEmpty()
+        ? QStringLiteral("提醒任务：%1").arg(title)
+        : QStringLiteral("提醒任务「%1」：%2").arg(title, message);
+
+    MemoryEntry entry;
+    entry.type = MemoryType::TaskShadow;
+    entry.status = MemoryStatus::Active;
+    entry.privacyLevel = PrivacyLevel::Personal;
+    entry.key = QStringLiteral("schedule:%1").arg(task.id);
+    entry.value = taskSummary(task);
+    entry.summary = summary;
+    entry.content = summary;
+    entry.tags = {QStringLiteral("schedule"), QStringLiteral("reminder"), QStringLiteral("task_shadow"), task.triggerType};
+    entry.scope = QStringLiteral("reminder");
+    entry.source = QStringLiteral("schedule_create");
+    entry.importance = task.priority >= 80 ? 0.8 : 0.6;
+    entry.strength = entry.importance;
+    entry.confidence = 1.0;
+    if (!message.isEmpty()) {
+        entry.evidence.append(message);
+    }
+    if (!task.description.trimmed().isEmpty()) {
+        entry.evidence.append(task.description.trimmed());
+    }
+
+    QJsonObject payload;
+    payload["linked_task_id"] = task.id;
+    payload["title"] = task.title;
+    payload["description"] = task.description;
+    payload["message"] = task.message;
+    payload["trigger_type"] = task.triggerType;
+    payload["next_trigger_at"] = dateTimeText(task.nextTriggerAt);
+    payload["created_at"] = dateTimeText(task.createdAt);
+    payload["animation_state"] = task.animationState;
+    payload["scheduler_source"] = task.source;
+    payload["create_params"] = createParams;
+    entry.payload = payload;
+    return entry;
+}
+
+bool saveMemoryStore(MemoryStore* memoryStore) {
+    if (!memoryStore) {
+        return false;
+    }
+
+    QString error;
+    if (!memoryStore->save(&error)) {
+        qWarning() << "[ScheduleTools] Failed to save memory store:" << error;
+        return false;
+    }
+    return true;
+}
+}
+
+ScheduleCreateTool::ScheduleCreateTool(AgentScheduler* scheduler, MemoryStore* memoryStore)
     : AITool(
           "schedule_create",
           "创建桌宠定时提醒任务。支持 once_at(一次性)、daily_at(每日固定时间)、interval(固定间隔)。到点后可显示气泡和可选动画。",
           ToolCategory::Action)
-    , m_scheduler(scheduler) {}
+    , m_scheduler(scheduler)
+    , m_memoryStore(memoryStore) {}
 
 QJsonObject ScheduleCreateTool::parameterSchema() const {
     QJsonObject schema;
@@ -97,9 +162,16 @@ ToolResult ScheduleCreateTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error.isEmpty() ? QString("创建任务失败") : error);
     }
 
+    bool memoryRecorded = false;
+    if (m_memoryStore) {
+        m_memoryStore->addEntry(taskShadowMemoryEntry(task, params));
+        memoryRecorded = saveMemoryStore(m_memoryStore);
+    }
+
     QJsonObject result;
     result["task"] = taskSummary(task);
     result["storage_path"] = m_scheduler->storagePath();
+    result["memory_recorded"] = memoryRecorded;
     return ToolResult::ok(result);
 }
 
@@ -140,12 +212,13 @@ ToolResult ScheduleListTool::execute(const QJsonObject& params) {
     return ToolResult::ok(result);
 }
 
-ScheduleCancelTool::ScheduleCancelTool(AgentScheduler* scheduler)
+ScheduleCancelTool::ScheduleCancelTool(AgentScheduler* scheduler, MemoryStore* memoryStore)
     : AITool(
           "schedule_cancel",
           "取消指定 id 的桌宠定时提醒任务。",
           ToolCategory::Action)
-    , m_scheduler(scheduler) {}
+    , m_scheduler(scheduler)
+    , m_memoryStore(memoryStore) {}
 
 QJsonObject ScheduleCancelTool::parameterSchema() const {
     QJsonObject schema;
@@ -174,18 +247,27 @@ ToolResult ScheduleCancelTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error);
     }
 
+    QJsonObject memoryPatch;
+    memoryPatch["cancelled_at"] = dateTimeText(QDateTime::currentDateTimeUtc());
+    memoryPatch["last_user_action"] = "cancelled";
+    const bool memoryUpdated = m_memoryStore
+        && m_memoryStore->updateTaskShadowStatus(id, MemoryStatus::Cancelled, memoryPatch)
+        && saveMemoryStore(m_memoryStore);
+
     QJsonObject result;
     result["cancelled"] = true;
     result["id"] = id;
+    result["memory_updated"] = memoryUpdated;
     return ToolResult::ok(result);
 }
 
-ScheduleSnoozeTool::ScheduleSnoozeTool(AgentScheduler* scheduler)
+ScheduleSnoozeTool::ScheduleSnoozeTool(AgentScheduler* scheduler, MemoryStore* memoryStore)
     : AITool(
           "schedule_snooze",
           "将指定 id 的提醒稍后再提醒。适合用户说“稍后提醒我”。",
           ToolCategory::Action)
-    , m_scheduler(scheduler) {}
+    , m_scheduler(scheduler)
+    , m_memoryStore(memoryStore) {}
 
 QJsonObject ScheduleSnoozeTool::parameterSchema() const {
     QJsonObject schema;
@@ -216,9 +298,18 @@ ToolResult ScheduleSnoozeTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error);
     }
 
+    QJsonObject memoryPatch;
+    memoryPatch["last_snoozed_at"] = dateTimeText(QDateTime::currentDateTimeUtc());
+    memoryPatch["last_snooze_minutes"] = minutes;
+    memoryPatch["last_user_action"] = "snoozed";
+    const bool memoryUpdated = m_memoryStore
+        && m_memoryStore->updateTaskShadowStatus(id, MemoryStatus::Active, memoryPatch)
+        && saveMemoryStore(m_memoryStore);
+
     QJsonObject result;
     result["snoozed"] = true;
     result["id"] = id;
     result["minutes"] = minutes;
+    result["memory_updated"] = memoryUpdated;
     return ToolResult::ok(result);
 }

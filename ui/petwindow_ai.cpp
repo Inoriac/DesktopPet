@@ -73,10 +73,11 @@ void PetWindow::setupAiBrain() {
             speakPetReply(text, QStringLiteral("toolBubble"));
         }, Qt::QueuedConnection);
     }));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleCreateTool>(agentScheduler.get()));
+    MemoryStore* memoryStore = aiBrain->memoryStore();
+    aiToolRegistry->registerTool(std::make_unique<ScheduleCreateTool>(agentScheduler.get(), memoryStore));
     aiToolRegistry->registerTool(std::make_unique<ScheduleListTool>(agentScheduler.get()));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get()));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleSnoozeTool>(agentScheduler.get()));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get(), memoryStore));
+    aiToolRegistry->registerTool(std::make_unique<ScheduleSnoozeTool>(agentScheduler.get(), memoryStore));
     aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
     aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));

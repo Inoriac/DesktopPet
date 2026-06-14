@@ -5,22 +5,111 @@
 #include <QFileInfo>
 #include <QJsonArray>
 #include <QJsonDocument>
+#include <QJsonParseError>
 #include <QUuid>
 
-QJsonObject MemoryEntry::toJson() const {
-    QJsonArray tagArray;
-    for (const QString& tag : tags) {
-        tagArray.append(tag);
+namespace {
+QJsonArray stringListToJson(const QStringList& values) {
+    QJsonArray array;
+    for (const QString& value : values) {
+        array.append(value);
     }
+    return array;
+}
 
+QStringList stringListFromJson(const QJsonArray& array) {
+    QStringList values;
+    for (const QJsonValue& value : array) {
+        values.append(value.toString());
+    }
+    return values;
+}
+
+QString dateTimeToString(const QDateTime& value) {
+    return value.isValid() ? value.toString(Qt::ISODate) : QString();
+}
+
+QDateTime dateTimeFromString(const QString& value) {
+    const QDateTime parsed = QDateTime::fromString(value, Qt::ISODate);
+    return parsed.isValid() ? parsed : QDateTime{};
+}
+
+QString valueToCompactText(const QJsonValue& value) {
+    if (value.isString()) {
+        return value.toString();
+    }
+    if (value.isUndefined() || value.isNull()) {
+        return {};
+    }
+    return QString::fromUtf8(QJsonDocument(QJsonObject{{"value", value}}).toJson(QJsonDocument::Compact));
+}
+
+QString fallbackSummary(const MemoryEntry& entry) {
+    if (!entry.summary.trimmed().isEmpty()) {
+        return entry.summary.trimmed();
+    }
+    if (!entry.content.trimmed().isEmpty()) {
+        return entry.content.trimmed();
+    }
+    const QString valueText = valueToCompactText(entry.value);
+    if (!entry.key.trimmed().isEmpty() && !valueText.trimmed().isEmpty()) {
+        return QString("%1=%2").arg(entry.key, valueText);
+    }
+    if (!valueText.trimmed().isEmpty()) {
+        return valueText;
+    }
+    return entry.key;
+}
+
+QString confidenceLabel(double confidence) {
+    if (confidence >= 0.85) {
+        return QStringLiteral("高置信度");
+    }
+    if (confidence >= 0.55) {
+        return QStringLiteral("中置信度");
+    }
+    if (confidence > 0.0) {
+        return QStringLiteral("低置信度");
+    }
+    return {};
+}
+
+bool shouldInjectIntoContext(const MemoryEntry& entry) {
+    return entry.status == MemoryStatus::Active
+        && entry.privacyLevel != PrivacyLevel::Sensitive;
+}
+}
+
+QJsonObject MemoryEntry::toJson() const {
     QJsonObject obj;
     obj["id"] = id;
     obj["type"] = memoryTypeToString(type);
+    obj["status"] = memoryStatusToString(status);
+    obj["privacy_level"] = privacyLevelToString(privacyLevel);
     obj["key"] = key;
     obj["value"] = value;
-    obj["tags"] = tagArray;
-    obj["created_at"] = createdAt.toString(Qt::ISODate);
-    obj["updated_at"] = updatedAt.toString(Qt::ISODate);
+    obj["summary"] = summary;
+    obj["content"] = content;
+    obj["tags"] = stringListToJson(tags);
+    obj["scope"] = scope;
+    obj["source"] = source;
+    obj["importance"] = importance;
+    obj["strength"] = strength;
+    obj["confidence"] = confidence;
+    obj["emotion"] = emotionTypeToString(emotion);
+    obj["emotion_intensity"] = emotionIntensity;
+    obj["emotion_confidence"] = emotionConfidence;
+    obj["mention_count"] = mentionCount;
+    obj["access_count"] = accessCount;
+    obj["created_at"] = dateTimeToString(createdAt);
+    obj["updated_at"] = dateTimeToString(updatedAt);
+    obj["last_accessed_at"] = dateTimeToString(lastAccessedAt);
+    obj["expires_at"] = dateTimeToString(expiresAt);
+    obj["evidence"] = stringListToJson(evidence);
+    obj["source_memory_ids"] = stringListToJson(sourceMemoryIds);
+    obj["supersedes"] = stringListToJson(supersedes);
+    obj["conflicts_with"] = stringListToJson(conflictsWith);
+    obj["payload"] = payload;
     return obj;
 }
 
@@ -28,13 +117,39 @@ MemoryEntry MemoryEntry::fromJson(const QJsonObject& object) {
     MemoryEntry entry;
     entry.id = object.value("id").toString();
     entry.type = memoryTypeFromString(object.value("type").toString());
+    entry.status = memoryStatusFromString(object.value("status").toString("active"));
+    entry.privacyLevel = privacyLevelFromString(object.value("privacy_level").toString("public"));
     entry.key = object.value("key").toString();
     entry.value = object.value("value");
-    for (const QJsonValue& tag : object.value("tags").toArray()) {
-        entry.tags.append(tag.toString());
+    entry.summary = object.value("summary").toString();
+    entry.content = object.value("content").toString();
+    entry.tags = stringListFromJson(object.value("tags").toArray());
+    entry.scope = object.value("scope").toString();
+    entry.source = object.value("source").toString();
+    entry.importance = object.value("importance").toDouble(0.0);
+    entry.strength = object.value("strength").toDouble(0.0);
+    entry.confidence = object.value("confidence").toDouble(0.0);
+    entry.emotion = emotionTypeFromString(object.value("emotion").toString("neutral"));
+    entry.emotionIntensity = object.value("emotion_intensity").toDouble(0.0);
+    entry.emotionConfidence = object.value("emotion_confidence").toDouble(0.0);
+    entry.mentionCount = object.value("mention_count").toInt(0);
+    entry.accessCount = object.value("access_count").toInt(0);
+    entry.createdAt = dateTimeFromString(object.value("created_at").toString());
+    entry.updatedAt = dateTimeFromString(object.value("updated_at").toString());
+    entry.lastAccessedAt = dateTimeFromString(object.value("last_accessed_at").toString());
+    entry.expiresAt = dateTimeFromString(object.value("expires_at").toString());
+    entry.evidence = stringListFromJson(object.value("evidence").toArray());
+    entry.sourceMemoryIds = stringListFromJson(object.value("source_memory_ids").toArray());
+    entry.supersedes = stringListFromJson(object.value("supersedes").toArray());
+    entry.conflictsWith = stringListFromJson(object.value("conflicts_with").toArray());
+    entry.payload = object.value("payload").toObject();
+
+    if (entry.summary.trimmed().isEmpty()) {
+        entry.summary = fallbackSummary(entry);
     }
-    entry.createdAt = QDateTime::fromString(object.value("created_at").toString(), Qt::ISODate);
-    entry.updatedAt = QDateTime::fromString(object.value("updated_at").toString(), Qt::ISODate);
+    if (entry.createdAt.isValid() && !entry.updatedAt.isValid()) {
+        entry.updatedAt = entry.createdAt;
+    }
     return entry;
 }
 
@@ -54,7 +169,12 @@ bool MemoryStore::load(QString* errorMessage) {
         return false;
     }
 
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        if (errorMessage) *errorMessage = parseError.errorString();
+        return false;
+    }
     if (!doc.isArray()) {
         if (errorMessage) *errorMessage = "memory file is not a JSON array";
         return false;
@@ -96,21 +216,96 @@ MemoryEntry MemoryStore::add(MemoryType type,
                              const QJsonValue& value,
                              const QStringList& tags) {
     MemoryEntry entry;
-    entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     entry.type = type;
     entry.key = key;
     entry.value = value;
     entry.tags = tags;
-    entry.createdAt = QDateTime::currentDateTimeUtc();
-    entry.updatedAt = entry.createdAt;
-    m_entries.append(entry);
-    return entry;
+    entry.summary = fallbackSummary(entry);
+    entry.status = MemoryStatus::Active;
+    entry.privacyLevel = PrivacyLevel::Public;
+    entry.source = tags.contains("assistant") ? QString("assistant_inferred") : QString("tool_result");
+    entry.confidence = type == MemoryType::ShortTerm || type == MemoryType::Working ? 0.4 : 0.75;
+    entry.importance = type == MemoryType::ShortTerm || type == MemoryType::Working ? 0.2 : 0.5;
+    entry.strength = entry.importance;
+    return addEntry(entry);
+}
+
+MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
+    MemoryEntry stored = entry;
+    if (stored.id.trimmed().isEmpty()) {
+        stored.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+    if (!stored.createdAt.isValid()) {
+        stored.createdAt = QDateTime::currentDateTimeUtc();
+    }
+    if (!stored.updatedAt.isValid()) {
+        stored.updatedAt = stored.createdAt;
+    }
+    if (stored.summary.trimmed().isEmpty()) {
+        stored.summary = fallbackSummary(stored);
+    }
+    if (stored.source.trimmed().isEmpty()) {
+        stored.source = "user_explicit";
+    }
+    if (stored.confidence <= 0.0) {
+        stored.confidence = 0.75;
+    }
+    if (stored.importance <= 0.0) {
+        stored.importance = 0.5;
+    }
+    if (stored.strength <= 0.0) {
+        stored.strength = stored.importance;
+    }
+    m_entries.append(stored);
+    return stored;
+}
+
+bool MemoryStore::updateStatusByKey(MemoryType type,
+                                    const QString& key,
+                                    MemoryStatus status,
+                                    const QJsonObject& payloadPatch) {
+    bool changed = false;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (MemoryEntry& entry : m_entries) {
+        if (entry.type != type || entry.key != key || entry.status == status) {
+            continue;
+        }
+        entry.status = status;
+        entry.updatedAt = now;
+        for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
+            entry.payload[it.key()] = it.value();
+        }
+        changed = true;
+    }
+    return changed;
+}
+
+bool MemoryStore::updateTaskShadowStatus(const QString& linkedTaskId,
+                                         MemoryStatus status,
+                                         const QJsonObject& payloadPatch) {
+    bool changed = false;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (MemoryEntry& entry : m_entries) {
+        if (entry.type != MemoryType::TaskShadow) {
+            continue;
+        }
+        if (entry.payload.value("linked_task_id").toString() != linkedTaskId) {
+            continue;
+        }
+        entry.status = status;
+        entry.updatedAt = now;
+        for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
+            entry.payload[it.key()] = it.value();
+        }
+        changed = true;
+    }
+    return changed;
 }
 
 QList<MemoryEntry> MemoryStore::recent(MemoryType type, int limit) const {
     QList<MemoryEntry> result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {
-        if (it->type == type) {
+        if (it->type == type && it->status != MemoryStatus::Deleted) {
             result.append(*it);
         }
     }
@@ -120,7 +315,7 @@ QList<MemoryEntry> MemoryStore::recent(MemoryType type, int limit) const {
 QList<MemoryEntry> MemoryStore::findByTag(const QString& tag, int limit) const {
     QList<MemoryEntry> result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {
-        if (it->tags.contains(tag)) {
+        if (it->status != MemoryStatus::Deleted && it->tags.contains(tag)) {
             result.append(*it);
         }
     }
@@ -130,10 +325,26 @@ QList<MemoryEntry> MemoryStore::findByTag(const QString& tag, int limit) const {
 QStringList MemoryStore::summaryForContext(int limit) const {
     QStringList result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {
-        const QString valueText = it->value.isString()
-                                  ? it->value.toString()
-                                  : QString::fromUtf8(QJsonDocument(QJsonObject{{"value", it->value}}).toJson(QJsonDocument::Compact));
-        result.append(QString("[%1] %2=%3").arg(memoryTypeToString(it->type), it->key, valueText));
+        if (!shouldInjectIntoContext(*it)) {
+            continue;
+        }
+
+        const QString summaryText = fallbackSummary(*it);
+        if (summaryText.trimmed().isEmpty()) {
+            continue;
+        }
+
+        QStringList labels;
+        labels.append(memoryTypeToString(it->type));
+        const QString confidence = confidenceLabel(it->confidence);
+        if (!confidence.isEmpty()) {
+            labels.append(confidence);
+        }
+        if (!it->scope.trimmed().isEmpty()) {
+            labels.append(it->scope.trimmed());
+        }
+
+        result.append(QString("[%1] %2").arg(labels.join("/"), summaryText));
     }
     return result;
 }

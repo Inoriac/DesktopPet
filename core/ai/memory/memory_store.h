@@ -18,6 +18,14 @@ public:
                     const QString& key,
                     const QJsonValue& value,
                     const QStringList& tags = {});
+    MemoryEntry addEntry(const MemoryEntry& entry);
+    bool updateStatusByKey(MemoryType type,
+                           const QString& key,
+                           MemoryStatus status,
+                           const QJsonObject& payloadPatch = {});
+    bool updateTaskShadowStatus(const QString& linkedTaskId,
+                                MemoryStatus status,
+                                const QJsonObject& payloadPatch = {});
 
     QList<MemoryEntry> all() const { return m_entries; }
     QList<MemoryEntry> recent(MemoryType type, int limit) const;

@@ -8,17 +8,59 @@
 #include <QStringList>
 
 enum class MemoryType {
+    Working,
     ShortTerm,
+    Episodic,
+    Semantic,
     Preference,
+    TaskShadow,
+    Relationship,
+    Core,
     Event
+};
+
+enum class MemoryStatus {
+    Active,
+    Archived,
+    Superseded,
+    Cancelled,
+    Deleted,
+    Expired
+};
+
+enum class EmotionType {
+    Neutral,
+    Joy,
+    Sadness,
+    Anger,
+    Fear,
+    Surprise
+};
+
+enum class PrivacyLevel {
+    Public,
+    Personal,
+    Sensitive
 };
 
 inline QString memoryTypeToString(MemoryType type) {
     switch (type) {
+    case MemoryType::Working:
+        return "working";
     case MemoryType::ShortTerm:
         return "short_term";
+    case MemoryType::Episodic:
+        return "episodic";
+    case MemoryType::Semantic:
+        return "semantic";
     case MemoryType::Preference:
         return "preference";
+    case MemoryType::TaskShadow:
+        return "task_shadow";
+    case MemoryType::Relationship:
+        return "relationship";
+    case MemoryType::Core:
+        return "core";
     case MemoryType::Event:
         return "event";
     }
@@ -26,19 +68,118 @@ inline QString memoryTypeToString(MemoryType type) {
 }
 
 inline MemoryType memoryTypeFromString(const QString& value) {
+    if (value == "working") return MemoryType::Working;
     if (value == "short_term") return MemoryType::ShortTerm;
+    if (value == "episodic") return MemoryType::Episodic;
+    if (value == "semantic") return MemoryType::Semantic;
     if (value == "preference") return MemoryType::Preference;
+    if (value == "task_shadow") return MemoryType::TaskShadow;
+    if (value == "relationship") return MemoryType::Relationship;
+    if (value == "core") return MemoryType::Core;
     return MemoryType::Event;
+}
+
+inline QString memoryStatusToString(MemoryStatus status) {
+    switch (status) {
+    case MemoryStatus::Active:
+        return "active";
+    case MemoryStatus::Archived:
+        return "archived";
+    case MemoryStatus::Superseded:
+        return "superseded";
+    case MemoryStatus::Cancelled:
+        return "cancelled";
+    case MemoryStatus::Deleted:
+        return "deleted";
+    case MemoryStatus::Expired:
+        return "expired";
+    }
+    return "active";
+}
+
+inline MemoryStatus memoryStatusFromString(const QString& value) {
+    if (value == "archived") return MemoryStatus::Archived;
+    if (value == "superseded") return MemoryStatus::Superseded;
+    if (value == "cancelled") return MemoryStatus::Cancelled;
+    if (value == "deleted") return MemoryStatus::Deleted;
+    if (value == "expired") return MemoryStatus::Expired;
+    return MemoryStatus::Active;
+}
+
+inline QString emotionTypeToString(EmotionType emotion) {
+    switch (emotion) {
+    case EmotionType::Neutral:
+        return "neutral";
+    case EmotionType::Joy:
+        return "joy";
+    case EmotionType::Sadness:
+        return "sadness";
+    case EmotionType::Anger:
+        return "anger";
+    case EmotionType::Fear:
+        return "fear";
+    case EmotionType::Surprise:
+        return "surprise";
+    }
+    return "neutral";
+}
+
+inline EmotionType emotionTypeFromString(const QString& value) {
+    if (value == "joy") return EmotionType::Joy;
+    if (value == "sadness") return EmotionType::Sadness;
+    if (value == "anger") return EmotionType::Anger;
+    if (value == "fear") return EmotionType::Fear;
+    if (value == "surprise") return EmotionType::Surprise;
+    return EmotionType::Neutral;
+}
+
+inline QString privacyLevelToString(PrivacyLevel level) {
+    switch (level) {
+    case PrivacyLevel::Public:
+        return "public";
+    case PrivacyLevel::Personal:
+        return "personal";
+    case PrivacyLevel::Sensitive:
+        return "sensitive";
+    }
+    return "public";
+}
+
+inline PrivacyLevel privacyLevelFromString(const QString& value) {
+    if (value == "personal") return PrivacyLevel::Personal;
+    if (value == "sensitive") return PrivacyLevel::Sensitive;
+    return PrivacyLevel::Public;
 }
 
 struct MemoryEntry {
     QString id;
     MemoryType type = MemoryType::Event;
+    MemoryStatus status = MemoryStatus::Active;
+    PrivacyLevel privacyLevel = PrivacyLevel::Public;
     QString key;
     QJsonValue value;
+    QString summary;
+    QString content;
     QStringList tags;
+    QString scope;
+    QString source;
+    double importance = 0.0;
+    double strength = 0.0;
+    double confidence = 0.0;
+    EmotionType emotion = EmotionType::Neutral;
+    double emotionIntensity = 0.0;
+    double emotionConfidence = 0.0;
+    int mentionCount = 0;
+    int accessCount = 0;
     QDateTime createdAt;
     QDateTime updatedAt;
+    QDateTime lastAccessedAt;
+    QDateTime expiresAt;
+    QStringList evidence;
+    QStringList sourceMemoryIds;
+    QStringList supersedes;
+    QStringList conflictsWith;
+    QJsonObject payload;
 
     QJsonObject toJson() const;
     static MemoryEntry fromJson(const QJsonObject& object);
