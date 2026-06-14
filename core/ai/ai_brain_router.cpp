@@ -13,6 +13,7 @@
 
 #include "configLoader/config_manager.h"
 #include "tools/runtime/tool_policy.h"
+#include "memory/working_memory_cache.h"
 
 bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                                     const QString& triggerTag) {
@@ -182,6 +183,14 @@ void AIBrain::rememberAssistantResponse(const QString& content,
                       content,
                       {triggerTag, "assistant"});
     m_memoryStore.save();
+
+    WorkingMemoryItem wm;
+    wm.summary = content.left(120);
+    wm.content = content;
+    wm.tags = {triggerTag, QStringLiteral("assistant")};
+    wm.source = QStringLiteral("assistant_response");
+    wm.importance = 0.3;
+    m_workingMemoryCache.add(wm);
 }
 
 void AIBrain::rememberToolOutcome(const QString& toolName,
@@ -205,10 +214,20 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
                       event,
                       {triggerTag, initiatedByLlm ? "llm" : "router", toolName});
     m_memoryStore.save();
+
+    const QString summary = QStringLiteral("工具 %1 执行%2")
+        .arg(toolName, outcome.result.success ? QStringLiteral("成功") : QStringLiteral("失败"));
+    WorkingMemoryItem wm;
+    wm.summary = summary;
+    wm.content = summary;
+    wm.tags = {triggerTag, toolName};
+    wm.source = QStringLiteral("tool_result");
+    wm.importance = 0.2;
+    m_workingMemoryCache.add(wm);
 }
 
 QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
-                                              const QString& triggerTag) const {
+                                              const QString& triggerTag) {
     QList<ChatMessage> messages;
 
     ChatMessage systemMessage;
@@ -241,7 +260,9 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
 
 QStringList AIBrain::retrieveMemoryHints(const QString& reason,
                                          const QString& triggerTag,
-                                         int limit) const {
+                                         int limit) {
+    m_workingMemoryCache.cleanup(&m_memoryStore);
+
     MemoryQuery query;
     query.text = reason;
     query.limit = limit;
@@ -271,7 +292,7 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
         query.limit = qMin(limit, 4);
     }
 
-    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query));
+    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query, &m_workingMemoryCache));
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {

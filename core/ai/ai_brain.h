@@ -19,6 +19,7 @@
 #include "memory/memory_policy.h"
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
+#include "memory/working_memory_cache.h"
 #include "router/intent_router.h"
 #include "tool_registry.h"
 #include "tools/runtime/tool_runtime.h"
@@ -76,10 +77,10 @@ private:
     void processUserMemoryWrite(const QString& input,
                                 const QString& triggerTag);
     QList<ChatMessage> buildBaseMessages(const QString& reason,
-                                         const QString& triggerTag) const;
+                                         const QString& triggerTag);
     QStringList retrieveMemoryHints(const QString& reason,
                                     const QString& triggerTag,
-                                    int limit = 8) const;
+                                    int limit = 8);
     void appendToMemory(const ChatMessage& message);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
@@ -103,6 +104,7 @@ private:
     MemoryExtractor m_memoryExtractor;
     MemoryPolicy m_memoryPolicy;
     MemoryRetriever m_memoryRetriever;
+    WorkingMemoryCache m_workingMemoryCache;
 
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;

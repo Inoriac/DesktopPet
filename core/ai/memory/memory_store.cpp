@@ -180,6 +180,8 @@ bool MemoryStore::load(QString* errorMessage) {
         return false;
     }
 
+    m_relationGraph.setConnectionName(m_repository->connectionName());
+
     QList<MemoryEntry> existing = m_repository->loadAll();
 
     if (existing.isEmpty() && QFile::exists(m_memoryFilePath)) {
@@ -360,4 +362,18 @@ void MemoryStore::persistStatusUpdate(const QString& id, MemoryStatus status, co
     if (m_repository && m_repository->isOpen()) {
         m_repository->updateStatus(id, status, payloadPatch);
     }
+}
+
+MemoryEntry* MemoryStore::findById(const QString& id) {
+    for (MemoryEntry& entry : m_entries) {
+        if (entry.id == id) return &entry;
+    }
+    return nullptr;
+}
+
+const MemoryEntry* MemoryStore::findById(const QString& id) const {
+    for (const MemoryEntry& entry : m_entries) {
+        if (entry.id == id) return &entry;
+    }
+    return nullptr;
 }

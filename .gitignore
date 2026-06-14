@@ -36,3 +36,4 @@ assets/models/*
 .idea/
 cmake-build-*/
 build/
+.claude/

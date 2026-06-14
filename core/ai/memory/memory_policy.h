@@ -5,6 +5,7 @@
 #include <QStringList>
 
 #include "memory_extractor.h"
+#include "memory_relation.h"
 
 class MemoryStore;
 
@@ -12,6 +13,7 @@ struct MemoryPolicyReport {
     int written = 0;
     int forgotten = 0;
     int skipped = 0;
+    int relationsCreated = 0;
     QStringList notes;
 };
 
@@ -22,6 +24,12 @@ public:
 
 private:
     bool shouldAutoWrite(const MemoryCandidate& candidate, QString* reason) const;
+    void discoverRelations(const MemoryEntry& newEntry,
+                           MemoryStore* store,
+                           MemoryPolicyReport* report) const;
+    void discoverMentionedWith(const QList<MemoryEntry>& writtenEntries,
+                               MemoryStore* store,
+                               MemoryPolicyReport* report) const;
 };
 
 #endif // DESKTOP_PET_MEMORY_POLICY_H

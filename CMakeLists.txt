@@ -152,6 +152,14 @@ set(CORE_SOURCES
     core/ai/memory/sqlite_memory_repository.cpp
     core/ai/memory/memory_json_codec.h
     core/ai/memory/memory_json_codec.cpp
+    core/ai/memory/memory_relation.h
+    core/ai/memory/memory_relation_graph.h
+    core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/working_memory_cache.h
+    core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/embedding_provider.h
+    core/ai/memory/embedding_index.h
+    core/ai/memory/noop_embedding_index.h
     core/ai/mcp/mcp_client.h
     core/ai/mcp/mcp_client.cpp
     core/ai/mcp/mcp_server_process.h
@@ -387,6 +395,14 @@ add_executable(memory_strategy_tests
     core/ai/memory/sqlite_memory_repository.cpp
     core/ai/memory/memory_json_codec.h
     core/ai/memory/memory_json_codec.cpp
+    core/ai/memory/memory_relation.h
+    core/ai/memory/memory_relation_graph.h
+    core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/working_memory_cache.h
+    core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/embedding_provider.h
+    core/ai/memory/embedding_index.h
+    core/ai/memory/noop_embedding_index.h
 )
 
 target_include_directories(memory_strategy_tests PRIVATE

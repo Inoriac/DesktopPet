@@ -6,6 +6,7 @@
 #include <memory>
 
 #include "memory_types.h"
+#include "memory_relation_graph.h"
 
 class MemoryRepository;
 
@@ -42,6 +43,12 @@ public:
     QStringList summaryForContext(int limit = 8) const;
     void clear();
 
+    MemoryRelationGraph& relationGraph() { return m_relationGraph; }
+    const MemoryRelationGraph& relationGraph() const { return m_relationGraph; }
+
+    MemoryEntry* findById(const QString& id);
+    const MemoryEntry* findById(const QString& id) const;
+
 private:
     void persistEntry(const MemoryEntry& entry);
     void persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
@@ -50,6 +57,7 @@ private:
     QString m_databasePath = QStringLiteral("runtime/memory/memory.db");
     QList<MemoryEntry> m_entries;
     std::unique_ptr<MemoryRepository> m_repository;
+    MemoryRelationGraph m_relationGraph;
 };
 
 #endif // DESKTOP_PET_MEMORY_STORE_H

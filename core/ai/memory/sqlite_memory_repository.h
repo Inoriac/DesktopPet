@@ -13,6 +13,7 @@ public:
     bool open(const QString& path, QString* errorMessage = nullptr) override;
     void close() override;
     bool isOpen() const override;
+    QString connectionName() const override { return m_connectionName; }
 
     bool insert(const MemoryEntry& entry) override;
     bool update(const MemoryEntry& entry) override;
