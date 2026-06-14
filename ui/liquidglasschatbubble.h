@@ -81,7 +81,6 @@ private:
     QColor m_animationEndMaterial;
     QColor m_animationStartText;
     QColor m_animationEndText;
-    mutable WId m_captureExcludedWindowId = 0;
 
     int m_fontSize = 14;
     int m_opacityPercent = 80;

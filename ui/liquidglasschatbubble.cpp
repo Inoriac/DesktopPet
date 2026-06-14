@@ -257,7 +257,6 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
 
 void LiquidGlassChatBubble::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    LiquidGlassMaterialAnalyzer::excludeFromCapture(this, m_captureExcludedWindowId);
     scheduleDynamicRefresh(true);
 }
 
@@ -308,7 +307,6 @@ void LiquidGlassChatBubble::analyzeAndApplyBackground() {
         return;
     }
 
-    LiquidGlassMaterialAnalyzer::excludeFromCapture(this, m_captureExcludedWindowId);
     const LiquidGlassMaterialSample sample = LiquidGlassMaterialAnalyzer::analyze(this, m_opacityPercent, m_textColor);
     if (!sample.valid) {
         return;

@@ -17,7 +17,6 @@ public:
     static LiquidGlassMaterialSample analyze(QWidget* widget, int opacityPercent, const QColor& currentTextColor);
     static QColor blendColors(const QColor& a, const QColor& b, qreal t);
     static qreal colorDistance(const QColor& a, const QColor& b);
-    static void excludeFromCapture(QWidget* widget, WId& cachedWindowId);
 };
 
 #endif // DESKTOP_PET_LIQUIDGLASSMATERIAL_H

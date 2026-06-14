@@ -17,6 +17,29 @@ constexpr int kBlurRadius = 12;
 constexpr int kSampleMaxSize = 48;
 constexpr qreal kWcagAaContrast = 4.5;
 
+#ifdef Q_OS_WIN
+class ScopedCaptureExclusion {
+public:
+    explicit ScopedCaptureExclusion(QWidget* widget)
+        : m_hwnd(widget ? reinterpret_cast<HWND>(widget->winId()) : nullptr) {
+#ifndef WDA_EXCLUDEFROMCAPTURE
+        constexpr DWORD WDA_EXCLUDEFROMCAPTURE = 0x00000011;
+#endif
+        m_restore = m_hwnd && SetWindowDisplayAffinity(m_hwnd, WDA_EXCLUDEFROMCAPTURE);
+    }
+
+    ~ScopedCaptureExclusion() {
+        if (m_restore) {
+            SetWindowDisplayAffinity(m_hwnd, 0);
+        }
+    }
+
+private:
+    HWND m_hwnd = nullptr;
+    bool m_restore = false;
+};
+#endif
+
 qreal srgbToLinear(qreal channel) {
     channel /= 255.0;
     return channel <= 0.04045 ? channel / 12.92 : std::pow((channel + 0.055) / 1.055, 2.4);
@@ -91,6 +114,11 @@ QImage captureBackground(QWidget* widget) {
     if (!screen) {
         screen = QGuiApplication::primaryScreen();
     }
+
+#ifdef Q_OS_WIN
+    ScopedCaptureExclusion captureExclusion(widget);
+#endif
+
     return screen ? screen->grabWindow(0, globalRect.x(), globalRect.y(), globalRect.width(), globalRect.height()).toImage()
                   : QImage();
 }
@@ -211,27 +239,4 @@ qreal LiquidGlassMaterialAnalyzer::colorDistance(const QColor& a, const QColor& 
     const qreal db = a.blue() - b.blue();
     const qreal da = (a.alpha() - b.alpha()) * 0.35;
     return std::sqrt(dr * dr + dg * dg + db * db + da * da);
-}
-
-void LiquidGlassMaterialAnalyzer::excludeFromCapture(QWidget* widget, WId& cachedWindowId) {
-#ifdef Q_OS_WIN
-    if (!widget) {
-        return;
-    }
-
-    const WId currentId = widget->winId();
-    if (cachedWindowId == currentId) {
-        return;
-    }
-
-#ifndef WDA_EXCLUDEFROMCAPTURE
-    constexpr DWORD WDA_EXCLUDEFROMCAPTURE = 0x00000011;
-#endif
-    if (SetWindowDisplayAffinity(reinterpret_cast<HWND>(currentId), WDA_EXCLUDEFROMCAPTURE)) {
-        cachedWindowId = currentId;
-    }
-#else
-    Q_UNUSED(widget);
-    Q_UNUSED(cachedWindowId);
-#endif
 }
