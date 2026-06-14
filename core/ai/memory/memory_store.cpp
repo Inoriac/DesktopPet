@@ -8,7 +8,11 @@
 #include <QJsonParseError>
 #include <QUuid>
 
+#include "memory_repository.h"
+#include "sqlite_memory_repository.h"
+
 namespace {
+
 QJsonArray stringListToJson(const QStringList& values) {
     QJsonArray array;
     for (const QString& value : values) {
@@ -35,42 +39,26 @@ QDateTime dateTimeFromString(const QString& value) {
 }
 
 QString valueToCompactText(const QJsonValue& value) {
-    if (value.isString()) {
-        return value.toString();
-    }
-    if (value.isUndefined() || value.isNull()) {
-        return {};
-    }
+    if (value.isString()) return value.toString();
+    if (value.isUndefined() || value.isNull()) return {};
     return QString::fromUtf8(QJsonDocument(QJsonObject{{"value", value}}).toJson(QJsonDocument::Compact));
 }
 
 QString fallbackSummary(const MemoryEntry& entry) {
-    if (!entry.summary.trimmed().isEmpty()) {
-        return entry.summary.trimmed();
-    }
-    if (!entry.content.trimmed().isEmpty()) {
-        return entry.content.trimmed();
-    }
+    if (!entry.summary.trimmed().isEmpty()) return entry.summary.trimmed();
+    if (!entry.content.trimmed().isEmpty()) return entry.content.trimmed();
     const QString valueText = valueToCompactText(entry.value);
     if (!entry.key.trimmed().isEmpty() && !valueText.trimmed().isEmpty()) {
         return QString("%1=%2").arg(entry.key, valueText);
     }
-    if (!valueText.trimmed().isEmpty()) {
-        return valueText;
-    }
+    if (!valueText.trimmed().isEmpty()) return valueText;
     return entry.key;
 }
 
 QString confidenceLabel(double confidence) {
-    if (confidence >= 0.85) {
-        return QStringLiteral("高置信度");
-    }
-    if (confidence >= 0.55) {
-        return QStringLiteral("中置信度");
-    }
-    if (confidence > 0.0) {
-        return QStringLiteral("低置信度");
-    }
+    if (confidence >= 0.85) return QStringLiteral("高置信度");
+    if (confidence >= 0.55) return QStringLiteral("中置信度");
+    if (confidence > 0.0) return QStringLiteral("低置信度");
     return {};
 }
 
@@ -78,6 +66,25 @@ bool shouldInjectIntoContext(const MemoryEntry& entry) {
     return entry.status == MemoryStatus::Active
         && entry.privacyLevel != PrivacyLevel::Sensitive;
 }
+
+bool importLegacyJson(const QString& jsonPath, MemoryRepository* repo) {
+    QFile file(jsonPath);
+    if (!file.exists() || !file.open(QIODevice::ReadOnly)) return false;
+
+    QJsonParseError parseError;
+    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) return false;
+
+    for (const QJsonValue& value : doc.array()) {
+        if (!value.isObject()) continue;
+        MemoryEntry entry = MemoryEntry::fromJson(value.toObject());
+        if (!entry.id.isEmpty()) {
+            repo->insert(entry);
+        }
+    }
+    return true;
+}
+
 }
 
 QJsonObject MemoryEntry::toJson() const {
@@ -153,39 +160,34 @@ MemoryEntry MemoryEntry::fromJson(const QJsonObject& object) {
     return entry;
 }
 
+MemoryStore::MemoryStore()
+    : m_repository(std::make_unique<SQLiteMemoryRepository>()) {}
+
+MemoryStore::~MemoryStore() = default;
+
 void MemoryStore::setStoragePath(const QString& memoryFilePath) {
     m_memoryFilePath = memoryFilePath;
 }
 
+void MemoryStore::setDatabasePath(const QString& dbPath) {
+    m_databasePath = dbPath;
+}
+
 bool MemoryStore::load(QString* errorMessage) {
-    QFile file(m_memoryFilePath);
-    if (!file.exists()) {
-        m_entries.clear();
-        return true;
-    }
-
-    if (!file.open(QIODevice::ReadOnly)) {
-        if (errorMessage) *errorMessage = file.errorString();
+    QString dbError;
+    if (!m_repository->open(m_databasePath, &dbError)) {
+        if (errorMessage) *errorMessage = QStringLiteral("SQLite open failed: %1").arg(dbError);
         return false;
     }
 
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError) {
-        if (errorMessage) *errorMessage = parseError.errorString();
-        return false;
-    }
-    if (!doc.isArray()) {
-        if (errorMessage) *errorMessage = "memory file is not a JSON array";
-        return false;
+    QList<MemoryEntry> existing = m_repository->loadAll();
+
+    if (existing.isEmpty() && QFile::exists(m_memoryFilePath)) {
+        importLegacyJson(m_memoryFilePath, m_repository.get());
+        existing = m_repository->loadAll();
     }
 
-    m_entries.clear();
-    for (const QJsonValue& value : doc.array()) {
-        if (value.isObject()) {
-            m_entries.append(MemoryEntry::fromJson(value.toObject()));
-        }
-    }
+    m_entries = existing;
     return true;
 }
 
@@ -256,7 +258,9 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
     if (stored.strength <= 0.0) {
         stored.strength = stored.importance;
     }
+
     m_entries.append(stored);
+    persistEntry(stored);
     return stored;
 }
 
@@ -275,6 +279,7 @@ bool MemoryStore::updateStatusByKey(MemoryType type,
         for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
             entry.payload[it.key()] = it.value();
         }
+        persistStatusUpdate(entry.id, status, payloadPatch);
         changed = true;
     }
     return changed;
@@ -286,17 +291,14 @@ bool MemoryStore::updateTaskShadowStatus(const QString& linkedTaskId,
     bool changed = false;
     const QDateTime now = QDateTime::currentDateTimeUtc();
     for (MemoryEntry& entry : m_entries) {
-        if (entry.type != MemoryType::TaskShadow) {
-            continue;
-        }
-        if (entry.payload.value("linked_task_id").toString() != linkedTaskId) {
-            continue;
-        }
+        if (entry.type != MemoryType::TaskShadow) continue;
+        if (entry.payload.value("linked_task_id").toString() != linkedTaskId) continue;
         entry.status = status;
         entry.updatedAt = now;
         for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
             entry.payload[it.key()] = it.value();
         }
+        persistStatusUpdate(entry.id, status, payloadPatch);
         changed = true;
     }
     return changed;
@@ -325,24 +327,16 @@ QList<MemoryEntry> MemoryStore::findByTag(const QString& tag, int limit) const {
 QStringList MemoryStore::summaryForContext(int limit) const {
     QStringList result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {
-        if (!shouldInjectIntoContext(*it)) {
-            continue;
-        }
+        if (!shouldInjectIntoContext(*it)) continue;
 
         const QString summaryText = fallbackSummary(*it);
-        if (summaryText.trimmed().isEmpty()) {
-            continue;
-        }
+        if (summaryText.trimmed().isEmpty()) continue;
 
         QStringList labels;
         labels.append(memoryTypeToString(it->type));
         const QString confidence = confidenceLabel(it->confidence);
-        if (!confidence.isEmpty()) {
-            labels.append(confidence);
-        }
-        if (!it->scope.trimmed().isEmpty()) {
-            labels.append(it->scope.trimmed());
-        }
+        if (!confidence.isEmpty()) labels.append(confidence);
+        if (!it->scope.trimmed().isEmpty()) labels.append(it->scope.trimmed());
 
         result.append(QString("[%1] %2").arg(labels.join("/"), summaryText));
     }
@@ -351,4 +345,19 @@ QStringList MemoryStore::summaryForContext(int limit) const {
 
 void MemoryStore::clear() {
     m_entries.clear();
+    if (m_repository && m_repository->isOpen()) {
+        m_repository->clear();
+    }
+}
+
+void MemoryStore::persistEntry(const MemoryEntry& entry) {
+    if (m_repository && m_repository->isOpen()) {
+        m_repository->insert(entry);
+    }
+}
+
+void MemoryStore::persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch) {
+    if (m_repository && m_repository->isOpen()) {
+        m_repository->updateStatus(id, status, payloadPatch);
+    }
 }

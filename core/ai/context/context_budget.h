@@ -28,6 +28,14 @@ struct ContextBudget {
         int remaining = maxCharacters;
         for (ChatMessage& message : trimmed) {
             if (message.content.size() > remaining) {
+                if (message.role == "tool") {
+                    message.content = QStringLiteral("{\"success\":false,\"error\":\"Tool message omitted because it exceeded the remaining context budget.\",\"truncated\":true}");
+                    remaining -= message.content.size();
+                    if (remaining < 0) {
+                        remaining = 0;
+                    }
+                    continue;
+                }
                 message.content = message.content.left(qMax(0, remaining));
             }
             remaining -= message.content.size();

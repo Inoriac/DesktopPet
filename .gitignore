@@ -35,3 +35,4 @@ assets/models/*
 .vscode/
 .idea/
 cmake-build-*/
+build/

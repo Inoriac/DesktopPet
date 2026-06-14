@@ -3,13 +3,22 @@
 
 #include <QList>
 #include <QString>
+#include <memory>
 
 #include "memory_types.h"
 
+class MemoryRepository;
+
 class MemoryStore {
 public:
+    MemoryStore();
+    ~MemoryStore();
+
     void setStoragePath(const QString& memoryFilePath);
     const QString& storagePath() const { return m_memoryFilePath; }
+
+    void setDatabasePath(const QString& dbPath);
+    const QString& databasePath() const { return m_databasePath; }
 
     bool load(QString* errorMessage = nullptr);
     bool save(QString* errorMessage = nullptr) const;
@@ -34,8 +43,13 @@ public:
     void clear();
 
 private:
-    QString m_memoryFilePath = "log/ai_memory.json";
+    void persistEntry(const MemoryEntry& entry);
+    void persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
+
+    QString m_memoryFilePath = QStringLiteral("log/ai_memory.json");
+    QString m_databasePath = QStringLiteral("runtime/memory/memory.db");
     QList<MemoryEntry> m_entries;
+    std::unique_ptr<MemoryRepository> m_repository;
 };
 
 #endif // DESKTOP_PET_MEMORY_STORE_H

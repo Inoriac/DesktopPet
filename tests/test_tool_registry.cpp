@@ -96,6 +96,25 @@ public:
     }
 };
 
+class MockLargeQueryTool : public AITool {
+public:
+    MockLargeQueryTool()
+        : AITool("mock_large_query", "A query tool returning a large payload", ToolCategory::Query) {}
+
+    QJsonObject parameterSchema() const override {
+        QJsonObject schema;
+        schema["type"] = "object";
+        schema["properties"] = QJsonObject{};
+        return schema;
+    }
+
+    ToolResult execute(const QJsonObject& /*params*/) override {
+        QJsonObject result;
+        result["blob"] = QString(4096, QLatin1Char('x'));
+        return ToolResult::ok(result);
+    }
+};
+
 class MockShellTool : public AITool {
 public:
     MockShellTool()
@@ -181,6 +200,7 @@ private slots:
     void testRuntimeRequiresConfirmationForHighRiskTool();
     void testRuntimeDeniesDangerousTool();
     void testRuntimeSanitizesSensitiveOutput();
+    void testRuntimeTruncatesLargePayload();
     void testPolicyDeniesScopedToolOutsideAllowedRoots();
 
     // --- 真实 Tool 测试 ---
@@ -462,6 +482,29 @@ void TestToolRegistry::testRuntimeSanitizesSensitiveOutput() {
     QVERIFY(outcome.result.success);
     QCOMPARE(outcome.result.data.value("api_key").toString(), QString("[REDACTED]"));
     QCOMPARE(outcome.result.data.value("message").toString(), QString("safe"));
+}
+
+void TestToolRegistry::testRuntimeTruncatesLargePayload() {
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<MockLargeQueryTool>());
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+    runtime.sanitizer()->setMaxPayloadLength(512);
+
+    ToolExecutionRequest request;
+    request.toolName = "mock_large_query";
+
+    const ToolExecutionOutcome outcome = runtime.execute(request);
+    QVERIFY(outcome.executed);
+    QVERIFY(outcome.result.success);
+
+    const QString payload = runtime.sanitizer()->toPayload(outcome.result);
+    QVERIFY(payload.size() <= 512);
+
+    const QJsonObject payloadJson = QJsonDocument::fromJson(payload.toUtf8()).object();
+    QVERIFY(payloadJson.value("success").toBool());
+    QVERIFY(payloadJson.value("data").toObject().value("truncated").toBool());
 }
 
 void TestToolRegistry::testPolicyDeniesScopedToolOutsideAllowedRoots() {

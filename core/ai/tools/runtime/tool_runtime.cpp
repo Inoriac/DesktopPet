@@ -69,7 +69,7 @@ ToolExecutionOutcome ToolRuntime::execute(const ToolExecutionRequest& request) {
     outcome.executed = true;
     outcome.result = m_sanitizer.sanitize(m_registry->executeTool(request.toolName, request.arguments));
 
-    const QString payload = QString::fromUtf8(QJsonDocument(outcome.result.toJson()).toJson(QJsonDocument::Compact));
+    const QString payload = m_sanitizer.toPayload(outcome.result);
     emit toolExecutionFinished(outcome.requestId, outcome.toolName, outcome.result.success, payload);
     return outcome;
 }

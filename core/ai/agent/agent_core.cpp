@@ -1,7 +1,9 @@
 #include "agent_core.h"
 
 #include "ai/context/context_manager.h"
+#include "ai/memory/memory_retriever.h"
 #include "ai/memory/memory_store.h"
+#include "ai/tools/runtime/tool_result_sanitizer.h"
 #include "ai/tools/runtime/tool_runtime.h"
 #include "ai/llm/llm_chat_service.h"
 #include "configLoader/config_manager.h"
@@ -54,7 +56,21 @@ QString AgentCore::startTask(const QString& input, const QString& triggerTag) {
     contextRequest.availableTools = availableToolSchemas();
 
     if (m_memoryStore) {
-        contextRequest.memoryHints = m_memoryStore->summaryForContext(8);
+        MemoryRetriever retriever;
+        MemoryQuery query;
+        query.text = input;
+        query.limit = 8;
+        query.includeSensitive = false;
+        query.includeInactive = false;
+        query.preferredTypes = {
+            MemoryType::Preference,
+            MemoryType::Semantic,
+            MemoryType::TaskShadow,
+            MemoryType::Core,
+            MemoryType::Relationship,
+            MemoryType::Episodic
+        };
+        contextRequest.memoryHints = retriever.formatForContext(retriever.retrieve(*m_memoryStore, query));
     }
 
     AgentSession* current = mutableSession(sessionId);
@@ -190,7 +206,7 @@ void AgentCore::continuePlanning(const QString& sessionId, int toolRound) {
                 request.policyContext.grantedToolNames = ConfigManager::instance().getAiToolAccessPolicy().autoGrantedTools;
 
                 const ToolExecutionOutcome outcome = m_toolRuntime->execute(request);
-                const QString payload = QString::fromUtf8(QJsonDocument(outcome.result.toJson()).toJson(QJsonDocument::Compact));
+                const QString payload = m_toolRuntime->sanitizer()->toPayload(outcome.result);
 
                 if (outcome.policyDecision.needsConfirmation()) {
                     setSessionState(sessionId, AgentState::NeedUserConfirm);

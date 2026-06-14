@@ -112,7 +112,7 @@ void AIBrain::thinkInternal(const QString& reason,
 
                 const ToolExecutionOutcome outcome = m_toolRuntime.execute(executionRequest);
                 ToolResult result = outcome.result;
-                const QString payload = QString::fromUtf8(QJsonDocument(result.toJson()).toJson(QJsonDocument::Compact));
+                const QString payload = m_toolRuntime.sanitizer()->toPayload(result);
                 rememberToolOutcome(call.name, triggerTag, true, outcome);
 
                 if (!result.success) {

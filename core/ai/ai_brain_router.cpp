@@ -51,8 +51,8 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         request.userConfirmed = false;
 
         const ToolExecutionOutcome outcome = m_toolRuntime.execute(request);
-        const QString payload = QString::fromUtf8(QJsonDocument(outcome.result.toJson()).toJson(QJsonDocument::Compact));
-    rememberToolOutcome(route.toolName, triggerTag, false, outcome);
+        const QString payload = m_toolRuntime.sanitizer()->toPayload(outcome.result);
+        rememberToolOutcome(route.toolName, triggerTag, false, outcome);
 
         emit toolExecuted(route.toolName, outcome.result.success, payload);
 
@@ -229,16 +229,64 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
         triggerTag,
         allowedActionsForTrigger(triggerTag)
     );
+    const QStringList memoryHints = retrieveMemoryHints(reason, triggerTag);
+    if (!memoryHints.isEmpty()) {
+        contextMessage.content += "\n相关记忆：\n" + memoryHints.join("\n");
+        contextMessage.content += "\n约束：不要编造未保存的历史；查询提醒时优先调用 schedule_list 获取真实任务状态；敏感记忆未经确认不得主动暴露。\n";
+    }
     messages.append(contextMessage);
 
     return messages;
+}
+
+QStringList AIBrain::retrieveMemoryHints(const QString& reason,
+                                         const QString& triggerTag,
+                                         int limit) const {
+    MemoryQuery query;
+    query.text = reason;
+    query.limit = limit;
+    query.includeSensitive = false;
+    query.includeInactive = false;
+
+    if (triggerTag == "user_request" || triggerTag == "manual") {
+        query.preferredTypes = {
+            MemoryType::Preference,
+            MemoryType::Semantic,
+            MemoryType::TaskShadow,
+            MemoryType::Core,
+            MemoryType::Relationship,
+            MemoryType::Episodic
+        };
+    } else if (triggerTag == "proactive_chat") {
+        query.preferredTypes = {
+            MemoryType::Preference,
+            MemoryType::Relationship,
+            MemoryType::Core
+        };
+    } else {
+        query.preferredTypes = {
+            MemoryType::Preference,
+            MemoryType::Core
+        };
+        query.limit = qMin(limit, 4);
+    }
+
+    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query));
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {
     m_memory.append(message);
 
     while (m_memory.size() > m_maxMemoryMessages) {
-        m_memory.removeFirst();
+        int removeIndex = 0;
+        for (int i = 0; i < m_memory.size(); ++i) {
+            const ChatMessage& candidate = m_memory.at(i);
+            if (candidate.role != "system" && candidate.role != "user") {
+                removeIndex = i;
+                break;
+            }
+        }
+        m_memory.removeAt(removeIndex);
     }
 }
 

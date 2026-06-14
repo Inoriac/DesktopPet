@@ -30,6 +30,7 @@ find_package(Qt6 COMPONENTS
     Network
         OpenGL
         OpenGLWidgets
+        Sql
         Test
         REQUIRED)
 
@@ -146,6 +147,11 @@ set(CORE_SOURCES
     core/ai/memory/memory_retriever.cpp
     core/ai/memory/memory_store.h
     core/ai/memory/memory_store.cpp
+    core/ai/memory/memory_repository.h
+    core/ai/memory/sqlite_memory_repository.h
+    core/ai/memory/sqlite_memory_repository.cpp
+    core/ai/memory/memory_json_codec.h
+    core/ai/memory/memory_json_codec.cpp
     core/ai/mcp/mcp_client.h
     core/ai/mcp/mcp_client.cpp
     core/ai/mcp/mcp_server_process.h
@@ -256,6 +262,7 @@ target_link_libraries(Desktop_Pet
     Qt::Network
         Qt::OpenGL
         Qt::OpenGLWidgets
+        Qt::Sql
         psapi
 )
 
@@ -267,10 +274,16 @@ set(TEST_SOURCES
 )
 
 add_executable(statistic_tests ${TEST_SOURCES}
-                               ${STATISTIC_SOURCES}
-                               ${CORE_SOURCES}
-                               ${ENTITY_SOURCES}
-                               ${ENGINE_SOURCES}
+                               core/animation/animation_player.cpp
+                               core/animation/animation_player.h
+                               core/animation/animation_crossfader.cpp
+                               core/animation/animation_crossfader.h
+                               core/animation/animation_importer.cpp
+                               core/animation/animation_importer.h
+                               engine/model_loader.cpp
+                               engine/model_loader_geometry.cpp
+                               engine/model_loader_skeleton.cpp
+                               engine/model_loader.h
                                ${TINYGLTF_SOURCES}
 
 )
@@ -291,6 +304,7 @@ target_link_libraries(statistic_tests
     Qt::Network
         Qt::OpenGL
         Qt::OpenGLWidgets
+        Qt::Sql
         psapi
 )
 
@@ -368,6 +382,11 @@ add_executable(memory_strategy_tests
     core/ai/memory/memory_retriever.cpp
     core/ai/memory/memory_store.h
     core/ai/memory/memory_store.cpp
+    core/ai/memory/memory_repository.h
+    core/ai/memory/sqlite_memory_repository.h
+    core/ai/memory/sqlite_memory_repository.cpp
+    core/ai/memory/memory_json_codec.h
+    core/ai/memory/memory_json_codec.cpp
 )
 
 target_include_directories(memory_strategy_tests PRIVATE
@@ -378,6 +397,7 @@ target_include_directories(memory_strategy_tests PRIVATE
 
 target_link_libraries(memory_strategy_tests
     Qt::Core
+    Qt::Sql
     Qt::Test
 )
 
@@ -490,7 +510,7 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif ()
 
     # ---- 复制 Qt 核心 DLL ----
-    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets)
+    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets Sql)
         if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -522,5 +542,49 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 --no-system-d3d-compiler
                 "$<TARGET_FILE:statistic_tests>"
                 COMMENT "Running windeployqt for statistic_tests...")
+    endif ()
+
+    # ---- 部署 MemoryStrategyTests 的 Qt 运行时依赖 ----
+    # memory_strategy_tests 链接 Qt::Sql，单独构建/运行该测试时也需要 Qt6Sql.dll
+    # 以及 SQLite 驱动插件；否则 Windows 会以 0xC0000135 报缺失 DLL。
+    foreach (QT_LIB Core Sql Test)
+        if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
+            add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
+                    "$<TARGET_FILE_DIR:memory_strategy_tests>")
+        elseif (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll")
+            add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll"
+                    "$<TARGET_FILE_DIR:memory_strategy_tests>")
+        endif ()
+    endforeach ()
+
+    if (EXISTS "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite${DEBUG_SUFFIX}.dll")
+        add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
+        add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite${DEBUG_SUFFIX}.dll"
+            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
+    elseif (EXISTS "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite.dll")
+        add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E make_directory
+            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
+        add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite.dll"
+            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
+    endif ()
+
+    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
+        add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
+                --no-translations
+                --no-system-d3d-compiler
+                "$<TARGET_FILE:memory_strategy_tests>"
+                COMMENT "Running windeployqt for memory_strategy_tests...")
     endif ()
 endif ()
