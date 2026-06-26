@@ -2,6 +2,7 @@
 // Memory extractor / policy / retriever / relation tests
 //
 
+#include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -13,6 +14,7 @@
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
 #include "memory/noop_embedding_index.h"
+#include "tools/memory_tools.h"
 
 class TestMemoryStrategy : public QObject {
     Q_OBJECT
@@ -24,6 +26,8 @@ private slots:
     void testPolicyWritesAndSkipsDuplicate();
     void testPolicyRejectsSensitiveMemory();
     void testPolicyMarksMatchedMemoryDeleted();
+    void testStoreUpdateEntryByIdPersists();
+    void testStoreUpdateStatusByIdIsExact();
     void testRetrieverRanksKeywordAndPreferredType();
     void testRetrieverFiltersSensitiveByDefault();
     void testRetrieverFormatsContextLines();
@@ -35,7 +39,13 @@ private slots:
     void testRetrieverDecayCurve();
     void testRetrieverEmotionBoost();
     void testRetrieverReinforcement();
+    void testRetrieverReinforcementPersists();
     void testRetrieverGraphExpansion();
+    void testMemoryOrganizeDryRun();
+    void testMemoryOrganizeExpiresWithoutDeleting();
+    void testMemoryOrganizeArchivesOperationalEvents();
+    void testMemoryOrganizeMergesDuplicates();
+    void testMemoryOrganizeSkipsSensitiveOutput();
     void testWorkingMemoryCacheTtl();
     void testWorkingMemoryCacheCapacity();
     void testWorkingMemoryCacheConsolidation();
@@ -155,6 +165,73 @@ void TestMemoryStrategy::testPolicyMarksMatchedMemoryDeleted() {
     QCOMPARE(forgetReport.forgotten, 1);
     QCOMPARE(store.all().size(), 1);
     QCOMPARE(store.all().first().status, MemoryStatus::Deleted);
+}
+
+void TestMemoryStrategy::testStoreUpdateEntryByIdPersists() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.key = QStringLiteral("update:id");
+    entry.summary = QStringLiteral("原始记忆");
+    entry.content = entry.summary;
+    entry.tags = {QStringLiteral("alpha")};
+    entry.importance = 0.4;
+    entry.confidence = 0.8;
+    entry.strength = 0.4;
+    const MemoryEntry stored = store.addEntry(entry);
+
+    MemoryEntry updated = stored;
+    updated.summary = QStringLiteral("更新后的记忆");
+    updated.tags = {QStringLiteral("alpha"), QStringLiteral("beta")};
+    updated.evidence = {QStringLiteral("evidence")};
+    updated.strength = 0.9;
+    QVERIFY(store.updateEntryById(updated));
+
+    MemoryStore reloaded;
+    setupStoreWithDb(reloaded, tempDir);
+    const MemoryEntry* found = reloaded.findById(stored.id);
+    QVERIFY(found);
+    QCOMPARE(found->summary, QStringLiteral("更新后的记忆"));
+    QVERIFY(found->tags.contains(QStringLiteral("beta")));
+    QVERIFY(found->evidence.contains(QStringLiteral("evidence")));
+    QVERIFY(found->strength >= 0.9);
+}
+
+void TestMemoryStrategy::testStoreUpdateStatusByIdIsExact() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry first;
+    first.type = MemoryType::Preference;
+    first.key = QStringLiteral("same:key");
+    first.summary = QStringLiteral("第一条");
+    first.importance = 0.5;
+    first.confidence = 0.8;
+    const MemoryEntry storedFirst = store.addEntry(first);
+
+    MemoryEntry second = first;
+    second.summary = QStringLiteral("第二条");
+    const MemoryEntry storedSecond = store.addEntry(second);
+
+    QJsonObject patch;
+    patch[QStringLiteral("reason")] = QStringLiteral("test");
+    QVERIFY(store.updateStatusById(storedSecond.id, MemoryStatus::Archived, patch));
+
+    const MemoryEntry* firstAfter = store.findById(storedFirst.id);
+    const MemoryEntry* secondAfter = store.findById(storedSecond.id);
+    QVERIFY(firstAfter);
+    QVERIFY(secondAfter);
+    QCOMPARE(firstAfter->status, MemoryStatus::Active);
+    QCOMPARE(secondAfter->status, MemoryStatus::Archived);
+    QCOMPARE(secondAfter->payload.value(QStringLiteral("reason")).toString(), QStringLiteral("test"));
 }
 
 void TestMemoryStrategy::testRetrieverRanksKeywordAndPreferredType() {
@@ -296,10 +373,13 @@ void TestMemoryStrategy::testPolicyCreatesSupersedes() {
     QCOMPARE(report.written, 1);
     QVERIFY(report.relationsCreated >= 1);
 
-    // Old memory should be superseded
+    // Old memory should be superseded, while the new same-key memory stays active.
     const MemoryEntry* old = store.findById(oldId);
     QVERIFY(old);
     QCOMPARE(old->status, MemoryStatus::Superseded);
+    const MemoryEntry* newest = store.findById(store.all().last().id);
+    QVERIFY(newest);
+    QCOMPARE(newest->status, MemoryStatus::Active);
 
     // Relation should exist
     QVERIFY(store.relationGraph().hasRelation(store.all().last().id, oldId, MemoryRelationType::Supersedes));
@@ -557,6 +637,38 @@ void TestMemoryStrategy::testRetrieverReinforcement() {
     QVERIFY(reinforced->lastAccessedAt.isValid());
 }
 
+void TestMemoryStrategy::testRetrieverReinforcementPersists() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.key = QStringLiteral("reinforce:persist");
+    entry.summary = QStringLiteral("持久化巩固 theta");
+    entry.content = entry.summary;
+    entry.importance = 0.5;
+    entry.confidence = 0.8;
+    entry.strength = 0.5;
+    const MemoryEntry stored = store.addEntry(entry);
+
+    MemoryRetriever retriever;
+    MemoryQuery query;
+    query.text = QStringLiteral("theta");
+    query.limit = 1;
+    retriever.retrieve(store, query);
+
+    MemoryStore reloaded;
+    setupStoreWithDb(reloaded, tempDir);
+    const MemoryEntry* reinforced = reloaded.findById(stored.id);
+    QVERIFY(reinforced);
+    QCOMPARE(reinforced->accessCount, 1);
+    QVERIFY(reinforced->strength >= 0.6);
+    QVERIFY(reinforced->lastAccessedAt.isValid());
+}
+
 void TestMemoryStrategy::testRetrieverGraphExpansion() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
@@ -608,6 +720,174 @@ void TestMemoryStrategy::testRetrieverGraphExpansion() {
         }
     }
     QVERIFY(foundExpanded);
+}
+
+void TestMemoryStrategy::testMemoryOrganizeDryRun() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry expired;
+    expired.type = MemoryType::ShortTerm;
+    expired.key = QStringLiteral("assistant_response");
+    expired.summary = QStringLiteral("需要过期的短期记忆");
+    expired.content = expired.summary;
+    expired.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-60);
+    expired.importance = 0.4;
+    expired.confidence = 0.8;
+    expired.strength = 0.4;
+    const MemoryEntry stored = store.addEntry(expired);
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("dry_run")] = 1;
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QVERIFY(result.data.value(QStringLiteral("expired")).toInt() >= 1);
+    QVERIFY(result.data.value(QStringLiteral("changed")).toInt() >= 1);
+
+    const MemoryEntry* after = store.findById(stored.id);
+    QVERIFY(after);
+    QCOMPARE(after->status, MemoryStatus::Active);
+}
+
+void TestMemoryStrategy::testMemoryOrganizeExpiresWithoutDeleting() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry entry;
+    entry.type = MemoryType::ShortTerm;
+    entry.key = QStringLiteral("expire:test");
+    entry.summary = QStringLiteral("过期但不删除");
+    entry.content = entry.summary;
+    entry.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-60);
+    entry.importance = 0.4;
+    entry.confidence = 0.8;
+    entry.strength = 0.4;
+    const MemoryEntry stored = store.addEntry(entry);
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("mode")] = QStringLiteral("expire");
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QCOMPARE(result.data.value(QStringLiteral("expired")).toInt(), 1);
+
+    const MemoryEntry* after = store.findById(stored.id);
+    QVERIFY(after);
+    QCOMPARE(after->status, MemoryStatus::Expired);
+    QVERIFY(after->status != MemoryStatus::Deleted);
+}
+
+void TestMemoryStrategy::testMemoryOrganizeArchivesOperationalEvents() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry event;
+    event.type = MemoryType::Event;
+    event.key = QStringLiteral("tool_execution");
+    event.summary = QStringLiteral("旧工具执行记录");
+    event.content = event.summary;
+    event.createdAt = QDateTime::currentDateTimeUtc().addDays(-10);
+    event.updatedAt = event.createdAt;
+    event.importance = 0.2;
+    event.confidence = 0.8;
+    event.strength = 0.2;
+    const MemoryEntry stored = store.addEntry(event);
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("mode")] = QStringLiteral("archive");
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QCOMPARE(result.data.value(QStringLiteral("archived")).toInt(), 1);
+
+    const MemoryEntry* after = store.findById(stored.id);
+    QVERIFY(after);
+    QCOMPARE(after->status, MemoryStatus::Archived);
+}
+
+void TestMemoryStrategy::testMemoryOrganizeMergesDuplicates() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry first;
+    first.type = MemoryType::Semantic;
+    first.key = QStringLiteral("dup:first");
+    first.scope = QStringLiteral("project");
+    first.summary = QStringLiteral("重复记忆内容");
+    first.content = first.summary;
+    first.tags = {QStringLiteral("memory"), QStringLiteral("test")};
+    first.importance = 0.8;
+    first.confidence = 0.9;
+    first.strength = 0.8;
+    const MemoryEntry storedFirst = store.addEntry(first);
+
+    MemoryEntry second = first;
+    second.key = QStringLiteral("dup:second");
+    second.importance = 0.3;
+    second.tags = {QStringLiteral("test"), QStringLiteral("duplicate")};
+    const MemoryEntry storedSecond = store.addEntry(second);
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("mode")] = QStringLiteral("merge_duplicates");
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QCOMPARE(result.data.value(QStringLiteral("superseded")).toInt(), 1);
+    QVERIFY(!QString::fromUtf8(QJsonDocument(result.data).toJson(QJsonDocument::Compact)).contains(QStringLiteral("重复记忆内容")));
+
+    const MemoryEntry* firstAfter = store.findById(storedFirst.id);
+    const MemoryEntry* secondAfter = store.findById(storedSecond.id);
+    QVERIFY(firstAfter);
+    QVERIFY(secondAfter);
+
+    const MemoryEntry* active = firstAfter->status == MemoryStatus::Active ? firstAfter : secondAfter;
+    const MemoryEntry* duplicate = firstAfter->status == MemoryStatus::Superseded ? firstAfter : secondAfter;
+    QCOMPARE(active->status, MemoryStatus::Active);
+    QCOMPARE(duplicate->status, MemoryStatus::Superseded);
+    QVERIFY(store.relationGraph().hasRelation(active->id, duplicate->id, MemoryRelationType::Supersedes));
+}
+
+void TestMemoryStrategy::testMemoryOrganizeSkipsSensitiveOutput() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry sensitive;
+    sensitive.type = MemoryType::Semantic;
+    sensitive.key = QStringLiteral("secret:test");
+    sensitive.summary = QStringLiteral("超级秘密 token abc");
+    sensitive.content = sensitive.summary;
+    sensitive.privacyLevel = PrivacyLevel::Sensitive;
+    sensitive.importance = 0.9;
+    sensitive.confidence = 0.9;
+    sensitive.strength = 0.9;
+    store.addEntry(sensitive);
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("dry_run")] = 1;
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+    QCOMPARE(result.data.value(QStringLiteral("skipped_sensitive")).toInt(), 1);
+
+    const QString payload = QString::fromUtf8(QJsonDocument(result.data).toJson(QJsonDocument::Compact));
+    QVERIFY(!payload.contains(QStringLiteral("超级秘密")));
+    QVERIFY(!payload.contains(QStringLiteral("abc")));
 }
 
 // ---- Phase 5: Working Memory Cache tests ----

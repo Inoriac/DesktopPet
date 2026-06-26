@@ -9,9 +9,11 @@
 #include "ai/tools/environment_tools.h"
 #include "ai/tools/file_tools.h"
 #include "ai/tools/life_tools.h"
+#include "ai/tools/memory_tools.h"
 #include "ai/tools/music_tools.h"
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/web_tools.h"
+#include "ai/skill/skill_tools.h"
 #include "configLoader/config_manager.h"
 #include "render_engine.h"
 #include "render_viewport.h"
@@ -74,6 +76,13 @@ void PetWindow::setupAiBrain() {
         }, Qt::QueuedConnection);
     }));
     MemoryStore* memoryStore = aiBrain->memoryStore();
+    aiToolRegistry->registerTool(std::make_unique<MemoryOrganizeTool>(memoryStore));
+    SkillStore* skillStore = aiBrain->skillStore();
+    aiToolRegistry->registerTool(std::make_unique<SkillCreateTool>(skillStore));
+    aiToolRegistry->registerTool(std::make_unique<SkillUpdateTool>(skillStore));
+    aiToolRegistry->registerTool(std::make_unique<SkillListTool>(skillStore));
+    aiToolRegistry->registerTool(std::make_unique<SkillDeleteTool>(skillStore));
+    aiToolRegistry->registerTool(std::make_unique<SkillRecordOutcomeTool>(skillStore));
     aiToolRegistry->registerTool(std::make_unique<ScheduleCreateTool>(agentScheduler.get(), memoryStore));
     aiToolRegistry->registerTool(std::make_unique<ScheduleListTool>(agentScheduler.get()));
     aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get(), memoryStore));

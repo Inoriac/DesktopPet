@@ -173,6 +173,8 @@ set(CORE_SOURCES
     core/ai/tools/environment_tools.cpp
     core/ai/tools/life_tools.h
     core/ai/tools/life_tools.cpp
+    core/ai/tools/memory_tools.h
+    core/ai/tools/memory_tools.cpp
     core/ai/tools/music_tools.h
     core/ai/tools/schedule_tools.h
     core/ai/tools/schedule_tools.cpp
@@ -180,6 +182,14 @@ set(CORE_SOURCES
     core/ai/tools/file_tools.cpp
     core/ai/tools/web_tools.h
     core/ai/tools/web_tools.cpp
+    core/ai/skill/skill_types.h
+    core/ai/skill/skill_types.cpp
+    core/ai/skill/skill_store.h
+    core/ai/skill/skill_store.cpp
+    core/ai/skill/skill_matcher.h
+    core/ai/skill/skill_matcher.cpp
+    core/ai/skill/skill_tools.h
+    core/ai/skill/skill_tools.cpp
 )
 
 set(ENGINE_SOURCES
@@ -400,6 +410,8 @@ add_executable(memory_strategy_tests
     core/ai/memory/memory_relation_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
+    core/ai/tools/memory_tools.h
+    core/ai/tools/memory_tools.cpp
     core/ai/memory/embedding_provider.h
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h

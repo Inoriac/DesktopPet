@@ -184,7 +184,9 @@ void MemoryPolicy::discoverRelations(const MemoryEntry& newEntry,
             if (graph.addRelation(rel)) {
                 ++report->relationsCreated;
             }
-            store->updateStatusByKey(existing.type, existing.key, MemoryStatus::Superseded);
+            QJsonObject payloadPatch;
+            payloadPatch[QStringLiteral("superseded_by")] = newEntry.id;
+            store->updateStatusById(existing.id, MemoryStatus::Superseded, payloadPatch);
             continue;
         }
 

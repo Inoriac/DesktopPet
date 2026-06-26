@@ -14,6 +14,7 @@
 #include "configLoader/config_manager.h"
 #include "tools/runtime/tool_policy.h"
 #include "memory/working_memory_cache.h"
+#include "skill/skill_matcher.h"
 
 bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                                     const QString& triggerTag) {
@@ -252,6 +253,13 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
     if (!memoryHints.isEmpty()) {
         contextMessage.content += "\n相关记忆：\n" + memoryHints.join("\n");
         contextMessage.content += "\n约束：不要编造未保存的历史；查询提醒时优先调用 schedule_list 获取真实任务状态；敏感记忆未经确认不得主动暴露。\n";
+    }
+
+    const QList<MatchedSkill> matchedSkills = m_skillMatcher.match(m_skillStore, reason, 2);
+    if (!matchedSkills.isEmpty()) {
+        const QStringList skillHints = m_skillMatcher.formatForContext(matchedSkills);
+        contextMessage.content += "\n已学习的相关技能（可参考但不必严格遵循，按实际情况灵活运用）：\n"
+                                  + skillHints.join("\n") + "\n";
     }
     messages.append(contextMessage);
 

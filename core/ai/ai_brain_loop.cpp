@@ -212,6 +212,17 @@ QStringList AIBrain::allowedActionsForTrigger(const QString& triggerTag) const {
 bool AIBrain::isToolCallAllowed(const QString& triggerTag,
                                 const LlmToolCall& call,
                                 QString& denialReason) const {
+    if (call.name == "memory_organize") {
+        if (triggerTag == "idle_action"
+            || triggerTag == "proactive_chat"
+            || triggerTag == "manual"
+            || triggerTag == "user_request") {
+            return true;
+        }
+        denialReason = QString("memory_organize is not allowed for trigger '%1'").arg(triggerTag);
+        return false;
+    }
+
     // 仅约束主动动作切换类 tool，其它 tool 默认允许。
     if (call.name != "play_animation" && call.name != "request_idle_transition") {
         return true;

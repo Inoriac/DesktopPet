@@ -17,6 +17,7 @@ AIBrain::AIBrain(QObject* parent)
     : QObject(parent) {
     setupTriggerTimers();
     m_memoryStore.load();
+    m_skillStore.load();
 }
 
 void AIBrain::setPetName(const QString& petName) {

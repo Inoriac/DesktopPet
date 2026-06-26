@@ -17,6 +17,10 @@ QString ContextBuilder::buildSystemPrompt(const QString& petName) const {
         "目标：自然、简短、可执行。"
         "当可用工具能完成任务时，优先调用工具。"
         "回复尽量简洁，中文输出。"
+        "你拥有技能学习能力：当完成了一个具有通用性的复杂任务流程后，"
+        "可调用 skill_create 将其固化为可复用技能；"
+        "在技能步骤中使用{参数名}占位符实现泛化。"
+        "执行完技能后，调用 skill_record_outcome 反馈结果。"
     ).arg(safePetName);
 }
 
@@ -37,6 +41,9 @@ QString ContextBuilder::buildRuntimeContext(const QString& petName,
     context += QString("llm_model=%1\n").arg(cfg.model);
     if (!allowedActions.isEmpty()) {
         context += QString("allowed_actions=%1\n").arg(allowedActions.join(","));
+    }
+    if (triggerTag == QStringLiteral("idle_action") || triggerTag == QStringLiteral("proactive_chat")) {
+        context += QStringLiteral("maintenance_hint=空闲维护时，如记忆需要整理，可调用 memory_organize；避免无意义重复调用。\n");
     }
     context += buildStatisticsSummary(petName);
 

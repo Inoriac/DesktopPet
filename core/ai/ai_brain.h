@@ -21,6 +21,8 @@
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
 #include "router/intent_router.h"
+#include "skill/skill_matcher.h"
+#include "skill/skill_store.h"
 #include "tool_registry.h"
 #include "tools/runtime/tool_runtime.h"
 
@@ -48,6 +50,8 @@ public:
     void clearMemory();
     MemoryStore* memoryStore() { return &m_memoryStore; }
     const MemoryStore* memoryStore() const { return &m_memoryStore; }
+    SkillStore* skillStore() { return &m_skillStore; }
+    const SkillStore* skillStore() const { return &m_skillStore; }
 
 signals:
     void thinkingStarted(const QString& reason);
@@ -105,6 +109,8 @@ private:
     MemoryPolicy m_memoryPolicy;
     MemoryRetriever m_memoryRetriever;
     WorkingMemoryCache m_workingMemoryCache;
+    SkillStore m_skillStore;
+    SkillMatcher m_skillMatcher;
 
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;

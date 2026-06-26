@@ -339,4 +339,5 @@ void MemoryRetriever::reinforceMemory(MemoryStore& store, const QString& id) con
     entry->strength = qMin(1.0, entry->strength + 0.1);
     entry->accessCount += 1;
     entry->lastAccessedAt = QDateTime::currentDateTimeUtc();
+    store.updateEntryById(*entry);
 }

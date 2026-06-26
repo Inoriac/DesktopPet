@@ -29,6 +29,10 @@ public:
                     const QJsonValue& value,
                     const QStringList& tags = {});
     MemoryEntry addEntry(const MemoryEntry& entry);
+    bool updateEntryById(const MemoryEntry& entry);
+    bool updateStatusById(const QString& id,
+                          MemoryStatus status,
+                          const QJsonObject& payloadPatch = {});
     bool updateStatusByKey(MemoryType type,
                            const QString& key,
                            MemoryStatus status,

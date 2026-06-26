@@ -266,6 +266,64 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
     return stored;
 }
 
+bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
+    if (entry.id.trimmed().isEmpty()) {
+        return false;
+    }
+
+    for (MemoryEntry& existing : m_entries) {
+        if (existing.id != entry.id) {
+            continue;
+        }
+
+        MemoryEntry stored = entry;
+        if (!stored.createdAt.isValid()) {
+            stored.createdAt = existing.createdAt.isValid()
+                ? existing.createdAt
+                : QDateTime::currentDateTimeUtc();
+        }
+        stored.updatedAt = QDateTime::currentDateTimeUtc();
+        if (stored.summary.trimmed().isEmpty()) {
+            stored.summary = fallbackSummary(stored);
+        }
+
+        existing = stored;
+        if (m_repository && m_repository->isOpen()) {
+            return m_repository->update(stored);
+        }
+        return true;
+    }
+
+    return false;
+}
+
+bool MemoryStore::updateStatusById(const QString& id,
+                                   MemoryStatus status,
+                                   const QJsonObject& payloadPatch) {
+    if (id.trimmed().isEmpty()) {
+        return false;
+    }
+
+    for (MemoryEntry& entry : m_entries) {
+        if (entry.id != id) {
+            continue;
+        }
+
+        entry.status = status;
+        entry.updatedAt = QDateTime::currentDateTimeUtc();
+        for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
+            entry.payload[it.key()] = it.value();
+        }
+
+        if (m_repository && m_repository->isOpen()) {
+            return m_repository->updateStatus(id, status, payloadPatch);
+        }
+        return true;
+    }
+
+    return false;
+}
+
 bool MemoryStore::updateStatusByKey(MemoryType type,
                                     const QString& key,
                                     MemoryStatus status,
