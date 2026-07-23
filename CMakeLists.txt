@@ -36,8 +36,6 @@ find_package(Qt6 COMPONENTS
 
 # 收集所有源文件
 set(UI_SOURCES
-    ui/mainwindow.cpp
-    ui/mainwindow.h
     ui/animated_combo_box.cpp
     ui/animated_combo_box.h
     ui/animated_scrollbar.cpp
