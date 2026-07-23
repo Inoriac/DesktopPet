@@ -281,7 +281,7 @@ target_link_libraries(Desktop_Pet
         Qt::OpenGL
         Qt::OpenGLWidgets
         Qt::Sql
-        psapi
+        $<$<PLATFORM_ID:Windows>:psapi>
 )
 
 set(TEST_SOURCES
@@ -323,7 +323,7 @@ target_link_libraries(statistic_tests
         Qt::OpenGL
         Qt::OpenGLWidgets
         Qt::Sql
-        psapi
+        $<$<PLATFORM_ID:Windows>:psapi>
 )
 
 enable_testing()

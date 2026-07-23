@@ -145,7 +145,7 @@ QWidget* createHorizontalControls(std::initializer_list<QWidget*> widgets) {
 }
 } // namespace
 
-MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
+MainWindow::MainWindow(const QString& autoStartPet, QWidget *parent) : QMainWindow(parent) {
     setObjectName(QStringLiteral("MainWindowRoot"));
     setAttribute(Qt::WA_StyledBackground, true);
     setWindowTitle(QStringLiteral("Desktop 3D Pet"));
@@ -161,7 +161,37 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     Pet::instance().load();
     loadPetList();
 
+    // 宠物展示设置初值来自配置 petSettings（缺失时 getter 返回与原硬编码一致的默认值）。
+    if (sizeSlider) {
+        sizeSlider->setValue(ConfigManager::instance().getPetScalePercent());
+    }
+    if (alwaysOnTopCheckBox) {
+        alwaysOnTopCheckBox->setChecked(ConfigManager::instance().isPetAlwaysOnTop());
+    }
+    if (clickThroughCheckBox) {
+        clickThroughCheckBox->setChecked(ConfigManager::instance().isPetClickThrough());
+    }
+
+    m_autoStartPetName = autoStartPet;
+
     setWindowIcon(QIcon(QStringLiteral("assets/icons/icon.png")));
+}
+
+void MainWindow::autoStartPet() {
+    if (m_autoStartPetName.isEmpty()) {
+        return;
+    }
+    if (!Pet::instance().hasPet(m_autoStartPetName)) {
+        qWarning() << "[autoStartPet] pet not found:" << m_autoStartPetName;
+        return;  // 角色无效：静默忽略，回到面板等待用户手动启动
+    }
+    if (!characterComboBox) {
+        qWarning() << "[autoStartPet] characterComboBox not ready";
+        return;
+    }
+    characterComboBox->setCurrentText(m_autoStartPetName);  // 触发 OnPetSelected 刷新预览/状态
+    OnStartPet();  // 复用现有启动流程（内含重复启动保护与空校验）
+    m_autoStartPetName.clear();  // 仅启动时触发一次
 }
 
 MainWindow::~MainWindow() {

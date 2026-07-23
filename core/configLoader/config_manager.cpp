@@ -232,6 +232,14 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         }
     }
 
+    // 宠物展示设置（尺寸/置顶/点击穿透）。缺失 petSettings 块时沿用成员默认值。
+    if (configJson.contains("petSettings")) {
+        const QJsonObject pet = configJson["petSettings"].toObject();
+        petScalePercent = clampInt(pet["scalePercent"].toInt(100), 50, 200);
+        petAlwaysOnTop = pet["alwaysOnTop"].toBool(true);
+        petClickThrough = pet["clickThrough"].toBool(false);
+    }
+
     // 读取 AI 配置
     // 支持两种格式：
     // 1) aiSettings 直接包含字段

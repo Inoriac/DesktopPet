@@ -38,3 +38,5 @@ assets/models/*
 cmake-build-*/
 build/
 .claude/
+前端修改计划.md
+memory_improvement_plan.md

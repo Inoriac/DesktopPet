@@ -10,8 +10,15 @@
 #include <QOpenGLFunctions>
 #include <QDebug>
 #include <QTimer>
-#include <psapi.h>
 #include <QDir>
+
+#ifdef Q_OS_WIN
+#include <windows.h>
+#include <psapi.h>
+#elif defined(Q_OS_MACOS)
+#include <mach/mach.h>
+#include <mach/mach_types.h>
+#endif
 #include <QCoreApplication>
 #include <QElapsedTimer>
 #include <QCursor>
@@ -42,11 +49,23 @@ RenderViewport::RenderViewport(QWidget *parent)
 
 RenderViewport::~RenderViewport() = default;
 
-// 添加辅助函数：获取当前进程内存占用
+// 添加辅助函数：获取当前进程内存占用（MB）
 size_t getCurrentMemoryUsage() {
+#ifdef Q_OS_WIN
     PROCESS_MEMORY_COUNTERS_EX pmc;
     GetProcessMemoryInfo(GetCurrentProcess(), (PROCESS_MEMORY_COUNTERS*)&pmc, sizeof(pmc));
     return pmc.WorkingSetSize / 1024 / 1024;  // 转换为 MB
+#elif defined(Q_OS_MACOS)
+    task_vm_info_data_t info;
+    mach_msg_type_number_t count = TASK_VM_INFO_COUNT;
+    if (task_info(mach_task_self(), TASK_VM_INFO, reinterpret_cast<task_info_t>(&info), &count) != KERN_SUCCESS) {
+        return 0;
+    }
+    // phys_footprint 是进程实际驻留内存，等价于 Windows WorkingSet
+    return info.phys_footprint / 1024 / 1024;  // 转换为 MB
+#else
+    return 0;  // 未支持平台：返回 0，仅为 qDebug 诊断用，不影响功能
+#endif
 }
 
 void RenderViewport::initializeGL() {

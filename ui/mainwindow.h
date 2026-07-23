@@ -34,8 +34,11 @@ class MainWindow : public QMainWindow {
     Q_OBJECT
 
 public:
-    explicit MainWindow(QWidget *parent = nullptr);
+    explicit MainWindow(const QString& autoStartPet = QString(), QWidget *parent = nullptr);
     ~MainWindow() override;
+
+    // 指定角色启动后自动开宠（供 launcher 经 --pet 调用）。角色无效则静默忽略。
+    void autoStartPet();
 
 private slots:
     void OnPetSelected();
@@ -113,6 +116,7 @@ private:
     // PetWindow
     PetWindow *activePetWindow {nullptr};
     QString activePetName;
+    QString m_autoStartPetName;  // --pet 传入的启动角色（若有效则构造后自动开宠）
 
     // Menus and actions
     QMenu *fileMenu{};
