@@ -216,17 +216,17 @@ Hippocampus 待巩固记忆
 
 ### 4.1 优先级矩阵
 
-| 优先级 | 改进项 | 工作量 | 预期收益 | Token 增量 |
-|--------|--------|--------|----------|-----------|
-| 🔴 P0 | 启用真实 Embedding 检索 | 2-3 周 | 检索召回率 ↑40%+ | 0 |
-| 🔴 P0 | 实现 RRF 三通道融合 | 1-2 周 | 检索准确率 ↑25%+ | 0 |
-| 🔴 P0 | 自适应遗忘机制 | 1-2 周 | 重要记忆留存率提升 | 0 |
-| 🟡 P1 | Daydream：空闲记忆整理（新建，详见 `daydream.md`） | 2-3 周 | 记忆分类准确率提升 + inbox 主动清空 | 少量 |
-| 🟡 P1 | Working Memory → Hippocampus 改造（详见 `daydream.md`） | 1 周 | 巩固决策质量提升 | 0 |
-| 🟡 P1 | 图谱双图架构 | 1-2 周 | 关系推理能力增强 | 0 |
-| 🟢 P2 | Cross-Encoder 重排序 | 1-2 周 | Top-10 精度 ↑15-30% | 0 |
-| 🟢 P2 | 工程优化（去 JSON 冗余、连接池、ID 语义化） | 1 周 | 减少 I/O，提升稳定性 | 0 |
-| 🟢 P2 | 记忆质量评估与可视化 | 1 周 | 调试效率提升 | 0 |
+| 优先级 | 改进项 | 工作量 | 预期收益 | Token 增量 | 状态/备注 |
+|--------|--------|--------|----------|-----------|-----------|
+| 🔴 P0 | 启用真实 Embedding 检索 | 2-3 周 | 检索召回率 ↑40%+ | 0 | 索引骨架/下载器已完成，ONNX 推理待做 |
+| 🔴 P0 | 实现 RRF 三通道融合 | 1-2 周 | 检索准确率 ↑25%+ | 0 | 待做 |
+| 🔴 P0 | 自适应遗忘机制 | 1-2 周 | 重要记忆留存率提升 | 0 | ✅ 完成 + 分区迁移 + 遗忘扫描 |
+| 🟡 P1 | Daydream：空闲记忆整理（新建，详见 `daydream.md`） | 2-3 周 | 记忆分类准确率提升 + inbox 主动清空 | 少量 | 待基本框架稳定后 |
+| 🟡 P1 | Working Memory → Hippocampus 改造（详见 `daydream.md`） | 1 周 | 巩固决策质量提升 | 0 | 待做 |
+| 🟡 P1 | 图谱双图架构 | 1-2 周 | 关系推理能力增强 | 0 | 待做 |
+| 🟢 P2 | Cross-Encoder 重排序 | 1-2 周 | Top-10 精度 ↑15-30% | 0 | 待做 |
+| 🟢 P2 | 工程优化（去 JSON 冗余、连接池、ID 语义化） | 1 周 | 减少 I/O，提升稳定性 | 0 | 待做 |
+| 🟢 P2 | 记忆质量评估与可视化 | 1 周 | 调试效率提升 | 0 | 待做 |
 
 ### 4.2 核心改进详述
 
@@ -482,6 +482,44 @@ public:
 
 ---
 
+## 实施进度（2026-07-24 核实）
+
+> 已合并 master（含 feature/front 的 psapi 修复与 launcher Python 前端重构，merge commit `166d621`）。记忆测试 39 passed。主程序 `Desktop_Pet` 在 macOS 可编译。
+
+### ✅ 已解决（已实现且编译/测试通过）
+
+| 项 | 交付 | 验证 |
+|---|---|---|
+| **分区模型** | `partition_policy.h`：5 分区（Hippocampus/Episodic/Semantic/Preference/Procedural），9 类型→分区映射，Core 类型并入 Semantic | 测试 |
+| **自适应遗忘** | `PartitionDecayPolicy`（effectiveHalfLife/retention/forgetIdleDays），套 hebb 真实参数（threshold 全 0.3、k_access 1.5、Semantic/Procedural k_importance 3.0） | 算例锁验（441/42 天） |
+| **分区持久化 + 存量回填** | `memory_items` 加 partition 列+索引；`ALTER + CASE` 回填；旧 `partition='core'` 迁移到 semantic；insert/load 读写 | 测试 |
+| **检索器接入衰减** | `computeEffectiveStrength` 改用 `policy.retention()`，替换硬编码 λ 三档 | 既有衰减测试仍绿 |
+| **遗忘扫描器** | `MemoryOrganizeTool` 加 `forget` 模式 + `applyForgettingSweep`（retention<threshold→Expired，不物理删，跳过 Hippocampus/Sensitive/无时间锚点） | 测试 |
+| **向量索引骨架（可插拔）** | `sqlite_embedding_index.{h,cpp}`：走 `memory_embeddings` 表，upsert（content_hash 跳过未变）/search（余弦 top-k）/remove；`EmbeddingProvider` 可插拔；`MemoryStore::databaseConnectionName()` 复用同 DB 连接 | Fake provider 测试 |
+| **HF 模型下载器** | `model_downloader.{h,cpp}`：hf-mirror 优先 + huggingface 兜底，逐镜像重试/超时/sha256 校验/已存在跳过/全失败降级 | 本地 file:// 镜像测试 |
+| **设计决策** | Core 分区去除；遗忘参数套 hebb；性格偏移进 Preference（JSON 基线为吸引子）；Daydream 拆至 daydream.md；Embedding 路径定 ONNX（详见下） | — |
+
+### ⏳ 尚待解决
+
+| 项 | 状态 / 卡点 |
+|---|---|
+| **ONNX 真实推理后端** | `OnnxEmbeddingProvider` 未写（加载 .onnx + tokenizer + onnxruntime 调用）。当前 embedding 仍用 Noop/Fake，未接真模型 |
+| **onnxruntime 库引入** | 项目本体未链接。**已定**：`third_party/onnxruntime`（gitignore + 每平台拉取脚本 + CMake find_library），Windows 安装包带 dll。脚本与 CMake 配置未写 |
+| **模型 ONNX 文件** | **已定**模型 = `bge-small-zh-v1.5`。官方仓库仅 PyTorch（无 ONNX）。**已定**：构建期一次性导出 int8 ONNX + tokenizer 打包，运行时不依赖联网。导出脚本未写 |
+| **C++ tokenizer** | BGE 用 BERT WordPiece。拟复用 HF `tokenizers` C 绑定或 header-only，不自写算法。未选型/未写 |
+| **provider 注入检索链路** | `ai_brain_router.cpp:303` / `agent_core.cpp:73` 两个 `retrieve` 调用点都未传 embeddingIndex，需把真实 index 注入 |
+| **RRF 三通道融合** | 计划 A2，待做 |
+| **图谱双图架构** | 计划 E，待做 |
+| **Daydream 全部** | 拆至 daydream.md，基本框架稳定后 |
+
+### ⚠️ 已识别但未决的关键风险
+
+- HF 直连不稳（本环境 curl 超时 000）→ 已通过 hf-mirror 优先 + 构建期导出打包规避运行时下载。
+- onnxruntime 在 Qt+CMake 集成（计划原列风险）→ third_party + find_library 标准解法，Windows/macOS 各一份平台包。
+- tokenizer 是 ONNX 路最繁琐处 → 优先复用而非手写。
+
+---
+
 ## 五、分阶段实施路线图
 
 ### Phase 1（1-2 周）🔴 最小可行 —— P0 项
@@ -537,20 +575,25 @@ public:
 ## 七、待讨论确认
 
 ### 已定
-- **Core 分区**：保留为第 6 个不遗忘分区（λ≈0、不进扫描）。
-- **遗忘参数**：Phase 1 直接套 hebb-mind 真实默认值（threshold 全 0.3、k_access 全 1.5、Semantic/Procedural k_importance=3.0、Episodic k_importance=1.0），Phase 3 凭 retrieval_hit_rate/utility_score 观测后再按 DesktopPet 自身指标微调（Episodic 30 天基半衰期可能偏短，等数据再定是否上调到 45–60 天）。
+- **Core 分区**：**已撤销**，回到 hebb 5 分区。Core 类型并入 Semantic，靠自适应（importance×access 拉伸半衰期）近不朽，addEntry 给 Core 类型设 importance 下限 0.8。旧库 `partition='core'` 迁移到 semantic。
+- **遗忘参数**：直接套 hebb-mind 真实默认值（threshold 全 0.3、k_access 全 1.5、Semantic/Procedural k_importance=3.0、Episodic k_importance=1.0），Phase 3 凭 retrieval_hit_rate/utility_score 观测后再按 DesktopPet 自身指标微调。
+- **性格/偏好偏移**：落 Preference 分区（JSON 性格预设保留为基线/吸引子不动，潜移默化 delta 作可衰减记忆叠在上面）。
+- **Embedding 路径**：定 **ONNX Runtime**（不走 Python 微服务——PyTorch ~2GB 体积对桌宠分发不现实）。模型 = HF 上的 BGE，推理 = C++ onnxruntime 进程内。
+- **模型**：`bge-small-zh-v1.5`（中文、~90MB int8、512 维）。
+- **模型 onnx 来源**：构建期一次性从官方 `BAAI/bge-small-zh-v1.5`（仅 PyTorch）导出 int8 ONNX + tokenizer，**打包进发行包**，运行时不依赖联网下载（国内 HF 直连不稳）。
+- **onnxruntime 引入**：`third_party/onnxruntime`（gitignore + 每平台拉取脚本 + CMake find_library），**因主要面向 Windows**——brew 仅 macOS 开发机方便、不覆盖 Windows 交付，故否。Windows 安装包带 `onnxruntime.dll`。
 - **Daydream 决策**（输入口径、中断回滚语义等）→ 详见 `daydream.md` 第九节。
 
 ### 待确认（基本框架相关）
 
-| # | 项 | 推荐默认 |
-|---|---|---|
-| 1 | Embedding 模型 | bge-small-zh-v1.5（90MB） |
-| 2 | Embedding 接入路径 | 先 ONNX 直集成；卡住降级 gRPC 微服务 |
-| 3 | Phase 1/2 排期 | P0=Embedding+自适应遗忘+分区迁移；P1=RRF+双图；Phase 2b=Daydream |
+| # | 项 | 推荐默认 | 备注 |
+|---|---|---|---|
+| 1 | tokenizer 选型 | HF `tokenizers` C 绑定 或 header-only BERT tokenizer | 避免手写 WordPiece 算法 |
+| 2 | onnxruntime 平台包 | Windows x64 + macOS arm64/x64 release zip | gitignore，脚本拉取 |
+| 3 | RRF / 图谱双图排期 | P1 | 待 P0 embedding 通后 |
 
 > Daydream 相关待确认项（空闲阈值、退避、tick、LLM 选型、降级规则保留期等）见 `daydream.md` 第十节。
 
 ---
 
-*本文档聚焦基本记忆框架（Embedding 检索 / RRF 融合 / 自适应遗忘 / 分区迁移 / 图谱双图 / 工程优化）。Daydream（空闲记忆整理）已拆至 `daydream.md`，在基本框架落地后实现。已校正 hebb-mind 遗忘参数表、巩固触发归因、JSON 双写夸大、关系类型枚举（7 种）等事实性误差。实施前请 review 各阶段任务与"待确认"项。*
+*本文档聚焦基本记忆框架（Embedding 检索 / RRF 融合 / 自适应遗忘 / 分区迁移 / 图谱双图 / 工程优化）。Daydream（空闲记忆整理）已拆至 `daydream.md`，在基本框架落地后实现。已校正 hebb-mind 遗忘参数表、巩固触发归因、JSON 双写夸大、关系类型枚举（7 种）等事实性误差。**实施进度见"实施进度"章节**（P0 自适应遗忘+分区+遗忘扫描+向量索引骨架+模型下载器已完成；ONNX 真实推理待做）。实施前请 review "待确认"项。*

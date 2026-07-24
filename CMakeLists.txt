@@ -159,6 +159,10 @@ set(CORE_SOURCES
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
     core/ai/memory/partition_policy.h
+    core/ai/memory/sqlite_embedding_index.h
+    core/ai/memory/sqlite_embedding_index.cpp
+    core/ai/memory/model_downloader.h
+    core/ai/memory/model_downloader.cpp
     core/ai/mcp/mcp_client.h
     core/ai/mcp/mcp_client.cpp
     core/ai/mcp/mcp_server_process.h
@@ -415,6 +419,10 @@ add_executable(memory_strategy_tests
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
     core/ai/memory/partition_policy.h
+    core/ai/memory/sqlite_embedding_index.h
+    core/ai/memory/sqlite_embedding_index.cpp
+    core/ai/memory/model_downloader.h
+    core/ai/memory/model_downloader.cpp
 )
 
 target_include_directories(memory_strategy_tests PRIVATE
@@ -426,6 +434,7 @@ target_include_directories(memory_strategy_tests PRIVATE
 target_link_libraries(memory_strategy_tests
     Qt::Core
     Qt::Sql
+    Qt::Network
     Qt::Test
 )
 

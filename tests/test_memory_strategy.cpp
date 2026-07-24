@@ -2,6 +2,9 @@
 // Memory extractor / policy / retriever / relation tests
 //
 
+#include <QCryptographicHash>
+#include <QDir>
+#include <QFile>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
@@ -15,6 +18,8 @@
 #include "memory/working_memory_cache.h"
 #include "memory/noop_embedding_index.h"
 #include "memory/partition_policy.h"
+#include "memory/sqlite_embedding_index.h"
+#include "memory/model_downloader.h"
 #include "tools/memory_tools.h"
 
 class TestMemoryStrategy : public QObject {
@@ -56,6 +61,8 @@ private slots:
     void testAdaptiveDecayRetentionAndForgetDays();
     void testPartitionPersistedAndBackfilled();
     void testForgettingSweepExpiresStaleAndSparesImportant();
+    void testSqliteEmbeddingIndexSearch();
+    void testModelDownloaderLocalMirror();
 
 private:
     void setupStoreWithDb(MemoryStore& store, const QTemporaryDir& dir);
@@ -1206,6 +1213,127 @@ void TestMemoryStrategy::testForgettingSweepExpiresStaleAndSparesImportant() {
     }
     QVERIFY(staleExpired);
     QVERIFY(coreActive);
+}
+
+// 测试用确定性 EmbeddingProvider：16 维，token 哈希到维度上。无真实模型也能验证
+// upsert/search/remove 与余弦检索的链路。语义近似由共享 token 体现。
+class FakeEmbeddingProvider : public EmbeddingProvider {
+public:
+    QString modelName() const override { return QStringLiteral("fake-16d"); }
+    int dimension() const override { return 16; }
+    QVector<float> embed(const QString& text) override {
+        QVector<float> v(16, 0.0f);
+        const QStringList tokens = text.toLower().split(QRegularExpression(QStringLiteral("\\W+")),
+                                                       Qt::SkipEmptyParts);
+        for (const QString& tok : tokens) {
+            int bucket = 0;
+            for (const QChar& c : tok) bucket = (bucket * 31 + c.unicode()) % 16;
+            v[bucket] += 1.0f;
+        }
+        return v;
+    }
+};
+
+// SqliteEmbeddingIndex：upsert 写向量到 memory_embeddings，search 余弦 top-k，
+// remove 删行。复用 MemoryStore 同一 DB 连接。注入 retriever 后语义命中排名前列。
+void TestMemoryStrategy::testSqliteEmbeddingIndexSearch() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry cpp;
+    cpp.type = MemoryType::Semantic;
+    cpp.key = QStringLiteral("lang:cpp");
+    cpp.summary = QStringLiteral("用户喜欢 c++ 编程语言");
+    const MemoryEntry storedCpp = store.addEntry(cpp);
+
+    MemoryEntry java;
+    java.type = MemoryType::Semantic;
+    java.key = QStringLiteral("lang:java");
+    java.summary = QStringLiteral("用户偶尔写 java 后端");
+    const MemoryEntry storedJava = store.addEntry(java);
+
+    FakeEmbeddingProvider provider;
+    SqliteEmbeddingIndex index(store.databaseConnectionName(), &provider);
+
+    // upsert：cpp 用 c++ 文本，java 用 java 文本
+    QVERIFY(index.upsert(storedCpp.id, QStringLiteral("c++ programming language")));
+    QVERIFY(index.upsert(storedJava.id, QStringLiteral("java backend server")));
+
+    // 查询 "c++" 应排到含 c++ token 的记忆附近（fake 向量下两者含 cpp 维度）
+    const QList<EmbeddingSearchResult> hits = index.search(QStringLiteral("c++"), 5);
+    QVERIFY(!hits.isEmpty());
+    QVERIFY(hits.first().similarity > 0.0);
+
+    // remove 后该 id 不再出现在结果中
+    const QString removedId = hits.first().memoryId;
+    QVERIFY(index.remove(removedId));
+    const QList<EmbeddingSearchResult> after = index.search(QStringLiteral("c++"), 5);
+    for (const EmbeddingSearchResult& r : after) {
+        QVERIFY(r.memoryId != removedId);
+    }
+
+    // 注入 retriever：embedding 通道产出候选且打 "embedding" reason。
+// 用与记忆正文不重叠的 query token（"rust"），使 Phase1 关键词关闸（return 0）→
+// 直接候选为空 → embedding 候选进入，带 "embedding" reason。
+MemoryRetriever retriever;
+    MemoryQuery query;
+    query.text = QStringLiteral("rust");
+    query.limit = 5;
+    const QList<RetrievedMemory> withIndex = retriever.retrieve(store, query, nullptr, &index);
+    bool hasEmbeddingReason = false;
+    for (const RetrievedMemory& m : withIndex) {
+        if (m.reasons.contains(QStringLiteral("embedding"))) hasEmbeddingReason = true;
+    }
+    QVERIFY(hasEmbeddingReason);
+}
+
+// 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF。
+// 在临时"源仓库"里按 HF 布局 repo/resolve/rev/file 摆好测试文件，镜像 host 指向它。
+void TestMemoryStrategy::testModelDownloaderLocalMirror() {
+    QTemporaryDir srcDir;
+    QTemporaryDir destDir;
+    QVERIFY(srcDir.isValid());
+    QVERIFY(destDir.isValid());
+
+    // 构造源文件 repo/resolve/main/model.txt（内容固定）
+    const QString repo = QStringLiteral("BAAI/test-model");
+    const QString revTree = repo + QStringLiteral("/resolve/main/");
+    const QString modelRel = QStringLiteral("model.txt");
+    const QString srcFile = srcDir.filePath(revTree + modelRel);
+    QDir().mkpath(QFileInfo(srcFile).absolutePath());
+    const QByteArray content = "hello embedding model";
+    {
+        QFile f(srcFile);
+        QVERIFY(f.open(QIODevice::WriteOnly));
+        f.write(content);
+        f.close();
+    }
+    const QString sha = QString::fromLatin1(
+        QCryptographicHash::hash(content, QCryptographicHash::Sha256).toHex());
+
+    ModelDownloader downloader;
+    // 用本地 file:// 目录当镜像 host（注意末尾不带斜杠，buildUrl 会补）
+    downloader.setMirrors({QUrl::fromLocalFile(srcDir.path()).toString()});
+    downloader.setRevision(QStringLiteral("main"));
+    downloader.setRetriesPerMirror(1);
+    downloader.setTransferTimeoutMs(5000);
+
+    // 第一次下载 + sha 校验通过
+    ModelDownloader::FileSpec spec{modelRel, sha};
+    QString err;
+    QVERIFY(downloader.downloadSync(repo, destDir.path(), {spec}, &err));
+    QFile downloaded(destDir.filePath(modelRel));
+    QVERIFY(downloaded.exists());
+    QCOMPARE(downloaded.open(QIODevice::ReadOnly) ? downloaded.readAll() : QByteArray(), content);
+
+    // 第二次：文件已存在且 sha 通过 → 跳过（不再触碰源；把源删掉也该成功）
+    QVERIFY(downloader.downloadSync(repo, destDir.path(), {spec}, &err));
+
+    // sha 不匹配 → 应判定失败（校验失败会删文件，无其它镜像 → 整体失败）
+    ModelDownloader::FileSpec badSpec{modelRel, QStringLiteral("0000")};
+    QVERIFY(!downloader.downloadSync(repo, destDir.path(), {badSpec}, &err));
 }
 
 QTEST_MAIN(TestMemoryStrategy)

@@ -179,6 +179,10 @@ void MemoryStore::setDatabasePath(const QString& dbPath) {
     m_databasePath = dbPath;
 }
 
+QString MemoryStore::databaseConnectionName() const {
+    return m_repository ? m_repository->connectionName() : QString();
+}
+
 bool MemoryStore::load(QString* errorMessage) {
     QString dbError;
     if (!m_repository->open(m_databasePath, &dbError)) {

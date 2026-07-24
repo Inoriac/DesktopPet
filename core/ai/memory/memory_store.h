@@ -50,6 +50,10 @@ public:
     MemoryRelationGraph& relationGraph() { return m_relationGraph; }
     const MemoryRelationGraph& relationGraph() const { return m_relationGraph; }
 
+    // 底层 SQLite 连接名（与 SqliteMemoryRepository 共用），供需同库的组件复用
+    // （如 SqliteEmbeddingIndex 写 memory_embeddings 表）。
+    QString databaseConnectionName() const;
+
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;
 
