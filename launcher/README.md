@@ -1,0 +1,42 @@
+# DesktopPet 启动器 (Python)
+
+PySide6 + PySide6-Fluent-Widgets 实现的 Fluent Design 启动器。
+负责配置管理 + 指定角色启动，通过命令行参数 `--config` / `--pet` 唤起 C++ 核心。
+
+详见仓库根 `前端修改计划.md`。
+
+## 运行
+
+```bash
+cd launcher
+python3 -m venv .venv
+# 阿里镜像（国内更快）；PyPI 也行
+.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ "PySide6-Essentials==6.7.3" darkdetect PySide6-Fluent-Widgets PySideSix-Frameless-Window
+.venv/bin/python main.py
+```
+
+> 本项目未使用 PySide6-Addons（WebEngine/3D），只装 Essentials 即可，省 ~300MB 下载。
+> PySideSix-Frameless-Window 会拉一整套 pyobjc macOS 框架绑定（~150 个小包），首次安装较久但属正常。
+
+## 前置
+
+- C++ 核心须已构建：`scripts/build_mac.sh`（产物 `build/Desktop_Pet`）。
+- 启动器回写配置到 `~/Library/Application Support/Desktop Pet Team/Desktop Pet/launch_config.json`，
+  并以 `--config <绝对路径> --pet <角色名>` 启动核心。
+
+## 主题共享
+
+启动器启动时 `setOrganizationName/ApplicationName` 逐字对齐 C++ `main.cpp`，
+经同名 QSettings（键 `ui/theme`）与 C++ 共享主题，无需配置文件中转。见计划 §3.1。
+
+## 文件
+
+| 文件 | 作用 |
+|------|------|
+| `main.py` | 主入口：FluentWindow 框架 + 导航 + 启动按钮 + 主题共享 |
+| `app_state.py` | 各页配置的运行期状态（dataclass） + 字段映射 settings dict |
+| `config_loader.py` | 模板加载 + 用户字段覆盖 + 导出 launch_config.json |
+| `pet_registry.py` | 读写 C++ `Pet` 注册表（AppData/pets.json） |
+| `pages/` | 宠物/AI/语音/气泡/高级/关于 各设置页 |
+| `pages/_cards.py` | Fluent `SettingCard` 嵌入自定义控件的助手 |
+| `requirements.txt` | 依赖清单 |

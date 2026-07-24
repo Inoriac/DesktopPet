@@ -59,6 +59,11 @@ public:
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
 
+    // 宠物展示设置（尺寸/置顶/点击穿透，原仅 MainWindow 运行时 UI 状态，现持久化进配置）
+    int getPetScalePercent() const { return petScalePercent; }
+    bool isPetAlwaysOnTop() const { return petAlwaysOnTop; }
+    bool isPetClickThrough() const { return petClickThrough; }
+
     // AI 行为策略
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
     const AiToolAccessPolicy& getAiToolAccessPolicy() const { return aiToolAccessPolicy; }
@@ -100,6 +105,11 @@ private:
     int totalWindowSitAnimations = 0;
 
     std::vector<BoneCollider> colliderConfigs;
+
+    // 宠物展示设置（来自 petSettings 块；缺失时用以下默认值，与原 MainWindow UI 硬编码一致）
+    int petScalePercent = 100;
+    bool petAlwaysOnTop = true;
+    bool petClickThrough = false;
 
     LlmConfig llmConfig;
     ScreenChatConfig screenChatConfig;

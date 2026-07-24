@@ -36,8 +36,6 @@ find_package(Qt6 COMPONENTS
 
 # 收集所有源文件
 set(UI_SOURCES
-    ui/mainwindow.cpp
-    ui/mainwindow.h
     ui/animated_combo_box.cpp
     ui/animated_combo_box.h
     ui/animated_scrollbar.cpp
@@ -282,7 +280,7 @@ target_link_libraries(Desktop_Pet
         Qt::OpenGL
         Qt::OpenGLWidgets
         Qt::Sql
-        psapi
+        $<$<PLATFORM_ID:Windows>:psapi>
 )
 
 set(TEST_SOURCES
@@ -324,7 +322,7 @@ target_link_libraries(statistic_tests
         Qt::OpenGL
         Qt::OpenGLWidgets
         Qt::Sql
-        psapi
+        $<$<PLATFORM_ID:Windows>:psapi>
 )
 
 enable_testing()
