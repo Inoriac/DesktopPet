@@ -156,6 +156,8 @@ struct MemoryEntry {
     MemoryType type = MemoryType::Event;
     MemoryStatus status = MemoryStatus::Active;
     PrivacyLevel privacyLevel = PrivacyLevel::Public;
+    QString partition;   // 物理分区（hippocampus/episodic/semantic/preference/procedural/core），
+                         // 派生自 type（见 partition_policy.h::partitionForType），持久化便于按分区扫描遗忘
     QString key;
     QJsonValue value;
     QString summary;

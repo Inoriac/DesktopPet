@@ -9,6 +9,7 @@
 #include <QUuid>
 
 #include "memory_repository.h"
+#include "partition_policy.h"
 #include "sqlite_memory_repository.h"
 
 namespace {
@@ -93,6 +94,7 @@ QJsonObject MemoryEntry::toJson() const {
     obj["type"] = memoryTypeToString(type);
     obj["status"] = memoryStatusToString(status);
     obj["privacy_level"] = privacyLevelToString(privacyLevel);
+    obj["partition"] = partition;
     obj["key"] = key;
     obj["value"] = value;
     obj["summary"] = summary;
@@ -126,6 +128,10 @@ MemoryEntry MemoryEntry::fromJson(const QJsonObject& object) {
     entry.type = memoryTypeFromString(object.value("type").toString());
     entry.status = memoryStatusFromString(object.value("status").toString("active"));
     entry.privacyLevel = privacyLevelFromString(object.value("privacy_level").toString("public"));
+    entry.partition = object.value("partition").toString();
+    if (entry.partition.trimmed().isEmpty()) {
+        entry.partition = partitionToString(partitionForType(entry.type));  // 旧 JSON 兼容：派生自 type
+    }
     entry.key = object.value("key").toString();
     entry.value = object.value("value");
     entry.summary = object.value("summary").toString();
@@ -259,6 +265,16 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
     }
     if (stored.strength <= 0.0) {
         stored.strength = stored.importance;
+    }
+    if (stored.partition.trimmed().isEmpty()) {
+        stored.partition = partitionToString(partitionForType(stored.type));  // 派生自 type
+    }
+    // Core 类型（用户身份等承载性事实）落入 Semantic 分区（可被自适应遗忘），
+    // 但写入时设 importance 下限，靠自适应（importance×access 拉伸半衰期）保证近不朽，
+    // 同时仍可被更高优先级事实 supersedes。不设独立永不遗忘分区。
+    if (stored.type == MemoryType::Core && stored.importance < 0.8) {
+        stored.importance = 0.8;
+        if (stored.strength < 0.8) stored.strength = 0.8;
     }
 
     m_entries.append(stored);

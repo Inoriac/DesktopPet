@@ -160,6 +160,7 @@ set(CORE_SOURCES
     core/ai/memory/embedding_provider.h
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
+    core/ai/memory/partition_policy.h
     core/ai/mcp/mcp_client.h
     core/ai/mcp/mcp_client.cpp
     core/ai/mcp/mcp_server_process.h
@@ -415,6 +416,7 @@ add_executable(memory_strategy_tests
     core/ai/memory/embedding_provider.h
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
+    core/ai/memory/partition_policy.h
 )
 
 target_include_directories(memory_strategy_tests PRIVATE

@@ -8,6 +8,7 @@
 #include <QSet>
 
 #include "memory_store.h"
+#include "partition_policy.h"
 #include "working_memory_cache.h"
 #include "embedding_index.h"
 
@@ -301,14 +302,21 @@ double MemoryRetriever::scoreEntry(const MemoryEntry& entry,
 }
 
 double MemoryRetriever::computeEffectiveStrength(const MemoryEntry& entry) const {
-    const double lambda = decayLambda(entry.type);
     const QDateTime reference = entry.lastAccessedAt.isValid() ? entry.lastAccessedAt
                                 : entry.updatedAt.isValid()    ? entry.updatedAt
                                                                : entry.createdAt;
     if (!reference.isValid()) return entry.strength;
 
     const qint64 daysSinceAccess = std::max<qint64>(0, reference.daysTo(QDateTime::currentDateTimeUtc()));
-    return entry.strength * std::exp(-lambda * static_cast<double>(daysSinceAccess));
+    // 自适应衰减：按 partition 取策略，retention(idle) = exp(-idle/eff_half_life)，
+    // eff 由 importance(0..1 → 0..10) 与 accessCount 拉伸。不遗忘分区 retention≡1。
+    const MemoryPartition p = entry.partition.trimmed().isEmpty()
+        ? partitionForType(entry.type)
+        : partitionFromString(entry.partition);
+    const PartitionDecayPolicy policy = policyFor(p);
+    const double retention = policy.retention(entry.importance * 10.0, entry.accessCount,
+                                              static_cast<double>(daysSinceAccess));
+    return entry.strength * retention;
 }
 
 double MemoryRetriever::computeEmotionBoost(const MemoryEntry& entry,
@@ -320,6 +328,8 @@ double MemoryRetriever::computeEmotionBoost(const MemoryEntry& entry,
 }
 
 double MemoryRetriever::decayLambda(MemoryType type) const {
+    // 已废弃：保留签名以兼容旧测试。衰减现由 computeEffectiveStrength 经
+    // PartitionDecayPolicy.retention() 计算（按 partition，importance/access 自适应）。
     switch (type) {
     case MemoryType::Core:
     case MemoryType::Preference:

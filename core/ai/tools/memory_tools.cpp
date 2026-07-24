@@ -6,6 +6,7 @@
 
 #include "ai/memory/memory_relation.h"
 #include "ai/memory/memory_store.h"
+#include "ai/memory/partition_policy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -29,6 +30,7 @@ struct MemoryOrganizeStats {
     int scanned = 0;
     int changed = 0;
     int expired = 0;
+    int forgotten = 0;   // 自适应遗忘扫描：retention 低于分区 threshold → Expired
     int archived = 0;
     int superseded = 0;
     int canonicalUpdated = 0;
@@ -46,6 +48,7 @@ struct MemoryOrganizeStats {
         obj[QStringLiteral("scanned")] = scanned;
         obj[QStringLiteral("changed")] = changed;
         obj[QStringLiteral("expired")] = expired;
+        obj[QStringLiteral("forgotten")] = forgotten;
         obj[QStringLiteral("archived")] = archived;
         obj[QStringLiteral("superseded")] = superseded;
         obj[QStringLiteral("canonical_updated")] = canonicalUpdated;
@@ -84,6 +87,7 @@ bool isAllowedMode(const QString& mode) {
         QStringLiteral("auto"),
         QStringLiteral("report"),
         QStringLiteral("expire"),
+        QStringLiteral("forget"),
         QStringLiteral("archive"),
         QStringLiteral("merge_duplicates"),
         QStringLiteral("compact"),
@@ -335,6 +339,54 @@ void applyExpiry(MemoryStore* store,
     }
 }
 
+// 自适应遗忘扫描：按分区 policy 算 retention，低于 threshold 的 Active 记忆标记 Expired。
+// 不物理删除。Hippocampus/Core（sweepEnabled=false）跳过；Sensitive 跳过。
+// 详见 memory_improvement_plan.md B1/B2（对齐 hebb-mind forgetting_job）。
+void applyForgettingSweep(MemoryStore* store,
+                          const QString& mode,
+                          bool dryRun,
+                          int maxChanges,
+                          const QDateTime& now,
+                          QSet<QString>* skippedSensitiveIds,
+                          MemoryOrganizeStats* stats) {
+    if (!modeIncludes(mode, QStringLiteral("forget"))) return;
+
+    const QList<MemoryEntry> entries = store->all();
+    for (const MemoryEntry& entry : entries) {
+        if (!hasChangeBudget(*stats, maxChanges)) return;
+        if (entry.status != MemoryStatus::Active) continue;
+        if (isSensitive(entry, skippedSensitiveIds)) continue;
+
+        const MemoryPartition p = entry.partition.trimmed().isEmpty()
+            ? partitionForType(entry.type)
+            : partitionFromString(entry.partition);
+        const PartitionDecayPolicy policy = policyFor(p);
+        if (!policy.sweepEnabled) continue;  // Hippocampus / Core 不清扫
+
+        const QDateTime reference = entry.lastAccessedAt.isValid() ? entry.lastAccessedAt
+            : entry.updatedAt.isValid() ? entry.updatedAt
+                                        : entry.createdAt;
+        if (!reference.isValid()) continue;  // 无时间锚点，无法判定遗忘，保留
+
+        const qint64 idleDays = std::max<qint64>(0, reference.secsTo(now) / 86400);
+        const double retention = policy.retention(entry.importance * 10.0,
+                                                  entry.accessCount,
+                                                  static_cast<double>(idleDays));
+        if (retention >= policy.threshold) continue;
+
+        ++stats->forgotten;
+        countChange(stats);
+        if (!dryRun) {
+            QJsonObject patch;
+            patch[QStringLiteral("organized_at")] = dateTimeText(now);
+            patch[QStringLiteral("organize_reason")] = QStringLiteral("forgetting_sweep");
+            patch[QStringLiteral("forget_partition")] = partitionToString(p);
+            patch[QStringLiteral("forget_retention")] = retention;
+            store->updateStatusById(entry.id, MemoryStatus::Expired, patch);
+        }
+    }
+}
+
 void applyOperationalArchive(MemoryStore* store,
                              const QString& mode,
                              bool dryRun,
@@ -450,12 +502,13 @@ QJsonObject MemoryOrganizeTool::parameterSchema() const {
 
     QJsonObject properties;
     QJsonObject mode = makeStringProperty(
-        QStringLiteral("整理模式：auto、report、expire、archive、merge_duplicates、compact。默认 auto。"),
+        QStringLiteral("整理模式：auto、report、expire、forget、archive、merge_duplicates、compact。默认 auto。forget=按分区自适应遗忘扫描。"),
         QStringLiteral("auto"));
     QJsonArray modeEnum;
     modeEnum.append(QStringLiteral("auto"));
     modeEnum.append(QStringLiteral("report"));
     modeEnum.append(QStringLiteral("expire"));
+    modeEnum.append(QStringLiteral("forget"));
     modeEnum.append(QStringLiteral("archive"));
     modeEnum.append(QStringLiteral("merge_duplicates"));
     modeEnum.append(QStringLiteral("compact"));
@@ -533,6 +586,13 @@ ToolResult MemoryOrganizeTool::execute(const QJsonObject& params) {
                 now,
                 &skippedSensitiveIds,
                 &stats);
+    applyForgettingSweep(m_memoryStore,
+                         mode,
+                         dryRun,
+                         maxChanges,
+                         now,
+                         &skippedSensitiveIds,
+                         &stats);
     applyOperationalArchive(m_memoryStore,
                             mode,
                             dryRun,

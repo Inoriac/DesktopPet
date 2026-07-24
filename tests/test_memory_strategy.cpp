@@ -14,6 +14,7 @@
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
 #include "memory/noop_embedding_index.h"
+#include "memory/partition_policy.h"
 #include "tools/memory_tools.h"
 
 class TestMemoryStrategy : public QObject {
@@ -51,6 +52,10 @@ private slots:
     void testWorkingMemoryCacheConsolidation();
     void testWorkingMemoryRetrieverIntegration();
     void testNoopEmbeddingIndexDoesNotAffectRetrieval();
+    void testPartitionMappingForAllTypes();
+    void testAdaptiveDecayRetentionAndForgetDays();
+    void testPartitionPersistedAndBackfilled();
+    void testForgettingSweepExpiresStaleAndSparesImportant();
 
 private:
     void setupStoreWithDb(MemoryStore& store, const QTemporaryDir& dir);
@@ -1014,6 +1019,193 @@ void TestMemoryStrategy::testNoopEmbeddingIndexDoesNotAffectRetrieval() {
 
     QCOMPARE(withoutEmbed.size(), withEmbed.size());
     QVERIFY(!withoutEmbed.isEmpty());
+}
+
+// 9 种 MemoryType → 分区映射（memory_improvement_plan.md B3）。
+// Core 类型并入 Semantic（靠自适应近不朽，非独立冻结分区）；
+// Preference/Semantic 直映；Episodic+Event→Episodic；
+// Working/ShortTerm/TaskShadow→Hippocampus；Relationship→Semantic。
+void TestMemoryStrategy::testPartitionMappingForAllTypes() {
+    QCOMPARE(partitionForType(MemoryType::Core), MemoryPartition::Semantic);
+    QCOMPARE(partitionForType(MemoryType::Preference), MemoryPartition::Preference);
+    QCOMPARE(partitionForType(MemoryType::Semantic), MemoryPartition::Semantic);
+    QCOMPARE(partitionForType(MemoryType::Episodic), MemoryPartition::Episodic);
+    QCOMPARE(partitionForType(MemoryType::Event), MemoryPartition::Episodic);
+    QCOMPARE(partitionForType(MemoryType::Working), MemoryPartition::Hippocampus);
+    QCOMPARE(partitionForType(MemoryType::ShortTerm), MemoryPartition::Hippocampus);
+    QCOMPARE(partitionForType(MemoryType::TaskShadow), MemoryPartition::Hippocampus);
+    QCOMPARE(partitionForType(MemoryType::Relationship), MemoryPartition::Semantic);
+
+    // 分区字符串往返（5 个分区）
+    for (MemoryPartition p : {MemoryPartition::Hippocampus, MemoryPartition::Episodic,
+                              MemoryPartition::Semantic, MemoryPartition::Preference,
+                              MemoryPartition::Procedural}) {
+        QCOMPARE(partitionFromString(partitionToString(p)), p);
+    }
+    // 旧库残留 "core" 值兼容 → 并入 Semantic
+    QCOMPARE(partitionFromString(QStringLiteral("core")), MemoryPartition::Semantic);
+
+    // 仅 Hippocampus 不清扫；其余四个清扫
+    QVERIFY(!policyFor(MemoryPartition::Hippocampus).sweepEnabled);
+    QVERIFY(policyFor(MemoryPartition::Episodic).sweepEnabled);
+    QVERIFY(policyFor(MemoryPartition::Semantic).sweepEnabled);
+    QVERIFY(policyFor(MemoryPartition::Procedural).sweepEnabled);
+    QVERIFY(policyFor(MemoryPartition::Preference).sweepEnabled);
+}
+
+// 自适应衰减：对齐 hebb-mind 真实参数验算 + Hippocampus 不清扫 + access 拉伸半衰期
+// + Core 类型靠高 importance 近不朽（无独立冻结分区）。
+void TestMemoryStrategy::testAdaptiveDecayRetentionAndForgetDays() {
+    // hebb 算例：Semantic importance=8 access=10 → eff=441 天 → idle≈441·ln(1/0.3)≈531 天
+    const auto semantic = policyFor(MemoryPartition::Semantic);
+    const double eff = semantic.effectiveHalfLife(8.0, 10);
+    QCOMPARE(eff, 441.0);
+    const double forget = semantic.forgetIdleDays(8.0, 10);
+    QVERIFY(qFuzzyCompare(forget, 441.0 * std::log(1.0 / 0.3)));
+
+    // Episodic importance=3 access=1 → eff=42 天
+    const auto episodic = policyFor(MemoryPartition::Episodic);
+    QCOMPARE(episodic.effectiveHalfLife(3.0, 1), 42.0);
+
+    // 留存率随 idle 单调下降，idle=0 时=1
+    QCOMPARE(episodic.retention(3.0, 1, 0.0), 1.0);
+    QVERIFY(episodic.retention(3.0, 1, 30.0) > episodic.retention(3.0, 1, 60.0));
+
+    // access 更高 → 半衰期更长 → 同 idle 留存更高
+    QVERIFY(episodic.retention(3.0, 10, 30.0) > episodic.retention(3.0, 1, 30.0));
+
+    // Hippocampus 不清扫：retention 恒 1，forgetIdleDays < 0
+    const auto hippo = policyFor(MemoryPartition::Hippocampus);
+    QCOMPARE(hippo.retention(5.0, 0, 365.0), 1.0);
+    QVERIFY(hippo.forgetIdleDays(5.0, 0) < 0.0);
+
+    // Core 类型保护：落入 Semantic，高 importance(importance=10/对应entry 1.0)+access
+    // 即使 idle 365 天，retention 仍远高于 threshold，靠自适应近不朽（无需冻结分区）。
+    // eff = 90×(1+3.0×1.0+1.5×1.0) = 90×5.5 = 495 天；retention(365)=exp(-365/495)≈0.48 > 0.3
+    const double coreEff = semantic.effectiveHalfLife(10.0, 10);
+    QCOMPARE(coreEff, 495.0);
+    QVERIFY(semantic.retention(10.0, 10, 365.0) > 0.3);
+
+    // importance=0 仅不增益，不是删除信号：仍按 base 半衰期遗忘
+    const double effZero = episodic.effectiveHalfLife(0.0, 0);
+    QCOMPARE(effZero, 30.0);  // base 不变
+}
+
+// 分区持久化：addEntry 派生 partition → 落 SQLite → 重 load 后仍正确；JSON 往返亦保持。
+void TestMemoryStrategy::testPartitionPersistedAndBackfilled() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+
+    MemoryEntry semantic;
+    semantic.type = MemoryType::Semantic;
+    semantic.key = QStringLiteral("lang:cpp");
+    semantic.summary = QStringLiteral("用户用 C++20");
+    const MemoryEntry storedSemantic = store.addEntry(semantic);
+
+    MemoryEntry working;
+    working.type = MemoryType::ShortTerm;
+    working.summary = QStringLiteral("临时提到番茄");
+    const MemoryEntry storedWorking = store.addEntry(working);
+
+    // addEntry 返回派生 partition 后的副本
+    QCOMPARE(storedSemantic.partition, QStringLiteral("semantic"));
+    QCOMPARE(storedWorking.partition, QStringLiteral("hippocampus"));
+
+    // JSON 往返保持 partition
+    const QJsonObject obj = storedSemantic.toJson();
+    QCOMPARE(obj.value("partition").toString(), QStringLiteral("semantic"));
+    const MemoryEntry fromJson = MemoryEntry::fromJson(obj);
+    QCOMPARE(fromJson.partition, QStringLiteral("semantic"));
+
+    // 旧式无 partition 字段的 JSON，fromJson 应派生自 type
+    QJsonObject legacy = storedSemantic.toJson();
+    legacy.remove("partition");
+    QCOMPARE(MemoryEntry::fromJson(legacy).partition, QStringLiteral("semantic"));
+
+    // 重新 load（走 SQLite loadAll），partition 应持久化
+    MemoryStore reloaded;
+    setupStoreWithDb(reloaded, dir);
+    const auto all = reloaded.all();
+    QVERIFY(all.size() >= 2);
+    bool foundSemantic = false, foundWorking = false;
+    for (const MemoryEntry& e : all) {
+        if (e.type == MemoryType::Semantic) {
+            QCOMPARE(e.partition, QStringLiteral("semantic"));
+            foundSemantic = true;
+        }
+        if (e.type == MemoryType::ShortTerm) {
+            QCOMPARE(e.partition, QStringLiteral("hippocampus"));
+            foundWorking = true;
+        }
+    }
+    QVERIFY(foundSemantic);
+    QVERIFY(foundWorking);
+}
+
+// 自适应遗忘扫描：高空闲低重要 Episodic 被 Expired；Core 类型(高 importance)靠自适应保留；
+// Sensitive 跳过；不物理删除。
+void TestMemoryStrategy::testForgettingSweepExpiresStaleAndSparesImportant() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    // Episodic，最后访问 90 天前，importance 0.5、access 0
+    // → eff=30×(1+1.0×0.5)=45，retention=exp(-90/45)≈0.135 < 0.3 → 应遗忘
+    MemoryEntry stale;
+    stale.type = MemoryType::Episodic;
+    stale.key = QStringLiteral("stale:event");
+    stale.summary = QStringLiteral("很久没想起 gamma");
+    stale.content = stale.summary;
+    stale.importance = 0.5;
+    stale.confidence = 0.8;
+    stale.strength = 0.8;
+    stale.updatedAt = QDateTime::currentDateTimeUtc().addDays(-90);
+    stale.lastAccessedAt = stale.updatedAt;
+    store.addEntry(stale);
+
+    // Core 类型（用户身份），同样 90 天前 —— 落入 Semantic，addEntry 设 importance 下限 0.8
+    // → importance 8/10、access 0：eff=90×(1+3.0×0.8)=306，retention=exp(-90/306)≈0.745 > 0.3 → 保留
+    MemoryEntry core;
+    core.type = MemoryType::Core;
+    core.key = QStringLiteral("user:identity");
+    core.summary = QStringLiteral("用户身份 gamma");
+    core.content = core.summary;
+    core.importance = 0.5;  // 故意低，验证 addEntry 的 Core importance 下限保护
+    core.strength = 0.5;
+    core.updatedAt = QDateTime::currentDateTimeUtc().addDays(-90);
+    core.lastAccessedAt = core.updatedAt;
+    const MemoryEntry storedCore = store.addEntry(core);
+    QVERIFY(storedCore.importance >= 0.8);   // Core 类型 importance 下限生效
+    QCOMPARE(storedCore.partition, QStringLiteral("semantic"));
+
+    MemoryOrganizeTool tool(&store);
+    QJsonObject params;
+    params[QStringLiteral("mode")] = QStringLiteral("forget");
+    const ToolResult result = tool.execute(params);
+    QVERIFY(result.success);
+
+    const QJsonObject stats = result.data;
+    QVERIFY(stats.value(QStringLiteral("forgotten")).toInt() >= 1);
+
+    // 重新确认状态：stale → Expired，identity 仍 Active；条目仍在（未物理删除）
+    const auto all = store.all();
+    bool staleExpired = false;
+    bool coreActive = false;
+    for (const MemoryEntry& e : all) {
+        if (e.key == QStringLiteral("stale:event")) {
+            QCOMPARE(e.status, MemoryStatus::Expired);
+            staleExpired = true;
+        }
+        if (e.key == QStringLiteral("user:identity")) {
+            QCOMPARE(e.status, MemoryStatus::Active);
+            coreActive = true;
+        }
+    }
+    QVERIFY(staleExpired);
+    QVERIFY(coreActive);
 }
 
 QTEST_MAIN(TestMemoryStrategy)

@@ -8,6 +8,8 @@
 #include <QSqlQuery>
 #include <QUuid>
 
+#include "partition_policy.h"
+
 namespace {
 
 QString dateTimeToString(const QDateTime& value) {
@@ -103,6 +105,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "  type TEXT NOT NULL,"
             "  status TEXT NOT NULL,"
             "  privacy_level TEXT NOT NULL,"
+            "  partition TEXT,"
             "  key TEXT,"
             "  summary TEXT,"
             "  content TEXT,"
@@ -127,6 +130,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_status ON memory_items(status)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items(key)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_partition ON memory_items(partition)"),
 
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS memory_tags ("
@@ -194,6 +198,42 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
     }
 
+    // 迁移：为既有库补 partition 列 + 存量回填（派生自 type，对齐 partition_policy.h::partitionForType）。
+    // SQLite 的 ALTER TABLE ADD COLUMN 不支持 IF NOT EXISTS，重复执行会报 "duplicate column" —— 忽略该错误。
+    {
+        QSqlQuery alter(db);
+        alter.exec(QStringLiteral("ALTER TABLE memory_items ADD COLUMN partition TEXT"));
+        // 不检查 lastError：列已存在时为预期错误，继续回填。
+
+        // 回填 partition IS NULL/空 的行。CASE 分支与 partitionForType() 严格对应（Core 类型 → semantic）。
+        const QString backfill = QStringLiteral(
+            "UPDATE memory_items SET partition = CASE"
+            "  WHEN type = 'core'         THEN 'semantic'"
+            "  WHEN type = 'preference'   THEN 'preference'"
+            "  WHEN type = 'semantic'     THEN 'semantic'"
+            "  WHEN type = 'episodic'     THEN 'episodic'"
+            "  WHEN type = 'event'        THEN 'episodic'"
+            "  WHEN type = 'relationship' THEN 'semantic'"
+            "  WHEN type = 'working'      THEN 'hippocampus'"
+            "  WHEN type = 'short_term'   THEN 'hippocampus'"
+            "  WHEN type = 'task_shadow'  THEN 'hippocampus'"
+            "  ELSE 'episodic'"
+            " END WHERE partition IS NULL OR partition = ''"
+        );
+        if (!query.exec(backfill)) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+
+        // 撤销 Core 分区：旧版本曾把 Core 类型写入 partition='core'，统一并入 semantic。
+        if (!query.exec(QStringLiteral(
+            "UPDATE memory_items SET partition = 'semantic' WHERE partition = 'core'"
+        ))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
     return true;
 }
 
@@ -205,14 +245,14 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
 
     query.prepare(QStringLiteral(
         "INSERT OR REPLACE INTO memory_items ("
-        "  id, type, status, privacy_level, key, summary, content,"
+        "  id, type, status, privacy_level, partition, key, summary, content,"
         "  scope, source, importance, strength, confidence,"
         "  emotion, emotion_intensity, emotion_confidence,"
         "  mention_count, access_count,"
         "  created_at, updated_at, last_accessed_at, expires_at,"
         "  payload_json"
         ") VALUES ("
-        "  :id, :type, :status, :privacy_level, :key, :summary, :content,"
+        "  :id, :type, :status, :privacy_level, :partition, :key, :summary, :content,"
         "  :scope, :source, :importance, :strength, :confidence,"
         "  :emotion, :emotion_intensity, :emotion_confidence,"
         "  :mention_count, :access_count,"
@@ -230,6 +270,7 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     query.bindValue(QStringLiteral(":type"), memoryTypeToString(entry.type));
     query.bindValue(QStringLiteral(":status"), memoryStatusToString(entry.status));
     query.bindValue(QStringLiteral(":privacy_level"), privacyLevelToString(entry.privacyLevel));
+    query.bindValue(QStringLiteral(":partition"), entry.partition);
     query.bindValue(QStringLiteral(":key"), entry.key);
     query.bindValue(QStringLiteral(":summary"), entry.summary);
     query.bindValue(QStringLiteral(":content"), entry.content);
@@ -323,7 +364,10 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
         entry.type = memoryTypeFromString(query.value(QStringLiteral("type")).toString());
         entry.status = memoryStatusFromString(query.value(QStringLiteral("status")).toString());
         entry.privacyLevel = privacyLevelFromString(query.value(QStringLiteral("privacy_level")).toString());
-        entry.key = query.value(QStringLiteral("key")).toString();
+        const QString partitionStr = query.value(QStringLiteral("partition")).toString();
+        entry.partition = partitionStr.trimmed().isEmpty()
+            ? partitionToString(partitionForType(entry.type))
+            : partitionStr;
         entry.summary = query.value(QStringLiteral("summary")).toString();
         entry.content = query.value(QStringLiteral("content")).toString();
         entry.scope = query.value(QStringLiteral("scope")).toString();
