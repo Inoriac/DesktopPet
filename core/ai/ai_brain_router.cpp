@@ -300,7 +300,7 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
         query.limit = qMin(limit, 4);
     }
 
-    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query, &m_workingMemoryCache));
+    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query, &m_workingMemoryCache, m_embeddingIndex));
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {

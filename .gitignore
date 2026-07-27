@@ -28,6 +28,16 @@ CharacterModels/
 *.pth
 *.ckpt
 
+# 构建期一次性导出 / Python 导出环境（仅开发期，不入库）
+build_export/
+
+# 分发用 embedding 模型(int8)需入库，给上面 *.onnx 开例外
+!assets/embeddings/model_quantized.onnx
+
+# onnxruntime 运行库：平台专属二进制，走 tools/fetch_onnxruntime.sh 拉取，不入库
+third_party/onnxruntime/*
+!third_party/onnxruntime/README.md
+
 # Local model assets
 assets/models/*
 !assets/models/README.md
@@ -40,3 +50,5 @@ build/
 .claude/
 前端修改计划.md
 memory_improvement_plan.md
+
+./build_noort

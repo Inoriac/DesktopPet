@@ -20,6 +20,8 @@
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
+
+class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
 #include "router/intent_router.h"
 #include "skill/skill_matcher.h"
 #include "skill/skill_store.h"
@@ -52,6 +54,11 @@ public:
     const MemoryStore* memoryStore() const { return &m_memoryStore; }
     SkillStore* skillStore() { return &m_skillStore; }
     const SkillStore* skillStore() const { return &m_skillStore; }
+
+    // 注入语义检索索引（绑定 SqliteEmbeddingIndex+OnnxEmbeddingProvider）。
+    // non-owning；为 nullptr 时 retrieve 回退纯关键词打分。生命周期需长于本对象。
+    void setEmbeddingIndex(EmbeddingIndex* idx) { m_embeddingIndex = idx; }
+    EmbeddingIndex* embeddingIndex() const { return m_embeddingIndex; }
 
 signals:
     void thinkingStarted(const QString& reason);
@@ -111,6 +118,7 @@ private:
     WorkingMemoryCache m_workingMemoryCache;
     SkillStore m_skillStore;
     SkillMatcher m_skillMatcher;
+    EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
 
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;

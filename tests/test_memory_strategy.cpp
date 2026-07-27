@@ -22,6 +22,11 @@
 #include "memory/model_downloader.h"
 #include "tools/memory_tools.h"
 
+#ifdef DESKTOP_PET_HAS_ORT
+#include "memory/onnx_embedding_provider.h"
+#include <cmath>
+#endif
+
 class TestMemoryStrategy : public QObject {
     Q_OBJECT
 
@@ -63,6 +68,9 @@ private slots:
     void testForgettingSweepExpiresStaleAndSparesImportant();
     void testSqliteEmbeddingIndexSearch();
     void testModelDownloaderLocalMirror();
+#ifdef DESKTOP_PET_HAS_ORT
+    void testOnnxEmbeddingProviderLoadsAndEmbeds();
+#endif
 
 private:
     void setupStoreWithDb(MemoryStore& store, const QTemporaryDir& dir);
@@ -1335,6 +1343,50 @@ void TestMemoryStrategy::testModelDownloaderLocalMirror() {
     ModelDownloader::FileSpec badSpec{modelRel, QStringLiteral("0000")};
     QVERIFY(!downloader.downloadSync(repo, destDir.path(), {badSpec}, &err));
 }
+
+#ifdef DESKTOP_PET_HAS_ORT
+// OnnxEmbeddingProvider：加载 assets/embeddings/model_quantized.onnx + vocab.txt，
+// 验证维度 512、归一化(norm≈1)、语义近邻(相似文本余弦 > 不相关文本)。
+// 模型未生成时 QSKIP，不阻塞回归。
+void TestMemoryStrategy::testOnnxEmbeddingProviderLoadsAndEmbeds() {
+    const QString dir = QStringLiteral(DESKTOP_PET_EMBEDDING_ASSETS);
+    const QString model = QDir(dir).filePath(QStringLiteral("model_quantized.onnx"));
+    const QString vocab = QDir(dir).filePath(QStringLiteral("vocab.txt"));
+    if (!QFile::exists(model) || !QFile::exists(vocab)) {
+        QSKIP("onnx embedding assets not present; run tools/export_bge_onnx.py");
+    }
+
+    OnnxEmbeddingProvider provider;
+    QString err;
+    OnnxEmbeddingProvider::Config cfg;
+    cfg.modelPath = model;
+    cfg.vocabPath = vocab;
+    cfg.maxSeqLen = 64;
+    QVERIFY(provider.load(cfg, &err));
+    QCOMPARE(provider.dimension(), 512);
+
+    const QVector<float> a = provider.embed(QStringLiteral("用户喜欢c++编程语言"));
+    QCOMPARE(a.size(), 512);
+    double norm = 0.0;
+    for (float v : a) norm += double(v) * double(v);
+    norm = std::sqrt(norm);
+    QVERIFY(norm > 0.95 && norm < 1.05); // L2 归一化后范数≈1
+
+    const QVector<float> b = provider.embed(QStringLiteral("用户偏爱C++程序设计"));
+    const QVector<float> c = provider.embed(QStringLiteral("今天天气晴朗适合出门散步"));
+
+    auto cosine = [](const QVector<float>& x, const QVector<float>& y) {
+        double dot = 0.0, na = 0.0, nb = 0.0;
+        for (int i = 0; i < x.size(); ++i) { dot += double(x[i]) * double(y[i]); na += double(x[i]) * double(x[i]); nb += double(y[i]) * double(y[i]); }
+        if (na <= 0.0 || nb <= 0.0) return -1.0;
+        return dot / (std::sqrt(na) * std::sqrt(nb));
+    };
+    const double simSimilar = cosine(a, b);
+    const double simUnrelated = cosine(a, c);
+    QVERIFY(simSimilar > 0.5);
+    QVERIFY(simSimilar > simUnrelated);
+}
+#endif
 
 QTEST_MAIN(TestMemoryStrategy)
 #include "test_memory_strategy.moc"

@@ -70,7 +70,7 @@ QString AgentCore::startTask(const QString& input, const QString& triggerTag) {
             MemoryType::Relationship,
             MemoryType::Episodic
         };
-        contextRequest.memoryHints = retriever.formatForContext(retriever.retrieve(*m_memoryStore, query));
+        contextRequest.memoryHints = retriever.formatForContext(retriever.retrieve(*m_memoryStore, query, nullptr, m_embeddingIndex));
     }
 
     AgentSession* current = mutableSession(sessionId);

@@ -440,6 +440,52 @@ target_link_libraries(memory_strategy_tests
 
 add_test(NAME MemoryStrategyTests COMMAND memory_strategy_tests)
 
+# ---- onnxruntime (third_party, optional软依赖) ----
+# 探测 third_party/onnxruntime/onnxruntime-<platform>-<ver>/，找到则把
+# OnnxEmbeddingProvider 编入 memory_strategy_tests；找不到则跳过（provider
+# 不存在，语义检索退化为 Noop），不阻塞构建。
+set(ORT_ROOT "")
+set(ORT_LIB "")
+file(GLOB _ort_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/onnxruntime-*")
+foreach(d ${_ort_dirs})
+    if(EXISTS "${d}/include/onnxruntime_cxx_api.h")
+        set(ORT_ROOT "${d}")
+        break()
+    endif()
+endforeach()
+if(ORT_ROOT)
+    find_library(ORT_LIB onnxruntime NO_DEFAULT_PATH PATHS "${ORT_ROOT}/lib")
+    if(NOT ORT_LIB)
+        # macOS 包名带版本，再放宽找一次
+        file(GLOB _ort_lib "${ORT_ROOT}/lib/libonnxruntime*.dylib" "${ORT_ROOT}/lib/libonnxruntime*.so" "${ORT_ROOT}/lib/onnxruntime*.dll")
+        if(_ort_lib)
+            list(GET _ort_lib 0 ORT_LIB)
+            set(ORT_LIB ${ORT_LIB} CACHE FILEPATH "")
+        endif()
+    endif()
+endif()
+if(ORT_ROOT AND ORT_LIB)
+    set(ORT_FOUND TRUE CACHE BOOL "onnxruntime available")
+    message(STATUS "onnxruntime found: root=${ORT_ROOT} lib=${ORT_LIB}")
+    target_sources(memory_strategy_tests PRIVATE
+        core/ai/memory/onnx_embedding_provider.h
+        core/ai/memory/onnx_embedding_provider.cpp)
+    target_include_directories(memory_strategy_tests PRIVATE ${ORT_ROOT}/include)
+    target_link_libraries(memory_strategy_tests ${ORT_LIB})
+    target_compile_definitions(memory_strategy_tests PRIVATE
+        DESKTOP_PET_HAS_ORT
+        DESKTOP_PET_EMBEDDING_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets/embeddings")
+    # 运行时让 binary 在同目录 / 相对 lib 找到动态库（mac 需要）
+    set_target_properties(memory_strategy_tests PROPERTIES
+        BUILD_RPATH "${ORT_ROOT}/lib"
+        INSTALL_RPATH "@loader_path")
+else()
+    set(ORT_FOUND FALSE CACHE BOOL "onnxruntime available")
+    message(STATUS "onnxruntime NOT found — OnnxEmbeddingProvider skipped (Noop fallback). "
+                   "Run tools/fetch_onnxruntime.sh to enable.")
+    # 不加 onnx_embedding_provider.cpp，但保留头以供 Desktop_Pet 在 ort 可用时引用
+endif()
+
 # ---- LLM 异步服务测试 ----
 add_executable(llm_tests
     tests/test_llm_chat_service.cpp

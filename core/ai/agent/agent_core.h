@@ -12,6 +12,7 @@ class ContextManager;
 class LlmChatService;
 class MemoryStore;
 class ToolRuntime;
+class EmbeddingIndex; // 可选注入；为空时 retrieve 走关键词路径
 
 class AgentCore : public QObject {
     Q_OBJECT
@@ -24,6 +25,7 @@ public:
     void setContextManager(ContextManager* contextManager);
     void setMemoryStore(MemoryStore* memoryStore);
     void setLlmChatService(LlmChatService* chatService);
+    void setEmbeddingIndex(EmbeddingIndex* idx) { m_embeddingIndex = idx; } // non-owning，可选
 
     QString startTask(const QString& input, const QString& triggerTag = "user_request");
     bool hasSession(const QString& sessionId) const;
@@ -50,6 +52,7 @@ private:
     ContextManager* m_contextManager = nullptr; // non-owning
     MemoryStore* m_memoryStore = nullptr;       // non-owning
     LlmChatService* m_chatService = nullptr;    // non-owning
+    EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
     QHash<QString, AgentSession> m_sessions;
     int m_maxToolRounds = 3;
 };
