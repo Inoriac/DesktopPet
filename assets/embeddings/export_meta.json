@@ -1,0 +1,19 @@
+{
+  "model_id": "BAAI/bge-small-zh-v1.5",
+  "embedding_dim": 512,
+  "max_seq_len": 512,
+  "pooling": "mean",
+  "normalize": true,
+  "quantization": "onnxruntime dynamic int8 (weight QInt8)",
+  "runtime": "onnxruntime",
+  "opset": 17,
+  "files": {
+    "int8": "model_quantized.onnx",
+    "fp32_ref": "model.onnx",
+    "vocab": "vocab.txt"
+  },
+  "sizes_mb": {
+    "int8": 57.41,
+    "fp32": 95.89
+  }
+}
