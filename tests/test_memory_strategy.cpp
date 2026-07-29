@@ -68,6 +68,9 @@ private slots:
     void testForgettingSweepExpiresStaleAndSparesImportant();
     void testSqliteEmbeddingIndexSearch();
     void testModelDownloaderLocalMirror();
+    void testTransactionRollbackRevertsWrites();
+    void testTransactionCommitRetainsWrites();
+    void testTransactionRollbackRevertsRelationGraph();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1342,6 +1345,80 @@ void TestMemoryStrategy::testModelDownloaderLocalMirror() {
     // sha 不匹配 → 应判定失败（校验失败会删文件，无其它镜像 → 整体失败）
     ModelDownloader::FileSpec badSpec{modelRel, QStringLiteral("0000")};
     QVERIFY(!downloader.downloadSync(repo, destDir.path(), {badSpec}, &err));
+}
+
+// Daydream 地基：事务 ROLLBACK 必须撤销同一连接上的所有写入。
+void TestMemoryStrategy::testTransactionRollbackRevertsWrites() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    QVERIFY(store.beginTransaction());
+
+    const MemoryEntry written = store.add(MemoryType::Semantic,
+                                          QStringLiteral("txn_rollback"),
+                                          QStringLiteral("应被回滚的条目"),
+                                          {QStringLiteral("txn")});
+    QVERIFY(!written.id.isEmpty());
+    QCOMPARE(store.all().size(), 1); // 内存镜像已更新
+
+    QVERIFY(store.rollbackTransaction());
+
+    // ROLLBACK 只撤 SQLite；内存镜像不丢，重 load 校验落盘真相
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 0);
+    QVERIFY(!store.findById(written.id));
+}
+
+void TestMemoryStrategy::testTransactionCommitRetainsWrites() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    QVERIFY(store.beginTransaction());
+    const MemoryEntry written = store.add(MemoryType::Semantic,
+                                          QStringLiteral("txn_commit"),
+                                          QStringLiteral("应保留的条目"),
+                                          {QStringLiteral("txn")});
+    QVERIFY(store.commitTransaction());
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 1);
+    QVERIFY(store.findById(written.id));
+}
+
+// ROLLBACK 也要撤销复用同一连接的 MemoryRelationGraph 写入（图残留防护）。
+void TestMemoryStrategy::testTransactionRollbackRevertsRelationGraph() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    const MemoryEntry a = store.addEntry(store.add(MemoryType::Semantic, QStringLiteral("a"), QStringLiteral("a"), {}));
+    const MemoryEntry b = store.addEntry(store.add(MemoryType::Semantic, QStringLiteral("b"), QStringLiteral("b"), {}));
+    QVERIFY(store.load());
+    const QString aId = store.all().at(0).id;
+    const QString bId = store.all().at(1).id;
+
+    QVERIFY(store.beginTransaction());
+    MemoryRelationGraph& graph = store.relationGraph();
+    MemoryRelation rel;
+    rel.fromMemoryId = aId;
+    rel.toMemoryId = bId;
+    rel.type = MemoryRelationType::Related;
+    QVERIFY(graph.addRelation(rel));
+    QVERIFY(graph.hasRelation(aId, bId, MemoryRelationType::Related));
+
+    QVERIFY(store.rollbackTransaction());
+
+    MemoryStore reloaded;
+    setupStoreWithDb(reloaded, tempDir);
+    QVERIFY(!reloaded.relationGraph().hasRelation(aId, bId, MemoryRelationType::Related));
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

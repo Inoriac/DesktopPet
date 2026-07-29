@@ -183,6 +183,18 @@ QString MemoryStore::databaseConnectionName() const {
     return m_repository ? m_repository->connectionName() : QString();
 }
 
+bool MemoryStore::beginTransaction() {
+    return m_repository && m_repository->beginTransaction();
+}
+
+bool MemoryStore::commitTransaction() {
+    return m_repository && m_repository->commitTransaction();
+}
+
+bool MemoryStore::rollbackTransaction() {
+    return m_repository && m_repository->rollbackTransaction();
+}
+
 bool MemoryStore::load(QString* errorMessage) {
     QString dbError;
     if (!m_repository->open(m_databasePath, &dbError)) {

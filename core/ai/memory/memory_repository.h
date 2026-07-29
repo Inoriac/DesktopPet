@@ -22,6 +22,12 @@ public:
                               const QJsonObject& payloadPatch = {}) = 0;
     virtual QList<MemoryEntry> loadAll() = 0;
     virtual bool clear() = 0;
+
+    // 事务原子性，供 Daydream 整 session ROLLBACK 用。底层走同一命名连接的
+    // QSqlDatabase::transaction/commit/rollback；同一连接上的插入会随 ROLLBACK 撤销。
+    virtual bool beginTransaction() = 0;
+    virtual bool commitTransaction() = 0;
+    virtual bool rollbackTransaction() = 0;
 };
 
 #endif // DESKTOP_PET_MEMORY_REPOSITORY_H

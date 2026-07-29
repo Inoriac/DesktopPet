@@ -4,6 +4,7 @@
 #include <QFileInfo>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSqlDriver>
 #include <QSqlError>
 #include <QSqlQuery>
 #include <QUuid>
@@ -92,6 +93,25 @@ bool SQLiteMemoryRepository::isOpen() const {
     if (!QSqlDatabase::contains(m_connectionName)) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
     return db.isOpen();
+}
+
+bool SQLiteMemoryRepository::beginTransaction() {
+    if (!isOpen()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    if (!db.driver()->hasFeature(QSqlDriver::Transactions)) return false;
+    return db.transaction();
+}
+
+bool SQLiteMemoryRepository::commitTransaction() {
+    if (!isOpen()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    return db.commit();
+}
+
+bool SQLiteMemoryRepository::rollbackTransaction() {
+    if (!isOpen()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    return db.rollback();
 }
 
 bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {

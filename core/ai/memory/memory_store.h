@@ -54,6 +54,12 @@ public:
     // （如 SqliteEmbeddingIndex 写 memory_embeddings 表）。
     QString databaseConnectionName() const;
 
+    // 事务原子性，供 Daydream 整 session ROLLBACK 用。beginafter 内所有写入（含
+    // MemoryRelationGraph 等复用同一连接的组件）在 commit 前未落盘，rollback 全撤销。
+    bool beginTransaction();
+    bool commitTransaction();
+    bool rollbackTransaction();
+
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;
 

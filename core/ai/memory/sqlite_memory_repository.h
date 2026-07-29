@@ -23,6 +23,10 @@ public:
     QList<MemoryEntry> loadAll() override;
     bool clear() override;
 
+    bool beginTransaction() override;
+    bool commitTransaction() override;
+    bool rollbackTransaction() override;
+
 private:
     bool initSchema(QString* errorMessage = nullptr);
     bool insertTags(const QString& memoryId, const QStringList& tags);
