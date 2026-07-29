@@ -11,6 +11,11 @@
 #include <QDateTime>
 #include <QSysInfo>
 
+// 平台用户空闲秒数（距上次键鼠输入），供 Daydream 空闲触发判定在 C++ 内部
+// 直接调用（不经过 LLM 工具链）。返回 <0 表示当前平台不支持。
+// 只读空闲时长、不读取输入内容、macOS/Windows 无需辅助功能权限。
+int queryUserIdleSeconds();
+
 // ================================================================
 // Tool: get_current_time
 // 功能: 获取当前时间和日期

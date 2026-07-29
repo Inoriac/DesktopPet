@@ -16,6 +16,7 @@
 #include "ai/tools/file_tools.h"
 #include "ai/tools/runtime/tool_runtime.h"
 #include "ai/tools/web_tools.h"
+#include "ai/tools/environment_tools.h"
 
 class TestFileAndWebTools : public QObject {
     Q_OBJECT
@@ -46,6 +47,7 @@ private slots:
     void test_web_fetch_block_localhost();
     void test_web_search_validate_params();
     void test_network_security_validator();
+    void test_query_user_idle_seconds_platform_supported();
 };
 
 void TestFileAndWebTools::test_read_text_file_success() {
@@ -476,6 +478,17 @@ void TestFileAndWebTools::test_network_security_validator() {
     // 注意: example.com 等需要 DNS 解析的测试在网络不可用时会失败
     // 因此不在这里测试，实际使用时会正常工作
     qDebug() << "Network security validator basic tests passed";
+}
+
+// queryUserIdleSeconds 是从 GetUserIdleStateTool 抽出来的自由函数，
+// 供 Daydream 触发判定在 C++ 内部直接调用。mac/Win 应返回 >=0。
+void TestFileAndWebTools::test_query_user_idle_seconds_platform_supported() {
+    const int idle = queryUserIdleSeconds();
+#if defined(Q_OS_WIN) || defined(Q_OS_MACOS)
+    QVERIFY2(idle >= 0, qPrintable(QString("expected idle>=0, got %1").arg(idle)));
+#else
+    if (idle < 0) QSKIP("idle detection not implemented on this platform");
+#endif
 }
 
 QTEST_MAIN(TestFileAndWebTools)

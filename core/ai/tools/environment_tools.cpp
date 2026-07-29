@@ -49,6 +49,24 @@ QString powerStatusText(int status) {
     default: return "unknown";
     }
 }
+}  // namespace
+
+int queryUserIdleSeconds() {
+#ifdef Q_OS_WIN
+    LASTINPUTINFO info;
+    info.cbSize = sizeof(LASTINPUTINFO);
+    if (!GetLastInputInfo(&info)) return -1;
+    const DWORD idleMs = GetTickCount() - info.dwTime;
+    return static_cast<int>(idleMs / 1000);
+#elif defined(Q_OS_MACOS)
+    // CGEventSourceSecondsSinceLastEventType：只读“距上次 HID 输入的秒数”，
+    // 不读取输入内容、无需辅助功能权限。clamp 到 >=0。
+    const CFTimeInterval idleSec = CGEventSourceSecondsSinceLastEventType(
+        kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
+    return (idleSec > 0.0) ? static_cast<int>(idleSec) : 0;
+#else
+    return -1; // 平台不支持
+#endif
 }
 
 GetUserIdleStateTool::GetUserIdleStateTool()
@@ -72,38 +90,20 @@ ToolResult GetUserIdleStateTool::execute(const QJsonObject& params) {
     QJsonObject result;
     result["idle_threshold_seconds"] = thresholdSeconds;
 
-#ifdef Q_OS_WIN
-    LASTINPUTINFO info;
-    info.cbSize = sizeof(LASTINPUTINFO);
-    if (!GetLastInputInfo(&info)) {
-        return ToolResult::fail("无法获取用户空闲状态");
+    // 复用 queryUserIdleSeconds（Daydream 触发判定也直接调它），单一来源。
+    const int idleSeconds = queryUserIdleSeconds();
+    if (idleSeconds < 0) {
+        result["supported"] = false;
+        result["idle_seconds"] = -1;
+        result["is_idle"] = false;
+        result["level"] = "unknown";
+        result["note"] = "当前平台暂未实现空闲状态检测";
+    } else {
+        result["supported"] = true;
+        result["idle_seconds"] = idleSeconds;
+        result["is_idle"] = idleSeconds >= thresholdSeconds;
+        result["level"] = idleLevel(idleSeconds);
     }
-
-    const DWORD now = GetTickCount();
-    const DWORD idleMs = now - info.dwTime;
-    const int idleSeconds = static_cast<int>(idleMs / 1000);
-    result["supported"] = true;
-    result["idle_seconds"] = idleSeconds;
-    result["is_idle"] = idleSeconds >= thresholdSeconds;
-    result["level"] = idleLevel(idleSeconds);
-#elif defined(Q_OS_MACOS)
-    // CGEventSourceSecondsSinceLastEventType：只读“距上次 HID 输入的秒数”，
-    // 不读取输入内容、无需辅助功能权限。供 Daydream 空闲触发判定使用。
-    // 部分系统下首次/无输入时可能返回 0 或极小值，clamp 到 >=0。
-    const CFTimeInterval idleSec = CGEventSourceSecondsSinceLastEventType(
-        kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
-    const int idleSeconds = (idleSec > 0.0) ? static_cast<int>(idleSec) : 0;
-    result["supported"] = true;
-    result["idle_seconds"] = idleSeconds;
-    result["is_idle"] = idleSeconds >= thresholdSeconds;
-    result["level"] = idleLevel(idleSeconds);
-#else
-    result["supported"] = false;
-    result["idle_seconds"] = -1;
-    result["is_idle"] = false;
-    result["level"] = "unknown";
-    result["note"] = "当前平台暂未实现空闲状态检测";
-#endif
 
     return ToolResult::ok(result);
 }

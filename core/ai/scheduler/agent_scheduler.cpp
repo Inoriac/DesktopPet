@@ -361,6 +361,22 @@ void AgentScheduler::scheduleNextTick() {
     m_timer.start(qMax(1000, nextMs));
 }
 
+qint64 AgentScheduler::msToNextDue() const {
+    qint64 nearest = -1;
+    const QDateTime now = QDateTime::currentDateTime();
+    for (const ScheduledTask& task : m_tasks) {
+        if (!task.enabled || !task.nextTriggerAt.isValid()) {
+            continue;
+        }
+        const qint64 diff = now.msecsTo(task.nextTriggerAt);
+        const qint64 clamped = diff < 0 ? 0 : diff; // 已过期算 0
+        if (nearest < 0 || clamped < nearest) {
+            nearest = clamped;
+        }
+    }
+    return nearest; // -1=无待办
+}
+
 QString AgentScheduler::defaultStoragePath() {
     const QString configDir = QDir::current().filePath("config");
     QDir().mkpath(configDir);

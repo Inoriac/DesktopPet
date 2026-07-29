@@ -34,6 +34,10 @@ public:
     bool cancelTask(const QString& id, QString* errorMessage = nullptr);
     bool snoozeTask(const QString& id, int minutes, QString* errorMessage = nullptr);
 
+    // 距最近一个待办 due 的毫秒数（已过期返回 0，无待办返回 -1）。不封顶，
+    // 供 Daydream 触发判定「距待办 > N₂ 分钟」用。与 scheduleNextTick 同源。
+    qint64 msToNextDue() const;
+
 signals:
     void taskTriggered(const QString& id, const QString& title);
     void taskFailed(const QString& id, const QString& errorMessage);
