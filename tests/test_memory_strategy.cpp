@@ -21,6 +21,7 @@
 #include "memory/sqlite_embedding_index.h"
 #include "memory/model_downloader.h"
 #include "memory/daydream_consolidator.h"
+#include "scheduler/daydream_trigger_policy.h"
 #include "tools/memory_tools.h"
 
 #ifdef DESKTOP_PET_HAS_ORT
@@ -77,6 +78,9 @@ private slots:
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
     void testDaydreamDrainUpgradesViaPersistedMentionCount();
+    void testDaydreamTriggerPolicyAllConditions();
+    void testDaydreamTriggerPolicyNegativeCases();
+    void testDaydreamTriggerPolicyNoDueTodoNonBlocking();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1602,6 +1606,37 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
     QCOMPARE(upgraded.type, MemoryType::Episodic);
     QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal); // review finding #3
     QCOMPARE(upgraded.source, QStringLiteral("consolidation"));
+}
+
+// DaydreamTriggerPolicy 复合判定：全条件满足才触发。
+void TestMemoryStrategy::testDaydreamTriggerPolicyAllConditions() {
+    DaydreamTriggerPolicy policy;
+    // idle=600>=N1(300) && !busy && msToNext=1200000>=N2(600000) &&
+    // msSinceLast=1000000>=MIN_GAP(900000) && !interrupted && count=0<HOURLY_CAP(3)
+    QVERIFY(policy.shouldTrigger(600, false, 1200000, 1000000, false, 0));
+    // 刚好边界：idle=N1, msToNext=N2, msSinceLast=MIN_GAP
+    QVERIFY(policy.shouldTrigger(300, false, 600000, 900000, false, 0));
+}
+
+void TestMemoryStrategy::testDaydreamTriggerPolicyNegativeCases() {
+    DaydreamTriggerPolicy policy;
+    const bool wasI = false;
+    // 任一条件不满足 → false
+    QVERIFY(!policy.shouldTrigger(299, false, 1200000, 1000000, wasI, 0)); // idle 不足
+    QVERIFY(!policy.shouldTrigger(600, true, 1200000, 1000000, wasI, 0));  // busy
+    QVERIFY(!policy.shouldTrigger(600, false, 599999, 1000000, wasI, 0));  // 待办近
+    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 899999, wasI, 0));  // 距上次不足
+    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 1000000, wasI, 3)); // 超每小时上限
+    QVERIFY(!policy.shouldTrigger(-1, false, 1200000, 1000000, wasI, 0));  // 平台不支持
+    //被打断需叠加 BACKOFF：MIN_GAP+BACKOFF=1500000，msSinceLast=1000000 不足
+    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 1000000, true, 0));
+    QVERIFY(policy.shouldTrigger(600, false, 1200000, 1500000, true, 0));  // 退避过后
+}
+
+// 无待办(msToNextDue<0)不阻塞触发。
+void TestMemoryStrategy::testDaydreamTriggerPolicyNoDueTodoNonBlocking() {
+    DaydreamTriggerPolicy policy;
+    QVERIFY(policy.shouldTrigger(600, false, -1, 1000000, false, 0));
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

@@ -144,6 +144,7 @@ void PetWindow::setupAiBrain() {
 
     aiBrain->setPetName(modelName);
     aiBrain->setToolRegistry(aiToolRegistry.get());
+    aiBrain->setAgentScheduler(agentScheduler.get());
     aiBrain->setEnabled(aiEnabled);
 
     if (aiEnabled) {

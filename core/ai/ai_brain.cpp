@@ -29,6 +29,10 @@ void AIBrain::setToolRegistry(ToolRegistry* registry) {
     m_toolRuntime.setToolRegistry(registry);
 }
 
+void AIBrain::setAgentScheduler(AgentScheduler* scheduler) {
+    m_scheduler = scheduler;
+}
+
 void AIBrain::setEnabled(bool enabled) {
     m_enabled = enabled;
     if (!m_enabled) {
@@ -52,6 +56,7 @@ void AIBrain::start() {
     scheduleTrigger("idle_action");
     scheduleTrigger("emotion");
     scheduleTrigger("proactive_chat");
+    armDaydreamTimer();
 }
 
 void AIBrain::stop() {
@@ -59,6 +64,7 @@ void AIBrain::stop() {
     m_idleTriggerTimer.stop();
     m_emotionTriggerTimer.stop();
     m_chatTriggerTimer.stop();
+    m_daydreamTimer.stop();
     m_idleRetryScheduled = false;
 }
 

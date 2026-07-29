@@ -12,6 +12,9 @@
 #include <QUuid>
 
 #include "configLoader/config_manager.h"
+#include "memory/daydream_consolidator.h"
+#include "scheduler/agent_scheduler.h"
+#include "tools/environment_tools.h"
 
 void AIBrain::thinkInternal(const QString& reason,
                             const QString& triggerTag,
@@ -165,6 +168,56 @@ void AIBrain::setupTriggerTimers() {
         }
         triggerThink("proactive_chat_tick", "proactive_chat");
     });
+
+    // Daydream 空闲整理监测 tick（4a：触发后同步跑 runHardcodedDrain 降级版）。
+    m_daydreamTimer.setSingleShot(true);
+    connect(&m_daydreamTimer, &QTimer::timeout, this, [this]() { checkDaydreamTrigger(); });
+}
+
+void AIBrain::armDaydreamTimer() {
+    if (!m_running) return;
+    m_daydreamTimer.start(m_daydreamPolicy.nextTickMs(0));
+}
+
+void AIBrain::checkDaydreamTrigger() {
+    if (!m_running || m_daydreamRunning) {
+        armDaydreamTimer();
+        return;
+    }
+
+    const int idleSec = queryUserIdleSeconds();
+    const qint64 msToNext = m_scheduler ? m_scheduler->msToNextDue() : -1;
+    const QDateTime now = QDateTime::currentDateTime();
+
+    // 小时窗口滚动：自首次/重置点起 1h 滚动计数（不按整点对齐，够用）。
+    if (!m_daydreamHourAnchor.isValid() || now >= m_daydreamHourAnchor.addSecs(3600)) {
+        m_daydreamCountThisHour = 0;
+        m_daydreamHourAnchor = now;
+    }
+    const qint64 msSinceLast = m_lastDaydreamAt.isValid() ? m_lastDaydreamAt.msecsTo(now) : -1;
+
+    if (m_daydreamPolicy.shouldTrigger(idleSec, m_busy, msToNext, msSinceLast,
+                                       /*wasInterrupted=*/false, m_daydreamCountThisHour)) {
+        runDaydreamSession();
+    }
+    armDaydreamTimer();
+}
+
+void AIBrain::runDaydreamSession() {
+    m_daydreamRunning = true;
+    m_lastDaydreamAt = QDateTime::currentDateTime();
+    ++m_daydreamCountThisHour;
+
+    DaydreamConsolidator consolidator(m_memoryStore);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    qDebug() << "[Daydream] session done:"
+             << "scanned=" << stats.scanned
+             << "upgraded=" << stats.upgraded
+             << "discarded=" << stats.discarded
+             << "failed=" << stats.failed
+             << "committed=" << stats.committed;
+
+    m_daydreamRunning = false;
 }
 
 AiTriggerConfig AIBrain::triggerConfigForTag(const QString& triggerTag) const {

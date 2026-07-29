@@ -127,6 +127,8 @@ set(CORE_SOURCES
     core/ai/scheduler/scheduled_task.cpp
     core/ai/scheduler/agent_scheduler.h
     core/ai/scheduler/agent_scheduler.cpp
+    core/ai/scheduler/daydream_trigger_policy.h
+    core/ai/scheduler/daydream_trigger_policy.cpp
     core/ai/tools/runtime/tool_policy.h
     core/ai/tools/runtime/tool_policy.cpp
     core/ai/tools/runtime/tool_result_sanitizer.h
@@ -155,6 +157,8 @@ set(CORE_SOURCES
     core/ai/memory/memory_relation_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/daydream_consolidator.h
+    core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
@@ -425,6 +429,8 @@ add_executable(memory_strategy_tests
     core/ai/memory/model_downloader.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
+    core/ai/scheduler/daydream_trigger_policy.h
+    core/ai/scheduler/daydream_trigger_policy.cpp
 )
 
 target_include_directories(memory_strategy_tests PRIVATE

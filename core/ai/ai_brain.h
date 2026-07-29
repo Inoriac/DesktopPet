@@ -20,8 +20,10 @@
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
+#include "scheduler/daydream_trigger_policy.h"
 
 class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
+class AgentScheduler;  // Daydream 距待办判定用，可选注入
 #include "router/intent_router.h"
 #include "skill/skill_matcher.h"
 #include "skill/skill_store.h"
@@ -36,6 +38,7 @@ public:
 
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
+    void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
 
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
@@ -98,6 +101,10 @@ private:
     void appendToMemory(const ChatMessage& message);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
+    // Daydream 空闲触发判定与 session 执行（4a：调 runHardcodedDrain 降级版）。
+    void checkDaydreamTrigger();
+    void runDaydreamSession();
+    void armDaydreamTimer();
     AiTriggerConfig triggerConfigForTag(const QString& triggerTag) const;
     QStringList allowedActionsForTrigger(const QString& triggerTag) const;
     bool isToolCallAllowed(const QString& triggerTag,
@@ -126,6 +133,13 @@ private:
     QTimer m_idleTriggerTimer;
     QTimer m_emotionTriggerTimer;
     QTimer m_chatTriggerTimer;
+    QTimer m_daydreamTimer;
+    DaydreamTriggerPolicy m_daydreamPolicy;
+    AgentScheduler* m_scheduler = nullptr; // non-owning
+    bool m_daydreamRunning = false;
+    QDateTime m_lastDaydreamAt;
+    QDateTime m_daydreamHourAnchor;
+    int m_daydreamCountThisHour = 0;
 
     bool m_enabled = true;
     bool m_running = false;
