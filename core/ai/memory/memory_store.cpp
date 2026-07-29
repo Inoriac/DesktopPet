@@ -195,6 +195,18 @@ bool MemoryStore::rollbackTransaction() {
     return m_repository && m_repository->rollbackTransaction();
 }
 
+bool MemoryStore::removeEntryById(const QString& id) {
+    if (!m_repository || !m_repository->isOpen() || id.isEmpty()) return false;
+    if (!m_repository->removeById(id)) return false;
+    for (int i = 0; i < m_entries.size(); ++i) {
+        if (m_entries[i].id == id) {
+            m_entries.removeAt(i);
+            break;
+        }
+    }
+    return true;
+}
+
 bool MemoryStore::load(QString* errorMessage) {
     QString dbError;
     if (!m_repository->open(m_databasePath, &dbError)) {

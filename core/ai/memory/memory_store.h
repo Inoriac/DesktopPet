@@ -40,6 +40,8 @@ public:
     bool updateTaskShadowStatus(const QString& linkedTaskId,
                                 MemoryStatus status,
                                 const QJsonObject& payloadPatch = {});
+    // 物理删除单条（含子表）。事务内调用可随 ROLLBACK 撤销。Daydream 清空 inbox 用。
+    bool removeEntryById(const QString& id);
 
     QList<MemoryEntry> all() const { return m_entries; }
     QList<MemoryEntry> recent(MemoryType type, int limit) const;

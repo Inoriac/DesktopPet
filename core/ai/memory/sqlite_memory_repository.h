@@ -22,6 +22,7 @@ public:
                       const QJsonObject& payloadPatch = {}) override;
     QList<MemoryEntry> loadAll() override;
     bool clear() override;
+    bool removeById(const QString& id) override;
 
     bool beginTransaction() override;
     bool commitTransaction() override;

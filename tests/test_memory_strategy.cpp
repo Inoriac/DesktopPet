@@ -20,6 +20,7 @@
 #include "memory/partition_policy.h"
 #include "memory/sqlite_embedding_index.h"
 #include "memory/model_downloader.h"
+#include "memory/daydream_consolidator.h"
 #include "tools/memory_tools.h"
 
 #ifdef DESKTOP_PET_HAS_ORT
@@ -71,6 +72,9 @@ private slots:
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
     void testTransactionRollbackRevertsRelationGraph();
+    void testDaydreamDrainUpgradesAndClearsHippocampus();
+    void testDaydreamDrainDiscardsLowValue();
+    void testDaydreamDrainSparesOtherPartitions();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1419,6 +1423,113 @@ void TestMemoryStrategy::testTransactionRollbackRevertsRelationGraph() {
     MemoryStore reloaded;
     setupStoreWithDb(reloaded, tempDir);
     QVERIFY(!reloaded.relationGraph().hasRelation(aId, bId, MemoryRelationType::Related));
+}
+
+// Daydream 第③步：硬编码降级巩固回路。mentionCount>=2 的 Hippocampus 条目应升级为
+// Episodic 长期记忆并清空源；低价值条目应被丢弃清空 inbox；其他分区条目不受影响。
+void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    // 一条高提及 Hippocampus 条目（ShortTerm→hippocampus），应被升级。
+    MemoryEntry hot;
+    hot.type = MemoryType::ShortTerm;
+    hot.key = QStringLiteral("hot_topic");
+    hot.summary = QStringLiteral("反复提到的面试安排");
+    hot.content = hot.summary;
+    hot.source = QStringLiteral("assistant_response");
+    hot.importance = 0.4;
+    hot.mentionCount = 3;
+    const QString hotId = store.addEntry(hot).id;
+    QVERIFY(store.load());
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1);
+    QCOMPARE(stats.upgraded, 1);
+    QCOMPARE(stats.discarded, 0);
+
+    // 重读落盘真相：Hippocampus 清空，Episodic 多一条升级记忆。
+    QVERIFY(store.load());
+    bool hippocampusEmpty = true;
+    int episodicCount = 0;
+    for (const MemoryEntry& e : store.all()) {
+        if (e.partition == QLatin1String("hippocampus")) hippocampusEmpty = false;
+        if (e.type == MemoryType::Episodic) ++episodicCount;
+    }
+    QVERIFY(hippocampusEmpty);
+    QCOMPARE(episodicCount, 1);
+    QVERIFY(!store.findById(hotId)); // 源条目已物理删除
+}
+
+void TestMemoryStrategy::testDaydreamDrainDiscardsLowValue() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry chitchat;
+    chitchat.type = MemoryType::ShortTerm;
+    chitchat.key = QStringLiteral("chitchat");
+    chitchat.summary = QStringLiteral("一次普通闲聊");
+    chitchat.content = chitchat.summary;
+    chitchat.source = QStringLiteral("assistant_response");
+    chitchat.importance = 0.2;
+    chitchat.mentionCount = 1; // 不满足 >=2，emotion 为 0 → discard
+    const QString id = store.addEntry(chitchat).id;
+    QVERIFY(store.load());
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1);
+    QCOMPARE(stats.upgraded, 0);
+    QCOMPARE(stats.discarded, 1);
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 0);
+    QVERIFY(!store.findById(id));
+}
+
+void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    // 一条 Semantic 长期记忆（不在 Hippocampus），不应被 drain 触碰。
+    store.add(MemoryType::Semantic, QStringLiteral("fact"), QStringLiteral("用户用 Qt6"), {QStringLiteral("tech")});
+    // 一条 Hippocampus 低价值条目，会被 discard。
+    MemoryEntry junk;
+    junk.type = MemoryType::ShortTerm;
+    junk.key = QStringLiteral("junk");
+    junk.summary = QStringLiteral("噪音");
+    junk.content = junk.summary;
+    junk.importance = 0.1;
+    store.addEntry(junk);
+    QVERIFY(store.load());
+    const int totalBefore = store.all().size();
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1); // 只扫到 1 条 Hippocampus
+    QCOMPARE(stats.discarded, 1);
+
+    QVERIFY(store.load());
+    // Semantic 那条仍在；Hippocampus 那条被删 → 总数减 1。
+    QCOMPARE(store.all().size(), totalBefore - 1);
+    bool semanticKept = false;
+    for (const MemoryEntry& e : store.all()) {
+        if (e.type == MemoryType::Semantic && e.summary.contains(QStringLiteral("Qt6"))) semanticKept = true;
+    }
+    QVERIFY(semanticKept);
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

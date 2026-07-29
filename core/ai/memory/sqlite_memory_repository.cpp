@@ -442,6 +442,39 @@ bool SQLiteMemoryRepository::clear() {
     return true;
 }
 
+bool SQLiteMemoryRepository::removeById(const QString& id) {
+    if (!isOpen() || id.isEmpty()) return false;
+
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+
+    // 连带子表：tags/evidence/access_log/embeddings 按 memory_id，relations 按 from/to。
+    query.prepare(QStringLiteral("DELETE FROM memory_tags WHERE memory_id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) return false;
+
+    query.prepare(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) return false;
+
+    query.prepare(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) return false;
+
+    query.prepare(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) return false;
+
+    query.prepare(QStringLiteral("DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"));
+    query.bindValue(QStringLiteral(":id"), id);
+    query.bindValue(QStringLiteral(":id2"), id);
+    if (!query.exec()) return false;
+
+    query.prepare(QStringLiteral("DELETE FROM memory_items WHERE id = :id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    return query.exec();
+}
+
 bool SQLiteMemoryRepository::insertTags(const QString& memoryId, const QStringList& tags) {
     if (tags.isEmpty()) return true;
 

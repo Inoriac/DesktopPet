@@ -423,6 +423,8 @@ add_executable(memory_strategy_tests
     core/ai/memory/sqlite_embedding_index.cpp
     core/ai/memory/model_downloader.h
     core/ai/memory/model_downloader.cpp
+    core/ai/memory/daydream_consolidator.h
+    core/ai/memory/daydream_consolidator.cpp
 )
 
 target_include_directories(memory_strategy_tests PRIVATE
