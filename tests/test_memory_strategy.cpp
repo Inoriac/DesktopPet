@@ -75,6 +75,7 @@ private slots:
     void testDaydreamDrainUpgradesAndClearsHippocampus();
     void testDaydreamDrainDiscardsLowValue();
     void testDaydreamDrainSparesOtherPartitions();
+    void testStoreKeyPersistsRoundtrip();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1527,9 +1528,23 @@ void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
     QCOMPARE(store.all().size(), totalBefore - 1);
     bool semanticKept = false;
     for (const MemoryEntry& e : store.all()) {
-        if (e.type == MemoryType::Semantic && e.summary.contains(QStringLiteral("Qt6"))) semanticKept = true;
+        if (e.type == MemoryType::Semantic && e.key == QStringLiteral("fact")) semanticKept = true;
     }
     QVERIFY(semanticKept);
+}
+
+// 回归：memory_items.key 此前 loadAll 漏读，读回恒为空。验证 key 往返持久化。
+void TestMemoryStrategy::testStoreKeyPersistsRoundtrip() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    store.add(MemoryType::Semantic, QStringLiteral("fact"), QStringLiteral("用户用 Qt6"), {QStringLiteral("tech")});
+    QVERIFY(store.load());
+
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().first().key, QStringLiteral("fact"));
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

@@ -388,6 +388,7 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
         entry.partition = partitionStr.trimmed().isEmpty()
             ? partitionToString(partitionForType(entry.type))
             : partitionStr;
+        entry.key = query.value(QStringLiteral("key")).toString();
         entry.summary = query.value(QStringLiteral("summary")).toString();
         entry.content = query.value(QStringLiteral("content")).toString();
         entry.scope = query.value(QStringLiteral("scope")).toString();
