@@ -81,6 +81,9 @@ private:
                                              bool initiatedByLlm) const;
     void rememberAssistantResponse(const QString& content,
                                    const QString& triggerTag);
+    // 一轮交互结束后的工作记忆整理：淘汰过期项，对值得巩固的项写入持久库。
+    // 过渡阶段从 rememberAssistantResponse 驱动，Daydream 落地后改由空闲整理接管。
+    void consolidateWorkingMemory();
     void rememberToolOutcome(const QString& toolName,
                              const QString& triggerTag,
                              bool initiatedByLlm,

@@ -438,6 +438,11 @@ target_link_libraries(memory_strategy_tests
     Qt::Test
 )
 
+if(APPLE)
+    # environment_tools.cpp 的 macOS 空闲检测用到 CGEventSource（CoreGraphics）
+    target_link_libraries(memory_strategy_tests "-framework CoreGraphics")
+endif()
+
 add_test(NAME MemoryStrategyTests COMMAND memory_strategy_tests)
 
 # ---- onnxruntime (third_party, optional软依赖) ----
@@ -550,6 +555,11 @@ target_link_libraries(file_web_tool_tests
     Qt::Network
     Qt::Test
 )
+
+if(APPLE)
+    # environment_tools.cpp 的 macOS 空闲检测用到 CGEventSource（CoreGraphics）
+    target_link_libraries(file_web_tool_tests "-framework CoreGraphics")
+endif()
 
 add_test(NAME FileWebToolTests COMMAND file_web_tool_tests)
 

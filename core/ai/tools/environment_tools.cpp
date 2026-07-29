@@ -15,6 +15,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#elif defined(Q_OS_MACOS)
+#include <CoreGraphics/CoreGraphics.h>
 #endif
 
 namespace {
@@ -80,6 +82,17 @@ ToolResult GetUserIdleStateTool::execute(const QJsonObject& params) {
     const DWORD now = GetTickCount();
     const DWORD idleMs = now - info.dwTime;
     const int idleSeconds = static_cast<int>(idleMs / 1000);
+    result["supported"] = true;
+    result["idle_seconds"] = idleSeconds;
+    result["is_idle"] = idleSeconds >= thresholdSeconds;
+    result["level"] = idleLevel(idleSeconds);
+#elif defined(Q_OS_MACOS)
+    // CGEventSourceSecondsSinceLastEventType：只读“距上次 HID 输入的秒数”，
+    // 不读取输入内容、无需辅助功能权限。供 Daydream 空闲触发判定使用。
+    // 部分系统下首次/无输入时可能返回 0 或极小值，clamp 到 >=0。
+    const CFTimeInterval idleSec = CGEventSourceSecondsSinceLastEventType(
+        kCGEventSourceStateHIDSystemState, kCGAnyInputEventType);
+    const int idleSeconds = (idleSec > 0.0) ? static_cast<int>(idleSec) : 0;
     result["supported"] = true;
     result["idle_seconds"] = idleSeconds;
     result["is_idle"] = idleSeconds >= thresholdSeconds;

@@ -42,6 +42,10 @@ third_party/onnxruntime/*
 assets/models/*
 !assets/models/README.md
 
+# macOS Finder 元数据
+.DS_Store
+**/.DS_Store
+
 # IDE / local generated files
 .vscode/
 .idea/

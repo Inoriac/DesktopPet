@@ -192,6 +192,14 @@ void AIBrain::rememberAssistantResponse(const QString& content,
     wm.source = QStringLiteral("assistant_response");
     wm.importance = 0.3;
     m_workingMemoryCache.add(wm);
+
+    consolidateWorkingMemory();
+}
+
+void AIBrain::consolidateWorkingMemory() {
+    // 淘汰过期工作记忆项；对值得巩固（mentionCount≥2 或 emotionIntensity≥0.7）的
+    // 过期项写入持久库。此为过渡 housekeeping，Daydream 落地后由空闲整理接管。
+    m_workingMemoryCache.cleanup(&m_memoryStore);
 }
 
 void AIBrain::rememberToolOutcome(const QString& toolName,
@@ -269,8 +277,9 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
 QStringList AIBrain::retrieveMemoryHints(const QString& reason,
                                          const QString& triggerTag,
                                          int limit) {
-    m_workingMemoryCache.cleanup(&m_memoryStore);
-
+    // 检索路径必须只读：不再在此触发工作记忆清理/巩固。
+    // 巩固写入现由 consolidateWorkingMemory() 在一轮交互结束后驱动
+    // （Daydream 落地后改由空闲整理接管）。retriever 读取缓存时已自行跳过过期项。
     MemoryQuery query;
     query.text = reason;
     query.limit = limit;
