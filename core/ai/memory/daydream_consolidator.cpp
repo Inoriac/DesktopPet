@@ -22,7 +22,10 @@ bool DaydreamConsolidator::upgradeOne(const MemoryEntry& source) {
     MemoryEntry merged;
     merged.type = MemoryType::Episodic;
     merged.status = MemoryStatus::Active;
-    merged.privacyLevel = source.privacyLevel;
+    // 固定 Personal：对齐 WorkingMemoryCache::consolidateToStore。源 ShortTerm 经
+    // add() 默认 Public，直接拷会把含个人语境的 Episodic 暴露给 includeSensitive=false
+    // 的公开检索。由工作记忆巩固生成的长期记忆默认按个人语境处理。
+    merged.privacyLevel = PrivacyLevel::Personal;
     merged.key = source.key;
     merged.summary = source.summary;
     merged.content = source.content;
@@ -35,6 +38,8 @@ bool DaydreamConsolidator::upgradeOne(const MemoryEntry& source) {
     merged.emotionIntensity = source.emotionIntensity;
     merged.emotionConfidence = source.emotionConfidence;
     merged.mentionCount = source.mentionCount;
+    // 第三支 0.65 当前不可达（shouldUpgrade 保证 mentionCount>=2 或 emotion>=0.7），
+    // 保留作防御默认：未来 emotion 系统落地或阈值调整时仍给出合理 confidence。
     merged.confidence = (source.mentionCount >= 2) ? 0.75
                        : (source.emotionIntensity >= 0.7) ? 0.70
                                                           : 0.65;
@@ -95,7 +100,10 @@ DaydreamConsolidator::Stats DaydreamConsolidator::runHardcodedDrain() {
         stats.committed = true;
     } else {
         m_store.rollbackTransaction();
-        // 回滚后内存镜像与盘不一致，调用方应 load() 重读。
     }
+    // drain 期间 upgradeOne/discardOne 改了内存镜像 m_entries，但 rollback 只撤
+    // SQLite；commit 路径镜像与盘也可能因 addEntry/removeEntry 顺序存在细微差。
+    // drain 自身负责 load() 重读对齐，调用方无需关心镜像一致性。
+    m_store.load();
     return stats;
 }

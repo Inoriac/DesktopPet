@@ -347,34 +347,36 @@ void AgentScheduler::scheduleNextTick() {
 
     int nextMs = 60 * 1000;
     const QDateTime now = QDateTime::currentDateTime();
-    for (const ScheduledTask& task : m_tasks) {
-        if (!task.enabled || !task.nextTriggerAt.isValid()) {
-            continue;
-        }
-        const qint64 diff = now.msecsTo(task.nextTriggerAt);
+    const QDateTime due = nearestDueAt();
+    if (due.isValid()) {
+        const qint64 diff = now.msecsTo(due);
         if (diff <= 0) {
             nextMs = 1000;
-            break;
+        } else {
+            nextMs = qMin(nextMs, static_cast<int>(qMin<qint64>(diff, 60 * 1000)));
         }
-        nextMs = qMin(nextMs, static_cast<int>(qMin<qint64>(diff, 60 * 1000)));
     }
     m_timer.start(qMax(1000, nextMs));
 }
 
-qint64 AgentScheduler::msToNextDue() const {
-    qint64 nearest = -1;
-    const QDateTime now = QDateTime::currentDateTime();
+QDateTime AgentScheduler::nearestDueAt() const {
+    QDateTime nearest;
     for (const ScheduledTask& task : m_tasks) {
         if (!task.enabled || !task.nextTriggerAt.isValid()) {
             continue;
         }
-        const qint64 diff = now.msecsTo(task.nextTriggerAt);
-        const qint64 clamped = diff < 0 ? 0 : diff; // 已过期算 0
-        if (nearest < 0 || clamped < nearest) {
-            nearest = clamped;
+        if (!nearest.isValid() || task.nextTriggerAt < nearest) {
+            nearest = task.nextTriggerAt;
         }
     }
-    return nearest; // -1=无待办
+    return nearest;
+}
+
+qint64 AgentScheduler::msToNextDue() const {
+    const QDateTime due = nearestDueAt();
+    if (!due.isValid()) return -1; // 无待办
+    const qint64 diff = QDateTime::currentDateTime().msecsTo(due);
+    return diff < 0 ? 0 : diff; // 已过期算 0
 }
 
 QString AgentScheduler::defaultStoragePath() {

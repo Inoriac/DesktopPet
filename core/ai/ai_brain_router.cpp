@@ -179,19 +179,31 @@ void AIBrain::rememberAssistantResponse(const QString& content,
         return;
     }
 
-    m_memoryStore.add(MemoryType::ShortTerm,
-                      "assistant_response",
-                      content,
-                      {triggerTag, "assistant"});
-    m_memoryStore.save();
-
     WorkingMemoryItem wm;
     wm.summary = content.left(120);
     wm.content = content;
     wm.tags = {triggerTag, QStringLiteral("assistant")};
     wm.source = QStringLiteral("assistant_response");
     wm.importance = 0.3;
-    m_workingMemoryCache.add(wm);
+    m_workingMemoryCache.add(wm);  // 先自增 recurrence 计数
+
+    // 写 ShortTerm 到持久库，带 cache 的 mentionCount recurrence 信号（Daydream
+    // drain 据 mentionCount>=2 判升级）。原 add() 不传 mentionCount，导致信号只
+    // 活在内存 cache、drain 100% discard。字段默认对齐 MemoryStore::add(ShortTerm)。
+    MemoryEntry shortTerm;
+    shortTerm.type = MemoryType::ShortTerm;
+    shortTerm.key = QStringLiteral("assistant_response");
+    shortTerm.value = content;
+    shortTerm.tags = wm.tags;
+    shortTerm.status = MemoryStatus::Active;
+    shortTerm.privacyLevel = PrivacyLevel::Public;
+    shortTerm.source = QStringLiteral("assistant_inferred");
+    shortTerm.confidence = 0.4;
+    shortTerm.importance = 0.2;
+    shortTerm.strength = 0.2;
+    shortTerm.mentionCount = m_workingMemoryCache.countMentions(wm.summary);
+    m_memoryStore.addEntry(shortTerm);
+    m_memoryStore.save();
 
     consolidateWorkingMemory();
 }

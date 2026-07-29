@@ -48,6 +48,9 @@ private:
     void executeTask(ScheduledTask& task, const QDateTime& now);
     bool isInQuietHours(const QDateTime& now) const;
     void scheduleNextTick();
+    // 最近 enabled 且 nextTriggerAt 有效任务的 due 时间；无则 invalid。
+    // scheduleNextTick 与 msToNextDue 共享此过滤，避免双份维护。
+    QDateTime nearestDueAt() const;
     static QString defaultStoragePath();
 
 private:

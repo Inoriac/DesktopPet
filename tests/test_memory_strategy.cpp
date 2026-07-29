@@ -76,6 +76,7 @@ private slots:
     void testDaydreamDrainDiscardsLowValue();
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
+    void testDaydreamDrainUpgradesViaPersistedMentionCount();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1545,6 +1546,62 @@ void TestMemoryStrategy::testStoreKeyPersistsRoundtrip() {
 
     QCOMPARE(store.all().size(), 1);
     QCOMPARE(store.all().first().key, QStringLiteral("fact"));
+}
+
+// 回归 review finding #1：生产路径写 ShortTerm 必须把 cache 的 recurrence 计数
+// 持久化进 MemoryEntry.mentionCount，否则 Daydream drain 100% discard。此测试用
+// 修复后的等价写入路径（cache.add 两次同 summary → countMentions → 写 ShortTerm），
+// 验证 mentionCount 持久化=2、drain 升级为 Episodic、privacy=Personal。
+void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    // 模拟修复后的 rememberAssistantResponse：先 cache.add 自增，再带 countMentions 写 ShortTerm。
+    WorkingMemoryCache cache;
+    WorkingMemoryItem wm;
+    wm.summary = QStringLiteral("面试安排");
+    wm.content = QStringLiteral("用户反复提到的面试安排");
+    wm.tags = {QStringLiteral("user_request"), QStringLiteral("assistant")};
+    wm.source = QStringLiteral("assistant_response");
+    wm.importance = 0.3;
+    cache.add(wm);
+    cache.add(wm); // 同 summary → mentionCount 自增到 2
+
+    MemoryEntry shortTerm;
+    shortTerm.type = MemoryType::ShortTerm;
+    shortTerm.key = QStringLiteral("assistant_response");
+    shortTerm.value = wm.content;
+    shortTerm.tags = wm.tags;
+    shortTerm.status = MemoryStatus::Active;
+    shortTerm.privacyLevel = PrivacyLevel::Public;
+    shortTerm.source = QStringLiteral("assistant_inferred");
+    shortTerm.confidence = 0.4;
+    shortTerm.importance = 0.2;
+    shortTerm.strength = 0.2;
+    shortTerm.mentionCount = cache.countMentions(wm.summary); // =2
+    store.addEntry(shortTerm);
+    QVERIFY(store.load());
+
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().first().mentionCount, 2); // recurrence 信号已持久化
+    QCOMPARE(store.all().first().partition, QStringLiteral("hippocampus"));
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1);
+    QCOMPARE(stats.upgraded, 1); // mentionCount>=2 → 升级而非 discard
+    QCOMPARE(stats.discarded, 0);
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 1);
+    const MemoryEntry upgraded = store.all().first();
+    QCOMPARE(upgraded.type, MemoryType::Episodic);
+    QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal); // review finding #3
+    QCOMPARE(upgraded.source, QStringLiteral("consolidation"));
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

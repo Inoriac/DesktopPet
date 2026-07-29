@@ -35,11 +35,14 @@ public:
 
     static int defaultTtlSecs(const QString& source);
 
+    // 累计 mentionCount：按 summary 命中所有缓存项的总提及次数。供 Daydream 写
+    // ShortTerm 时持久化 recurrence 信号用（drain 据 mentionCount>=2 判升级）。
+    int countMentions(const QString& summary) const;
+
 private:
     void trimToCapacity();
     bool shouldConsolidate(const WorkingMemoryItem& item) const;
     void consolidateToStore(const WorkingMemoryItem& item, MemoryStore* store) const;
-    int countMentions(const QString& summary) const;
 
     QList<WorkingMemoryItem> m_items;
     int m_maxItems = 50;

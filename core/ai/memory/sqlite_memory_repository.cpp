@@ -449,31 +449,22 @@ bool SQLiteMemoryRepository::removeById(const QString& id) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
 
-    // 连带子表：tags/evidence/access_log/embeddings 按 memory_id，relations 按 from/to。
-    query.prepare(QStringLiteral("DELETE FROM memory_tags WHERE memory_id = :id"));
-    query.bindValue(QStringLiteral(":id"), id);
-    if (!query.exec()) return false;
+    // 连带子表删除：tags/evidence/access_log/embeddings 按 memory_id，
+    // relations 按 from/to（需 :id + :id2 双绑定）。
+    auto execDelete = [&](const QString& sql, bool bindId2 = false) -> bool {
+        query.prepare(sql);
+        query.bindValue(QStringLiteral(":id"), id);
+        if (bindId2) query.bindValue(QStringLiteral(":id2"), id);
+        return query.exec();
+    };
 
-    query.prepare(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :id"));
-    query.bindValue(QStringLiteral(":id"), id);
-    if (!query.exec()) return false;
-
-    query.prepare(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"));
-    query.bindValue(QStringLiteral(":id"), id);
-    if (!query.exec()) return false;
-
-    query.prepare(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"));
-    query.bindValue(QStringLiteral(":id"), id);
-    if (!query.exec()) return false;
-
-    query.prepare(QStringLiteral("DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"));
-    query.bindValue(QStringLiteral(":id"), id);
-    query.bindValue(QStringLiteral(":id2"), id);
-    if (!query.exec()) return false;
-
-    query.prepare(QStringLiteral("DELETE FROM memory_items WHERE id = :id"));
-    query.bindValue(QStringLiteral(":id"), id);
-    return query.exec();
+    if (!execDelete(QStringLiteral("DELETE FROM memory_tags WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral(
+            "DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"), true)) return false;
+    return execDelete(QStringLiteral("DELETE FROM memory_items WHERE id = :id"));
 }
 
 bool SQLiteMemoryRepository::insertTags(const QString& memoryId, const QStringList& tags) {
