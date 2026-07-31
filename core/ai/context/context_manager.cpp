@@ -2,6 +2,8 @@
 
 #include <QJsonDocument>
 
+#include "ai/prompt/prompt_renderer.h"
+
 void ContextManager::setBudget(const ContextBudget& budget) {
     m_budget = budget;
 }
@@ -28,11 +30,8 @@ QList<ChatMessage> ContextManager::buildMessages(const AgentContextRequest& requ
 }
 
 QString ContextManager::sanitizeForLlm(const QString& text) const {
-    QString sanitized = text;
-    sanitized.replace("api_key", "api_[redacted]", Qt::CaseInsensitive);
-    sanitized.replace("password", "pass[redacted]", Qt::CaseInsensitive);
-    sanitized.replace("token", "tok[redacted]", Qt::CaseInsensitive);
-    sanitized.replace("secret", "sec[redacted]", Qt::CaseInsensitive);
+    // 脱敏关键词与 PromptRenderer::redactSecrets 集中维护，避免认知漂移。
+    QString sanitized = PromptRenderer::redactSecrets(text);
     return m_budget.trimString(sanitized);
 }
 

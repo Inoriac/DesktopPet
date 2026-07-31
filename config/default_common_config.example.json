@@ -79,6 +79,8 @@
         "temperature": 0.7,
         "retryCount": 1,
         "thinkIntervalMs": 30000,
+        "persona": "温和型",
+        "promptTemplate": "default",
         "daydream": {
           "enabled": true,
           "idleThresholdSec": 300,
