@@ -14,6 +14,7 @@
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/web_tools.h"
 #include "ai/skill/skill_tools.h"
+#include "ai/prompt/prompt_template_store.h"
 #include "configLoader/config_manager.h"
 #include "render_engine.h"
 #include "render_viewport.h"
@@ -143,6 +144,25 @@ void PetWindow::setupAiBrain() {
     agentScheduler->start();
 
     aiBrain->setPetName(modelName);
+
+    // 注入通用提示词模版 + 性格预设：系统提示词渲染的输入。
+    // 模版加载失败/未命中时不调用 setPromptTemplate，ContextBuilder 回退内联兜底模版（零回归）。
+    PromptTemplateStore promptTemplateStore;
+    promptTemplateStore.setStoragePath(QStringLiteral("config/prompts"));
+    if (promptTemplateStore.load()) {
+        const PromptTemplate* templ =
+            promptTemplateStore.findByName(ConfigManager::instance().activePromptTemplateName());
+        if (templ) {
+            aiBrain->setPromptTemplate(*templ);
+        } else {
+            qWarning() << "[AIBrain] 未找到提示词模版，使用内联兜底:"
+                       << ConfigManager::instance().activePromptTemplateName();
+        }
+    } else {
+        qWarning() << "[AIBrain] 提示词模版目录未加载，使用内联兜底模版";
+    }
+    aiBrain->setPersona(ConfigManager::instance().getActivePersonality());
+
     aiBrain->setToolRegistry(aiToolRegistry.get());
     aiBrain->setEnabled(aiEnabled);
 

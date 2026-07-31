@@ -37,6 +37,10 @@ public:
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
 
+    // 注入通用提示词模版与性格预设（转发给 ContextBuilder，用于系统提示词渲染）
+    void setPersona(const PetPersonality& persona) { m_contextBuilder.setPersona(persona); }
+    void setPromptTemplate(const PromptTemplate& templ) { m_contextBuilder.setPromptTemplate(templ); }
+
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
 

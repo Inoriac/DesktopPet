@@ -7,9 +7,21 @@
 #include <QDateTime>
 
 #include "configLoader/config_manager.h"
+#include "prompt/prompt_renderer.h"
 #include "statistic_manager.h"
 
 QString ContextBuilder::buildSystemPrompt(const QString& petName) const {
+    // 未注入模版 → 回退到与改造前逐字一致的内联系统提示词，保证零回归。
+    if (!m_templateSet || m_template.systemPromptBody.isEmpty()) {
+        return inlineFallbackSystemPrompt(petName);
+    }
+
+    const PetPersonality& persona = m_personaSet ? m_persona : PetPersonality{};
+    const QMap<QString, QString> vars = PromptRenderer::buildVariables(persona, petName);
+    return PromptRenderer::render(m_template.systemPromptBody, vars);
+}
+
+QString ContextBuilder::inlineFallbackSystemPrompt(const QString& petName) const {
     const QString safePetName = petName.isEmpty() ? QString("桌宠") : petName;
 
     return QString(

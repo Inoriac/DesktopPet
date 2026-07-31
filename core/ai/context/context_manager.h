@@ -27,6 +27,10 @@ public:
     void setBudget(const ContextBudget& budget);
     const ContextBudget& budget() const { return m_budget; }
 
+    // 注入通用提示词模版与性格预设（转发给内部 ContextBuilder，与 AIBrain 路径保持一致）
+    void setPersona(const PetPersonality& persona) { m_builder.setPersona(persona); }
+    void setPromptTemplate(const PromptTemplate& templ) { m_builder.setPromptTemplate(templ); }
+
     QList<ChatMessage> buildMessages(const AgentContextRequest& request) const;
     QString sanitizeForLlm(const QString& text) const;
 
