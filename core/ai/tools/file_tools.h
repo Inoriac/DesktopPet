@@ -33,6 +33,9 @@ public:
     QString getAllowedRoot(const QString& path) const;
 
 private:
+    QString resolvePathForValidation(const QString& path) const;
+    bool isWithinAllowedRoot(const QString& resolvedPath) const;
+
     QStringList m_allowedRoots;
     QStringList m_normalizedRoots;
 };

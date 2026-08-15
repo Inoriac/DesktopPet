@@ -56,7 +56,8 @@ struct PetStatistics {
     qint64 llmPromptCacheHitTokens = 0;
     qint64 llmPromptCacheMissTokens = 0;
 
-    PetStatistics(const QString& name) : petName(name) {}
+    PetStatistics() = default;
+    explicit PetStatistics(const QString& name) : petName(name) {}
 };
 
 #endif //DESKTOP_PET_STATISTIC_TYPES_H

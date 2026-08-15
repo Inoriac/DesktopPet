@@ -56,16 +56,18 @@ void ModelLoader::extractSkeleton(const tinygltf::Model& model) {
         const tinygltf::Buffer& buffer = model.buffers[bufferView.buffer];
 
         // 获取矩阵数据起始地址
-        const float* matrixData = reinterpret_cast<const float*>(&buffer.data[bufferView.byteOffset + accessor.byteOffset]);
+        const unsigned char* matrixData = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
+        const size_t matrixStride = static_cast<size_t>(accessor.ByteStride(bufferView));
 
         skin.inverseBindMatrices.resize(accessor.count);
 
         for (size_t i = 0; i < accessor.count; i++) {
+            const float* matrix = reinterpret_cast<const float*>(matrixData + i * matrixStride);
             QMatrix4x4 m;
             m.setToIdentity();
             for (int col = 0; col < 4; col++) {
                 for (int row = 0; row < 4; row++) {
-                    m(row, col) = matrixData[i * 16 + col * 4 + row];
+                    m(row, col) = matrix[col * 4 + row];
                 }
             }
             skin.inverseBindMatrices[i] = m;
@@ -143,7 +145,7 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
     const unsigned char* jointsDataBase = &jointsBuffer.data[ jointsBufferView.byteOffset + jointsAccessor.byteOffset ];
 
     // 步长
-    int jointsStride = tinygltf::GetComponentSizeInBytes(jointsAccessor.componentType) * 4;
+    const int jointsStride = jointsAccessor.ByteStride(jointsBufferView);
 
     // WEIGHTS_0
     const tinygltf::Accessor& weightsAccessor = model.accessors[ primitive.attributes.at("WEIGHTS_0") ];
@@ -153,7 +155,7 @@ void ModelLoader::extractSkinningData(const tinygltf::Model& model, const tinygl
     const unsigned char* weightsDataBase = &weightsBuffer.data[weightsBufferView.byteOffset + weightsAccessor.byteOffset];
 
     // 步长
-    int weightsStride = tinygltf::GetComponentSizeInBytes(weightsAccessor.componentType) * 4;
+    const int weightsStride = weightsAccessor.ByteStride(weightsBufferView);
 
     // 顶点数量
     size_t vertexCount = jointsAccessor.count;

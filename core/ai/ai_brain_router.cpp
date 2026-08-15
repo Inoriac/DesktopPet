@@ -50,9 +50,46 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         request.toolName = route.toolName;
         request.arguments = route.toolArguments;
         request.policyContext = buildToolPolicyContext(triggerTag, reason, false);
-        request.userConfirmed = false;
-
         const ToolExecutionOutcome outcome = m_toolRuntime.execute(request);
+        if (outcome.policyDecision.needsConfirmation()) {
+            const QString confirmationId = outcome.requestId;
+            const QString toolName = route.toolName;
+            m_pendingToolConfirmations.insert(
+                confirmationId,
+                [this, confirmationId, toolName, triggerTag](bool approved) {
+                    const ToolExecutionOutcome resolved =
+                        m_toolRuntime.resolveConfirmation(confirmationId, approved);
+                    const QString resolvedPayload =
+                        m_toolRuntime.sanitizer()->toPayload(resolved.result);
+                    rememberToolOutcome(toolName, triggerTag, false, resolved);
+                    emit toolExecuted(toolName, resolved.result.success, resolvedPayload);
+
+                    ChatMessage toolMessage;
+                    toolMessage.role = "tool";
+                    toolMessage.name = toolName;
+                    toolMessage.content = resolvedPayload;
+                    appendToMemory(toolMessage);
+
+                    const QString responseText = resolved.result.success
+                        ? QStringLiteral("已完成。")
+                        : QStringLiteral("操作未执行：%1").arg(resolved.result.errorMessage);
+                    ChatMessage assistantMessage;
+                    assistantMessage.role = "assistant";
+                    assistantMessage.content = responseText;
+                    appendToMemory(assistantMessage);
+                    rememberAssistantResponse(responseText, triggerTag);
+                    emit assistantResponseReady(responseText);
+
+                    m_busy = false;
+                    emit thinkingFinished(resolved.result.success,
+                                          resolved.result.success ? QString() : resolved.result.errorMessage);
+                });
+            emit toolConfirmationRequired(confirmationId,
+                                          route.toolName,
+                                          outcome.policyDecision.reason,
+                                          route.toolArguments);
+            return true;
+        }
         const QString payload = m_toolRuntime.sanitizer()->toPayload(outcome.result);
         rememberToolOutcome(route.toolName, triggerTag, false, outcome);
 

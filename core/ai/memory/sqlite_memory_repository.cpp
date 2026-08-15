@@ -261,6 +261,16 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     if (!isOpen()) return false;
 
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    const QString savepoint = QStringLiteral("memory_entry_%1")
+                                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-'));
+    QSqlQuery transactionQuery(db);
+    if (!transactionQuery.exec(QStringLiteral("SAVEPOINT %1").arg(savepoint))) {
+        return false;
+    }
+    const auto rollback = [&]() {
+        transactionQuery.exec(QStringLiteral("ROLLBACK TO SAVEPOINT %1").arg(savepoint));
+        transactionQuery.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
+    };
     QSqlQuery query(db);
 
     query.prepare(QStringLiteral(
@@ -311,16 +321,19 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     query.bindValue(QStringLiteral(":payload_json"), jsonObjectToString(payload));
 
     if (!query.exec()) {
+        rollback();
         return false;
     }
 
-    deleteTags(entry.id);
-    insertTags(entry.id, entry.tags);
+    if (!deleteTags(entry.id)
+        || !insertTags(entry.id, entry.tags)
+        || !deleteEvidence(entry.id)
+        || !insertEvidence(entry.id, entry.evidence)) {
+        rollback();
+        return false;
+    }
 
-    deleteEvidence(entry.id);
-    insertEvidence(entry.id, entry.evidence);
-
-    return true;
+    return transactionQuery.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
 }
 
 bool SQLiteMemoryRepository::update(const MemoryEntry& entry) {
@@ -433,14 +446,31 @@ bool SQLiteMemoryRepository::clear() {
 
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
+    const QString savepoint = QStringLiteral("clear_memory_%1")
+                                  .arg(QUuid::createUuid().toString(QUuid::WithoutBraces).remove('-'));
+    if (!query.exec(QStringLiteral("SAVEPOINT %1").arg(savepoint))) {
+        return false;
+    }
+    const auto rollback = [&]() {
+        query.exec(QStringLiteral("ROLLBACK TO SAVEPOINT %1").arg(savepoint));
+        query.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
+    };
 
-    query.exec(QStringLiteral("DELETE FROM memory_tags"));
-    query.exec(QStringLiteral("DELETE FROM memory_evidence"));
-    query.exec(QStringLiteral("DELETE FROM memory_relations"));
-    query.exec(QStringLiteral("DELETE FROM memory_access_log"));
-    query.exec(QStringLiteral("DELETE FROM memory_embeddings"));
-    query.exec(QStringLiteral("DELETE FROM memory_items"));
-    return true;
+    const QStringList tables = {
+        QStringLiteral("memory_tags"),
+        QStringLiteral("memory_evidence"),
+        QStringLiteral("memory_relations"),
+        QStringLiteral("memory_access_log"),
+        QStringLiteral("memory_embeddings"),
+        QStringLiteral("memory_items")
+    };
+    for (const QString& table : tables) {
+        if (!query.exec(QStringLiteral("DELETE FROM %1").arg(table))) {
+            rollback();
+            return false;
+        }
+    }
+    return query.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
 }
 
 bool SQLiteMemoryRepository::removeById(const QString& id) {
@@ -480,7 +510,7 @@ bool SQLiteMemoryRepository::insertTags(const QString& memoryId, const QStringLi
         if (tag.trimmed().isEmpty()) continue;
         query.bindValue(QStringLiteral(":memory_id"), memoryId);
         query.bindValue(QStringLiteral(":tag"), tag);
-        query.exec();
+        if (!query.exec()) return false;
     }
     return true;
 }
@@ -502,27 +532,27 @@ bool SQLiteMemoryRepository::insertEvidence(const QString& memoryId, const QStri
         query.bindValue(QStringLiteral(":memory_id"), memoryId);
         query.bindValue(QStringLiteral(":raw_text"), text);
         query.bindValue(QStringLiteral(":created_at"), now);
-        query.exec();
+        if (!query.exec()) return false;
     }
     return true;
 }
 
-void SQLiteMemoryRepository::deleteTags(const QString& memoryId) {
-    if (!isOpen()) return;
+bool SQLiteMemoryRepository::deleteTags(const QString& memoryId) {
+    if (!isOpen()) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
     query.prepare(QStringLiteral("DELETE FROM memory_tags WHERE memory_id = :memory_id"));
     query.bindValue(QStringLiteral(":memory_id"), memoryId);
-    query.exec();
+    return query.exec();
 }
 
-void SQLiteMemoryRepository::deleteEvidence(const QString& memoryId) {
-    if (!isOpen()) return;
+bool SQLiteMemoryRepository::deleteEvidence(const QString& memoryId) {
+    if (!isOpen()) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
     query.prepare(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :memory_id"));
     query.bindValue(QStringLiteral(":memory_id"), memoryId);
-    query.exec();
+    return query.exec();
 }
 
 QStringList SQLiteMemoryRepository::loadTags(const QString& memoryId) {

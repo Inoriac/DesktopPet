@@ -49,6 +49,7 @@ private:
 private:
     // 辅助方法
     bool parseGLTF(const std::string& path);    // 加载模型
+    bool validateModel(const tinygltf::Model& model, QString& errorMessage) const;
     void extractMeshData(const tinygltf::Model& model, const tinygltf::Mesh& mesh); // 获取 MeshData
 
     void extractVertexData(const tinygltf::Model& model, const tinygltf::Primitive& primitive, MeshData& meshData); // 提取顶点数据

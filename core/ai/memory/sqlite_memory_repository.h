@@ -32,8 +32,8 @@ private:
     bool initSchema(QString* errorMessage = nullptr);
     bool insertTags(const QString& memoryId, const QStringList& tags);
     bool insertEvidence(const QString& memoryId, const QStringList& evidence);
-    void deleteTags(const QString& memoryId);
-    void deleteEvidence(const QString& memoryId);
+    bool deleteTags(const QString& memoryId);
+    bool deleteEvidence(const QString& memoryId);
     QStringList loadTags(const QString& memoryId);
     QStringList loadEvidence(const QString& memoryId);
 

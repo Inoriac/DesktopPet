@@ -7,11 +7,15 @@
 
 #include <QTest>
 #include <QJsonDocument>
+#include <QFile>
+#include <QDir>
+#include <QTemporaryDir>
 #include <memory>
 
 #include "tool_registry.h"
 #include "tools/environment_tools.h"
 #include "tools/runtime/tool_runtime.h"
+#include "scheduler/agent_scheduler.h"
 
 // ================================================================
 // 用于测试的 Mock Tool
@@ -198,10 +202,14 @@ private slots:
     void testPolicyAllowsSafeQuery();
     void testRuntimeBlocksUnknownTool();
     void testRuntimeRequiresConfirmationForHighRiskTool();
+    void testRuntimeCancelsConfirmationWhenRegistryChanges();
+    void testRuntimeKeepsDuplicateConfirmationIdsDistinct();
+    void testPolicyDoesNotAutoGrantHighRiskTool();
     void testRuntimeDeniesDangerousTool();
     void testRuntimeSanitizesSensitiveOutput();
     void testRuntimeTruncatesLargePayload();
     void testPolicyDeniesScopedToolOutsideAllowedRoots();
+    void testSchedulerRollsBackWhenSaveFails();
 
     // --- 真实 Tool 测试 ---
     void testGetCurrentTimeTool();
@@ -448,6 +456,57 @@ void TestToolRegistry::testRuntimeRequiresConfirmationForHighRiskTool() {
     QVERIFY(!outcome.result.success);
     QVERIFY(outcome.policyDecision.needsConfirmation());
     QCOMPARE(outcome.policyDecision.riskLevel, ToolRiskLevel::L3HighRiskAction);
+    QVERIFY(runtime.hasPendingConfirmation(outcome.requestId));
+}
+
+void TestToolRegistry::testRuntimeCancelsConfirmationWhenRegistryChanges() {
+    ToolRegistry originalRegistry;
+    originalRegistry.registerTool(std::make_unique<MockShellTool>());
+    ToolRegistry replacementRegistry;
+    replacementRegistry.registerTool(std::make_unique<MockShellTool>());
+
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&originalRegistry);
+
+    ToolExecutionRequest request;
+    request.toolName = "shell_execute";
+    const ToolExecutionOutcome pending = runtime.execute(request);
+    QVERIFY(runtime.hasPendingConfirmation(pending.requestId));
+
+    runtime.setToolRegistry(&replacementRegistry);
+    QVERIFY(!runtime.hasPendingConfirmation(pending.requestId));
+    const ToolExecutionOutcome resolved = runtime.resolveConfirmation(pending.requestId, true);
+    QVERIFY(!resolved.executed);
+    QVERIFY(resolved.policyDecision.isDenied());
+}
+
+void TestToolRegistry::testRuntimeKeepsDuplicateConfirmationIdsDistinct() {
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<MockShellTool>());
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.requestId = QStringLiteral("duplicate-id");
+    request.toolName = QStringLiteral("shell_execute");
+    const ToolExecutionOutcome first = runtime.execute(request);
+    const ToolExecutionOutcome second = runtime.execute(request);
+
+    QCOMPARE(first.requestId, QStringLiteral("duplicate-id"));
+    QVERIFY(first.requestId != second.requestId);
+    QVERIFY(runtime.hasPendingConfirmation(first.requestId));
+    QVERIFY(runtime.hasPendingConfirmation(second.requestId));
+}
+
+void TestToolRegistry::testPolicyDoesNotAutoGrantHighRiskTool() {
+    MockShellTool tool;
+    PolicyEngine policy;
+    ToolPolicyContext context;
+    context.grantedToolNames = {"shell_execute"};
+
+    const ToolPolicyDecision decision = policy.evaluate(tool, {}, context);
+    QVERIFY(decision.needsConfirmation());
+    QCOMPARE(decision.riskLevel, ToolRiskLevel::L3HighRiskAction);
 }
 
 void TestToolRegistry::testRuntimeDeniesDangerousTool() {
@@ -519,6 +578,30 @@ void TestToolRegistry::testPolicyDeniesScopedToolOutsideAllowedRoots() {
 
     const ToolPolicyDecision decision = policy.evaluate(tool, args, context);
     QVERIFY(decision.isDenied());
+}
+
+void TestToolRegistry::testSchedulerRollsBackWhenSaveFails() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString blockingPath = dir.filePath("not-a-directory");
+    QFile blocker(blockingPath);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.write("block");
+    blocker.close();
+
+    AgentScheduler scheduler;
+    scheduler.setStoragePath(QDir(blockingPath).filePath("tasks.json"));
+    QJsonObject params{
+        {"title", "persist me"},
+        {"message", "message"},
+        {"type", "once_at"},
+        {"delay_minutes", 5}
+    };
+    QString error;
+    const ScheduledTask task = scheduler.createTask(params, &error);
+    QVERIFY(task.id.isEmpty());
+    QVERIFY(!error.isEmpty());
+    QVERIFY(scheduler.tasks().isEmpty());
 }
 
 // ============================================================

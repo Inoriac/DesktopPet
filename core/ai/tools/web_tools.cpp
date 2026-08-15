@@ -16,6 +16,124 @@
 #include <QRegularExpression>
 #include <QDebug>
 #include <QHostInfo>
+#include <algorithm>
+#include <iterator>
+
+namespace {
+struct SafeHttpResult {
+    bool success = false;
+    QByteArray data;
+    QString error;
+    QUrl finalUrl;
+};
+
+QByteArray hostHeaderForUrl(const QUrl& url) {
+    QString host = url.host();
+    if (host.contains(':') && !host.startsWith('[')) {
+        host = '[' + host + ']';
+    }
+    const int port = url.port();
+    const bool defaultPort = port < 0
+        || (url.scheme() == "http" && port == 80)
+        || (url.scheme() == "https" && port == 443);
+    if (!defaultPort) {
+        host += ':' + QString::number(port);
+    }
+    return host.toUtf8();
+}
+
+SafeHttpResult performSafeGet(const QUrl& initialUrl,
+                              const NetworkSecurityValidator& validator,
+                              int timeoutMs,
+                              qint64 maxResponseSize) {
+    QUrl logicalUrl = initialUrl;
+    constexpr int maxRedirects = 5;
+
+    for (int redirectCount = 0; redirectCount <= maxRedirects; ++redirectCount) {
+        QHostAddress address;
+        QString validationError;
+        if (!validator.resolveAllowedAddress(logicalUrl, &address, &validationError)) {
+            return {false, {}, validationError, logicalUrl};
+        }
+
+        QUrl requestUrl = logicalUrl;
+        requestUrl.setHost(address.toString());
+        QNetworkRequest request(requestUrl);
+        request.setAttribute(QNetworkRequest::RedirectPolicyAttribute,
+                             QNetworkRequest::ManualRedirectPolicy);
+        request.setHeader(QNetworkRequest::UserAgentHeader,
+                          "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+        request.setRawHeader("Host", hostHeaderForUrl(logicalUrl));
+        request.setTransferTimeout(timeoutMs);
+
+        if (logicalUrl.scheme().compare("https", Qt::CaseInsensitive) == 0) {
+            request.setPeerVerifyName(logicalUrl.host());
+        }
+
+        QNetworkAccessManager manager;
+        QEventLoop loop;
+        QNetworkReply* reply = manager.get(request);
+        QTimer timer;
+        timer.setSingleShot(true);
+        bool oversized = false;
+        QObject::connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+        QObject::connect(reply, &QNetworkReply::downloadProgress, reply,
+                         [reply, maxResponseSize, &oversized](qint64 received, qint64 total) {
+            if (received > maxResponseSize || (total > 0 && total > maxResponseSize)) {
+                oversized = true;
+                reply->abort();
+            }
+        });
+        QObject::connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
+        timer.start(timeoutMs);
+        loop.exec();
+
+        if (!timer.isActive()) {
+            reply->abort();
+            reply->deleteLater();
+            return {false, {}, QString("请求超时 (%1 ms)").arg(timeoutMs), logicalUrl};
+        }
+        timer.stop();
+
+        if (oversized) {
+            reply->deleteLater();
+            return {false, {},
+                    QString("Response exceeds size limit (%1 KB)").arg(maxResponseSize / 1024),
+                    logicalUrl};
+        }
+
+        const QVariant redirect = reply->attribute(QNetworkRequest::RedirectionTargetAttribute);
+        if (redirect.isValid()) {
+            const QUrl target = logicalUrl.resolved(redirect.toUrl());
+            reply->deleteLater();
+            if (redirectCount == maxRedirects) {
+                return {false, {}, "重定向次数过多", logicalUrl};
+            }
+            logicalUrl = target;
+            continue;
+        }
+
+        if (reply->error() != QNetworkReply::NoError) {
+            const QString error = QString("网络错误: %1").arg(reply->errorString());
+            reply->deleteLater();
+            return {false, {}, error, logicalUrl};
+        }
+
+        const QByteArray data = reply->readAll();
+        reply->deleteLater();
+        if (data.size() > maxResponseSize) {
+            return {false, {},
+                    QString("响应过大 (最大 %1 KB): %2 KB")
+                        .arg(maxResponseSize / 1024)
+                        .arg(data.size() / 1024),
+                    logicalUrl};
+        }
+        return {true, data, {}, logicalUrl};
+    }
+
+    return {false, {}, "请求未完成", logicalUrl};
+}
+}
 
 // ================================================================
 // NetworkSecurityValidator 实现
@@ -35,93 +153,96 @@ bool NetworkSecurityValidator::isUrlAllowed(const QString& urlString) const {
         return false;
     }
 
-    // 检查主机名
-    const QString host = url.host();
-    if (host.isEmpty()) {
-        return false;
-    }
-
-    // 阻止 localhost 和 loopback
-    if (host == "localhost" || host == "127.0.0.1" || host == "::1" || host == "0.0.0.0") {
-        return false;
-    }
-
-    // 阻止 IP 地址访问内网
-    if (isIpBlocked(host)) {
-        return false;
-    }
-
-    return true;
+    return resolveAllowedAddress(url, nullptr);
 }
 
 bool NetworkSecurityValidator::isIpBlocked(const QString& host) const {
-    // 如果是 IP 地址，直接检查
     QHostAddress addr;
     if (addr.setAddress(host)) {
-        return isPrivateIp(addr) || isReservedIp(addr);
+        return isAddressBlocked(addr);
     }
 
-    // 如果是主机名，解析后再检查
-    QString resolvedIp = resolveHost(host);
-    if (!resolvedIp.isEmpty()) {
-        if (addr.setAddress(resolvedIp)) {
-            return isPrivateIp(addr) || isReservedIp(addr);
-        }
-    }
-
-    return false;
-}
-
-QString NetworkSecurityValidator::resolveHost(const QString& host) {
-    QHostInfo info = QHostInfo::fromName(host);
-    if (info.error() == QHostInfo::NoError && !info.addresses().isEmpty()) {
-        return info.addresses().first().toString();
-    }
-    return QString();
-}
-
-bool NetworkSecurityValidator::isPrivateIp(const QHostAddress& addr) const {
-    // 10.0.0.0/8
-    quint32 ip = addr.toIPv4Address();
-    if ((ip >> 24) == 10) {
+    const QList<QHostAddress> addresses = resolveHostAddresses(host);
+    if (addresses.isEmpty()) {
         return true;
     }
-
-    // 172.16.0.0/12 (172.16.0.0 - 172.31.255.255)
-    // 高 8 位是 172，次高 8 位在 16-31 范围内
-    if ((ip >> 24) == 172) {
-        quint32 second = (ip >> 16) & 0xFF;
-        if (second >= 16 && second <= 31) {
+    for (const QHostAddress& resolved : addresses) {
+        if (isAddressBlocked(resolved)) {
             return true;
         }
     }
-
-    // 192.168.0.0/16
-    if ((ip >> 16) == 0xC0A8) {  // 192.168.x.x
-        return true;
-    }
-
     return false;
 }
 
-bool NetworkSecurityValidator::isReservedIp(const QHostAddress& addr) const {
-    // 127.0.0.0/8 (loopback)
-    quint32 ip = addr.toIPv4Address();
-    if ((ip >> 24) == 127) {
-        return true;
+QList<QHostAddress> NetworkSecurityValidator::resolveHostAddresses(const QString& host) {
+    QHostInfo info = QHostInfo::fromName(host);
+    if (info.error() == QHostInfo::NoError) {
+        return info.addresses();
+    }
+    return {};
+}
+
+bool NetworkSecurityValidator::resolveAllowedAddress(const QUrl& url,
+                                                     QHostAddress* address,
+                                                     QString* errorMessage) const {
+    const QString scheme = url.scheme().toLower();
+    if (!url.isValid() || (scheme != "http" && scheme != "https") || url.host().isEmpty()) {
+        if (errorMessage) *errorMessage = QString("URL 不允许访问: %1").arg(url.toString());
+        return false;
     }
 
-    // 169.254.0.0/16 (link-local)
-    if ((ip >> 16) == 0xA9FE) {
-        return true;
+    QList<QHostAddress> addresses;
+    QHostAddress literal;
+    if (literal.setAddress(url.host())) {
+        addresses.append(literal);
+    } else {
+        addresses = resolveHostAddresses(url.host());
     }
-
-    // 0.0.0.0/8
-    if ((ip >> 24) == 0) {
-        return true;
+    if (addresses.isEmpty()) {
+        if (errorMessage) *errorMessage = QString("无法安全解析主机: %1").arg(url.host());
+        return false;
     }
+    for (const QHostAddress& candidate : addresses) {
+        if (isAddressBlocked(candidate)) {
+            if (errorMessage) *errorMessage = QString("主机解析到受限地址: %1").arg(candidate.toString());
+            return false;
+        }
+    }
+    if (address) *address = addresses.first();
+    return true;
+}
 
-    return false;
+bool NetworkSecurityValidator::isAddressBlocked(const QHostAddress& addr) const {
+    bool isIpv4 = false;
+    const quint32 ipv4 = addr.toIPv4Address(&isIpv4);
+    if (isIpv4) {
+        return isBlockedIpv4(ipv4);
+    }
+    return addr.protocol() != QAbstractSocket::IPv6Protocol
+        || isBlockedIpv6(addr.toIPv6Address());
+}
+
+bool NetworkSecurityValidator::isBlockedIpv4(quint32 ip) const {
+    const quint8 first = static_cast<quint8>(ip >> 24);
+    const quint8 second = static_cast<quint8>((ip >> 16) & 0xff);
+    return first == 0
+        || first == 10
+        || first == 127
+        || (first == 100 && second >= 64 && second <= 127)
+        || (first == 169 && second == 254)
+        || (first == 172 && second >= 16 && second <= 31)
+        || (first == 192 && second == 168)
+        || first >= 224;
+}
+
+bool NetworkSecurityValidator::isBlockedIpv6(const Q_IPV6ADDR& ip) const {
+    const bool unspecified = std::all_of(std::begin(ip.c), std::end(ip.c), [](quint8 byte) { return byte == 0; });
+    const bool loopback = std::all_of(std::begin(ip.c), std::end(ip.c) - 1, [](quint8 byte) { return byte == 0; })
+        && ip.c[15] == 1;
+    const bool uniqueLocal = (ip.c[0] & 0xfe) == 0xfc;
+    const bool linkLocal = ip.c[0] == 0xfe && (ip.c[1] & 0xc0) == 0x80;
+    const bool multicast = ip.c[0] == 0xff;
+    return unspecified || loopback || uniqueLocal || linkLocal || multicast;
 }
 
 // ================================================================
@@ -132,7 +253,7 @@ WebFetchTool::WebFetchTool()
     : AITool(
         "web_fetch",
         "获取指定 URL 的网页内容。支持 HTTP 和 HTTPS。"
-        "返回纯文本内容，不包含 HTML 标签。",
+        "返回响应中的原始文本内容。",
         ToolCategory::Query
       ) {}
 
@@ -167,58 +288,19 @@ ToolResult WebFetchTool::execute(const QJsonObject& params) {
     const QString urlString = params.value("url").toString();
     int timeoutMs = params.value("timeout_ms").toInt(DEFAULT_TIMEOUT_MS);
 
-    // URL 安全检查
-    if (!m_validator.isUrlAllowed(urlString)) {
-        return ToolResult::fail(QString("URL 不允许访问: %1").arg(urlString));
-    }
-
     QUrl url(urlString);
     if (!url.isValid()) {
         return ToolResult::fail(QString("无效的 URL: %1").arg(urlString));
     }
 
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
-
-    QEventLoop loop;
-    QNetworkReply* reply = manager.get(request);
-
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-
-    timer.start(timeoutMs);
-    loop.exec();
-
-    if (timer.isActive() == false) {
-        reply->abort();
-        reply->deleteLater();
-        return ToolResult::fail(QString("请求超时 (%1 ms)").arg(timeoutMs));
-    }
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QString errorStr = reply->errorString();
-        reply->deleteLater();
-        return ToolResult::fail(QString("网络错误: %1").arg(errorStr));
-    }
-
-    const QByteArray data = reply->readAll();
-    reply->deleteLater();
-
-    // 检查响应大小
-    if (data.size() > MAX_RESPONSE_SIZE) {
-        return ToolResult::fail(QString("响应过大 (最大 %1 KB): %2 KB")
-            .arg(MAX_RESPONSE_SIZE / 1024).arg(data.size() / 1024));
-    }
+    const SafeHttpResult response = performSafeGet(url, m_validator, timeoutMs, MAX_RESPONSE_SIZE);
+    if (!response.success) return ToolResult::fail(response.error);
 
     // 返回原始内容（让 LLM 决定如何解析）
     QJsonObject result;
-    result["url"] = urlString;
-    result["size"] = data.size();
-    result["content"] = QString::fromUtf8(data);
+    result["url"] = response.finalUrl.toString();
+    result["size"] = response.data.size();
+    result["content"] = QString::fromUtf8(response.data);
 
     return ToolResult::ok(result);
 }
@@ -286,43 +368,11 @@ QString WebSearchTool::bingSearch(const QString& query, int maxResults) const {
     queryParams.addQueryItem("ensearch", "1");  // 启用国内版
     url.setQuery(queryParams);
 
-    if (!m_validator.isUrlAllowed(url.toString())) {
-        return QString("搜索 URL 不安全");
-    }
-
-    QNetworkAccessManager manager;
-    QNetworkRequest request(url);
-    request.setHeader(QNetworkRequest::UserAgentHeader,
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36");
-
-    QEventLoop loop;
-    QNetworkReply* reply = manager.get(request);
-
-    QTimer timer;
-    timer.setSingleShot(true);
-    timer.connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
-    timer.connect(reply, &QNetworkReply::finished, &loop, &QEventLoop::quit);
-
-    timer.start(BING_TIMEOUT_MS);
-    loop.exec();
-
-    if (timer.isActive() == false) {
-        reply->abort();
-        reply->deleteLater();
-        return QString("搜索超时，请稍后重试");
-    }
-
-    if (reply->error() != QNetworkReply::NoError) {
-        QString errorStr = reply->errorString();
-        reply->deleteLater();
-        return QString("搜索失败: %1").arg(errorStr);
-    }
-
-    const QByteArray html = reply->readAll();
-    reply->deleteLater();
+    const SafeHttpResult response = performSafeGet(url, m_validator, BING_TIMEOUT_MS, 2 * 1024 * 1024);
+    if (!response.success) return QString("搜索失败: %1").arg(response.error);
 
     // 解析 Bing 结果
-    QJsonArray results = parseBingResults(QString::fromUtf8(html));
+    QJsonArray results = parseBingResults(QString::fromUtf8(response.data));
 
     // 格式化为文本输出
     QStringList output;

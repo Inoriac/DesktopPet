@@ -30,13 +30,20 @@ public:
     QString startTask(const QString& input, const QString& triggerTag = "user_request");
     bool hasSession(const QString& sessionId) const;
     const AgentSession* session(const QString& sessionId) const;
+    void resolveToolConfirmation(const QString& sessionId,
+                                 const QString& requestId,
+                                 bool approved);
 
 signals:
     void sessionStarted(const QString& sessionId, const QString& input);
     void sessionStateChanged(const QString& sessionId, const QString& state);
     void assistantResponseReady(const QString& sessionId, const QString& content);
     void toolExecuted(const QString& sessionId, const QString& toolName, bool success, const QString& payload);
-    void userConfirmationRequired(const QString& sessionId, const QString& toolName, const QString& reason);
+    void userConfirmationRequired(const QString& sessionId,
+                                  const QString& requestId,
+                                  const QString& toolName,
+                                  const QString& reason,
+                                  const QJsonObject& arguments);
     void sessionFinished(const QString& sessionId, bool success, const QString& message);
 
 private:
@@ -47,6 +54,12 @@ private:
     QJsonArray availableToolSchemas() const;
 
 private:
+    struct PendingConfirmation {
+        QString sessionId;
+        LlmToolCall call;
+        int toolRound = 0;
+    };
+
     QString m_petName;
     ToolRuntime* m_toolRuntime = nullptr;       // non-owning
     ContextManager* m_contextManager = nullptr; // non-owning
@@ -54,6 +67,7 @@ private:
     LlmChatService* m_chatService = nullptr;    // non-owning
     EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
     QHash<QString, AgentSession> m_sessions;
+    QHash<QString, PendingConfirmation> m_pendingConfirmations;
     int m_maxToolRounds = 3;
 };
 

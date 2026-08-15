@@ -20,11 +20,26 @@ AIBrain::AIBrain(QObject* parent)
     m_skillStore.load();
 }
 
+void AIBrain::resolveToolConfirmation(const QString& requestId, bool approved) {
+    const auto it = m_pendingToolConfirmations.find(requestId);
+    if (it == m_pendingToolConfirmations.end()) {
+        return;
+    }
+    std::function<void(bool)> continuation = std::move(it.value());
+    m_pendingToolConfirmations.erase(it);
+    continuation(approved);
+}
+
 void AIBrain::setPetName(const QString& petName) {
     m_petName = petName;
 }
 
 void AIBrain::setToolRegistry(ToolRegistry* registry) {
+    if (m_toolRegistry != registry) {
+        ++m_requestGeneration;
+        m_pendingToolConfirmations.clear();
+        m_busy = false;
+    }
     m_toolRegistry = registry;
     m_toolRuntime.setToolRegistry(registry);
 }
@@ -60,12 +75,16 @@ void AIBrain::start() {
 }
 
 void AIBrain::stop() {
+    ++m_requestGeneration;
     m_running = false;
     m_idleTriggerTimer.stop();
     m_emotionTriggerTimer.stop();
     m_chatTriggerTimer.stop();
     m_daydreamTimer.stop();
     m_idleRetryScheduled = false;
+    m_toolRuntime.cancelPendingConfirmations(QStringLiteral("AI brain stopped"));
+    m_pendingToolConfirmations.clear();
+    m_busy = false;
 }
 
 void AIBrain::triggerThink(const QString& reason,

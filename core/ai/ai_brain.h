@@ -7,9 +7,11 @@
 #define DESKTOP_PET_AI_BRAIN_H
 
 #include <QObject>
+#include <QHash>
 #include <QTimer>
 #include <QList>
 #include <QStringList>
+#include <functional>
 
 #include "ai_types.h"
 #include "ai_call_logger.h"
@@ -53,6 +55,7 @@ public:
     void onUserInteraction(const QString& eventName, const QString& detail = QString());
 
     void clearMemory();
+    void resolveToolConfirmation(const QString& requestId, bool approved);
     MemoryStore* memoryStore() { return &m_memoryStore; }
     const MemoryStore* memoryStore() const { return &m_memoryStore; }
     SkillStore* skillStore() { return &m_skillStore; }
@@ -69,6 +72,10 @@ signals:
     void assistantResponseReady(const QString& content);
     void proactiveResponseReady(const QString& content);
     void toolExecuted(const QString& toolName, bool success, const QString& payload);
+    void toolConfirmationRequired(const QString& requestId,
+                                  const QString& toolName,
+                                  const QString& reason,
+                                  const QJsonObject& arguments);
 
 private:
     void thinkInternal(const QString& reason,
@@ -145,11 +152,13 @@ private:
     bool m_running = false;
     bool m_busy = false;
     bool m_idleRetryScheduled = false;
+    quint64 m_requestGeneration = 0;
 
     int m_maxToolRounds = 3;
     int m_maxMemoryMessages = 20;
 
     QList<ChatMessage> m_memory;
+    QHash<QString, std::function<void(bool)>> m_pendingToolConfirmations;
     AiCallLogger m_callLogger;
 };
 

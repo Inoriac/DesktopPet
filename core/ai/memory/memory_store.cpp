@@ -6,6 +6,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonParseError>
+#include <QSaveFile>
 #include <QUuid>
 
 #include "memory_repository.h"
@@ -239,13 +240,17 @@ bool MemoryStore::save(QString* errorMessage) const {
         array.append(entry.toJson());
     }
 
-    QFile file(m_memoryFilePath);
+    QSaveFile file(m_memoryFilePath);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
         if (errorMessage) *errorMessage = file.errorString();
         return false;
     }
 
-    file.write(QJsonDocument(array).toJson(QJsonDocument::Indented));
+    const QByteArray payload = QJsonDocument(array).toJson(QJsonDocument::Indented);
+    if (file.write(payload) != payload.size() || !file.commit()) {
+        if (errorMessage) *errorMessage = file.errorString();
+        return false;
+    }
     return true;
 }
 
@@ -305,8 +310,10 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
         if (stored.strength < 0.8) stored.strength = 0.8;
     }
 
+    if (!persistEntry(stored)) {
+        return {};
+    }
     m_entries.append(stored);
-    persistEntry(stored);
     return stored;
 }
 
@@ -331,10 +338,12 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
             stored.summary = fallbackSummary(stored);
         }
 
-        existing = stored;
         if (m_repository && m_repository->isOpen()) {
-            return m_repository->update(stored);
+            if (!m_repository->update(stored)) {
+                return false;
+            }
         }
+        existing = stored;
         return true;
     }
 
@@ -353,15 +362,17 @@ bool MemoryStore::updateStatusById(const QString& id,
             continue;
         }
 
-        entry.status = status;
-        entry.updatedAt = QDateTime::currentDateTimeUtc();
+        MemoryEntry updated = entry;
+        updated.status = status;
+        updated.updatedAt = QDateTime::currentDateTimeUtc();
         for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
-            entry.payload[it.key()] = it.value();
+            updated.payload[it.key()] = it.value();
         }
 
-        if (m_repository && m_repository->isOpen()) {
-            return m_repository->updateStatus(id, status, payloadPatch);
+        if (!persistStatusUpdate(id, status, payloadPatch)) {
+            return false;
         }
+        entry = updated;
         return true;
     }
 
@@ -378,12 +389,16 @@ bool MemoryStore::updateStatusByKey(MemoryType type,
         if (entry.type != type || entry.key != key || entry.status == status) {
             continue;
         }
-        entry.status = status;
-        entry.updatedAt = now;
+        MemoryEntry updated = entry;
+        updated.status = status;
+        updated.updatedAt = now;
         for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
-            entry.payload[it.key()] = it.value();
+            updated.payload[it.key()] = it.value();
         }
-        persistStatusUpdate(entry.id, status, payloadPatch);
+        if (!persistStatusUpdate(entry.id, status, payloadPatch)) {
+            continue;
+        }
+        entry = updated;
         changed = true;
     }
     return changed;
@@ -397,12 +412,16 @@ bool MemoryStore::updateTaskShadowStatus(const QString& linkedTaskId,
     for (MemoryEntry& entry : m_entries) {
         if (entry.type != MemoryType::TaskShadow) continue;
         if (entry.payload.value("linked_task_id").toString() != linkedTaskId) continue;
-        entry.status = status;
-        entry.updatedAt = now;
+        MemoryEntry updated = entry;
+        updated.status = status;
+        updated.updatedAt = now;
         for (auto it = payloadPatch.constBegin(); it != payloadPatch.constEnd(); ++it) {
-            entry.payload[it.key()] = it.value();
+            updated.payload[it.key()] = it.value();
         }
-        persistStatusUpdate(entry.id, status, payloadPatch);
+        if (!persistStatusUpdate(entry.id, status, payloadPatch)) {
+            continue;
+        }
+        entry = updated;
         changed = true;
     }
     return changed;
@@ -448,22 +467,26 @@ QStringList MemoryStore::summaryForContext(int limit) const {
 }
 
 void MemoryStore::clear() {
+    if (m_repository && m_repository->isOpen() && !m_repository->clear()) {
+        return;
+    }
     m_entries.clear();
-    if (m_repository && m_repository->isOpen()) {
-        m_repository->clear();
-    }
 }
 
-void MemoryStore::persistEntry(const MemoryEntry& entry) {
+bool MemoryStore::persistEntry(const MemoryEntry& entry) {
     if (m_repository && m_repository->isOpen()) {
-        m_repository->insert(entry);
+        return m_repository->insert(entry);
     }
+    return true;
 }
 
-void MemoryStore::persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch) {
+bool MemoryStore::persistStatusUpdate(const QString& id,
+                                      MemoryStatus status,
+                                      const QJsonObject& payloadPatch) {
     if (m_repository && m_repository->isOpen()) {
-        m_repository->updateStatus(id, status, payloadPatch);
+        return m_repository->updateStatus(id, status, payloadPatch);
     }
+    return true;
 }
 
 MemoryEntry* MemoryStore::findById(const QString& id) {

@@ -7,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QPointer>
 #include <QRandomGenerator>
 #include <QTimer>
 #include <QUuid>
@@ -22,6 +23,8 @@ void AIBrain::thinkInternal(const QString& reason,
                             const QList<ChatMessage>& workingMessages) {
     const QJsonArray tools = m_toolRegistry ? m_toolRegistry->allToolSchemas() : QJsonArray{};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    const quint64 requestGeneration = m_requestGeneration;
+    const QPointer<AIBrain> guard(this);
 
     m_callLogger.logRequest(requestId,
                             m_petName,
@@ -32,7 +35,11 @@ void AIBrain::thinkInternal(const QString& reason,
                             tools);
 
     m_chatService.requestAsync(workingMessages, tools,
-        [this, requestId, reason, triggerTag, toolRound, workingMessages](bool ok, LlmResponse response, QString error) mutable {
+        [this, guard, requestGeneration, requestId, reason, triggerTag, toolRound, workingMessages]
+        (bool ok, LlmResponse response, QString error) mutable {
+            if (!guard || requestGeneration != m_requestGeneration) {
+                return;
+            }
             m_callLogger.logResponse(requestId,
                                      m_petName,
                                      ok,
@@ -111,9 +118,38 @@ void AIBrain::thinkInternal(const QString& reason,
                 executionRequest.toolName = call.name;
                 executionRequest.arguments = call.arguments;
                 executionRequest.policyContext = buildToolPolicyContext(triggerTag, reason, true);
-                executionRequest.userConfirmed = false;
-
                 const ToolExecutionOutcome outcome = m_toolRuntime.execute(executionRequest);
+                if (outcome.policyDecision.needsConfirmation()) {
+                    if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
+                        nextMessages[assistantIndex].toolCalls = assistantToolCalls;
+                    }
+                    const QString confirmationId = outcome.requestId;
+                    m_pendingToolConfirmations.insert(
+                        confirmationId,
+                        [this, confirmationId, call, reason, triggerTag, toolRound, nextMessages]
+                        (bool approved) mutable {
+                            const ToolExecutionOutcome resolved =
+                                m_toolRuntime.resolveConfirmation(confirmationId, approved);
+                            const QString resolvedPayload =
+                                m_toolRuntime.sanitizer()->toPayload(resolved.result);
+                            rememberToolOutcome(call.name, triggerTag, true, resolved);
+
+                            ChatMessage toolMessage;
+                            toolMessage.role = "tool";
+                            toolMessage.name = call.name;
+                            toolMessage.content = resolvedPayload;
+                            toolMessage.toolCallId = call.id;
+                            nextMessages.append(toolMessage);
+                            appendToMemory(toolMessage);
+                            emit toolExecuted(call.name, resolved.result.success, resolvedPayload);
+                            thinkInternal(reason, triggerTag, toolRound + 1, nextMessages);
+                        });
+                    emit toolConfirmationRequired(confirmationId,
+                                                  call.name,
+                                                  outcome.policyDecision.reason,
+                                                  call.arguments);
+                    return;
+                }
                 ToolResult result = outcome.result;
                 const QString payload = m_toolRuntime.sanitizer()->toPayload(result);
                 rememberToolOutcome(call.name, triggerTag, true, outcome);
