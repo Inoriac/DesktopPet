@@ -38,6 +38,36 @@ static int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
 }
 
+static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
+    DaydreamConfig cfg;
+    cfg.enabled = object.value("enabled").toBool(true);
+    cfg.idleThresholdSec = clampInt(
+        object.value("idleThresholdSec").toInt(cfg.idleThresholdSec), 30, 24 * 60 * 60);
+    cfg.dueSoonThresholdMs = clampInt(
+        object.value("dueSoonThresholdMs").toInt(cfg.dueSoonThresholdMs), 0, 24 * 60 * 60 * 1000);
+    cfg.minIntervalMs = clampInt(
+        object.value("minIntervalMs").toInt(cfg.minIntervalMs), 60 * 1000, 24 * 60 * 60 * 1000);
+    cfg.interruptionBackoffMs = clampInt(
+        object.value("interruptionBackoffMs").toInt(cfg.interruptionBackoffMs), 0, 24 * 60 * 60 * 1000);
+    cfg.hourlyLimit = clampInt(object.value("hourlyLimit").toInt(cfg.hourlyLimit), 1, 24);
+    cfg.tickIntervalMs = clampInt(
+        object.value("tickIntervalMs").toInt(cfg.tickIntervalMs), 5 * 1000, 5 * 60 * 1000);
+
+    cfg.sessionLimit = clampInt(object.value("sessionLimit").toInt(cfg.sessionLimit), 1, 128);
+    cfg.batchLimit = clampInt(
+        object.value("batchLimit").toInt(cfg.batchLimit), 1, std::min(cfg.sessionLimit, 32));
+    cfg.inboxLimit = clampInt(object.value("inboxLimit").toInt(cfg.inboxLimit), 1, 5000);
+    cfg.inboxLimit = std::max(cfg.inboxLimit, cfg.sessionLimit);
+    cfg.relatedMemoryLimit = clampInt(
+        object.value("relatedMemoryLimit").toInt(cfg.relatedMemoryLimit), 0, 32);
+
+    cfg.model = object.value("model").toString().trimmed().left(256);
+    cfg.maxTokens = clampInt(object.value("maxTokens").toInt(cfg.maxTokens), 256, 8192);
+    cfg.temperature = std::clamp(
+        object.value("temperature").toDouble(cfg.temperature), 0.0, 2.0);
+    return cfg;
+}
+
 static QString cleanConfigPath(const QString& path) {
     const QString trimmed = path.trimmed();
     if (trimmed.isEmpty()) {
@@ -246,6 +276,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     // 2) aiSettings.profiles + activeProfile
     llmConfig = LlmConfig{};
     screenChatConfig = ScreenChatConfig{};
+    daydreamConfig = DaydreamConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiToolAccessPolicy = AiToolAccessPolicy{};
@@ -336,6 +367,10 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             } else {
                 screenChatConfig.petGender = "female";
             }
+        }
+
+        if (aiRaw.contains("daydream") && aiRaw.value("daydream").isObject()) {
+            daydreamConfig = parseDaydreamConfig(aiRaw.value("daydream").toObject());
         }
 
         if (aiRaw.contains("voice") && aiRaw.value("voice").isObject()) {

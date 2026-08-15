@@ -276,7 +276,7 @@ void AIBrain::setupTriggerTimers() {
 }
 
 void AIBrain::armDaydreamTimer() {
-    if (!m_running) return;
+    if (!m_running || !m_daydreamConfig.enabled) return;
     const QDateTime now = QDateTime::currentDateTime();
     const qint64 msSinceLast = m_lastDaydreamAt.isValid()
         ? m_lastDaydreamAt.msecsTo(now)
@@ -285,7 +285,7 @@ void AIBrain::armDaydreamTimer() {
 }
 
 void AIBrain::checkDaydreamTrigger() {
-    if (!m_running) return;
+    if (!m_running || !m_daydreamConfig.enabled) return;
     if (m_daydreamRunning) {
         if (!canContinueDaydream()) {
             cancelDaydreamSession(QStringLiteral("idle conditions changed"));
@@ -313,8 +313,10 @@ void AIBrain::checkDaydreamTrigger() {
 }
 
 void AIBrain::runDaydreamSession() {
+    if (!m_daydreamConfig.enabled) return;
     DaydreamConsolidator consolidator(m_memoryStore);
-    const DaydreamConsolidator::Snapshot snapshot = consolidator.createSnapshot();
+    const DaydreamConsolidator::Snapshot snapshot = consolidator.createSnapshot(
+        m_daydreamConfig.sessionLimit);
     if (snapshot.isEmpty()) return;
 
     m_daydreamRunning = true;
@@ -325,6 +327,11 @@ void AIBrain::runDaydreamSession() {
     m_daydreamSnapshot = snapshot;
     m_daydreamDecisions.clear();
     m_daydreamBatchOffset = 0;
+    m_daydreamFallbackBatches = 0;
+    m_daydreamInvalidBatches = 0;
+
+    qInfo() << "[Daydream] session started: items=" << snapshot.size();
+    emit daydreamStarted(snapshot.size());
 
     runNextDaydreamBatch(m_daydreamGeneration);
 }
@@ -348,7 +355,7 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
     }
 
     const QList<MemoryEntry> batch = m_daydreamSnapshot.items.mid(
-        m_daydreamBatchOffset, DaydreamConsolidator::BATCH_LIMIT);
+        m_daydreamBatchOffset, m_daydreamConfig.batchLimit);
     QList<MemoryEntry> modelBatch;
     QList<DaydreamConsolidator::Decision> forcedDecisions;
     for (const MemoryEntry& entry : batch) {
@@ -369,12 +376,16 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
     }
 
     DaydreamConsolidator consolidator(m_memoryStore);
-    const QList<MemoryEntry> related = consolidator.relatedLongTermMemories(modelBatch);
+    const QList<MemoryEntry> related = consolidator.relatedLongTermMemories(
+        modelBatch, m_daydreamConfig.relatedMemoryLimit);
     const QList<ChatMessage> messages = buildDaydreamMessages(modelBatch, related);
 
     LlmConfig config = ConfigManager::instance().getLlmConfig();
-    config.maxTokens = qMax(config.maxTokens, 1200);
-    config.temperature = qMin(config.temperature, 0.2);
+    if (!m_daydreamConfig.model.isEmpty()) {
+        config.model = m_daydreamConfig.model;
+    }
+    config.maxTokens = m_daydreamConfig.maxTokens;
+    config.temperature = m_daydreamConfig.temperature;
 
     const QPointer<AIBrain> guard(this);
     m_chatService.requestAsyncWithConfig(
@@ -389,6 +400,7 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
 
             QList<DaydreamConsolidator::Decision> batchDecisions = forcedDecisions;
             if (!ok) {
+                ++m_daydreamFallbackBatches;
                 qWarning() << "[Daydream] LLM batch failed; using bounded hardcoded fallback:" << error;
                 batchDecisions.append(DaydreamConsolidator::hardcodedDecisions(modelBatch));
             } else {
@@ -396,6 +408,7 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
                 QList<DaydreamConsolidator::Decision> parsed;
                 if (!DaydreamConsolidator::parseDecisions(response.content, modelBatch, related,
                                                            &parsed, &parseError)) {
+                    ++m_daydreamInvalidBatches;
                     qWarning() << "[Daydream] invalid LLM batch; preserving sources:" << parseError;
                     batchDecisions.append(preserveDecisions(modelBatch));
                 } else {
@@ -420,6 +433,18 @@ void AIBrain::finishDaydreamSession(quint64 generation) {
     DaydreamConsolidator consolidator(m_memoryStore);
     const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
         m_daydreamSnapshot, m_daydreamDecisions);
+    QJsonObject summary{
+        {QStringLiteral("scanned"), stats.scanned},
+        {QStringLiteral("upgraded"), stats.upgraded},
+        {QStringLiteral("updated"), stats.updated},
+        {QStringLiteral("discarded"), stats.discarded},
+        {QStringLiteral("preserved"), stats.preserved},
+        {QStringLiteral("failed"), stats.failed},
+        {QStringLiteral("staleSnapshot"), stats.staleSnapshot},
+        {QStringLiteral("committed"), stats.committed},
+        {QStringLiteral("fallbackBatches"), m_daydreamFallbackBatches},
+        {QStringLiteral("invalidBatches"), m_daydreamInvalidBatches}
+    };
     qDebug() << "[Daydream] session done:"
              << "scanned=" << stats.scanned
              << "upgraded=" << stats.upgraded
@@ -428,12 +453,17 @@ void AIBrain::finishDaydreamSession(quint64 generation) {
              << "preserved=" << stats.preserved
              << "failed=" << stats.failed
              << "stale=" << stats.staleSnapshot
-             << "committed=" << stats.committed;
+             << "committed=" << stats.committed
+             << "fallbackBatches=" << m_daydreamFallbackBatches
+             << "invalidBatches=" << m_daydreamInvalidBatches;
 
     m_daydreamRunning = false;
     m_daydreamSnapshot = {};
     m_daydreamDecisions.clear();
     m_daydreamBatchOffset = 0;
+    m_daydreamFallbackBatches = 0;
+    m_daydreamInvalidBatches = 0;
+    emit daydreamFinished(summary);
 }
 
 void AIBrain::cancelDaydreamSession(const QString& reason) {
@@ -444,7 +474,10 @@ void AIBrain::cancelDaydreamSession(const QString& reason) {
     m_daydreamSnapshot = {};
     m_daydreamDecisions.clear();
     m_daydreamBatchOffset = 0;
-    qDebug() << "[Daydream] session cancelled:" << reason;
+    m_daydreamFallbackBatches = 0;
+    m_daydreamInvalidBatches = 0;
+    qInfo() << "[Daydream] session cancelled:" << reason;
+    emit daydreamCancelled(reason);
 }
 
 AiTriggerConfig AIBrain::triggerConfigForTag(const QString& triggerTag) const {

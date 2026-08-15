@@ -15,6 +15,8 @@
 
 AIBrain::AIBrain(QObject* parent)
     : QObject(parent) {
+    m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
+    m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
     m_memoryStore.load();
     m_skillStore.load();
@@ -71,7 +73,9 @@ void AIBrain::start() {
     scheduleTrigger("idle_action");
     scheduleTrigger("emotion");
     scheduleTrigger("proactive_chat");
-    armDaydreamTimer();
+    if (m_daydreamConfig.enabled) {
+        armDaydreamTimer();
+    }
 }
 
 void AIBrain::stop() {
@@ -154,6 +158,10 @@ void AIBrain::processUserMemoryWrite(const QString& input,
         return;
     }
 
+    if (!m_daydreamConfig.enabled) {
+        return;
+    }
+
     MemoryEntry impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
     if (impression.content.isEmpty()) return;
 
@@ -176,7 +184,7 @@ void AIBrain::processUserMemoryWrite(const QString& input,
     }
 
     DaydreamConsolidator consolidator(m_memoryStore);
-    if (consolidator.pendingCount() >= DaydreamConsolidator::INBOX_LIMIT) {
+    if (consolidator.pendingCount() >= m_daydreamConfig.inboxLimit) {
         qWarning() << "[Daydream] inbox capacity reached; skipping new impression";
         return;
     }

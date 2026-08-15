@@ -80,6 +80,26 @@ struct ScreenChatConfig {
     QString petGender = "female";
 };
 
+// 空闲记忆整理配置。模型留空时复用主 LLM 配置中的 model。
+struct DaydreamConfig {
+    bool enabled = true;
+    int idleThresholdSec = 5 * 60;
+    int dueSoonThresholdMs = 10 * 60 * 1000;
+    int minIntervalMs = 15 * 60 * 1000;
+    int interruptionBackoffMs = 10 * 60 * 1000;
+    int hourlyLimit = 3;
+    int tickIntervalMs = 30 * 1000;
+
+    int sessionLimit = 32;
+    int batchLimit = 8;
+    int inboxLimit = 200;
+    int relatedMemoryLimit = 8;
+
+    QString model;
+    int maxTokens = 1200;
+    double temperature = 0.2;
+};
+
 // 自定义语音角色配置
 struct CustomVoiceConfig {
     QString name;

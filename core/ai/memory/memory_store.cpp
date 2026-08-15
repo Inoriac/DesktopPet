@@ -216,6 +216,7 @@ bool MemoryStore::load(QString* errorMessage) {
     }
 
     m_relationGraph.setConnectionName(m_repository->connectionName());
+    m_tagCooccurrenceGraph.setConnectionName(m_repository->connectionName());
 
     QList<MemoryEntry> existing = m_repository->loadAll();
 

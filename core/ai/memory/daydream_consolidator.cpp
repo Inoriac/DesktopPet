@@ -310,10 +310,15 @@ MemoryEntry DaydreamConsolidator::makeLongTermEntry(const MemoryEntry& source,
     consolidated.content = decision.mergedContent.isEmpty()
         ? source.content
         : decision.mergedContent;
-    consolidated.tags = source.tags;
-    for (const QString& tag : decision.tags) {
+    const auto appendTag = [&consolidated](const QString& rawTag) {
+        const QString tag = rawTag.simplified().left(64);
+        if (tag.isEmpty() || tag.compare(QStringLiteral("daydream_inbox"), Qt::CaseInsensitive) == 0) {
+            return;
+        }
         if (!consolidated.tags.contains(tag, Qt::CaseInsensitive)) consolidated.tags.append(tag);
-    }
+    };
+    for (const QString& tag : source.tags) appendTag(tag);
+    for (const QString& tag : decision.tags) appendTag(tag);
     consolidated.scope = source.scope;
     consolidated.source = QStringLiteral("daydream");
     consolidated.importance = qBound(0.1, decision.qualityScore / 10.0, 1.0);
@@ -342,7 +347,11 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
     case Action::Create:
     case Action::KeepBoth: {
         const MemoryEntry created = m_store.addEntry(makeLongTermEntry(source, decision));
-        if (created.id.isEmpty() || !m_store.removeEntryById(source.id)) return false;
+        if (created.id.isEmpty()
+            || !m_store.tagCooccurrenceGraph().recordTags(created.tags)
+            || !m_store.removeEntryById(source.id)) {
+            return false;
+        }
         ++stats->upgraded;
         return true;
     }
@@ -366,7 +375,11 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
             if (!updated.tags.contains(tag, Qt::CaseInsensitive)) updated.tags.append(tag);
         }
         if (!updated.sourceMemoryIds.contains(source.id)) updated.sourceMemoryIds.append(source.id);
-        if (!m_store.updateEntryById(updated) || !m_store.removeEntryById(source.id)) return false;
+        if (!m_store.updateEntryById(updated)
+            || !m_store.tagCooccurrenceGraph().recordTags(updated.tags)
+            || !m_store.removeEntryById(source.id)) {
+            return false;
+        }
         ++stats->updated;
         return true;
     }

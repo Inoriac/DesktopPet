@@ -56,6 +56,7 @@ public:
     const LlmConfig& getLlmConfig() const { return llmConfig; }
     void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
+    const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
 
@@ -113,6 +114,7 @@ private:
 
     LlmConfig llmConfig;
     ScreenChatConfig screenChatConfig;
+    DaydreamConfig daydreamConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
     AiToolAccessPolicy aiToolAccessPolicy;

@@ -25,7 +25,7 @@ Daydream 是作者提出的桌宠**空闲时刻自主记忆整理**机制。它*
 
 ## 二、现状校正
 
-当前分支已有 Daydream 的全局空闲触发器、Hippocampus 快照、异步批量 LLM 决策、硬编码失败降级和最终短事务提交。检索路径已只读，不再同步巩固。尚需继续用真实模型输出做兼容性验证，并补齐可配置开关/轻量模型配置和更完整的关系图更新。
+当前分支已有 Daydream 的全局空闲触发器、Hippocampus 快照、异步批量 LLM 决策、硬编码失败降级和最终短事务提交。检索路径已只读，不再同步巩固。运行开关、触发阈值、容量、批次和独立轻量模型均已配置化；标签共现图也已落 SQLite 并纳入最终短事务。尚需继续用真实模型输出做兼容性验证。
 
 ## 三、触发设计：大概率空闲 + 解耦 + 可中断
 
@@ -141,7 +141,7 @@ if (applyAll(staged, db)) db.commit();
 else db.rollback();
 ```
 
-- **关系图无残留**：`memory_relations` 及未来 `tag_cooccurrences` 必须与记忆写入处于最终同一短事务。
+- **关系图无残留**：`memory_relations` 与 `tag_cooccurrences` 均复用 MemoryStore 的 SQLite 连接，并与记忆写入处于最终同一短事务。共现权重表示标签对被 create/update 巩固确认的事件次数。
 - **新 inbox 不被误删**：快照建立后到达的新项不属于当前 session；下次再处理。
 - **源项变化时拒绝提交**：若同 key 的再次提及更新了 mentionCount/content/revision，旧 LLM 决策已失效，整 session 不落库。
 - **无批级可见状态**：批次只产生 staging 结果，不逐批提交，因此中断不会留下已完成批。
@@ -211,18 +211,21 @@ ShortTerm/TaskShadow 存量分流：都先进 Hippocampus inbox，由 LLM 判定
 - **Daydream 原子性**：不可变快照 + 内存 staging + generation 取消 + 最终短 SQLite 事务。语义仍是“全 session 无部分可见结果”，但网络等待期间不占写锁。
 - **Daydream 输入归属**：只消化用户自述 impression，不持久化 assistant response。显式记忆/遗忘请求不等待 Daydream。
 
-## 十、待确认（已带推荐默认值，可逐条调整）
+## 十、运行配置（推荐默认值已落地）
 
-| # | 项 | 推荐默认 |
+配置位于当前 AI profile 的 `daydream` 对象，例如 `aiSettings.profiles.default.daydream`。模型字段留空时复用 profile 的主模型；`enabled=false` 时不启动空闲监测，也不收集新的 Daydream inbox 印象。所有数值在读取时都会限制到安全范围。
+
+| 配置项 | 默认值 | 语义 |
 |---|---|---|
-| 1 | 空闲阈值 N₁ / N₂ / 间隔下限 / session 上限 | 5min / 10min / 15min / 32 条 |
-| 2 | 打断后退避（防抖动） | ≥10min 不再判定空闲 |
-| 3 | 中断监测 tick 频率 | 每 30s 复查 idle_seconds 跳变 |
-| 4 | 平台不支持时降级判定 | 默认关闭；需配置显式开（仅 m_busy+无待办+距上次对话） |
-| 5 | Daydream 用哪个 LLM | 复用 ChatService（OpenAI-compatible），单独配轻量模型，可开关默认开 |
-| 6 | 被打断时有新对话进来 | 新对话优先：立即使 generation 失效；Daydream 尚未写库，新对话不等 |
-| 7 | 每小时 Daydream 上限 | ≤3 次/小时 |
-| 8 | 原硬编码巩固规则保留期 | 并存到 Phase 3，作为 Daydream 失败降级兜底，验证稳定后删 |
+| `enabled` | `true` | 总开关 |
+| `idleThresholdSec` / `dueSoonThresholdMs` | `300` / `600000` | 全局空闲阈值 / 待办保护窗口 |
+| `minIntervalMs` / `interruptionBackoffMs` | `900000` / `600000` | 最小间隔 / 打断后的额外退避 |
+| `hourlyLimit` / `tickIntervalMs` | `3` / `30000` | 每小时 session 上限 / 空闲复查周期 |
+| `sessionLimit` / `batchLimit` / `inboxLimit` | `32` / `8` / `200` | 单次、单批和收件箱容量 |
+| `relatedMemoryLimit` | `8` | 每批提供给模型的历史候选上限 |
+| `model` / `maxTokens` / `temperature` | 空 / `1200` / `0.2` | 独立模型及推理参数 |
+
+平台不支持全局空闲检测时仍默认不触发；原硬编码规则继续作为 LLM 请求失败时的有界降级。被用户交互打断时 generation 立即失效，新对话不等待 Daydream。
 
 ## 十一、路线图（Daydream 部分，属主文档 Phase 2）
 

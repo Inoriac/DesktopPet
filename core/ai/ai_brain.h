@@ -77,6 +77,9 @@ signals:
                                   const QString& toolName,
                                   const QString& reason,
                                   const QJsonObject& arguments);
+    void daydreamStarted(int itemCount);
+    void daydreamFinished(const QJsonObject& summary);
+    void daydreamCancelled(const QString& reason);
 
 private:
     void thinkInternal(const QString& reason,
@@ -141,6 +144,7 @@ private:
     QTimer m_emotionTriggerTimer;
     QTimer m_chatTriggerTimer;
     QTimer m_daydreamTimer;
+    DaydreamConfig m_daydreamConfig;
     DaydreamTriggerPolicy m_daydreamPolicy;
     AgentScheduler* m_scheduler = nullptr; // non-owning
     bool m_daydreamRunning = false;
@@ -152,6 +156,8 @@ private:
     DaydreamConsolidator::Snapshot m_daydreamSnapshot;
     QList<DaydreamConsolidator::Decision> m_daydreamDecisions;
     int m_daydreamBatchOffset = 0;
+    int m_daydreamFallbackBatches = 0;
+    int m_daydreamInvalidBatches = 0;
 
     bool m_enabled = true;
     bool m_running = false;

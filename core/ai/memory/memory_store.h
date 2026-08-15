@@ -7,6 +7,7 @@
 
 #include "memory_types.h"
 #include "memory_relation_graph.h"
+#include "tag_cooccurrence_graph.h"
 
 class MemoryRepository;
 
@@ -51,6 +52,8 @@ public:
 
     MemoryRelationGraph& relationGraph() { return m_relationGraph; }
     const MemoryRelationGraph& relationGraph() const { return m_relationGraph; }
+    TagCooccurrenceGraph& tagCooccurrenceGraph() { return m_tagCooccurrenceGraph; }
+    const TagCooccurrenceGraph& tagCooccurrenceGraph() const { return m_tagCooccurrenceGraph; }
 
     // 底层 SQLite 连接名（与 SqliteMemoryRepository 共用），供需同库的组件复用
     // （如 SqliteEmbeddingIndex 写 memory_embeddings 表）。
@@ -74,6 +77,7 @@ private:
     QList<MemoryEntry> m_entries;
     std::unique_ptr<MemoryRepository> m_repository;
     MemoryRelationGraph m_relationGraph;
+    TagCooccurrenceGraph m_tagCooccurrenceGraph;
 };
 
 #endif // DESKTOP_PET_MEMORY_STORE_H

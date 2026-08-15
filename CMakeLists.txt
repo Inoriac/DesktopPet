@@ -155,6 +155,8 @@ set(CORE_SOURCES
     core/ai/memory/memory_relation.h
     core/ai/memory/memory_relation_graph.h
     core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/tag_cooccurrence_graph.h
+    core/ai/memory/tag_cooccurrence_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
     core/ai/memory/daydream_consolidator.h
@@ -449,6 +451,8 @@ add_executable(memory_strategy_tests
     core/ai/memory/memory_relation.h
     core/ai/memory/memory_relation_graph.h
     core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/tag_cooccurrence_graph.h
+    core/ai/memory/tag_cooccurrence_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
     core/ai/tools/memory_tools.h

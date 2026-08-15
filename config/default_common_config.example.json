@@ -79,6 +79,22 @@
         "temperature": 0.7,
         "retryCount": 1,
         "thinkIntervalMs": 30000,
+        "daydream": {
+          "enabled": true,
+          "idleThresholdSec": 300,
+          "dueSoonThresholdMs": 600000,
+          "minIntervalMs": 900000,
+          "interruptionBackoffMs": 600000,
+          "hourlyLimit": 3,
+          "tickIntervalMs": 30000,
+          "sessionLimit": 32,
+          "batchLimit": 8,
+          "inboxLimit": 200,
+          "relatedMemoryLimit": 8,
+          "model": "",
+          "maxTokens": 1200,
+          "temperature": 0.2
+        },
         "screenChat": {
           "enabled": false,
           "minIntervalMs": 480000,

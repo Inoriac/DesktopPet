@@ -412,7 +412,7 @@ hebb-mind 使用 5 个物理分区。DesktopPet 保留 `Core` 作为逻辑类型
 
 从单一「关系类型图」扩展为双图：
 
-1. **标签共现图**（新）：同记忆内标签两两建边，权重=共现次数，发现隐式关联（对齐 hebb `KnowledgeGraph.add_tags` 的共现建边逻辑）。**存储须落 SQLite 表 `tag_cooccurrences`**（非纯内存对象），并纳入 Daydream 最终短事务，避免记忆与图状态分离（详见 `daydream.md` 第五节）。
+1. **标签共现图**（新）：同记忆内标签两两建边，权重=被 create/update 巩固确认的共现事件次数，发现隐式关联（对齐 hebb `KnowledgeGraph.add_tags` 的共现建边逻辑）。**存储须落 SQLite 表 `tag_cooccurrences`**（非纯内存对象），并纳入 Daydream 最终短事务，避免记忆与图状态分离（详见 `daydream.md` 第五节）。
 2. **关系类型图**（现有 `MemoryRelationGraph`，已落 `memory_relations` 表）：7 种关系类型——Related / TopicOf / CreatedTask / Supersedes / ConflictsWith / DerivedFrom / MentionedWith（memory_relation.h）。随事务回滚，无残留。
 
 ```cpp
@@ -510,8 +510,8 @@ public:
 | **C++ tokenizer** | BGE 用 BERT WordPiece。拟复用 HF `tokenizers` C 绑定或 header-only，不自写算法。未选型/未写 |
 | **provider 注入检索链路** | `ai_brain_router.cpp:303` / `agent_core.cpp:73` 两个 `retrieve` 调用点都未传 embeddingIndex，需把真实 index 注入 |
 | **RRF 三通道融合** | 计划 A2，待做 |
-| **图谱双图架构** | 计划 E，待做 |
-| **Daydream 全部** | 拆至 daydream.md，基本框架稳定后 |
+| **图谱双图架构** | 标签共现图已落 SQLite 并接入 Daydream 短事务；关系类型加权检索待做 |
+| **Daydream 全部** | 核心链路、配置、可观测信号与共现图已完成；真实模型兼容性验证待做 |
 
 ### ⚠️ 已识别但未决的关键风险
 
@@ -593,7 +593,7 @@ public:
 | 2 | onnxruntime 平台包 | Windows x64 + macOS arm64/x64 release zip | gitignore，脚本拉取 |
 | 3 | RRF / 图谱双图排期 | P1 | 待 P0 embedding 通后 |
 
-> Daydream 相关待确认项（空闲阈值、退避、tick、LLM 选型、降级规则保留期等）见 `daydream.md` 第十节。
+> Daydream 运行项（空闲阈值、退避、tick、独立 LLM、容量与降级规则）已配置化，见 `daydream.md` 第十节。
 
 ---
 

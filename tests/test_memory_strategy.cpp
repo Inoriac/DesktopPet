@@ -83,7 +83,11 @@ private slots:
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
     void testTransactionRollbackRevertsRelationGraph();
+    void testTransactionRollbackRevertsTagCooccurrence();
     void testDaydreamDrainUpgradesAndClearsHippocampus();
+    void testDaydreamUpdatesTagCooccurrenceGraph();
+    void testDaydreamUpdateRecordsTagCooccurrence();
+    void testDaydreamTagCooccurrenceAccumulates();
     void testDaydreamDrainDiscardsLowValue();
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
@@ -98,6 +102,7 @@ private slots:
     void testDaydreamTriggerPolicyNegativeCases();
     void testDaydreamTriggerPolicyNoDueTodoNonBlocking();
     void testDaydreamTriggerPolicyContinuation();
+    void testDaydreamTriggerPolicyUsesRuntimeConfig();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
 #endif
@@ -1617,6 +1622,25 @@ void TestMemoryStrategy::testTransactionRollbackRevertsRelationGraph() {
     QVERIFY(!reloaded.relationGraph().hasRelation(aId, bId, MemoryRelationType::Related));
 }
 
+void TestMemoryStrategy::testTransactionRollbackRevertsTagCooccurrence() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    QVERIFY(store.beginTransaction());
+    QVERIFY(store.tagCooccurrenceGraph().recordTags(
+        {QStringLiteral("Qt"), QStringLiteral("C++")}));
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral("qt"), QStringLiteral("c++")), 1);
+    QVERIFY(store.rollbackTransaction());
+
+    MemoryStore reloaded;
+    setupStoreWithDb(reloaded, tempDir);
+    QCOMPARE(reloaded.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral("qt"), QStringLiteral("c++")), 0);
+}
+
 // Daydream 第③步：硬编码降级巩固回路。mentionCount>=2 的 Hippocampus 条目应升级为
 // Episodic 长期记忆并清空源；低价值条目应被丢弃清空 inbox；其他分区条目不受影响。
 void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
@@ -1657,6 +1681,114 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     QCOMPARE(episodicCount, 1);
     QVERIFY(!store.findById(hotId)); // 源条目已物理删除
     QCOMPARE(store.all().first().sourceMemoryIds, QStringList{hotId});
+}
+
+void TestMemoryStrategy::testDaydreamUpdatesTagCooccurrenceGraph() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    MemoryEntry source;
+    source.type = MemoryType::ShortTerm;
+    source.key = QStringLiteral("tag_graph");
+    source.summary = QStringLiteral("用户使用 Qt 和 C++");
+    source.content = source.summary;
+    source.source = QStringLiteral("user_interaction");
+    source.tags = {
+        QStringLiteral("Qt"),
+        QStringLiteral(" C++ "),
+        QStringLiteral("daydream_inbox")
+    };
+    source.mentionCount = 2;
+    QVERIFY(!store.addEntry(source).id.isEmpty());
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.upgraded, 1);
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral(" qt "), QStringLiteral("C++")), 1);
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral("daydream_inbox"), QStringLiteral("qt")), 0);
+    QVERIFY(!store.all().first().tags.contains(
+        QStringLiteral("daydream_inbox"), Qt::CaseInsensitive));
+}
+
+void TestMemoryStrategy::testDaydreamUpdateRecordsTagCooccurrence() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    const MemoryEntry target = store.add(
+        MemoryType::Semantic,
+        QStringLiteral("tooling"),
+        QStringLiteral("用户使用 Qt"),
+        {QStringLiteral("Qt")});
+    QVERIFY(!target.id.isEmpty());
+
+    MemoryEntry source;
+    source.type = MemoryType::ShortTerm;
+    source.key = QStringLiteral("tooling_update");
+    source.summary = QStringLiteral("用户也使用 C++");
+    source.content = source.summary;
+    source.source = QStringLiteral("user_interaction");
+    source.tags = {QStringLiteral("C++")};
+    const MemoryEntry storedSource = store.addEntry(source);
+    QVERIFY(!storedSource.id.isEmpty());
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Snapshot snapshot = consolidator.createSnapshot();
+    QCOMPARE(snapshot.size(), 1);
+    DaydreamConsolidator::Decision decision;
+    decision.sourceId = storedSource.id;
+    decision.action = DaydreamConsolidator::Action::Update;
+    decision.targetType = MemoryType::Semantic;
+    decision.targetMemoryId = target.id;
+    decision.expectedTarget = target;
+    decision.mergedContent = QStringLiteral("用户使用 Qt 和 C++");
+    decision.qualityScore = 8.0;
+    decision.tags = {QStringLiteral("Qt"), QStringLiteral("C++")};
+
+    const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
+        snapshot, {decision});
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.updated, 1);
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral("qt"), QStringLiteral("c++")), 1);
+    QVERIFY(!store.findById(storedSource.id));
+}
+
+void TestMemoryStrategy::testDaydreamTagCooccurrenceAccumulates() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    for (int i = 0; i < 2; ++i) {
+        MemoryEntry source;
+        source.type = MemoryType::ShortTerm;
+        source.key = QStringLiteral("tag_graph_%1").arg(i);
+        source.summary = QStringLiteral("标签共现 %1").arg(i);
+        source.content = source.summary;
+        source.source = QStringLiteral("user_interaction");
+        source.tags = i == 0
+            ? QStringList{QStringLiteral("Qt"), QStringLiteral("C++")}
+            : QStringList{QStringLiteral(" qt "), QStringLiteral("c++")};
+        source.mentionCount = 2;
+        QVERIFY(!store.addEntry(source).id.isEmpty());
+
+        DaydreamConsolidator consolidator(store);
+        QVERIFY(consolidator.runHardcodedDrain().committed);
+    }
+
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
+        QStringLiteral("QT"), QStringLiteral("c++")), 2);
+    const QList<TagCooccurrence> neighbors = store.tagCooccurrenceGraph().neighborsOf(
+        QStringLiteral("qt"));
+    QCOMPARE(neighbors.size(), 1);
+    QCOMPARE(neighbors.first().weight, 2);
 }
 
 void TestMemoryStrategy::testDaydreamDrainDiscardsLowValue() {
@@ -2019,6 +2151,26 @@ void TestMemoryStrategy::testDaydreamTriggerPolicyContinuation() {
     QVERIFY(!policy.shouldContinue(299, false, 600000));
     QVERIFY(!policy.shouldContinue(600, true, 600000));
     QVERIFY(!policy.shouldContinue(600, false, 599999));
+}
+
+void TestMemoryStrategy::testDaydreamTriggerPolicyUsesRuntimeConfig() {
+    DaydreamConfig config;
+    config.idleThresholdSec = 60;
+    config.dueSoonThresholdMs = 120000;
+    config.minIntervalMs = 180000;
+    config.interruptionBackoffMs = 60000;
+    config.hourlyLimit = 1;
+    config.tickIntervalMs = 5000;
+    DaydreamTriggerPolicy policy(config);
+
+    QVERIFY(policy.shouldTrigger(60, false, 120000, 180000, false, 0));
+    QVERIFY(!policy.shouldTrigger(59, false, 120000, 180000, false, 0));
+    QVERIFY(!policy.shouldTrigger(60, false, 119999, 180000, false, 0));
+    QVERIFY(!policy.shouldTrigger(60, false, 120000, 179999, false, 0));
+    QVERIFY(!policy.shouldTrigger(60, false, 120000, 180000, false, 1));
+    QVERIFY(policy.shouldTrigger(60, false, 120000, 240000, true, 0));
+    QCOMPARE(policy.requiredGapMs(true), qint64(240000));
+    QCOMPARE(policy.nextTickMs(-1), 5000);
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

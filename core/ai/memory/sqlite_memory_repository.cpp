@@ -196,6 +196,17 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_type ON memory_relations(relation_type)"),
 
         QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS tag_cooccurrences ("
+            "  tag_a TEXT NOT NULL,"
+            "  tag_b TEXT NOT NULL,"
+            "  weight INTEGER NOT NULL DEFAULT 1,"
+            "  updated_at TEXT,"
+            "  PRIMARY KEY(tag_a, tag_b)"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_tag_cooccurrences_tag_b ON tag_cooccurrences(tag_b)"),
+
+        QStringLiteral(
             "CREATE TABLE IF NOT EXISTS memory_access_log ("
             "  id TEXT PRIMARY KEY,"
             "  memory_id TEXT NOT NULL,"
@@ -474,6 +485,7 @@ bool SQLiteMemoryRepository::clear() {
     };
 
     const QStringList tables = {
+        QStringLiteral("tag_cooccurrences"),
         QStringLiteral("memory_tags"),
         QStringLiteral("memory_evidence"),
         QStringLiteral("memory_relations"),
