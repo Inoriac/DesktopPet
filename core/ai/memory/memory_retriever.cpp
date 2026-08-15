@@ -333,6 +333,7 @@ double MemoryRetriever::decayLambda(MemoryType type) const {
     switch (type) {
     case MemoryType::Core:
     case MemoryType::Preference:
+    case MemoryType::Procedural:
         return 0.01;
     case MemoryType::ShortTerm:
     case MemoryType::Working:

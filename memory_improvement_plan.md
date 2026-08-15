@@ -10,7 +10,7 @@
 
 ### 1.1 分析结论
 
-DesktopPet 的记忆框架已有良好基础（9 种记忆类型、Ebbinghaus 遗忘曲线、图谱扩展检索、隐私分级），但对比 hebb-mind 后发现三个关键短板：
+DesktopPet 的记忆框架已有良好基础（10 种记忆类型、Ebbinghaus 遗忘曲线、图谱扩展检索、隐私分级），但对比 hebb-mind 后发现三个关键短板：
 
 - **Embedding 向量检索为空壳**：接口已定义但用 Noop 占位，检索纯靠关键词匹配
 - **遗忘策略硬编码**：衰减参数 λ 固定，不随访问频率和重要性自适应
@@ -37,7 +37,7 @@ DesktopPet 的记忆框架已有良好基础（9 种记忆类型、Ebbinghaus �
 
 ```
 core/ai/memory/
-├── memory_types.h/cpp          # 9 种记忆类型 + 状态 + 情感枚举
+├── memory_types.h/cpp          # 10 种记忆类型 + 状态 + 情感枚举
 ├── memory_store.h/cpp           # 主存储（SQLite + JSON 双写）
 ├── sqlite_memory_repository.*   # SQLite 持久化（6 张表）
 ├── memory_retriever.h/cpp       # 检索 Pipeline（关键词 + 图谱扩展）
@@ -86,7 +86,7 @@ score = keywordScore × 4.0 + typeMatch × 2.0 + strength × 1.6
 | ShortTerm、Working | 0.3（快速遗忘） |
 | 其余（Episodic/Semantic/TaskShadow/Relationship/Event） | 0.05（默认） |
 
-注意：衰减是基于「自上次访问天数」的指数衰减 `strength × exp(−λ × daysSinceAccess)`，λ 越大越快遗忘。当前 9 种类型的 λ 分流较粗（仅 3 档），且固定不随访问频率/重要性变化。
+注意：衰减是基于「自上次访问天数」的指数衰减 `strength × exp(−λ × daysSinceAccess)`，λ 越大越快遗忘。类型级 λ 分流较粗（仅 3 档），且固定不随访问频率/重要性变化。
 
 ```cpp
 double computeEffectiveStrength(const MemoryEntry& entry) const {
@@ -374,30 +374,31 @@ std::vector<PartitionDecayPolicy> getDefaultPolicies() {
 }
 ```
 
-##### B3. 类型映射（9 种 → 物理分区）
+##### B3. 类型映射（10 种 → 物理分区）
 
-hebb-mind 只有 5 个分区且无 Core。**已定（见"待讨论"第 5 条）：保留 DesktopPet 的 `Core`（λ=0.01，必记项，如用户核心身份/不可遗忘设定）作为第 6 个不遗忘分区**（λ≈0、不进遗忘扫描），其余 8 种归并到 hebb 风格 5 分区。
+hebb-mind 使用 5 个物理分区。DesktopPet 保留 `Core` 作为逻辑类型，但物理上并入 Semantic，通过 importance 下限和自适应衰减获得近不朽效果；`Procedural` 同时是逻辑类型和物理分区，避免 Daydream 分类结果无法在类型系统中表达。
 
 | 原类型 | 目标分区 | 说明 |
 |--------|---------|------|
-| Core | Core（新增不遗忘分区） | λ≈0、不进遗忘扫描，承载身份/核心设定 |
+| Core | Semantic | importance 下限 + 自适应衰减，仍允许事实演化 |
 | Preference | Preference | 直接迁移 |
 | Semantic | Semantic | 直接迁移 |
+| Procedural | Procedural | 技能、操作方法、习得动作 |
 | Episodic、Event | Episodic | 合并 |
 | Working | Hippocampus | 原 TTL → Daydream 巩固决策 |
 | ShortTerm | Hippocampus（待巩固）| Daydream 按 LLM 判定分流 |
 | TaskShadow | Hippocampus → 按需转 Semantic | 任务相关沉淀为事实/程序 |
 | Relationship | Semantic（+关系标签）| 保留关系链路（关系类型图另建）|
 
-> 改造范围：`MemoryType` 枚举与 SQLite 表新增「分区」列（现有 6 表不变，仅 `memory_items` 加列 + 一次存量回填）。`Core` 若并入 Semantic 也可，但会丢失"永不遗忘"的显式语义，不推荐。
+> 改造范围：`MemoryType` 枚举补齐 Procedural；SQLite `memory_items` 持久化物理分区并做一次存量回填。
 
 ---
 
 #### C. Daydream：空闲记忆整理（P1，新建）→ 详见 `daydream.md`
 
-桌宠空闲时刻自主整理记忆（"消化"而非"写日记"）。完整设计——大概率空闲复合触发判定（系统级全局空闲）、运行中滑入非空闲时全 session 单事务 ROLLBACK + 协作式取消令牌防图/协程残留、LLM 驱动分类巩固流程、Working Memory→Hippocampus 改造——已拆至 **`daydream.md`**。本节在基本框架落地后进入实现。
+桌宠空闲时刻自主整理记忆（"消化"而非"写日记"）。完整设计——系统级全局空闲复合触发、快照 + 内存 staging + generation 取消、最终短事务原子提交、LLM 分类巩固、Working Memory→Hippocampus 改造——已拆至 **`daydream.md`**。
 
-基本框架阶段与 Daydream 的唯一耦合点：**共现图须落 SQLite 表 `tag_cooccurrences` 并纳入 Daydream 事务**（否则无法随 ROLLBACK 撤销、产生图残留），见 E 节。
+基本框架阶段与 Daydream 的唯一耦合点：**共现图须落 SQLite 表 `tag_cooccurrences`，并与最终记忆变更处于同一个短事务**，见 E 节。
 
 ---
 
@@ -411,7 +412,7 @@ hebb-mind 只有 5 个分区且无 Core。**已定（见"待讨论"第 5 条）�
 
 从单一「关系类型图」扩展为双图：
 
-1. **标签共现图**（新）：同记忆内标签两两建边，权重=共现次数，发现隐式关联（对齐 hebb `KnowledgeGraph.add_tags` 的共现建边逻辑）。**存储须落 SQLite 表 `tag_cooccurrences`**（非纯内存对象）——以便纳入 Daydream 事务，被打断时随 `ROLLBACK` 撤销，避免"图残留"（详见 `daydream.md` 第五节"中断回滚"）。
+1. **标签共现图**（新）：同记忆内标签两两建边，权重=共现次数，发现隐式关联（对齐 hebb `KnowledgeGraph.add_tags` 的共现建边逻辑）。**存储须落 SQLite 表 `tag_cooccurrences`**（非纯内存对象），并纳入 Daydream 最终短事务，避免记忆与图状态分离（详见 `daydream.md` 第五节）。
 2. **关系类型图**（现有 `MemoryRelationGraph`，已落 `memory_relations` 表）：7 种关系类型——Related / TopicOf / CreatedTask / Supersedes / ConflictsWith / DerivedFrom / MentionedWith（memory_relation.h）。随事务回滚，无残留。
 
 ```cpp
@@ -490,7 +491,7 @@ public:
 
 | 项 | 交付 | 验证 |
 |---|---|---|
-| **分区模型** | `partition_policy.h`：5 分区（Hippocampus/Episodic/Semantic/Preference/Procedural），9 类型→分区映射，Core 类型并入 Semantic | 测试 |
+| **分区模型** | `partition_policy.h`：5 分区（Hippocampus/Episodic/Semantic/Preference/Procedural），10 类型→分区映射，Core 类型并入 Semantic | 测试 |
 | **自适应遗忘** | `PartitionDecayPolicy`（effectiveHalfLife/retention/forgetIdleDays），套 hebb 真实参数（threshold 全 0.3、k_access 1.5、Semantic/Procedural k_importance 3.0） | 算例锁验（441/42 天） |
 | **分区持久化 + 存量回填** | `memory_items` 加 partition 列+索引；`ALTER + CASE` 回填；旧 `partition='core'` 迁移到 semantic；insert/load 读写 | 测试 |
 | **检索器接入衰减** | `computeEffectiveStrength` 改用 `policy.retention()`，替换硬编码 λ 三档 | 既有衰减测试仍绿 |
@@ -544,7 +545,7 @@ public:
 
 ### Phase 2b —— Daydream（详见 `daydream.md`）
 
-基本框架稳定后进入：Working Memory→Hippocampus 改造、检索路径解耦、macOS 空闲补齐、Daydream 新建（空闲触发 + 全 session 事务回滚 + 取消令牌 + LLM 巩固）。交付物与验收标准见 **`daydream.md`** 第十一节。
+基本框架稳定后进入：Working Memory→Hippocampus 改造、检索路径解耦、macOS 空闲补齐、Daydream 新建（空闲触发 + 快照/staging + generation 取消 + 最终短事务 + LLM 巩固）。交付物与验收标准见 **`daydream.md`** 第十一节。
 
 ### Phase 3（1-2 月）🔵 进阶优化 —— P2 项
 
@@ -568,7 +569,7 @@ public:
 | Schema 迁移兼容性 | 已有数据丢失 | `ALTER TABLE ADD COLUMN`，存量回填 partition 列；`tag_cooccurrences` 新建表 |
 | 图谱双图改造并发读写 | 数据竞争 | `std::mutex`（对齐 hebb asyncio.Lock 共享锁）保护图谱内存索引写入 |
 | C++ 移植 Python 设计的差异 | 异步/并发模型不同 | 参考 Python 逻辑，用 Qt 并发原语（QThreadPool/QtConcurrent + 信号槽）重写 |
-| Daydream 相关（token/空闲误判/macOS 空闲缺口/中断回滚/长事务） | 见 `daydream.md` 第八节 | 应对策略详见 `daydream.md` |
+| Daydream 相关（token/空闲误判/macOS 空闲缺口/迟到回调/快照冲突） | 见 `daydream.md` 第八节 | 应对策略详见 `daydream.md` |
 
 ---
 

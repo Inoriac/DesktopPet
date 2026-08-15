@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QFileInfo>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlDriver>
@@ -31,6 +32,12 @@ QString jsonObjectToString(const QJsonObject& obj) {
 QJsonObject jsonObjectFromString(const QString& text) {
     if (text.isEmpty()) return {};
     return QJsonDocument::fromJson(text.toUtf8()).object();
+}
+
+QStringList jsonArrayToStringList(const QJsonArray& array) {
+    QStringList values;
+    for (const QJsonValue& value : array) values.append(value.toString());
+    return values;
 }
 
 }
@@ -230,6 +237,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "UPDATE memory_items SET partition = CASE"
             "  WHEN type = 'core'         THEN 'semantic'"
             "  WHEN type = 'preference'   THEN 'preference'"
+            "  WHEN type = 'procedural'   THEN 'procedural'"
             "  WHEN type = 'semantic'     THEN 'semantic'"
             "  WHEN type = 'episodic'     THEN 'episodic'"
             "  WHEN type = 'event'        THEN 'episodic'"
@@ -295,6 +303,9 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     if (!entry.value.isNull() && !entry.value.isUndefined()) {
         payload[QStringLiteral("value")] = entry.value;
     }
+    payload[QStringLiteral("source_memory_ids")] = QJsonArray::fromStringList(entry.sourceMemoryIds);
+    payload[QStringLiteral("supersedes")] = QJsonArray::fromStringList(entry.supersedes);
+    payload[QStringLiteral("conflicts_with")] = QJsonArray::fromStringList(entry.conflictsWith);
 
     query.bindValue(QStringLiteral(":id"), entry.id);
     query.bindValue(QStringLiteral(":type"), memoryTypeToString(entry.type));
@@ -423,6 +434,12 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
         if (payload.contains(QStringLiteral("value"))) {
             entry.value = payload.take(QStringLiteral("value"));
         }
+        entry.sourceMemoryIds = jsonArrayToStringList(
+            payload.take(QStringLiteral("source_memory_ids")).toArray());
+        entry.supersedes = jsonArrayToStringList(
+            payload.take(QStringLiteral("supersedes")).toArray());
+        entry.conflictsWith = jsonArrayToStringList(
+            payload.take(QStringLiteral("conflicts_with")).toArray());
         entry.payload = payload;
 
         entry.tags = loadTags(entry.id);

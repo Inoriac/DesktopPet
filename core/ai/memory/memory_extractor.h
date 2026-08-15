@@ -24,6 +24,12 @@ class MemoryExtractor {
 public:
     QList<MemoryCandidate> extractFromUserInput(const QString& input,
                                                 const QString& triggerTag) const;
+
+    // Builds a bounded, personal Hippocampus impression for later Daydream
+    // classification. Empty content means the input must not enter the inbox.
+    MemoryEntry extractDaydreamImpression(const QString& input,
+                                          const QString& triggerTag) const;
+    static bool isLikelySensitiveContent(const QString& text);
 };
 
 #endif // DESKTOP_PET_MEMORY_EXTRACTOR_H

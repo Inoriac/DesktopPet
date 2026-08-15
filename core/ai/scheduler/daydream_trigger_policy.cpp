@@ -28,3 +28,11 @@ int DaydreamTriggerPolicy::nextTickMs(qint64 /*msSinceLast*/) const {
 qint64 DaydreamTriggerPolicy::requiredGapMs(bool wasInterrupted) const {
     return wasInterrupted ? (MIN_GAP_MS + BACKOFF_MS) : MIN_GAP_MS;
 }
+
+bool DaydreamTriggerPolicy::shouldContinue(int idleSec,
+                                           bool busy,
+                                           qint64 msToNextDue) const {
+    if (idleSec < N1_IDLE_SEC) return false;
+    if (busy) return false;
+    return msToNextDue < 0 || msToNextDue >= N2_MS_TO_DUE;
+}

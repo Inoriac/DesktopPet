@@ -36,7 +36,6 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             assistantMessage.role = "assistant";
             assistantMessage.content = route.reply;
             appendToMemory(assistantMessage);
-            rememberAssistantResponse(route.reply, triggerTag);
         }
 
         m_busy = false;
@@ -77,7 +76,6 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                     assistantMessage.role = "assistant";
                     assistantMessage.content = responseText;
                     appendToMemory(assistantMessage);
-                    rememberAssistantResponse(responseText, triggerTag);
                     emit assistantResponseReady(responseText);
 
                     m_busy = false;
@@ -180,7 +178,6 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         assistantMessage.role = "assistant";
         assistantMessage.content = responseText;
         appendToMemory(assistantMessage);
-        rememberAssistantResponse(responseText, triggerTag);
 
         m_busy = false;
         emit thinkingFinished(outcome.result.success, outcome.result.success ? QString() : outcome.result.errorMessage);
@@ -208,47 +205,6 @@ ToolPolicyContext AIBrain::buildToolPolicyContext(const QString& triggerTag,
         context.allowedRootPaths.append(QDir::currentPath());
     }
     return context;
-}
-
-void AIBrain::rememberAssistantResponse(const QString& content,
-                                        const QString& triggerTag) {
-    if (content.isEmpty()) {
-        return;
-    }
-
-    WorkingMemoryItem wm;
-    wm.summary = content.left(120);
-    wm.content = content;
-    wm.tags = {triggerTag, QStringLiteral("assistant")};
-    wm.source = QStringLiteral("assistant_response");
-    wm.importance = 0.3;
-    m_workingMemoryCache.add(wm);  // 先自增 recurrence 计数
-
-    // 写 ShortTerm 到持久库，带 cache 的 mentionCount recurrence 信号（Daydream
-    // drain 据 mentionCount>=2 判升级）。原 add() 不传 mentionCount，导致信号只
-    // 活在内存 cache、drain 100% discard。字段默认对齐 MemoryStore::add(ShortTerm)。
-    MemoryEntry shortTerm;
-    shortTerm.type = MemoryType::ShortTerm;
-    shortTerm.key = QStringLiteral("assistant_response");
-    shortTerm.value = content;
-    shortTerm.tags = wm.tags;
-    shortTerm.status = MemoryStatus::Active;
-    shortTerm.privacyLevel = PrivacyLevel::Public;
-    shortTerm.source = QStringLiteral("assistant_inferred");
-    shortTerm.confidence = 0.4;
-    shortTerm.importance = 0.2;
-    shortTerm.strength = 0.2;
-    shortTerm.mentionCount = m_workingMemoryCache.countMentions(wm.summary);
-    m_memoryStore.addEntry(shortTerm);
-    m_memoryStore.save();
-
-    consolidateWorkingMemory();
-}
-
-void AIBrain::consolidateWorkingMemory() {
-    // 淘汰过期工作记忆项；对值得巩固（mentionCount≥2 或 emotionIntensity≥0.7）的
-    // 过期项写入持久库。此为过渡 housekeeping，Daydream 落地后由空闲整理接管。
-    m_workingMemoryCache.cleanup(&m_memoryStore);
 }
 
 void AIBrain::rememberToolOutcome(const QString& toolName,
@@ -326,9 +282,8 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
 QStringList AIBrain::retrieveMemoryHints(const QString& reason,
                                          const QString& triggerTag,
                                          int limit) {
-    // 检索路径必须只读：不再在此触发工作记忆清理/巩固。
-    // 巩固写入现由 consolidateWorkingMemory() 在一轮交互结束后驱动
-    // （Daydream 落地后改由空闲整理接管）。retriever 读取缓存时已自行跳过过期项。
+    // Retrieval is read-only with respect to consolidation. Expired cache items
+    // are skipped by the retriever and Daydream owns persistent inbox draining.
     MemoryQuery query;
     query.text = reason;
     query.limit = limit;
@@ -339,6 +294,7 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
         query.preferredTypes = {
             MemoryType::Preference,
             MemoryType::Semantic,
+            MemoryType::Procedural,
             MemoryType::TaskShadow,
             MemoryType::Core,
             MemoryType::Relationship,

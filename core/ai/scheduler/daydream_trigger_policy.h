@@ -36,6 +36,12 @@ public:
                        bool wasInterrupted,
                        int countThisHour) const;
 
+    // Running sessions only need the conditions that can invalidate in-flight
+    // work. Gap and hourly cap are start-time admission controls.
+    bool shouldContinue(int idleSec,
+                        bool busy,
+                        qint64 msToNextDue) const;
+
     // 下一跳 tick 间隔（固定 TICK_MS；msSinceLast 仅留作未来自适应扩展的钩子）。
     int nextTickMs(qint64 msSinceLast) const;
 

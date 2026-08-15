@@ -1,5 +1,6 @@
 #include "memory_extractor.h"
 
+#include <QCryptographicHash>
 #include <QDateTime>
 #include <QJsonObject>
 #include <QRegularExpression>
@@ -21,7 +22,7 @@ QString stripTrailingPunctuation(QString text) {
 QString makeKey(const QString& scope, const QString& content) {
     QString normalized = content.toLower().trimmed();
     normalized.replace(QRegularExpression("\\s+"), "_");
-    normalized.replace(QRegularExpression("[^a-z0-9_\\u4e00-\\u9fa5]+"), "_");
+    normalized.replace(QRegularExpression("[^a-z0-9_\\x{4e00}-\\x{9fa5}]+"), "_");
     normalized = normalized.left(48).trimmed();
     if (normalized.isEmpty()) {
         normalized = QStringLiteral("item");
@@ -45,7 +46,28 @@ bool containsSensitiveHint(const QString& text) {
             return true;
         }
     }
+    static const QList<QRegularExpression> secretPatterns = {
+        QRegularExpression(QStringLiteral("\\bsk-[A-Za-z0-9_-]{12,}\\b"),
+                           QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("\\bBearer\\s+[A-Za-z0-9._~+/-]{12,}={0,2}\\b"),
+                           QRegularExpression::CaseInsensitiveOption),
+        QRegularExpression(QStringLiteral("\\b(?:\\d[ -]?){15,19}\\b")),
+    };
+    for (const QRegularExpression& pattern : secretPatterns) {
+        if (pattern.match(text).hasMatch()) return true;
+    }
     return false;
+}
+
+bool looksLikeSelfDisclosure(const QString& text) {
+    static const QRegularExpression commandAddress(
+        QStringLiteral("^(?:请)?(?:帮我|给我|替我|为我|告诉我|提醒我|让我)"));
+    if (commandAddress.match(text).hasMatch()) return false;
+    if (text.contains(QStringLiteral("我"))) return true;
+    static const QRegularExpression englishSelfReference(
+        QStringLiteral("\\b(i|i'm|i've|my|mine|we|we're|our|ours)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    return englishSelfReference.match(text).hasMatch();
 }
 
 MemoryCandidate makeWriteCandidate(MemoryType type,
@@ -175,4 +197,41 @@ QList<MemoryCandidate> MemoryExtractor::extractFromUserInput(const QString& inpu
     }
 
     return candidates;
+}
+
+MemoryEntry MemoryExtractor::extractDaydreamImpression(const QString& input,
+                                                        const QString& triggerTag) const {
+    const QString text = normalizedText(input);
+    if (text.isEmpty() || text.size() > 2000
+        || !looksLikeSelfDisclosure(text)
+        || isLikelySensitiveContent(text)) {
+        return {};
+    }
+
+    const QString bounded = text.left(512);
+    const QByteArray digest = QCryptographicHash::hash(
+        bounded.toCaseFolded().toUtf8(), QCryptographicHash::Sha256).toHex().left(24);
+
+    MemoryEntry entry;
+    entry.type = MemoryType::ShortTerm;
+    entry.status = MemoryStatus::Active;
+    entry.privacyLevel = PrivacyLevel::Personal;
+    entry.key = QStringLiteral("daydream:user:%1").arg(QString::fromLatin1(digest));
+    entry.summary = bounded.left(160);
+    entry.content = bounded;
+    entry.value = bounded;
+    entry.tags = {QStringLiteral("daydream_inbox"), QStringLiteral("user_interaction"), triggerTag};
+    entry.scope = QStringLiteral("user");
+    entry.source = QStringLiteral("user_interaction");
+    entry.confidence = 0.35;
+    entry.importance = 0.3;
+    entry.strength = 0.3;
+    entry.mentionCount = 1;
+    entry.evidence = {bounded};
+    entry.payload[QStringLiteral("extractor")] = QStringLiteral("daydream_impression_v1");
+    return entry;
+}
+
+bool MemoryExtractor::isLikelySensitiveContent(const QString& text) {
+    return containsSensitiveHint(text);
 }

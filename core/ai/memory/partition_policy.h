@@ -44,12 +44,13 @@ inline MemoryPartition partitionFromString(const QString& value) {
     return MemoryPartition::Episodic;
 }
 
-// 9 种 MemoryType → 物理分区映射（memory_improvement_plan.md B3）。
+// 10 种 MemoryType → 物理分区映射（memory_improvement_plan.md B3）。
 // Working/ShortTerm/TaskShadow 进 Hippocampus 待 Daydream 巩固；Core 类型并入 Semantic。
 inline MemoryPartition partitionForType(MemoryType type) {
     switch (type) {
     case MemoryType::Core:        return MemoryPartition::Semantic;   // 身份事实 → Semantic，靠自适应近不朽
     case MemoryType::Preference:  return MemoryPartition::Preference;
+    case MemoryType::Procedural:  return MemoryPartition::Procedural;
     case MemoryType::Semantic:    return MemoryPartition::Semantic;
     case MemoryType::Episodic:
     case MemoryType::Event:       return MemoryPartition::Episodic;

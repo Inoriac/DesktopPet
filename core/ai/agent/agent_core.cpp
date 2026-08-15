@@ -83,6 +83,7 @@ QString AgentCore::startTask(const QString& input, const QString& triggerTag) {
         query.preferredTypes = {
             MemoryType::Preference,
             MemoryType::Semantic,
+            MemoryType::Procedural,
             MemoryType::TaskShadow,
             MemoryType::Core,
             MemoryType::Relationship,
@@ -235,13 +236,6 @@ void AgentCore::continuePlanning(const QString& sessionId, int toolRound) {
             const int assistantIndex = session->messages().size() - 1;
 
             if (response.toolCalls.isEmpty() || toolRound >= m_maxToolRounds) {
-                if (m_memoryStore && !response.content.isEmpty()) {
-                    m_memoryStore->add(MemoryType::ShortTerm,
-                                       "assistant_response",
-                                       response.content,
-                                       {session->triggerTag(), "agent"});
-                    m_memoryStore->save();
-                }
                 finishSession(sessionId, true, response.content);
                 return;
             }

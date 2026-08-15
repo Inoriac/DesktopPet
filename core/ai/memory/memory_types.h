@@ -13,6 +13,7 @@ enum class MemoryType {
     Episodic,
     Semantic,
     Preference,
+    Procedural,
     TaskShadow,
     Relationship,
     Core,
@@ -55,6 +56,8 @@ inline QString memoryTypeToString(MemoryType type) {
         return "semantic";
     case MemoryType::Preference:
         return "preference";
+    case MemoryType::Procedural:
+        return "procedural";
     case MemoryType::TaskShadow:
         return "task_shadow";
     case MemoryType::Relationship:
@@ -73,6 +76,7 @@ inline MemoryType memoryTypeFromString(const QString& value) {
     if (value == "episodic") return MemoryType::Episodic;
     if (value == "semantic") return MemoryType::Semantic;
     if (value == "preference") return MemoryType::Preference;
+    if (value == "procedural") return MemoryType::Procedural;
     if (value == "task_shadow") return MemoryType::TaskShadow;
     if (value == "relationship") return MemoryType::Relationship;
     if (value == "core") return MemoryType::Core;
@@ -156,7 +160,7 @@ struct MemoryEntry {
     MemoryType type = MemoryType::Event;
     MemoryStatus status = MemoryStatus::Active;
     PrivacyLevel privacyLevel = PrivacyLevel::Public;
-    QString partition;   // 物理分区（hippocampus/episodic/semantic/preference/procedural/core），
+    QString partition;   // 物理分区（hippocampus/episodic/semantic/preference/procedural），
                          // 派生自 type（见 partition_policy.h::partitionForType），持久化便于按分区扫描遗忘
     QString key;
     QJsonValue value;

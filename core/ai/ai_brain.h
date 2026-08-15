@@ -17,6 +17,7 @@
 #include "ai_call_logger.h"
 #include "context_builder.h"
 #include "llm/llm_chat_service.h"
+#include "memory/daydream_consolidator.h"
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
 #include "memory/memory_retriever.h"
@@ -89,11 +90,6 @@ private:
     ToolPolicyContext buildToolPolicyContext(const QString& triggerTag,
                                              const QString& userInput,
                                              bool initiatedByLlm) const;
-    void rememberAssistantResponse(const QString& content,
-                                   const QString& triggerTag);
-    // 一轮交互结束后的工作记忆整理：淘汰过期项，对值得巩固的项写入持久库。
-    // 过渡阶段从 rememberAssistantResponse 驱动，Daydream 落地后改由空闲整理接管。
-    void consolidateWorkingMemory();
     void rememberToolOutcome(const QString& toolName,
                              const QString& triggerTag,
                              bool initiatedByLlm,
@@ -108,9 +104,13 @@ private:
     void appendToMemory(const ChatMessage& message);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
-    // Daydream 空闲触发判定与 session 执行（4a：调 runHardcodedDrain 降级版）。
+    // Daydream: snapshot batches are decided asynchronously, then committed once.
     void checkDaydreamTrigger();
     void runDaydreamSession();
+    void runNextDaydreamBatch(quint64 generation);
+    void finishDaydreamSession(quint64 generation);
+    void cancelDaydreamSession(const QString& reason);
+    bool canContinueDaydream() const;
     void armDaydreamTimer();
     AiTriggerConfig triggerConfigForTag(const QString& triggerTag) const;
     QStringList allowedActionsForTrigger(const QString& triggerTag) const;
@@ -147,6 +147,11 @@ private:
     QDateTime m_lastDaydreamAt;
     QDateTime m_daydreamHourAnchor;
     int m_daydreamCountThisHour = 0;
+    bool m_lastDaydreamInterrupted = false;
+    quint64 m_daydreamGeneration = 0;
+    DaydreamConsolidator::Snapshot m_daydreamSnapshot;
+    QList<DaydreamConsolidator::Decision> m_daydreamDecisions;
+    int m_daydreamBatchOffset = 0;
 
     bool m_enabled = true;
     bool m_running = false;

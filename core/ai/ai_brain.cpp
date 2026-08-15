@@ -75,6 +75,9 @@ void AIBrain::start() {
 }
 
 void AIBrain::stop() {
+    if (m_daydreamRunning) {
+        cancelDaydreamSession(QStringLiteral("AI brain stopped"));
+    }
     ++m_requestGeneration;
     m_running = false;
     m_idleTriggerTimer.stop();
@@ -89,6 +92,17 @@ void AIBrain::stop() {
 
 void AIBrain::triggerThink(const QString& reason,
                            const QString& triggerTag) {
+    if (m_daydreamRunning) {
+        const bool userInitiated = triggerTag == QLatin1String("manual")
+            || triggerTag == QLatin1String("user_request")
+            || triggerTag == QLatin1String("touch_event");
+        if (userInitiated) {
+            cancelDaydreamSession(QStringLiteral("user interaction"));
+        } else {
+            if (m_running) scheduleTrigger(triggerTag);
+            return;
+        }
+    }
     if (!m_enabled || m_busy) {
         return;
     }
@@ -133,10 +147,39 @@ void AIBrain::processUserMemoryWrite(const QString& input,
     }
 
     const QList<MemoryCandidate> candidates = m_memoryExtractor.extractFromUserInput(input, triggerTag);
-    if (candidates.isEmpty()) {
+    if (!candidates.isEmpty()) {
+        // Explicit remember/forget requests keep their deterministic, immediate
+        // semantics and must not also be duplicated into the Daydream inbox.
+        m_memoryPolicy.applyCandidates(candidates, &m_memoryStore);
         return;
     }
 
-    m_memoryPolicy.applyCandidates(candidates, &m_memoryStore);
+    MemoryEntry impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
+    if (impression.content.isEmpty()) return;
+
+    // Coalesce exact repeated self-disclosures so recurrence becomes a useful
+    // consolidation signal instead of creating duplicate inbox rows.
+    for (const MemoryEntry& existing : m_memoryStore.all()) {
+        if (existing.status != MemoryStatus::Active
+            || existing.partition != QLatin1String("hippocampus")
+            || existing.key != impression.key) {
+            continue;
+        }
+        MemoryEntry updated = existing;
+        updated.mentionCount = qMax(1, existing.mentionCount) + 1;
+        updated.updatedAt = QDateTime::currentDateTimeUtc();
+        if (!updated.evidence.contains(impression.content)) {
+            updated.evidence.append(impression.content);
+        }
+        m_memoryStore.updateEntryById(updated);
+        return;
+    }
+
+    DaydreamConsolidator consolidator(m_memoryStore);
+    if (consolidator.pendingCount() >= DaydreamConsolidator::INBOX_LIMIT) {
+        qWarning() << "[Daydream] inbox capacity reached; skipping new impression";
+        return;
+    }
+    m_memoryStore.addEntry(impression);
 }
 
