@@ -41,6 +41,8 @@ public:
 
     // 同步下载 repo 下所有 FileSpec 到 destDir，返回是否全部成功。
     // repo 例 "BAAI/bge-small-zh-v1.5"；destDir 不存在则创建。单个文件失败不中断其余。
+    void setMaxFileBytes(qint64 bytes);
+
     bool downloadSync(const QString& repo, const QString& destDir,
                       const QList<FileSpec>& files, QString* errorMessage = nullptr);
 
@@ -55,6 +57,8 @@ private:
     QString m_revision = QStringLiteral("main");
     int m_retries = 2;
     int m_timeoutMs = 30000;
+
+    qint64 m_maxFileBytes = 512LL * 1024 * 1024;
 
     QUrl buildUrl(const QString& mirrorHost, const QString& repo, const QString& file) const;
     bool downloadFile(const QString& repo, const QString& destPath, const FileSpec& spec, QString* note);

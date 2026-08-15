@@ -15,39 +15,59 @@
 #include <QSaveFile>
 #include <QRegularExpression>
 
+namespace {
+Qt::CaseSensitivity pathCaseSensitivity() {
+#ifdef Q_OS_WIN
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
+}
+
+QString cleanAbsolutePath(const QString& path) {
+    QString result = QDir::cleanPath(QFileInfo(path).absoluteFilePath());
+    result.replace('\\', '/');
+    return result;
+}
+}
+
 // ================================================================
 // FilePathValidator 实现
 // ================================================================
 
-FilePathValidator::FilePathValidator(const QStringList& allowedRoots)
-    : m_allowedRoots(allowedRoots) {
+FilePathValidator::FilePathValidator(const QStringList& allowedRoots) {
     // 预计算规范化的根路径
     for (const QString& root : allowedRoots) {
-        QString normalized = QDir(root).absolutePath();
+        QString normalized = QFileInfo(root).canonicalFilePath();
+        if (normalized.isEmpty()) {
+            normalized = QDir(root).canonicalPath();
+        }
+        if (normalized.isEmpty()) {
+            continue;
+        }
         normalized = QDir::cleanPath(normalized);
         normalized.replace('\\', '/');
-        // 确保路径以 / 结尾以便于前缀匹配
-        if (!normalized.endsWith('/') && !normalized.endsWith('\\')) {
-            normalized += '/';
-        }
+        m_allowedRoots.append(root);
         m_normalizedRoots.append(normalized);
     }
 }
 
 bool FilePathValidator::isPathAllowed(const QString& path) const {
-    const QString normalized = normalizePath(path);
-    for (const QString& root : m_normalizedRoots) {
-        if (normalized == root || normalized.startsWith(root, Qt::CaseInsensitive)) {
-            return true;
-        }
-    }
-    return false;
+    return isWithinAllowedRoot(resolvePathForValidation(path));
 }
 
 bool FilePathValidator::isPathAllowedForWrite(const QString& path) const {
-    const QString normalized = normalizeFilePath(path) + '/';
+    return isWithinAllowedRoot(resolvePathForValidation(path));
+}
+
+bool FilePathValidator::isWithinAllowedRoot(const QString& resolvedPath) const {
+    if (resolvedPath.isEmpty()) {
+        return false;
+    }
     for (const QString& root : m_normalizedRoots) {
-        if (normalized.startsWith(root, Qt::CaseInsensitive)) {
+        const QString rootPrefix = root.endsWith('/') ? root : root + '/';
+        if (resolvedPath.compare(root, pathCaseSensitivity()) == 0
+            || resolvedPath.startsWith(rootPrefix, pathCaseSensitivity())) {
             return true;
         }
     }
@@ -55,30 +75,57 @@ bool FilePathValidator::isPathAllowedForWrite(const QString& path) const {
 }
 
 QString FilePathValidator::normalizePath(const QString& path) const {
-    // 使用 QDir 获取规范化的绝对路径
-    // 注意：对于不存在但可访问的路径（如临时目录），QDir 可以正确处理
-    QString absolute = QFileInfo(path).absoluteFilePath();
-    absolute = QDir::cleanPath(absolute);
-    // 统一使用正斜杠
-    absolute.replace('\\', '/');
-    // 确保末尾有分隔符
-    if (!absolute.endsWith('/')) {
-        absolute += '/';
-    }
-    return absolute;
+    const QString resolved = resolvePathForValidation(path);
+    return resolved.isEmpty() ? cleanAbsolutePath(path) : resolved;
 }
 
 QString FilePathValidator::normalizeFilePath(const QString& path) const {
-    QString absolute = QFileInfo(path).absoluteFilePath();
-    absolute = QDir::cleanPath(absolute);
-    absolute.replace('\\', '/');
-    return absolute;
+    return cleanAbsolutePath(path);
+}
+
+QString FilePathValidator::resolvePathForValidation(const QString& path) const {
+    const QString absolute = cleanAbsolutePath(path);
+    QFileInfo current(absolute);
+    QStringList missingComponents;
+
+    while (!current.exists() && !current.isSymLink()) {
+        const QString name = current.fileName();
+        if (name.isEmpty()) {
+            return {};
+        }
+        missingComponents.prepend(name);
+        const QString parentPath = current.absolutePath();
+        if (parentPath == current.absoluteFilePath()) {
+            return {};
+        }
+        current.setFile(parentPath);
+    }
+
+    QString resolved = current.canonicalFilePath();
+    if (resolved.isEmpty() && current.isDir()) {
+        resolved = QDir(current.absoluteFilePath()).canonicalPath();
+    }
+    if (resolved.isEmpty()) {
+        return {};
+    }
+
+    resolved = QDir::cleanPath(resolved);
+    for (const QString& component : missingComponents) {
+        resolved = QDir(resolved).filePath(component);
+    }
+    resolved = QDir::cleanPath(resolved);
+    resolved.replace('\\', '/');
+    return resolved;
 }
 
 QString FilePathValidator::getAllowedRoot(const QString& path) const {
-    const QString normalized = normalizePath(path);
+    const QString normalized = resolvePathForValidation(path);
     for (int i = 0; i < m_normalizedRoots.size(); ++i) {
-        if (normalized.startsWith(m_normalizedRoots[i], Qt::CaseInsensitive)) {
+        const QString rootPrefix = m_normalizedRoots[i].endsWith('/')
+            ? m_normalizedRoots[i]
+            : m_normalizedRoots[i] + '/';
+        if (normalized.compare(m_normalizedRoots[i], pathCaseSensitivity()) == 0
+            || normalized.startsWith(rootPrefix, pathCaseSensitivity())) {
             return m_allowedRoots[i];
         }
     }

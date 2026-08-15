@@ -10,6 +10,8 @@
 #include "../ai_tool.h"
 #include <QString>
 #include <QHostAddress>
+#include <QList>
+#include <QUrl>
 
 // ================================================================
 // 网络安全验证器
@@ -21,11 +23,13 @@ public:
 
     bool isUrlAllowed(const QString& url) const;
     bool isIpBlocked(const QString& host) const;
-    static QString resolveHost(const QString& host);
+    bool resolveAllowedAddress(const QUrl& url, QHostAddress* address, QString* errorMessage = nullptr) const;
+    static QList<QHostAddress> resolveHostAddresses(const QString& host);
 
 private:
-    bool isPrivateIp(const QHostAddress& addr) const;
-    bool isReservedIp(const QHostAddress& addr) const;
+    bool isAddressBlocked(const QHostAddress& addr) const;
+    bool isBlockedIpv4(quint32 ip) const;
+    bool isBlockedIpv6(const Q_IPV6ADDR& ip) const;
 };
 
 // ================================================================

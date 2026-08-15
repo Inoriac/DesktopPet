@@ -52,7 +52,7 @@ QString ContextBuilder::buildRuntimeContext(const QString& petName,
 
 QString ContextBuilder::buildStatisticsSummary(const QString& petName) const {
     const QString statsName = petName.isEmpty() ? QString("AI_GLOBAL") : petName;
-    PetStatistics* stats = StatisticManager::getInstance().getPetStatistics(statsName);
+    const std::optional<PetStatistics> stats = StatisticManager::getInstance().getPetStatistics(statsName);
 
     if (!stats) {
         return QString("stats=none\n");

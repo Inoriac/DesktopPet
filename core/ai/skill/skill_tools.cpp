@@ -193,6 +193,9 @@ ToolResult SkillCreateTool::execute(const QJsonObject& params) {
     if (entry.steps.isEmpty()) return ToolResult::fail(QStringLiteral("有效步骤为空"));
 
     const SkillEntry created = m_store->add(entry);
+    if (created.id.isEmpty()) {
+        return ToolResult::fail(QStringLiteral("Failed to persist skill"));
+    }
 
     QJsonObject result;
     result[QStringLiteral("created")] = true;

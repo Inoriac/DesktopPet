@@ -95,6 +95,10 @@ int main(int argc, char *argv[])
 
     PetWindow *pet = new PetWindow(petName, nullptr);
     StatisticManager::getInstance().recordPetStart(petName);
+    QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [petName]() {
+        StatisticManager::getInstance().recordPetStop(petName);
+        StatisticManager::getInstance().saveStatistics();
+    });
     pet->applySettings(sizePercent, alwaysOnTop, clickThrough, aiEnabled,
                        screenChat, voice);
     pet->show();

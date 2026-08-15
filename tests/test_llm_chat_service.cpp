@@ -52,6 +52,7 @@ class TestLlmChatService : public QObject {
 private slots:
     void testRequestAsyncDoesNotBlock();
     void testRetryThenSuccess();
+    void testRequestReleasesCapturedState();
 };
 
 void TestLlmChatService::testRequestAsyncDoesNotBlock() {
@@ -127,13 +128,38 @@ void TestLlmChatService::testRetryThenSuccess() {
     QVERIFY(callbackCalled);
     QCOMPARE(fakeClient->callCount, 2);
 
-    PetStatistics* stats = StatisticManager::getInstance().getPetStatistics("AI_GLOBAL");
-    QVERIFY(stats != nullptr);
+    const std::optional<PetStatistics> stats = StatisticManager::getInstance().getPetStatistics("AI_GLOBAL");
+    QVERIFY(stats.has_value());
     QCOMPARE(stats->llmCallCount, static_cast<qint64>(1));
     QCOMPARE(stats->llmPromptTokens, static_cast<qint64>(11));
     QCOMPARE(stats->llmCompletionTokens, static_cast<qint64>(22));
     QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(33));
     QCOMPARE(stats->llmReasoningTokens, static_cast<qint64>(9));
+}
+
+void TestLlmChatService::testRequestReleasesCapturedState() {
+    auto fakeClient = std::make_shared<FakeAsyncLlmClient>();
+    fakeClient->planned.append({true, {}, {}});
+    LlmChatService service(fakeClient);
+
+    LlmConfig cfg;
+    cfg.enabled = true;
+    cfg.retryCount = 0;
+
+    auto captured = std::make_shared<int>(42);
+    std::weak_ptr<int> weakCaptured = captured;
+    QEventLoop loop;
+    service.requestAsyncWithConfig(cfg, {}, {},
+        [captured, &loop](bool, LlmResponse, QString) {
+            Q_UNUSED(captured)
+            loop.quit();
+        });
+    captured.reset();
+    QTimer::singleShot(300, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    QCoreApplication::processEvents();
+    QVERIFY(weakCaptured.expired());
 }
 
 QTEST_MAIN(TestLlmChatService)

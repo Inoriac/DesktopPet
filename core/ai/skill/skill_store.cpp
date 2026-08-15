@@ -9,23 +9,24 @@
 #include <QJsonDocument>
 #include <QSaveFile>
 #include <QUuid>
+#include <utility>
 
 void SkillStore::setStoragePath(const QString& directoryPath) {
     m_storagePath = directoryPath;
 }
 
 bool SkillStore::load(QString* errorMessage) {
-    m_entries.clear();
-
     QDir dir(m_storagePath);
     if (!dir.exists()) {
         if (!dir.mkpath(QStringLiteral("."))) {
             if (errorMessage) *errorMessage = QStringLiteral("无法创建目录: %1").arg(m_storagePath);
             return false;
         }
+        m_entries.clear();
         return true;
     }
 
+    QList<SkillEntry> loadedEntries;
     const QStringList files = dir.entryList({QStringLiteral("*.json")}, QDir::Files);
     for (const QString& fileName : files) {
         QFile file(dir.filePath(fileName));
@@ -37,9 +38,10 @@ bool SkillStore::load(QString* errorMessage) {
         SkillEntry entry = SkillEntry::fromJson(doc.object());
         if (entry.id.isEmpty() || entry.name.isEmpty()) continue;
 
-        m_entries.append(entry);
+        loadedEntries.append(entry);
     }
 
+    m_entries = std::move(loadedEntries);
     return true;
 }
 
@@ -56,7 +58,12 @@ bool SkillStore::saveEntry(const SkillEntry& entry, QString* errorMessage) const
         return false;
     }
 
-    file.write(QJsonDocument(entry.toJson()).toJson(QJsonDocument::Indented));
+    const QByteArray payload = QJsonDocument(entry.toJson()).toJson(QJsonDocument::Indented);
+    if (file.write(payload) != payload.size()) {
+        if (errorMessage) *errorMessage = QStringLiteral("Failed to write file: %1").arg(file.fileName());
+        file.cancelWriting();
+        return false;
+    }
     if (!file.commit()) {
         if (errorMessage) *errorMessage = QStringLiteral("文件提交失败: %1").arg(file.fileName());
         return false;
@@ -87,8 +94,10 @@ SkillEntry SkillStore::add(const SkillEntry& entry) {
     newEntry.updatedAt = now;
     newEntry.version = 1;
 
+    if (!saveEntry(newEntry)) {
+        return {};
+    }
     m_entries.append(newEntry);
-    saveEntry(newEntry);
     return newEntry;
 }
 
@@ -98,8 +107,10 @@ bool SkillStore::update(const SkillEntry& entry) {
             SkillEntry updated = entry;
             updated.updatedAt = QDateTime::currentDateTimeUtc();
             updated.version = m_entries[i].version + 1;
+            if (!saveEntry(updated)) {
+                return false;
+            }
             m_entries[i] = updated;
-            saveEntry(updated);
             return true;
         }
     }
@@ -109,8 +120,10 @@ bool SkillStore::update(const SkillEntry& entry) {
 bool SkillStore::remove(const QString& id) {
     for (int i = 0; i < m_entries.size(); ++i) {
         if (m_entries[i].id == id) {
+            if (!removeFile(id)) {
+                return false;
+            }
             m_entries.removeAt(i);
-            removeFile(id);
             return true;
         }
     }
@@ -118,19 +131,23 @@ bool SkillStore::remove(const QString& id) {
 }
 
 bool SkillStore::recordOutcome(const QString& id, bool success) {
-    SkillEntry* entry = findById(id);
-    if (!entry) return false;
+    SkillEntry* existing = findById(id);
+    if (!existing) return false;
+    SkillEntry updated = *existing;
 
-    entry->useCount++;
+    updated.useCount++;
     if (success) {
-        entry->successCount++;
+        updated.successCount++;
     } else {
-        entry->failureCount++;
+        updated.failureCount++;
     }
-    entry->lastUsedAt = QDateTime::currentDateTimeUtc();
-    entry->updatedAt = entry->lastUsedAt;
+    updated.lastUsedAt = QDateTime::currentDateTimeUtc();
+    updated.updatedAt = updated.lastUsedAt;
 
-    saveEntry(*entry);
+    if (!saveEntry(updated)) {
+        return false;
+    }
+    *existing = updated;
     return true;
 }
 

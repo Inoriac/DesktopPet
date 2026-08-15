@@ -113,7 +113,9 @@ bool AgentScheduler::load() {
 }
 
 bool AgentScheduler::save() const {
-    QDir().mkpath(QFileInfo(m_storagePath).absolutePath());
+    if (!QDir().mkpath(QFileInfo(m_storagePath).absolutePath())) {
+        return false;
+    }
 
     QJsonArray items;
     for (const ScheduledTask& task : m_tasks) {
@@ -128,7 +130,11 @@ bool AgentScheduler::save() const {
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         return false;
     }
-    file.write(QJsonDocument(root).toJson(QJsonDocument::Indented));
+    const QByteArray payload = QJsonDocument(root).toJson(QJsonDocument::Indented);
+    if (file.write(payload) != payload.size()) {
+        file.cancelWriting();
+        return false;
+    }
     return file.commit();
 }
 
@@ -206,7 +212,13 @@ ScheduledTask AgentScheduler::createTask(const QJsonObject& params, QString* err
     }
 
     m_tasks.append(task);
-    save();
+    if (!save()) {
+        m_tasks.removeLast();
+        if (errorMessage) {
+            *errorMessage = QString("无法持久化调度任务: %1").arg(m_storagePath);
+        }
+        return {};
+    }
     scheduleNextTick();
     emit taskChanged();
     return task;
@@ -215,8 +227,14 @@ ScheduledTask AgentScheduler::createTask(const QJsonObject& params, QString* err
 bool AgentScheduler::cancelTask(const QString& id, QString* errorMessage) {
     for (int i = 0; i < m_tasks.size(); ++i) {
         if (m_tasks[i].id == id) {
-            m_tasks.removeAt(i);
-            save();
+            const ScheduledTask removed = m_tasks.takeAt(i);
+            if (!save()) {
+                m_tasks.insert(i, removed);
+                if (errorMessage) {
+                    *errorMessage = QString("无法持久化任务取消: %1").arg(m_storagePath);
+                }
+                return false;
+            }
             scheduleNextTick();
             emit taskChanged();
             return true;
@@ -233,10 +251,17 @@ bool AgentScheduler::snoozeTask(const QString& id, int minutes, QString* errorMe
     const QDateTime now = QDateTime::currentDateTime();
     for (ScheduledTask& task : m_tasks) {
         if (task.id == id) {
+            const ScheduledTask original = task;
             task.enabled = true;
             task.nextTriggerAt = now.addMSecs(minutesToMs(minutes));
             task.updatedAt = now;
-            save();
+            if (!save()) {
+                task = original;
+                if (errorMessage) {
+                    *errorMessage = QString("无法持久化任务推迟: %1").arg(m_storagePath);
+                }
+                return false;
+            }
             scheduleNextTick();
             emit taskChanged();
             return true;
@@ -251,6 +276,8 @@ bool AgentScheduler::snoozeTask(const QString& id, int minutes, QString* errorMe
 
 void AgentScheduler::checkDueTasks() {
     const QDateTime now = QDateTime::currentDateTime();
+    const QList<ScheduledTask> originalTasks = m_tasks;
+    const QDateTime originalLastProactiveAt = m_lastProactiveAt;
     bool changed = false;
 
     for (ScheduledTask& task : m_tasks) {
@@ -283,7 +310,15 @@ void AgentScheduler::checkDueTasks() {
     }
 
     if (changed) {
-        save();
+        if (!save()) {
+            m_tasks = originalTasks;
+            m_lastProactiveAt = originalLastProactiveAt;
+            m_running = false;
+            m_timer.stop();
+            emit taskFailed({}, QString("无法持久化调度状态，调度器已停止: %1").arg(m_storagePath));
+            emit taskChanged();
+            return;
+        }
         emit taskChanged();
     }
     scheduleNextTick();

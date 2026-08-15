@@ -8,6 +8,9 @@
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <filesystem>
 
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
@@ -19,7 +22,9 @@
 #include "memory/noop_embedding_index.h"
 #include "memory/partition_policy.h"
 #include "memory/sqlite_embedding_index.h"
+#include "memory/sqlite_memory_repository.h"
 #include "memory/model_downloader.h"
+#include "skill/skill_store.h"
 #include "tools/memory_tools.h"
 
 #ifdef DESKTOP_PET_HAS_ORT
@@ -38,6 +43,9 @@ private slots:
     void testPolicyRejectsSensitiveMemory();
     void testPolicyMarksMatchedMemoryDeleted();
     void testStoreUpdateEntryByIdPersists();
+    void testStoreDoesNotMutateWhenPersistenceFails();
+    void testRepositoryClearRollsBackOnFailure();
+    void testSkillStoreDoesNotMutateWhenPersistenceFails();
     void testStoreUpdateStatusByIdIsExact();
     void testRetrieverRanksKeywordAndPreferredType();
     void testRetrieverFiltersSensitiveByDefault();
@@ -217,9 +225,108 @@ void TestMemoryStrategy::testStoreUpdateEntryByIdPersists() {
     const MemoryEntry* found = reloaded.findById(stored.id);
     QVERIFY(found);
     QCOMPARE(found->summary, QStringLiteral("更新后的记忆"));
+    QCOMPARE(found->key, QStringLiteral("update:id"));
     QVERIFY(found->tags.contains(QStringLiteral("beta")));
     QVERIFY(found->evidence.contains(QStringLiteral("evidence")));
     QVERIFY(found->strength >= 0.9);
+}
+
+void TestMemoryStrategy::testStoreDoesNotMutateWhenPersistenceFails() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry original;
+    original.type = MemoryType::Semantic;
+    original.key = QStringLiteral("atomic:test");
+    original.summary = QStringLiteral("original");
+    original.content = original.summary;
+    const MemoryEntry stored = store.addEntry(original);
+    QVERIFY(!stored.id.isEmpty());
+
+    QSqlDatabase db = QSqlDatabase::database(store.databaseConnectionName());
+    QSqlQuery trigger(db);
+    QVERIFY(trigger.exec(QStringLiteral(
+        "CREATE TRIGGER reject_memory_write BEFORE INSERT ON memory_items "
+        "BEGIN SELECT RAISE(ABORT, 'forced failure'); END")));
+
+    MemoryEntry added = original;
+    added.id.clear();
+    added.key = QStringLiteral("atomic:new");
+    QCOMPARE(store.addEntry(added).id, QString());
+    QCOMPARE(store.all().size(), 1);
+
+    MemoryEntry updated = stored;
+    updated.summary = QStringLiteral("must not leak into memory");
+    QVERIFY(!store.updateEntryById(updated));
+    const MemoryEntry* current = store.findById(stored.id);
+    QVERIFY(current);
+    QCOMPARE(current->summary, QStringLiteral("original"));
+}
+
+void TestMemoryStrategy::testRepositoryClearRollsBackOnFailure() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    SQLiteMemoryRepository repository;
+    QVERIFY(repository.open(tempDir.filePath(QStringLiteral("memory.db"))));
+
+    MemoryEntry entry;
+    entry.id = QStringLiteral("clear-rollback");
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("must survive failed clear");
+    entry.tags = {QStringLiteral("important")};
+    entry.evidence = {QStringLiteral("source text")};
+    QVERIFY(repository.insert(entry));
+
+    QSqlDatabase db = QSqlDatabase::database(repository.connectionName());
+    QSqlQuery trigger(db);
+    QVERIFY(trigger.exec(QStringLiteral(
+        "CREATE TRIGGER reject_memory_clear BEFORE DELETE ON memory_items "
+        "BEGIN SELECT RAISE(ABORT, 'forced failure'); END")));
+
+    QVERIFY(!repository.clear());
+    const QList<MemoryEntry> entries = repository.loadAll();
+    QCOMPARE(entries.size(), 1);
+    QCOMPARE(entries.first().tags, QStringList{QStringLiteral("important")});
+    QCOMPARE(entries.first().evidence, QStringList{QStringLiteral("source text")});
+}
+
+void TestMemoryStrategy::testSkillStoreDoesNotMutateWhenPersistenceFails() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    const QString storagePath = tempDir.filePath(QStringLiteral("skills"));
+    SkillStore store;
+    store.setStoragePath(storagePath);
+    QVERIFY(store.load());
+
+    SkillEntry entry;
+    entry.name = QStringLiteral("persistent skill");
+    entry.description = QStringLiteral("original");
+    const SkillEntry created = store.add(entry);
+    QVERIFY(!created.id.isEmpty());
+
+    const QString backupPath = tempDir.filePath(QStringLiteral("skills-backup"));
+    QVERIFY(QDir().rename(storagePath, backupPath));
+    QFile blocker(storagePath);
+    QVERIFY(blocker.open(QIODevice::WriteOnly));
+    blocker.write("not a directory");
+    blocker.close();
+
+    SkillEntry updated = created;
+    updated.description = QStringLiteral("must not leak into memory");
+    QVERIFY(!store.update(updated));
+    QCOMPARE(store.findById(created.id)->description, QStringLiteral("original"));
+
+    QVERIFY(!store.recordOutcome(created.id, true));
+    QCOMPARE(store.findById(created.id)->useCount, 0);
+
+    SkillEntry second;
+    second.name = QStringLiteral("failed add");
+    QVERIFY(store.add(second).id.isEmpty());
+    QCOMPARE(store.count(), 1);
 }
 
 void TestMemoryStrategy::testStoreUpdateStatusByIdIsExact() {
@@ -1342,6 +1449,39 @@ void TestMemoryStrategy::testModelDownloaderLocalMirror() {
     // sha 不匹配 → 应判定失败（校验失败会删文件，无其它镜像 → 整体失败）
     ModelDownloader::FileSpec badSpec{modelRel, QStringLiteral("0000")};
     QVERIFY(!downloader.downloadSync(repo, destDir.path(), {badSpec}, &err));
+
+    ModelDownloader::FileSpec traversalSpec{QStringLiteral("../escaped.txt"), {}};
+    QVERIFY(!downloader.downloadSync(repo, destDir.path(), {traversalSpec}, &err));
+    QVERIFY(!QFileInfo::exists(QDir(destDir.path()).absoluteFilePath("../escaped.txt")));
+
+    QTemporaryDir limitedDestDir;
+    QVERIFY(limitedDestDir.isValid());
+    ModelDownloader limitedDownloader;
+    limitedDownloader.setMirrors({QUrl::fromLocalFile(srcDir.path()).toString()});
+    limitedDownloader.setRevision(QStringLiteral("main"));
+    limitedDownloader.setRetriesPerMirror(0);
+    limitedDownloader.setTransferTimeoutMs(5000);
+    limitedDownloader.setMaxFileBytes(8);
+    QVERIFY(!limitedDownloader.downloadSync(repo, limitedDestDir.path(), {spec}, &err));
+    QVERIFY(!QFileInfo::exists(limitedDestDir.filePath(modelRel)));
+
+    QTemporaryDir outsideDestDir;
+    QVERIFY(outsideDestDir.isValid());
+    QFile outsideFile(outsideDestDir.filePath(QStringLiteral("external.txt")));
+    QVERIFY(outsideFile.open(QIODevice::WriteOnly));
+    outsideFile.write("outside model");
+    outsideFile.close();
+
+    const QString linkedDirectory = destDir.filePath(QStringLiteral("linked"));
+    std::error_code linkError;
+    std::filesystem::create_directory_symlink(
+        std::filesystem::u8path(outsideDestDir.path().toUtf8().constData()),
+        std::filesystem::u8path(linkedDirectory.toUtf8().constData()),
+        linkError);
+    if (!linkError) {
+        ModelDownloader::FileSpec linkedSpec{QStringLiteral("linked/external.txt"), {}};
+        QVERIFY(!downloader.downloadSync(repo, destDir.path(), {linkedSpec}, &err));
+    }
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

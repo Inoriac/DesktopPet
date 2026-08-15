@@ -8,6 +8,8 @@
 #include <QSignalSpy>
 #include <QFile>
 #include <QDir>
+#include <thread>
+#include <vector>
 
 #include "statistic_manager.h"
 #include "statistic_types.h"
@@ -28,6 +30,7 @@ private slots:
     void testInitialize();
     void testPetStartStop();
     void testTouchInteraction();
+    void testStopAndTouchWithoutStart();
     void testDataQuery();
 
     // 事件系统测试
@@ -36,7 +39,7 @@ private slots:
     void testSignalEmission();
 
     // 持久化测试
-    // void testSaveLoad();
+    void testSaveLoad();
     void testClearStatistics();
 
     // 配置测试
@@ -97,15 +100,16 @@ void TestStatisticManager::testPetStartStop() {
 
     // 测试启动
     manager->recordPetStart(petName);
-    PetStatistics* stats = manager->getPetStatistics(petName);
+    std::optional<PetStatistics> stats = manager->getPetStatistics(petName);
 
-    QVERIFY(stats != nullptr);
+    QVERIFY(stats.has_value());
     QCOMPARE(stats->petName, petName);
     QCOMPARE(stats->sessionCount, 1);
 
     QTest::qWait(1000);
 
     manager->recordPetStop(petName);
+    stats = manager->getPetStatistics(petName);
 
     // 验证运行时长
     QVERIFY(stats->totalRuntimeMs > 0);
@@ -124,32 +128,44 @@ void TestStatisticManager::testTouchInteraction() {
     // 记录触摸交互
     manager->recordTouchInteraction(petName, areaName);
 
-    PetStatistics* stats = manager->getPetStatistics(petName);
-    QVERIFY(stats != nullptr);
+    std::optional<PetStatistics> stats = manager->getPetStatistics(petName);
+    QVERIFY(stats.has_value());
     QCOMPARE(stats->touchAreaCount[areaName], 1);
 
     // 多次触摸
     manager->recordTouchInteraction(petName, areaName);
     manager->recordTouchInteraction(petName, "hand");
+    stats = manager->getPetStatistics(petName);
 
     QCOMPARE(stats->touchAreaCount["head"], 2);
     QCOMPARE(stats->touchAreaCount["hand"], 1);
 }
 
+void TestStatisticManager::testStopAndTouchWithoutStart() {
+    const QString petName = "OutOfOrderPet";
+    manager->recordPetStop(petName);
+    manager->recordTouchInteraction(petName, "head");
+
+    const std::optional<PetStatistics> stats = manager->getPetStatistics(petName);
+    QVERIFY(stats.has_value());
+    QCOMPARE(stats->touchAreaCount.value("head"), 1);
+    QVERIFY(!stats->isRunning);
+}
+
 void TestStatisticManager::testDataQuery() {
     const QString petName = "TestPet";
 
-    PetStatistics* stats = manager->getPetStatistics("NonExistentPet");
-    QVERIFY(stats == nullptr);
+    std::optional<PetStatistics> stats = manager->getPetStatistics("NonExistentPet");
+    QVERIFY(!stats.has_value());
 
     manager->recordPetStart(petName);
     stats = manager->getPetStatistics(petName);
 
-    QVERIFY(stats != nullptr);
+    QVERIFY(stats.has_value());
     QCOMPARE(stats->petName, petName);
 
     // 测试获取所有的统计数据
-    QHash<QString, PetStatistics*> allStats = manager->getAllPetStatistics();
+    QHash<QString, PetStatistics> allStats = manager->getAllPetStatistics();
     QCOMPARE(allStats.size(), 1);
     QVERIFY(allStats.contains(petName));
 }
@@ -200,38 +216,21 @@ void TestStatisticManager::testSignalEmission()
     QVERIFY(updateSpy.count() >= 1);
 }
 
-// void TestStatisticManager::testSaveLoad()
-// {
-//     const QString petName = "TestPet";
-//
-//     // 创建一些测试数据
-//     manager->recordPetStart(petName);
-//     manager->recordTouchInteraction(petName, "head");
-//     manager->recordTouchInteraction(petName, "hand");
-//     manager->recordPetStop(petName);
-//
-//     // 保存数据
-//     manager->saveStatistics();
-//
-//     // 验证文件被创建
-//     QVERIFY(QFile::exists(testFilePath));
-//
-//     // 清空内存中的数据
-//     // manager->clearStatistics();
-//     // QVERIFY(manager->getPetStatistics(petName) == nullptr);
-//
-//     // 重新加载数据
-//     manager->loadStatistics();
-//
-//     // 验证数据被正确加载
-//     PetStatistics* stats = manager->getPetStatistics(petName);
-//     QVERIFY(stats != nullptr);
-//     QCOMPARE(stats->petName, petName);
-//     QCOMPARE(stats->sessionCount, 1);
-//     QCOMPARE(stats->touchAreaCount["head"], 1);
-//     QCOMPARE(stats->touchAreaCount["hand"], 1);
-//     QVERIFY(stats->totalRuntimeMs > 0);
-// }
+void TestStatisticManager::testSaveLoad() {
+    const QString petName = "PersistedPet";
+    manager->recordPetStart(petName);
+    manager->recordTouchInteraction(petName, "head");
+    manager->recordPetStop(petName);
+    manager->saveStatistics();
+    QVERIFY(QFile::exists(testFilePath));
+
+    manager->recordTouchInteraction(petName, "not_persisted");
+    manager->loadStatistics();
+    const std::optional<PetStatistics> stats = manager->getPetStatistics(petName);
+    QVERIFY(stats.has_value());
+    QCOMPARE(stats->touchAreaCount.value("head"), 1);
+    QCOMPARE(stats->touchAreaCount.value("not_persisted"), 0);
+}
 
 void TestStatisticManager::testClearStatistics()
 {
@@ -247,8 +246,8 @@ void TestStatisticManager::testClearStatistics()
     // 清除特定桌宠
     manager->clearStatistics(petName1);
     QCOMPARE(manager->getAllPetStatistics().size(), 1);
-    QVERIFY(manager->getPetStatistics(petName1) == nullptr);
-    QVERIFY(manager->getPetStatistics(petName2) != nullptr);
+    QVERIFY(!manager->getPetStatistics(petName1).has_value());
+    QVERIFY(manager->getPetStatistics(petName2).has_value());
 
     // 清除所有数据
     manager->clearStatistics();
@@ -274,16 +273,25 @@ void TestStatisticManager::testConcurrentAccess()
 {
     const QString petName = "ConcurrentTestPet";
 
-    // 模拟并发访问
-    manager->recordPetStart(petName);
+    constexpr int threadCount = 8;
+    constexpr int callsPerThread = 100;
+    std::vector<std::thread> workers;
+    for (int i = 0; i < threadCount; ++i) {
+        workers.emplace_back([this, petName]() {
+            LlmUsage usage;
+            usage.totalTokens = 1;
+            for (int call = 0; call < callsPerThread; ++call) {
+                manager->recordLlmUsage(petName, usage);
+                (void)manager->getPetStatistics(petName);
+            }
+        });
+    }
+    for (std::thread& worker : workers) worker.join();
 
-    // 在多个线程中同时访问（这里简化测试）
-    PetStatistics* stats1 = manager->getPetStatistics(petName);
-    PetStatistics* stats2 = manager->getPetStatistics(petName);
-
-    QVERIFY(stats1 != nullptr);
-    QVERIFY(stats2 != nullptr);
-    QCOMPARE(stats1, stats2); // 应该返回同一个对象
+    const std::optional<PetStatistics> stats = manager->getPetStatistics(petName);
+    QVERIFY(stats.has_value());
+    QCOMPARE(stats->llmCallCount, static_cast<qint64>(threadCount * callsPerThread));
+    QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(threadCount * callsPerThread));
 }
 
 QTEST_MAIN(TestStatisticManager)

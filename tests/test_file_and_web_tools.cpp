@@ -11,6 +11,7 @@
 #include <QTemporaryDir>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <filesystem>
 
 #include "ai/tool_registry.h"
 #include "ai/tools/file_tools.h"
@@ -25,6 +26,8 @@ private slots:
     void test_read_text_file_success();
     void test_read_text_file_not_found();
     void test_read_text_file_path_traversal();
+    void test_file_tools_reject_symlink_escape();
+    void test_file_path_validator_keeps_root_pairs_aligned();
     void test_list_directory_success();
     void test_list_directory_not_found();
     void test_write_text_file_success();
@@ -40,6 +43,7 @@ private slots:
     void test_execute_whitelisted_command_rejects_outside_path_arg();
     void test_tool_runtime_requires_confirmation_for_write();
     void test_tool_runtime_executes_confirmed_write();
+    void test_tool_runtime_rejects_denied_write();
 
     // 网络工具测试 (验证参数和本地逻辑)
     void test_web_fetch_validate_params();
@@ -109,6 +113,52 @@ void TestFileAndWebTools::test_read_text_file_path_traversal() {
 
     // 应该被拒绝
     QVERIFY(!result.success);
+}
+
+void TestFileAndWebTools::test_file_tools_reject_symlink_escape() {
+    QTemporaryDir allowedDir;
+    QTemporaryDir outsideDir;
+    QVERIFY(allowedDir.isValid());
+    QVERIFY(outsideDir.isValid());
+
+    QFile secret(outsideDir.filePath("secret.txt"));
+    QVERIFY(secret.open(QIODevice::WriteOnly));
+    secret.write("outside");
+    secret.close();
+
+    const QString linkPath = allowedDir.filePath("escape");
+    std::error_code error;
+    std::filesystem::create_directory_symlink(
+        std::filesystem::u8path(outsideDir.path().toUtf8().constData()),
+        std::filesystem::u8path(linkPath.toUtf8().constData()),
+        error);
+    if (error) {
+        QSKIP(qPrintable(QString("Cannot create directory symlink in this environment: %1")
+                             .arg(QString::fromStdString(error.message()))));
+    }
+
+    ReadTextFileTool readTool({allowedDir.path()});
+    QJsonObject readParams{{"path", QDir(linkPath).filePath("secret.txt")}};
+    QVERIFY(!readTool.execute(readParams).success);
+
+    WriteTextFileTool writeTool({allowedDir.path()}, 1024);
+    QJsonObject writeParams{
+        {"path", QDir(linkPath).filePath("created.txt")},
+        {"content", "must not escape"}
+    };
+    QVERIFY(!writeTool.execute(writeParams).success);
+}
+
+void TestFileAndWebTools::test_file_path_validator_keeps_root_pairs_aligned() {
+    QTemporaryDir allowedDir;
+    QVERIFY(allowedDir.isValid());
+
+    const QString missingRoot = allowedDir.filePath("missing-root");
+    const QString filePath = allowedDir.filePath("allowed.txt");
+    FilePathValidator validator({missingRoot, allowedDir.path()});
+
+    QCOMPARE(QDir::cleanPath(validator.getAllowedRoot(filePath)),
+             QDir::cleanPath(allowedDir.path()));
 }
 
 void TestFileAndWebTools::test_list_directory_success() {
@@ -408,12 +458,39 @@ void TestFileAndWebTools::test_tool_runtime_executes_confirmed_write() {
     request.policyContext.allowedRootPaths = {tempDir.path()};
     request.arguments["path"] = filePath;
     request.arguments["content"] = "runtime write";
-    request.userConfirmed = true;
+    const ToolExecutionOutcome pending = runtime.execute(request);
+    QVERIFY(pending.policyDecision.needsConfirmation());
+    QVERIFY(runtime.hasPendingConfirmation(pending.requestId));
 
-    const ToolExecutionOutcome outcome = runtime.execute(request);
+    const ToolExecutionOutcome outcome = runtime.resolveConfirmation(pending.requestId, true);
     QVERIFY2(outcome.executed, qPrintable(outcome.policyDecision.reason));
     QVERIFY2(outcome.result.success, qPrintable(outcome.result.errorMessage));
     QVERIFY(QFileInfo::exists(filePath));
+}
+
+void TestFileAndWebTools::test_tool_runtime_rejects_denied_write() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+
+    ToolExecutionRequest request;
+    request.requestId = "deny-write";
+    request.toolName = "write_text_file";
+    request.policyContext.allowedRootPaths = {tempDir.path()};
+    request.arguments["path"] = tempDir.filePath("runtime.txt");
+    request.arguments["content"] = "runtime write";
+
+    const ToolExecutionOutcome pending = runtime.execute(request);
+    QVERIFY(runtime.hasPendingConfirmation(pending.requestId));
+    const ToolExecutionOutcome rejected = runtime.resolveConfirmation(pending.requestId, false);
+    QVERIFY(!rejected.executed);
+    QVERIFY(rejected.policyDecision.isDenied());
+    QVERIFY(!runtime.hasPendingConfirmation(pending.requestId));
+    QVERIFY(!QFileInfo::exists(tempDir.filePath("runtime.txt")));
 }
 
 void TestFileAndWebTools::test_web_fetch_validate_params() {
@@ -442,7 +519,9 @@ void TestFileAndWebTools::test_web_fetch_block_localhost() {
 
     ToolResult result = tool.execute(params);
     QVERIFY(!result.success);
-    QVERIFY(result.errorMessage.contains("不允许") || result.errorMessage.contains("not allowed"));
+    QVERIFY(result.errorMessage.contains("不允许")
+            || result.errorMessage.contains("受限")
+            || result.errorMessage.contains("not allowed"));
 }
 
 void TestFileAndWebTools::test_web_search_validate_params() {
@@ -472,6 +551,10 @@ void TestFileAndWebTools::test_network_security_validator() {
     QVERIFY(!validator.isUrlAllowed("http://192.168.1.1/"));
     QVERIFY(!validator.isUrlAllowed("http://10.0.0.1/"));
     QVERIFY(!validator.isUrlAllowed("http://172.16.0.1/"));
+    QVERIFY(!validator.isUrlAllowed("http://[0:0:0:0:0:0:0:1]/"));
+    QVERIFY(!validator.isUrlAllowed("http://[fc00::1]/"));
+    QVERIFY(!validator.isUrlAllowed("http://[fe80::1]/"));
+    QVERIFY(validator.isUrlAllowed("http://[2606:4700:4700::1111]/"));
 
     // 注意: example.com 等需要 DNS 解析的测试在网络不可用时会失败
     // 因此不在这里测试，实际使用时会正常工作

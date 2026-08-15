@@ -8,6 +8,7 @@
 #include <QStandardPaths>
 #include <QDir>
 #include <QFile>
+#include <QSaveFile>
 #include <QJsonDocument>
 #include <QJsonArray>
 #include <QCoreApplication>
@@ -30,8 +31,6 @@ StatisticManager::~StatisticManager() {
         delete runtimeUpdateTimer;
     }
 
-    // 清理统计数据
-    qDeleteAll(petStatisticsMap);
     petStatisticsMap.clear();
 }
 
@@ -60,6 +59,7 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
                 runtimeUpdateTimer = new QTimer(this);
                 connect(runtimeUpdateTimer, &QTimer::timeout, this, &StatisticManager::onRuntimeUpdateTimer);
             }
+            runtimeUpdateTimer->start(1000);
 
             // 启用自动保存
             if (autoSaveEnabled && autoSaveInterval > 0) {
@@ -74,51 +74,53 @@ void StatisticManager::initialize(const QString &savePath, int autoSaveIntervalS
     // 注册事件监听
     // 启动
     registerEventSlot(StatisticEventType::PET_START, [this](const StatisticEvent& event) {
-        PetStatistics* stats = nullptr;
+        PetStatistics snapshot;
         {
             QMutexLocker locker(&dataMutex);
-
             ensurePetStatistics(event.petName);
-            stats = petStatisticsMap[event.petName];
+            PetStatistics& stats = petStatisticsMap[event.petName];
+            stats.startTime = QDateTime::currentDateTime();
+            stats.lastActiveTime = stats.startTime;
+            stats.sessionRuntimeMs = 0;
+            stats.sessionCount++;
+            stats.isRunning = true;
+            snapshot = stats;
         }
-
-        stats->startTime = QDateTime::currentDateTime();
-        stats->lastActiveTime = stats->startTime;
-        stats->sessionCount++;
-        stats->isRunning = true;
-
-        emit statisticsUpdated(event.petName, *stats);
+        emit statisticsUpdated(event.petName, snapshot);
     });
 
     // 关闭
     registerEventSlot(StatisticEventType::PET_STOP, [this](const StatisticEvent& event) {
-        auto* stats = petStatisticsMap[event.petName];
-
-        if (stats->startTime.isValid()) {
-            qint64 duration = stats->startTime.msecsTo(QDateTime::currentDateTime());
-            stats->sessionRuntimeMs += duration;
-            stats->totalRuntimeMs += duration;
-            stats->startTime = QDateTime(); // 清空，标记会话结束
-            stats->isRunning = false;
+        PetStatistics snapshot;
+        {
+            QMutexLocker locker(&dataMutex);
+            ensurePetStatistics(event.petName);
+            PetStatistics& stats = petStatisticsMap[event.petName];
+            if (stats.startTime.isValid()) {
+                const qint64 duration = stats.startTime.msecsTo(QDateTime::currentDateTime());
+                stats.sessionRuntimeMs = duration;
+                stats.totalRuntimeMs += duration;
+                stats.startTime = QDateTime();
+                stats.isRunning = false;
+            }
+            stats.lastActiveTime = QDateTime::currentDateTime();
+            snapshot = stats;
         }
-        stats->lastActiveTime = QDateTime::currentDateTime();
-
-        emit statisticsUpdated(event.petName, *stats);
+        emit statisticsUpdated(event.petName, snapshot);
     });
 
     // 触摸
     registerEventSlot(StatisticEventType::BODY_PART_TOUCH, [this](const StatisticEvent& event) {
-        auto* stats = petStatisticsMap[event.petName];
-
-        stats->lastActiveTime = QDateTime::currentDateTime();
-
-        if (!stats->touchAreaCount.contains(event.areaName)) {
-            stats->touchAreaCount.insert(event.areaName, 0);
+        PetStatistics snapshot;
+        {
+            QMutexLocker locker(&dataMutex);
+            ensurePetStatistics(event.petName);
+            PetStatistics& stats = petStatisticsMap[event.petName];
+            stats.lastActiveTime = QDateTime::currentDateTime();
+            stats.touchAreaCount[event.areaName] += 1;
+            snapshot = stats;
         }
-        stats->touchAreaCount[event.areaName] += 1;
-        // qDebug() << "Touch:" << event.areaName << " for " << stats->petName << " area";
-
-        emit statisticsUpdated(event.petName, *stats);
+        emit statisticsUpdated(event.petName, snapshot);
     });
 
     //情绪
@@ -164,8 +166,6 @@ void StatisticManager::recordPetStop(const QString& petName) {
     StatisticEvent event = StatisticEvent(StatisticEventType::PET_STOP, petName, {});
     emitStatisticEvent(event);
 
-    // 停止事件后立即落盘，便于快速验证运行时长统计。
-    saveStatistics();
 }
 
 void StatisticManager::recordTouchInteraction(const QString& petName, const QString& areaName) {
@@ -180,36 +180,36 @@ void StatisticManager::recordTouchInteraction(const QString& petName, const QStr
 void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& usage) {
     const QString effectivePetName = petName.isEmpty() ? "AI_GLOBAL" : petName;
 
-    PetStatistics* stats = nullptr;
+    PetStatistics snapshot;
     {
         QMutexLocker locker(&dataMutex);
         ensurePetStatistics(effectivePetName);
-        stats = petStatisticsMap[effectivePetName];
+        PetStatistics& stats = petStatisticsMap[effectivePetName];
 
-        stats->llmCallCount += 1;
-        stats->lastActiveTime = QDateTime::currentDateTime();
-        stats->llmPromptTokens += usage.promptTokens;
-        stats->llmCompletionTokens += usage.completionTokens;
-        stats->llmTotalTokens += usage.totalTokens;
-        stats->llmReasoningTokens += usage.reasoningTokens;
-        stats->llmCachedTokens += usage.cachedTokens;
-        stats->llmPromptCacheHitTokens += usage.promptCacheHitTokens;
-        stats->llmPromptCacheMissTokens += usage.promptCacheMissTokens;
+        stats.llmCallCount += 1;
+        stats.lastActiveTime = QDateTime::currentDateTime();
+        stats.llmPromptTokens += usage.promptTokens;
+        stats.llmCompletionTokens += usage.completionTokens;
+        stats.llmTotalTokens += usage.totalTokens;
+        stats.llmReasoningTokens += usage.reasoningTokens;
+        stats.llmCachedTokens += usage.cachedTokens;
+        stats.llmPromptCacheHitTokens += usage.promptCacheHitTokens;
+        stats.llmPromptCacheMissTokens += usage.promptCacheMissTokens;
+        snapshot = stats;
     }
 
-    emit statisticsUpdated(effectivePetName, *stats);
-
-    // LLM usage 发生后立即落盘，便于验证 token 统计持久化。
-    saveStatistics();
+    emit statisticsUpdated(effectivePetName, snapshot);
 }
 
-PetStatistics* StatisticManager::getPetStatistics(const QString& petName)
+std::optional<PetStatistics> StatisticManager::getPetStatistics(const QString& petName)
 {
     QMutexLocker locker(&dataMutex);
-    return petStatisticsMap.value(petName, nullptr);
+    const auto it = petStatisticsMap.constFind(petName);
+    if (it == petStatisticsMap.constEnd()) return std::nullopt;
+    return it.value();
 }
 
-QHash<QString, PetStatistics*> StatisticManager::getAllPetStatistics()
+QHash<QString, PetStatistics> StatisticManager::getAllPetStatistics()
 {
     QMutexLocker locker(&dataMutex);
     return petStatisticsMap;
@@ -232,11 +232,9 @@ void StatisticManager::clearStatistics(const QString &petName) {
 
     if (!petName.isEmpty()) {
         if (petStatisticsMap.contains(petName)) {
-            delete petStatisticsMap[petName];
             petStatisticsMap.remove(petName);
         }
     } else {
-        qDeleteAll(petStatisticsMap);
         petStatisticsMap.clear();
     }
 
@@ -271,20 +269,12 @@ void StatisticManager::onAutoSaveTimer() {
 }
 
 void StatisticManager::onRuntimeUpdateTimer() {
-    QList<PetStatistics*> activePets;
-    {
-        QMutexLocker locker(&dataMutex);
-        for (auto* stats : petStatisticsMap) {
-            if (stats->isRunning && stats->startTime.isValid()) {
-                activePets.append(stats);
-            }
+    const QDateTime now = QDateTime::currentDateTime();
+    QMutexLocker locker(&dataMutex);
+    for (PetStatistics& stats : petStatisticsMap) {
+        if (stats.isRunning && stats.startTime.isValid()) {
+            stats.sessionRuntimeMs = stats.startTime.msecsTo(now);
         }
-    }
-
-    QDateTime now = QDateTime::currentDateTime();
-
-    for (auto* stats : activePets) {
-        stats->sessionRuntimeMs = stats->startTime.msecsTo(now);
     }
 
     // emit statisticsUpdated(); // 通知 UI 或存储模块
@@ -292,7 +282,7 @@ void StatisticManager::onRuntimeUpdateTimer() {
 
 void StatisticManager::ensurePetStatistics(const QString &petName) {
     if (!petStatisticsMap.contains(petName)) {
-        petStatisticsMap[petName] = new PetStatistics(petName);
+        petStatisticsMap.insert(petName, PetStatistics(petName));
     }
 }
 
@@ -311,11 +301,14 @@ void StatisticManager::saveToFile() {
         return;
     }
 
-    QFile file(filePath);
+    QSaveFile file(filePath);
     if (file.open(QIODevice::WriteOnly)) {
-        QJsonDocument doc(statisticsToJson());
-        file.write(doc.toJson());
-        file.close();
+        const QByteArray payload = QJsonDocument(statisticsToJson()).toJson();
+        if (file.write(payload) != payload.size() || !file.commit()) {
+            qWarning() << "Failed to save statistics:" << file.errorString();
+        }
+    } else {
+        qWarning() << "Failed to open statistics file:" << file.errorString();
     }
 }
 
@@ -340,26 +333,26 @@ QJsonObject StatisticManager::statisticsToJson() {
     QJsonArray petsArray;
 
     for (auto it = petStatisticsMap.begin(); it != petStatisticsMap.end(); ++it) {
-        PetStatistics* stats = it.value();
+        const PetStatistics& stats = it.value();
 
         QJsonObject petObj;
-        petObj["petName"] = stats->petName;
-        petObj["sessionCount"] = stats->sessionCount;
-        petObj["lastActiveTime"] = stats->lastActiveTime.toString(Qt::ISODate);
-        petObj["totalRuntimeMs"] = stats->totalRuntimeMs;
-        petObj["sessionRuntimeMs"] = stats->sessionRuntimeMs;
-        petObj["llmCallCount"] = static_cast<qint64>(stats->llmCallCount);
-        petObj["llmPromptTokens"] = static_cast<qint64>(stats->llmPromptTokens);
-        petObj["llmCompletionTokens"] = static_cast<qint64>(stats->llmCompletionTokens);
-        petObj["llmTotalTokens"] = static_cast<qint64>(stats->llmTotalTokens);
-        petObj["llmReasoningTokens"] = static_cast<qint64>(stats->llmReasoningTokens);
-        petObj["llmCachedTokens"] = static_cast<qint64>(stats->llmCachedTokens);
-        petObj["llmPromptCacheHitTokens"] = static_cast<qint64>(stats->llmPromptCacheHitTokens);
-        petObj["llmPromptCacheMissTokens"] = static_cast<qint64>(stats->llmPromptCacheMissTokens);
+        petObj["petName"] = stats.petName;
+        petObj["sessionCount"] = stats.sessionCount;
+        petObj["lastActiveTime"] = stats.lastActiveTime.toString(Qt::ISODate);
+        petObj["totalRuntimeMs"] = stats.totalRuntimeMs;
+        petObj["sessionRuntimeMs"] = stats.sessionRuntimeMs;
+        petObj["llmCallCount"] = static_cast<qint64>(stats.llmCallCount);
+        petObj["llmPromptTokens"] = static_cast<qint64>(stats.llmPromptTokens);
+        petObj["llmCompletionTokens"] = static_cast<qint64>(stats.llmCompletionTokens);
+        petObj["llmTotalTokens"] = static_cast<qint64>(stats.llmTotalTokens);
+        petObj["llmReasoningTokens"] = static_cast<qint64>(stats.llmReasoningTokens);
+        petObj["llmCachedTokens"] = static_cast<qint64>(stats.llmCachedTokens);
+        petObj["llmPromptCacheHitTokens"] = static_cast<qint64>(stats.llmPromptCacheHitTokens);
+        petObj["llmPromptCacheMissTokens"] = static_cast<qint64>(stats.llmPromptCacheMissTokens);
 
         // 触摸区域统计
         QJsonObject touchAreaObj;
-        for (auto it2 = stats->touchAreaCount.begin(); it2 != stats->touchAreaCount.end(); ++it2) {
+        for (auto it2 = stats.touchAreaCount.begin(); it2 != stats.touchAreaCount.end(); ++it2) {
             touchAreaObj[it2.key()] = it2.value();
         }
         petObj["touchAreaCount"] = touchAreaObj;
@@ -381,24 +374,24 @@ void StatisticManager::jsonToStatistics(const QJsonObject &json) {
         QJsonObject petObj = value.toObject();
         QString petName = petObj["petName"].toString();
 
-        PetStatistics* stats = new PetStatistics(petName);
-        stats->sessionCount = petObj["sessionCount"].toInt();
-        stats->lastActiveTime = QDateTime::fromString(petObj["lastActiveTime"].toString(), Qt::ISODate);
-        stats->totalRuntimeMs = petObj["totalRuntimeMs"].toVariant().toLongLong();
-        stats->sessionRuntimeMs = petObj["sessionRuntimeMs"].toVariant().toLongLong();
-        stats->llmCallCount = petObj["llmCallCount"].toVariant().toLongLong();
-        stats->llmPromptTokens = petObj["llmPromptTokens"].toVariant().toLongLong();
-        stats->llmCompletionTokens = petObj["llmCompletionTokens"].toVariant().toLongLong();
-        stats->llmTotalTokens = petObj["llmTotalTokens"].toVariant().toLongLong();
-        stats->llmReasoningTokens = petObj["llmReasoningTokens"].toVariant().toLongLong();
-        stats->llmCachedTokens = petObj["llmCachedTokens"].toVariant().toLongLong();
-        stats->llmPromptCacheHitTokens = petObj["llmPromptCacheHitTokens"].toVariant().toLongLong();
-        stats->llmPromptCacheMissTokens = petObj["llmPromptCacheMissTokens"].toVariant().toLongLong();
+        PetStatistics stats(petName);
+        stats.sessionCount = petObj["sessionCount"].toInt();
+        stats.lastActiveTime = QDateTime::fromString(petObj["lastActiveTime"].toString(), Qt::ISODate);
+        stats.totalRuntimeMs = petObj["totalRuntimeMs"].toVariant().toLongLong();
+        stats.sessionRuntimeMs = petObj["sessionRuntimeMs"].toVariant().toLongLong();
+        stats.llmCallCount = petObj["llmCallCount"].toVariant().toLongLong();
+        stats.llmPromptTokens = petObj["llmPromptTokens"].toVariant().toLongLong();
+        stats.llmCompletionTokens = petObj["llmCompletionTokens"].toVariant().toLongLong();
+        stats.llmTotalTokens = petObj["llmTotalTokens"].toVariant().toLongLong();
+        stats.llmReasoningTokens = petObj["llmReasoningTokens"].toVariant().toLongLong();
+        stats.llmCachedTokens = petObj["llmCachedTokens"].toVariant().toLongLong();
+        stats.llmPromptCacheHitTokens = petObj["llmPromptCacheHitTokens"].toVariant().toLongLong();
+        stats.llmPromptCacheMissTokens = petObj["llmPromptCacheMissTokens"].toVariant().toLongLong();
 
         // 加载触摸区域统计
         QJsonObject touchAreaObj = petObj["touchAreaCount"].toObject();
         for (auto it = touchAreaObj.begin(); it != touchAreaObj.end(); ++it) {
-            stats->touchAreaCount[it.key()] = it.value().toInt();
+            stats.touchAreaCount[it.key()] = it.value().toInt();
         }
 
         petStatisticsMap[petName] = stats;

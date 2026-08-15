@@ -14,6 +14,7 @@
 #include <QKeyEvent>
 #include <QContextMenuEvent>
 #include <QMouseEvent>
+#include <QMessageBox>
 #include <QScreen>
 #include <QGuiApplication>
 #include <QDateTime>
@@ -122,6 +123,43 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
         Q_UNUSED(payload);
         Q_UNUSED(success);
         // No further action required here for now; keep as diagnostic hook.
+    });
+    connect(aiBrain.get(), &AIBrain::toolConfirmationRequired, this,
+            [this](const QString& requestId,
+                   const QString& toolName,
+                   const QString& reason,
+                   const QJsonObject& arguments) {
+        QStringList targets;
+        for (const QString& key : {QStringLiteral("path"),
+                                   QStringLiteral("working_directory"),
+                                   QStringLiteral("command"),
+                                   QStringLiteral("url")}) {
+            if (arguments.contains(key)) {
+                targets.append(QStringLiteral("%1: %2").arg(key, arguments.value(key).toVariant().toString()));
+            }
+        }
+        QString argumentText = QString::fromUtf8(
+            QJsonDocument(arguments).toJson(QJsonDocument::Indented));
+        constexpr int maxArgumentDisplayLength = 2000;
+        if (argumentText.size() > maxArgumentDisplayLength) {
+            argumentText = argumentText.left(maxArgumentDisplayLength)
+                + QStringLiteral("\n... (参数已截断)");
+        }
+        const QString targetText = targets.isEmpty()
+            ? QStringLiteral("未提供路径或命令目标")
+            : targets.join('\n');
+        const QString message = QStringLiteral(
+                                    "桌宠请求执行操作：%1\n\n%2\n\n目标：\n%3\n\n操作参数：\n%4\n\n是否允许本次执行？")
+                                    .arg(toolName, reason, targetText, argumentText);
+        const bool approved = QMessageBox::question(
+                                  this,
+                                  QStringLiteral("确认工具操作"),
+                                  message,
+                                  QMessageBox::Yes | QMessageBox::No,
+                                  QMessageBox::No) == QMessageBox::Yes;
+        if (aiBrain) {
+            aiBrain->resolveToolConfirmation(requestId, approved);
+        }
     });
 }
 

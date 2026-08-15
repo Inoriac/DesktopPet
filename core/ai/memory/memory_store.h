@@ -58,8 +58,8 @@ public:
     const MemoryEntry* findById(const QString& id) const;
 
 private:
-    void persistEntry(const MemoryEntry& entry);
-    void persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
+    bool persistEntry(const MemoryEntry& entry);
+    bool persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
 
     QString m_memoryFilePath = QStringLiteral("log/ai_memory.json");
     QString m_databasePath = QStringLiteral("runtime/memory/memory.db");

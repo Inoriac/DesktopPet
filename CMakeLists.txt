@@ -332,6 +332,36 @@ target_link_libraries(statistic_tests
 enable_testing()
 add_test(NAME StatisticTests COMMAND statistic_tests)
 
+add_executable(statistic_manager_tests
+        tests/test_statistic_manager.cpp
+        statistic/statistic_manager.cpp
+        statistic/statistic_manager.h
+        include/statistic_types.h
+        include/ai_types.h
+)
+target_include_directories(statistic_manager_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(statistic_manager_tests Qt::Core Qt::Test Qt::Widgets)
+add_test(NAME StatisticManagerTests COMMAND statistic_manager_tests)
+
+add_executable(model_loader_tests
+        tests/test_model_loader.cpp
+        engine/model_loader.cpp
+        engine/model_loader_geometry.cpp
+        engine/model_loader_skeleton.cpp
+        engine/model_loader.h
+        ${TINYGLTF_SOURCES}
+)
+target_include_directories(model_loader_tests PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}/engine
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
+)
+target_link_libraries(model_loader_tests Qt::Core Qt::Gui Qt::Test)
+add_test(NAME ModelLoaderTests COMMAND model_loader_tests)
+
 # ---- Tool 系统测试 ----
 # 轻量测试，不依赖 OpenGL / 模型文件
 add_executable(tool_tests
@@ -348,6 +378,10 @@ add_executable(tool_tests
         core/ai/tools/environment_tools.h
         core/ai/tools/environment_tools.cpp
         core/ai/tools/animation_tools.h
+        core/ai/scheduler/scheduled_task.h
+        core/ai/scheduler/scheduled_task.cpp
+        core/ai/scheduler/agent_scheduler.h
+        core/ai/scheduler/agent_scheduler.cpp
         include/ai_types.h
         ${STATISTIC_SOURCES}
 )
@@ -423,6 +457,10 @@ add_executable(memory_strategy_tests
     core/ai/memory/sqlite_embedding_index.cpp
     core/ai/memory/model_downloader.h
     core/ai/memory/model_downloader.cpp
+    core/ai/skill/skill_types.h
+    core/ai/skill/skill_types.cpp
+    core/ai/skill/skill_store.h
+    core/ai/skill/skill_store.cpp
 )
 
 target_include_directories(memory_strategy_tests PRIVATE

@@ -9,7 +9,9 @@
 #include "configLoader/config_manager.h"
 
 #include <QJsonDocument>
+#include <QPointer>
 #include <QUuid>
+#include <utility>
 
 AgentCore::AgentCore(QObject* parent)
     : QObject(parent) {}
@@ -19,7 +21,23 @@ void AgentCore::setPetName(const QString& petName) {
 }
 
 void AgentCore::setToolRuntime(ToolRuntime* runtime) {
+    if (m_toolRuntime == runtime) {
+        return;
+    }
+    if (m_toolRuntime) {
+        m_toolRuntime->cancelPendingConfirmations(QStringLiteral("Tool runtime changed"));
+    }
+    QStringList affectedSessions;
+    for (const PendingConfirmation& pending : std::as_const(m_pendingConfirmations)) {
+        if (!affectedSessions.contains(pending.sessionId)) {
+            affectedSessions.append(pending.sessionId);
+        }
+    }
+    m_pendingConfirmations.clear();
     m_toolRuntime = runtime;
+    for (const QString& sessionId : affectedSessions) {
+        finishSession(sessionId, false, QStringLiteral("Tool runtime changed while awaiting confirmation"));
+    }
 }
 
 void AgentCore::setContextManager(ContextManager* contextManager) {
@@ -101,6 +119,45 @@ const AgentSession* AgentCore::session(const QString& sessionId) const {
     return &it.value();
 }
 
+void AgentCore::resolveToolConfirmation(const QString& sessionId,
+                                        const QString& requestId,
+                                        bool approved) {
+    const auto it = m_pendingConfirmations.find(requestId);
+    if (it == m_pendingConfirmations.end() || it->sessionId != sessionId || !m_toolRuntime) {
+        return;
+    }
+    const PendingConfirmation pending = it.value();
+    m_pendingConfirmations.erase(it);
+
+    AgentSession* current = mutableSession(sessionId);
+    if (!current) {
+        m_toolRuntime->resolveConfirmation(requestId, false);
+        return;
+    }
+
+    const ToolExecutionOutcome outcome = m_toolRuntime->resolveConfirmation(requestId, approved);
+    const QString payload = m_toolRuntime->sanitizer()->toPayload(outcome.result);
+
+    AgentToolObservation observation;
+    observation.toolCallId = pending.call.id;
+    observation.toolName = pending.call.name;
+    observation.arguments = pending.call.arguments;
+    observation.result = outcome.result;
+    observation.observedAt = QDateTime::currentDateTimeUtc();
+    current->appendObservation(observation);
+
+    ChatMessage toolMessage;
+    toolMessage.role = "tool";
+    toolMessage.name = pending.call.name;
+    toolMessage.toolCallId = pending.call.id;
+    toolMessage.content = payload;
+    current->appendMessage(toolMessage);
+    emit toolExecuted(sessionId, pending.call.name, outcome.result.success, payload);
+
+    setSessionState(sessionId, AgentState::Observing);
+    continuePlanning(sessionId, pending.toolRound + 1);
+}
+
 AgentSession* AgentCore::mutableSession(const QString& sessionId) {
     auto it = m_sessions.find(sessionId);
     if (it == m_sessions.end()) {
@@ -148,9 +205,19 @@ void AgentCore::continuePlanning(const QString& sessionId, int toolRound) {
     setSessionState(sessionId, AgentState::Planning);
     const QList<ChatMessage> messages = current->messages();
     const QJsonArray tools = availableToolSchemas();
+    ToolRuntime* const runtimeAtRequest = m_toolRuntime;
+    const QPointer<AgentCore> guard(this);
 
     m_chatService->requestAsync(messages, tools,
-        [this, sessionId, toolRound](bool ok, LlmResponse response, QString error) mutable {
+        [this, guard, runtimeAtRequest, sessionId, toolRound]
+        (bool ok, LlmResponse response, QString error) mutable {
+            if (!guard) {
+                return;
+            }
+            if (m_toolRuntime != runtimeAtRequest) {
+                finishSession(sessionId, false, "Tool runtime changed while planning");
+                return;
+            }
             AgentSession* session = mutableSession(sessionId);
             if (!session) {
                 return;
@@ -209,8 +276,24 @@ void AgentCore::continuePlanning(const QString& sessionId, int toolRound) {
                 const QString payload = m_toolRuntime->sanitizer()->toPayload(outcome.result);
 
                 if (outcome.policyDecision.needsConfirmation()) {
+                    AgentSession* pendingSession = mutableSession(sessionId);
+                    if (!pendingSession) {
+                        return;
+                    }
+                    QList<ChatMessage>& pendingMessages = pendingSession->mutableMessages();
+                    if (assistantIndex >= 0 && assistantIndex < pendingMessages.size()) {
+                        pendingMessages[assistantIndex].toolCalls = assistantToolCalls;
+                    }
+                    m_pendingConfirmations.insert(
+                        outcome.requestId,
+                        PendingConfirmation{sessionId, call, toolRound});
                     setSessionState(sessionId, AgentState::NeedUserConfirm);
-                    emit userConfirmationRequired(sessionId, call.name, outcome.policyDecision.reason);
+                    emit userConfirmationRequired(sessionId,
+                                                  outcome.requestId,
+                                                  call.name,
+                                                  outcome.policyDecision.reason,
+                                                  call.arguments);
+                    return;
                 }
 
                 AgentToolObservation observation;

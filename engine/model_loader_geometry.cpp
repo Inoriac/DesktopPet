@@ -7,6 +7,7 @@
 #include <QDebug>
 
 #include <algorithm>
+#include <cstring>
 #include <cstdint>
 
 void ModelLoader::extractMeshData(const tinygltf::Model &model, const tinygltf::Mesh &mesh) {
@@ -106,25 +107,21 @@ void ModelLoader::extractIndexData(const tinygltf::Model &model, const tinygltf:
     const unsigned char *dataPtr = &buffer.data[bufferView.byteOffset + accessor.byteOffset];
 
     // 根据索引类型读取
-    switch (accessor.componentType) {
-        case TINYGLTF_COMPONENT_TYPE_BYTE: {
-            const uint8_t *indices = reinterpret_cast<const uint8_t *>(dataPtr);
-            meshData.indices.assign(indices, indices + accessor.count);
-            break;
+    const size_t stride = static_cast<size_t>(accessor.ByteStride(bufferView));
+    meshData.indices.reserve(accessor.count);
+    for (size_t i = 0; i < accessor.count; ++i) {
+        const unsigned char* element = dataPtr + i * stride;
+        if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_BYTE) {
+            meshData.indices.push_back(*element);
+        } else if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT) {
+            uint16_t value = 0;
+            std::memcpy(&value, element, sizeof(value));
+            meshData.indices.push_back(value);
+        } else if (accessor.componentType == TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT) {
+            uint32_t value = 0;
+            std::memcpy(&value, element, sizeof(value));
+            meshData.indices.push_back(value);
         }
-        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_SHORT: {
-            const uint16_t *indices = reinterpret_cast<const uint16_t *>(dataPtr);
-            meshData.indices.assign(indices, indices + accessor.count);
-            break;
-        }
-        case TINYGLTF_COMPONENT_TYPE_UNSIGNED_INT: {
-            const uint32_t *indices = reinterpret_cast<const uint32_t *>(dataPtr);
-            meshData.indices.assign(indices, indices + accessor.count);
-            break;
-        }
-        default:
-            qWarning() << "Unsupported component type:" << accessor.componentType;
-            break;
     }
 }
 
@@ -154,6 +151,8 @@ MaterialData ModelLoader::extractMaterialData(const tinygltf::Material& mat, con
             return;
 
         const tinygltf::Texture &tex = model.textures[texIndex];
+        if (tex.source < 0 || tex.source >= static_cast<int>(model.images.size()))
+            return;
         const tinygltf::Image &img = model.images[tex.source];
 
         if (!img.uri.empty()) {

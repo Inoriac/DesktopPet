@@ -13,6 +13,7 @@
 #include <QJsonDocument>
 #include <QMutex>
 #include <functional>
+#include <optional>
 
 #include "../include/statistic_types.h"
 #include "../include/ai_types.h"
@@ -45,8 +46,8 @@ public:
     // void recordAnimationPlay(const QString& petName, const QString& animationName, qint64 durationMs = 0);
 
     // 数据查询接口
-    PetStatistics* getPetStatistics(const QString& petName);
-    QHash<QString, PetStatistics*> getAllPetStatistics();
+    std::optional<PetStatistics> getPetStatistics(const QString& petName);
+    QHash<QString, PetStatistics> getAllPetStatistics();
 
     // 数据管理
     void saveStatistics();
@@ -85,7 +86,7 @@ private:
     void jsonToStatistics(const QJsonObject& json);
 
 private:
-    QHash<QString, PetStatistics*> petStatisticsMap;  // 桌宠统计数据
+    QHash<QString, PetStatistics> petStatisticsMap;  // 桌宠统计数据
     QHash<StatisticEventType, QList<QMetaObject::Connection>> eventConnections; // 事件连接
 
     QString filePath;                                // 存储文件路径

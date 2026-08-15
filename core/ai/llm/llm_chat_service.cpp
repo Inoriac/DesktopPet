@@ -44,10 +44,15 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
     auto attemptIndex = std::make_shared<int>(0);
     auto client = m_client;
     auto retryInvoker = std::make_shared<std::function<void()>>();
+    std::weak_ptr<std::function<void()>> weakRetryInvoker = retryInvoker;
 
-    *retryInvoker = [client, cfg, messages, tools, callback, attempts, attemptIndex, retryInvoker, petName]() mutable {
+    *retryInvoker = [client, cfg, messages, tools, callback, attempts, attemptIndex, weakRetryInvoker, petName]() mutable {
+        const auto keepAlive = weakRetryInvoker.lock();
+        if (!keepAlive) {
+            return;
+        }
         client->sendChatCompletionAsync(cfg, messages, tools,
-            [client, cfg, messages, tools, callback, attempts, attemptIndex, retryInvoker, petName]
+            [callback, attempts, attemptIndex, keepAlive, petName]
             (bool ok, LlmResponse response, QString error) mutable {
                 if (ok) {
                     const QString statsPetName = petName.isEmpty() ? QString("AI_GLOBAL") : petName;
@@ -61,7 +66,7 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
                            << "/" << attempts << ", reason:" << error;
 
                 if (*attemptIndex < attempts) {
-                    (*retryInvoker)();
+                    (*keepAlive)();
                     return;
                 }
 

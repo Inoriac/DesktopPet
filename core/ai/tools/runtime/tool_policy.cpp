@@ -3,28 +3,62 @@
 #include <QDir>
 #include <QFileInfo>
 
-static QString normalizePolicyPath(const QString& path) {
-    QString absolute = QFileInfo(path).absoluteFilePath();
-    absolute = QDir::cleanPath(absolute);
-    absolute.replace('\\', '/');
-    if (!absolute.endsWith('/')) {
-        absolute += '/';
+namespace {
+Qt::CaseSensitivity policyPathCaseSensitivity() {
+#ifdef Q_OS_WIN
+    return Qt::CaseInsensitive;
+#else
+    return Qt::CaseSensitive;
+#endif
+}
+
+QString resolvePolicyPath(const QString& path) {
+    QFileInfo current(QDir::cleanPath(QFileInfo(path).absoluteFilePath()));
+    QStringList missingComponents;
+    while (!current.exists() && !current.isSymLink()) {
+        const QString name = current.fileName();
+        if (name.isEmpty()) {
+            return {};
+        }
+        missingComponents.prepend(name);
+        const QString parentPath = current.absolutePath();
+        if (parentPath == current.absoluteFilePath()) {
+            return {};
+        }
+        current.setFile(parentPath);
     }
-    return absolute;
+
+    QString resolved = current.canonicalFilePath();
+    if (resolved.isEmpty() && current.isDir()) {
+        resolved = QDir(current.absoluteFilePath()).canonicalPath();
+    }
+    if (resolved.isEmpty()) {
+        return {};
+    }
+    for (const QString& component : missingComponents) {
+        resolved = QDir(resolved).filePath(component);
+    }
+    resolved = QDir::cleanPath(resolved);
+    resolved.replace('\\', '/');
+    return resolved;
 }
 
 static QStringList normalizePolicyRoots(const QStringList& roots) {
     QStringList normalized;
     for (const QString& root : roots) {
-        QString absolute = QFileInfo(root).absoluteFilePath();
-        absolute = QDir::cleanPath(absolute);
-        absolute.replace('\\', '/');
-        if (!absolute.endsWith('/')) {
-            absolute += '/';
+        const QString resolved = resolvePolicyPath(root);
+        if (!resolved.isEmpty()) {
+            normalized.append(resolved);
         }
-        normalized.append(absolute);
     }
     return normalized;
+}
+
+bool policyPathIsWithin(const QString& path, const QString& root) {
+    const QString rootPrefix = root.endsWith('/') ? root : root + '/';
+    return path.compare(root, policyPathCaseSensitivity()) == 0
+        || path.startsWith(rootPrefix, policyPathCaseSensitivity());
+}
 }
 
 QString toolRiskLevelToString(ToolRiskLevel level) {
@@ -117,7 +151,8 @@ ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
         return ToolPolicyDecision::deny(level, scopeReason);
     }
 
-    if (context.grantedToolNames.contains(tool.name())) {
+    if (context.grantedToolNames.contains(tool.name())
+        && (level == ToolRiskLevel::L0SafeRead || level == ToolRiskLevel::L1LocalQuery)) {
         return ToolPolicyDecision::allow(level, "tool explicitly granted");
     }
 
@@ -213,10 +248,14 @@ bool PolicyEngine::scopedArgumentsAllowed(const QString& toolName,
         return false;
     }
 
-    const QString normalizedPath = normalizePolicyPath(path);
+    const QString normalizedPath = resolvePolicyPath(path);
+    if (normalizedPath.isEmpty()) {
+        reason = QString("path cannot be resolved safely: %1").arg(path);
+        return false;
+    }
     const QStringList roots = normalizePolicyRoots(context.allowedRootPaths);
     for (const QString& root : roots) {
-        if (normalizedPath == root || normalizedPath.startsWith(root, Qt::CaseInsensitive)) {
+        if (policyPathIsWithin(normalizedPath, root)) {
             return true;
         }
     }
