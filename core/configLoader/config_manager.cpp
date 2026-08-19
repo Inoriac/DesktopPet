@@ -3,6 +3,7 @@
 //
 
 #include "config_manager.h"
+#include "emotion/emotion_config_json.h"
 #include <QDir>
 #include <QJsonArray>
 #include <QFile>
@@ -277,6 +278,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     llmConfig = LlmConfig{};
     screenChatConfig = ScreenChatConfig{};
     daydreamConfig = DaydreamConfig{};
+    emotionConfig = EmotionConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiToolAccessPolicy = AiToolAccessPolicy{};
@@ -371,6 +373,10 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
         if (aiRaw.contains("daydream") && aiRaw.value("daydream").isObject()) {
             daydreamConfig = parseDaydreamConfig(aiRaw.value("daydream").toObject());
+        }
+
+        if (aiRaw.contains("emotion") && aiRaw.value("emotion").isObject()) {
+            emotionConfig = parseEmotionConfig(aiRaw.value("emotion").toObject());
         }
 
         if (aiRaw.contains("voice") && aiRaw.value("voice").isObject()) {

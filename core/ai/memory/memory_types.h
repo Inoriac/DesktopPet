@@ -7,6 +7,8 @@
 #include <QString>
 #include <QStringList>
 
+#include "emotion/emotion_types.h"
+
 enum class MemoryType {
     Working,
     ShortTerm,
@@ -27,15 +29,6 @@ enum class MemoryStatus {
     Cancelled,
     Deleted,
     Expired
-};
-
-enum class EmotionType {
-    Neutral,
-    Joy,
-    Sadness,
-    Anger,
-    Fear,
-    Surprise
 };
 
 enum class PrivacyLevel {
@@ -108,33 +101,6 @@ inline MemoryStatus memoryStatusFromString(const QString& value) {
     if (value == "deleted") return MemoryStatus::Deleted;
     if (value == "expired") return MemoryStatus::Expired;
     return MemoryStatus::Active;
-}
-
-inline QString emotionTypeToString(EmotionType emotion) {
-    switch (emotion) {
-    case EmotionType::Neutral:
-        return "neutral";
-    case EmotionType::Joy:
-        return "joy";
-    case EmotionType::Sadness:
-        return "sadness";
-    case EmotionType::Anger:
-        return "anger";
-    case EmotionType::Fear:
-        return "fear";
-    case EmotionType::Surprise:
-        return "surprise";
-    }
-    return "neutral";
-}
-
-inline EmotionType emotionTypeFromString(const QString& value) {
-    if (value == "joy") return EmotionType::Joy;
-    if (value == "sadness") return EmotionType::Sadness;
-    if (value == "anger") return EmotionType::Anger;
-    if (value == "fear") return EmotionType::Fear;
-    if (value == "surprise") return EmotionType::Surprise;
-    return EmotionType::Neutral;
 }
 
 inline QString privacyLevelToString(PrivacyLevel level) {

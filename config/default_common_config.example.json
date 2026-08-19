@@ -95,6 +95,37 @@
           "maxTokens": 1200,
           "temperature": 0.2
         },
+        "emotion": {
+          "enabled": true,
+          "baseline": {
+            "valence": 0.1,
+            "arousal": 0.35
+          },
+          "decay": {
+            "valenceHalfLifeSec": 3600,
+            "arousalHalfLifeSec": 1200,
+            "maxOfflineDecaySec": 21600
+          },
+          "impulse": {
+            "maxValence": 0.18,
+            "maxArousal": 0.25,
+            "negativeMultiplier": 0.75,
+            "sameSourcePerMinute": 3
+          },
+          "expression": {
+            "positiveThreshold": 0.45,
+            "negativeThreshold": 0.65,
+            "switchMargin": 0.12,
+            "minIntensity": 0.45,
+            "durationMs": 12000,
+            "cooldownMs": 60000,
+            "queueLimit": 3
+          },
+          "llmAppraisal": {
+            "enabled": false,
+            "minConfidence": 0.8
+          }
+        },
         "screenChat": {
           "enabled": false,
           "minIntervalMs": 480000,

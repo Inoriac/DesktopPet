@@ -59,6 +59,7 @@ private slots:
     void testRetryThenSuccess();
     void testRequestReleasesCapturedState();
     void testDaydreamConfigLoadsAndClamps();
+    void testEmotionConfigLoadsFromActiveProfile();
 };
 
 void TestLlmChatService::testRequestAsyncDoesNotBlock() {
@@ -222,6 +223,46 @@ void TestLlmChatService::testDaydreamConfigLoadsAndClamps() {
     QCOMPARE(config.model, QStringLiteral("compact-model"));
     QCOMPARE(config.maxTokens, 256);
     QCOMPARE(config.temperature, 2.0);
+}
+
+void TestLlmChatService::testEmotionConfigLoadsFromActiveProfile() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+
+    const QJsonObject emotion{
+        {"enabled", false},
+        {"baseline", QJsonObject{{"valence", -0.2}, {"arousal", 0.6}}},
+        {"decay", QJsonObject{{"valenceHalfLifeSec", 1800}, {"arousalHalfLifeSec", 900}}},
+        {"impulse", QJsonObject{{"sameSourcePerMinute", 5}}},
+        {"expression", QJsonObject{{"durationMs", 7000}, {"cooldownMs", 30000}}}
+    };
+    const QJsonObject root{
+        {"aiSettings", QJsonObject{
+            {"activeProfile", "selected"},
+            {"profiles", QJsonObject{
+                {"default", QJsonObject{{"emotion", QJsonObject{{"enabled", true}}}}},
+                {"selected", QJsonObject{{"emotion", emotion}}}
+            }}
+        }}
+    };
+
+    const QString path = dir.filePath(QStringLiteral("emotion-config.json"));
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QVERIFY(file.write(QJsonDocument(root).toJson(QJsonDocument::Compact)) > 0);
+    file.close();
+
+    ConfigManager& manager = ConfigManager::instance();
+    QVERIFY(manager.loadConfig(path));
+    const EmotionConfig config = manager.getEmotionConfig();
+    QVERIFY(!config.enabled);
+    QCOMPARE(config.baselineValence, -0.2);
+    QCOMPARE(config.baselineArousal, 0.6);
+    QCOMPARE(config.valenceHalfLifeSec, 1800.0);
+    QCOMPARE(config.arousalHalfLifeSec, 900.0);
+    QCOMPARE(config.sameSourcePerMinute, 5);
+    QCOMPARE(config.expressionDurationMs, static_cast<qint64>(7000));
+    QCOMPARE(config.expressionCooldownMs, static_cast<qint64>(30000));
 }
 
 QTEST_MAIN(TestLlmChatService)

@@ -13,6 +13,7 @@
 
 #include "global_types.h"
 #include "ai_types.h"
+#include "emotion/emotion_types.h"
 
 class ConfigManager {
 public:
@@ -57,6 +58,7 @@ public:
     void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
     const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
+    EmotionConfig getEmotionConfig() const { return emotionConfig; }
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
 
@@ -115,6 +117,7 @@ private:
     LlmConfig llmConfig;
     ScreenChatConfig screenChatConfig;
     DaydreamConfig daydreamConfig;
+    EmotionConfig emotionConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
     AiToolAccessPolicy aiToolAccessPolicy;

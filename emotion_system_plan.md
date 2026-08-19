@@ -1,6 +1,6 @@
 # 桌宠情绪系统设计方案
 
-> 状态：设计提案，等待审阅；不代表已经进入实现阶段。
+> 状态：Phase 1 确定性核心已实现并通过全量测试；Phase 2 表现与上下文接入尚未开始。
 > 调研日期：2026-08-16。
 
 ## 1. 结论
@@ -76,7 +76,7 @@ FAtiMA Toolkit 的工程拆分也值得借鉴：情绪评价、情绪化决策�
 ## 5. 推荐状态模型
 
 ```cpp
-enum class EmotionLabel {
+enum class EmotionType {
     Neutral,
     Joy,
     Sadness,
@@ -88,7 +88,7 @@ enum class EmotionLabel {
 struct EmotionSnapshot {
     double moodValence = 0.10;       // [-1, 1]，负面到正面
     double moodArousal = 0.35;       // [0, 1]，平静到活跃
-    EmotionLabel active = EmotionLabel::Neutral;
+    EmotionType active = EmotionType::Neutral;
     double intensity = 0.0;          // [0, 1]
     double confidence = 1.0;         // [0, 1]
     QString sourceEventId;
@@ -268,6 +268,8 @@ personality_revision
       "positiveThreshold": 0.45,
       "negativeThreshold": 0.65,
       "switchMargin": 0.12,
+      "minIntensity": 0.45,
+      "durationMs": 12000,
       "cooldownMs": 60000,
       "queueLimit": 3
     },

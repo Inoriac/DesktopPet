@@ -78,6 +78,14 @@ set(CORE_SOURCES
     core/behavior/behavior_manager.cpp
     core/behavior/behavior_manager.h
 
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_config_json.cpp
+    core/emotion/emotion_config_json.h
+    core/emotion/emotion_state_repository.h
+    core/emotion/emotion_engine.cpp
+    core/emotion/emotion_engine.h
+
     core/configLoader/config_manager.cpp
     core/configLoader/config_manager.h
 
@@ -431,6 +439,29 @@ target_link_libraries(intent_router_tests
 
 add_test(NAME IntentRouterTests COMMAND intent_router_tests)
 
+# ---- Emotion deterministic core tests ----
+add_executable(emotion_tests
+    tests/test_emotion_engine.cpp
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_config_json.cpp
+    core/emotion/emotion_config_json.h
+    core/emotion/emotion_state_repository.h
+    core/emotion/emotion_engine.cpp
+    core/emotion/emotion_engine.h
+)
+
+target_include_directories(emotion_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+)
+
+target_link_libraries(emotion_tests
+    Qt::Core
+    Qt::Test
+)
+
+add_test(NAME EmotionTests COMMAND emotion_tests)
+
 # ---- Memory 写入策略测试 ----
 add_executable(memory_strategy_tests
     tests/test_memory_strategy.cpp
@@ -551,6 +582,10 @@ add_executable(llm_tests
     core/ai/llm/openai_compatible_client.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_config_json.cpp
+    core/emotion/emotion_config_json.h
     statistic/statistic_manager.h
     statistic/statistic_manager.cpp
     include/statistic_types.h
