@@ -146,7 +146,6 @@ void PetWindow::startThinkingBubble(const QString& reason) {
 
     const QString normalizedReason = reason.trimmed();
     if (normalizedReason == QStringLiteral("idle_tick")
-        || normalizedReason == QStringLiteral("emotion_tick")
         || normalizedReason == QStringLiteral("proactive_chat_tick")
         || normalizedReason == QStringLiteral("busy_retry")) {
         return;

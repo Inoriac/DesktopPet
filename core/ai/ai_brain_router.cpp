@@ -223,10 +223,15 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
         event["error"] = outcome.result.errorMessage;
     }
 
-    m_memoryStore.add(MemoryType::Event,
-                      "tool_execution",
-                      event,
-                      {triggerTag, initiatedByLlm ? "llm" : "router", toolName});
+    MemoryEntry storedEvent = m_memoryStore.add(
+        MemoryType::Event,
+        "tool_execution",
+        event,
+        {triggerTag, initiatedByLlm ? "llm" : "router", toolName});
+    annotateMemoryEntry(storedEvent);
+    if (!storedEvent.id.isEmpty() && storedEvent.emotion != EmotionType::Neutral) {
+        m_memoryStore.updateEntryById(storedEvent);
+    }
     m_memoryStore.save();
 
     const QString summary = QStringLiteral("工具 %1 执行%2")
@@ -260,7 +265,8 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
         reason,
         "Idle",
         triggerTag,
-        allowedActionsForTrigger(triggerTag)
+        allowedActionsForTrigger(triggerTag),
+        currentEmotionSnapshot()
     );
     const QStringList memoryHints = retrieveMemoryHints(reason, triggerTag);
     if (!memoryHints.isEmpty()) {
@@ -289,6 +295,10 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
     query.limit = limit;
     query.includeSensitive = false;
     query.includeInactive = false;
+    if (const std::optional<EmotionSnapshot> emotion = currentEmotionSnapshot(); emotion.has_value()) {
+        query.currentEmotion = emotion->active;
+        query.currentEmotionIntensity = emotion->intensity;
+    }
 
     if (triggerTag == "user_request" || triggerTag == "manual") {
         query.preferredTypes = {

@@ -59,6 +59,7 @@ set(UI_SOURCES
     ui/liquidglassmaterial.h
     ui/petwindow.cpp
     ui/petwindow_interaction.cpp
+    ui/petwindow_emotion.cpp
     ui/petwindow_ai.cpp
     ui/petwindow_screen_chat.cpp
     ui/petwindow_bubble.cpp
@@ -83,6 +84,8 @@ set(CORE_SOURCES
     core/emotion/emotion_config_json.cpp
     core/emotion/emotion_config_json.h
     core/emotion/emotion_state_repository.h
+    core/emotion/sqlite_emotion_state_repository.cpp
+    core/emotion/sqlite_emotion_state_repository.h
     core/emotion/emotion_engine.cpp
     core/emotion/emotion_engine.h
 
@@ -346,6 +349,14 @@ target_link_libraries(statistic_tests
 enable_testing()
 add_test(NAME StatisticTests COMMAND statistic_tests)
 
+find_package(Python3 COMPONENTS Interpreter QUIET)
+if(Python3_Interpreter_FOUND)
+    add_test(NAME LauncherConfigTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_config.py)
+    set_tests_properties(LauncherConfigTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
+
 add_executable(statistic_manager_tests
         tests/test_statistic_manager.cpp
         statistic/statistic_manager.cpp
@@ -461,6 +472,34 @@ target_link_libraries(emotion_tests
 )
 
 add_test(NAME EmotionTests COMMAND emotion_tests)
+
+# ---- Emotion runtime adapters and SQLite tests ----
+add_executable(emotion_runtime_tests
+    tests/test_emotion_runtime.cpp
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_engine.cpp
+    core/emotion/emotion_engine.h
+    core/emotion/emotion_state_repository.h
+    core/emotion/sqlite_emotion_state_repository.cpp
+    core/emotion/sqlite_emotion_state_repository.h
+    core/behavior/behavior_manager.cpp
+    core/behavior/behavior_manager.h
+    core/controller/pet_controller.cpp
+    core/controller/pet_controller.h
+)
+
+target_include_directories(emotion_runtime_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+)
+
+target_link_libraries(emotion_runtime_tests
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+)
+
+add_test(NAME EmotionRuntimeTests COMMAND emotion_runtime_tests)
 
 # ---- Memory 写入策略测试 ----
 add_executable(memory_strategy_tests
@@ -580,6 +619,8 @@ add_executable(llm_tests
     core/ai/llm/llm_client.h
     core/ai/llm/openai_compatible_client.h
     core/ai/llm/openai_compatible_client.cpp
+    core/ai/context_builder.h
+    core/ai/context_builder.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
     core/emotion/emotion_types.cpp
@@ -764,5 +805,14 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 --no-system-d3d-compiler
                 "$<TARGET_FILE:memory_strategy_tests>"
                 COMMENT "Running windeployqt for memory_strategy_tests...")
+    endif ()
+
+    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
+        add_custom_command(TARGET emotion_runtime_tests POST_BUILD
+                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
+                --no-translations
+                --no-system-d3d-compiler
+                "$<TARGET_FILE:emotion_runtime_tests>"
+                COMMENT "Running windeployqt for emotion_runtime_tests...")
     endif ()
 endif ()

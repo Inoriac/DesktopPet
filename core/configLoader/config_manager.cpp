@@ -301,7 +301,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     aiBehaviorPolicy.forbiddenActions = {"Drag", "WindowSit"};
 
     aiBehaviorPolicy.idleTrigger = AiTriggerConfig{true, 60000, 180000};
-    aiBehaviorPolicy.emotionTrigger = AiTriggerConfig{true, 120000, 300000};
+    aiBehaviorPolicy.emotionTrigger = AiTriggerConfig{false, 120000, 300000};
     aiBehaviorPolicy.proactiveChatTrigger = AiTriggerConfig{true, 180000, 300000};
 
     if (configJson.contains("aiSettings")) {

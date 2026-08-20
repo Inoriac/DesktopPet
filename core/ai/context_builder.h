@@ -9,6 +9,10 @@
 #include <QString>
 #include <QStringList>
 
+#include <optional>
+
+#include "emotion/emotion_types.h"
+
 class ContextBuilder {
 public:
     QString buildSystemPrompt(const QString& petName) const;
@@ -16,7 +20,8 @@ public:
                                 const QString& reason,
                                 const QString& currentState = QString(),
                                 const QString& triggerTag = QString(),
-                                const QStringList& allowedActions = QStringList()) const;
+                                const QStringList& allowedActions = QStringList(),
+                                const std::optional<EmotionSnapshot>& emotion = std::nullopt) const;
 
 private:
     QString buildStatisticsSummary(const QString& petName) const;

@@ -20,6 +20,7 @@ class AppState:
 
     # AI 设置
     ai_enabled: bool = False
+    emotion_enabled: bool = True
     auto_screen_chat: bool = False
     chat_interval_min_ms: int = 480000
     chat_interval_max_ms: int = 720000
@@ -67,6 +68,7 @@ class AppState:
             "alwaysOnTop": d["always_on_top"],
             "clickThrough": d["click_through"],
             "aiEnabled": d["ai_enabled"],
+            "emotionEnabled": d["emotion_enabled"],
             "autoScreenChat": d["auto_screen_chat"],
             "chatIntervalMinMs": d["chat_interval_min_ms"],
             "chatIntervalMaxMs": d["chat_interval_max_ms"],

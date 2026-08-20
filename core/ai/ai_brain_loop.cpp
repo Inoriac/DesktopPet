@@ -245,7 +245,6 @@ void AIBrain::thinkInternal(const QString& reason,
 
 void AIBrain::setupTriggerTimers() {
     m_idleTriggerTimer.setSingleShot(true);
-    m_emotionTriggerTimer.setSingleShot(true);
     m_chatTriggerTimer.setSingleShot(true);
 
     connect(&m_idleTriggerTimer, &QTimer::timeout, this, [this]() {
@@ -254,13 +253,6 @@ void AIBrain::setupTriggerTimers() {
             return;
         }
         triggerThink("idle_tick", "idle_action");
-    });
-    connect(&m_emotionTriggerTimer, &QTimer::timeout, this, [this]() {
-        if (m_busy) {
-            scheduleTrigger("emotion");
-            return;
-        }
-        triggerThink("emotion_tick", "emotion");
     });
     connect(&m_chatTriggerTimer, &QTimer::timeout, this, [this]() {
         if (m_busy) {
@@ -507,8 +499,6 @@ void AIBrain::scheduleTrigger(const QString& triggerTag) {
 
     if (triggerTag == "idle_action") {
         m_idleTriggerTimer.start(interval);
-    } else if (triggerTag == "emotion") {
-        m_emotionTriggerTimer.start(interval);
     } else if (triggerTag == "proactive_chat") {
         m_chatTriggerTimer.start(interval);
     }

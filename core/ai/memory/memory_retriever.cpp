@@ -324,7 +324,9 @@ double MemoryRetriever::computeEmotionBoost(const MemoryEntry& entry,
     if (query.currentEmotion == EmotionType::Neutral) return 0.0;
     if (entry.emotion == EmotionType::Neutral) return 0.0;
     if (entry.emotion != query.currentEmotion) return 0.0;
-    return entry.emotionIntensity * 1.5;
+    const double memoryIntensity = std::clamp(entry.emotionIntensity, 0.0, 1.0);
+    const double currentIntensity = std::clamp(query.currentEmotionIntensity, 0.0, 1.0);
+    return std::min(0.35, memoryIntensity * currentIntensity * 0.35);
 }
 
 double MemoryRetriever::decayLambda(MemoryType type) const {

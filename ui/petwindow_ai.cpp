@@ -15,6 +15,7 @@
 #include "ai/tools/web_tools.h"
 #include "ai/skill/skill_tools.h"
 #include "configLoader/config_manager.h"
+#include "controller/pet_controller.h"
 #include "render_engine.h"
 #include "render_viewport.h"
 
@@ -134,11 +135,17 @@ void PetWindow::setupAiBrain() {
 
     agentScheduler->setToolRegistry(aiToolRegistry.get());
     agentScheduler->load();
-    connect(agentScheduler.get(), &AgentScheduler::taskTriggered, this, [](const QString& id, const QString& title) {
+    connect(agentScheduler.get(), &AgentScheduler::taskTriggered, this, [this](const QString& id, const QString& title) {
         qDebug() << "[AgentScheduler] task triggered:" << id << title;
+        if (petController) {
+            petController->recordTaskOutcome(id, true);
+        }
     });
-    connect(agentScheduler.get(), &AgentScheduler::taskFailed, this, [](const QString& id, const QString& errorMessage) {
+    connect(agentScheduler.get(), &AgentScheduler::taskFailed, this, [this](const QString& id, const QString& errorMessage) {
         qWarning() << "[AgentScheduler] task failed:" << id << errorMessage;
+        if (petController && !id.trimmed().isEmpty()) {
+            petController->recordTaskOutcome(id, false);
+        }
     });
     agentScheduler->start();
 

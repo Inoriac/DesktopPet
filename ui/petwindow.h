@@ -24,6 +24,10 @@ class ChatHistoryWindow;
 class LiquidGlassChatBubble;
 
 class RenderViewport;
+class BehaviorManager;
+class EmotionEngine;
+class PetController;
+class SQLiteEmotionStateRepository;
 
 class PetWindow : public QWidget{
     Q_OBJECT
@@ -77,6 +81,10 @@ private:
     void setupWindow();
     void setupRenderViewport();
     void setupContextMenu();
+    void setupEmotionSystem();
+    QString emotionStatusText() const;
+    void setEmotionSystemEnabled(bool enabled);
+    void resetEmotionSystem();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
     void setupAiBrain();
     void setupScreenChat();
@@ -178,6 +186,12 @@ private:
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
     std::unique_ptr<AgentScheduler> agentScheduler;
+    std::unique_ptr<SQLiteEmotionStateRepository> emotionRepository;
+    std::unique_ptr<EmotionEngine> emotionEngine;
+    std::unique_ptr<PetController> petController;
+    std::unique_ptr<BehaviorManager> behaviorManager;
+    QTimer* emotionTickTimer = nullptr;
+    QTimer* emotionBehaviorTimer = nullptr;
     QStringList m_allowedRoots;  // 文件工具允许的根目录
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;

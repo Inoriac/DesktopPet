@@ -5,6 +5,7 @@
 #include "petwindow.h"
 
 #include "configLoader/config_manager.h"
+#include "controller/pet_controller.h"
 #include "liquidglasschatbubble.h"
 
 #include <QDir>
@@ -82,6 +83,9 @@ void PetWindow::setupScreenChat() {
     inputBubble->refreshGlass();
     connect(inputBubble, &LiquidGlassChatBubble::messageSubmitted, this, [this](const QString& text) {
         appendChatHistoryMessage(QStringLiteral("user"), text);
+        if (petController) {
+            petController->recordExplicitFeedbackText(text);
+        }
         if (!aiBrain || !aiBrain->isEnabled()) {
             qWarning() << "[AIBrain] user input ignored, AI disabled";
             appendChatHistoryMessage(QStringLiteral("system"), QStringLiteral("AI 当前没有启用，暂时不能回复。"));

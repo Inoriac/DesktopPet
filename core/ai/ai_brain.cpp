@@ -11,6 +11,10 @@
 #include <QDir>
 #include <QUuid>
 
+#include <algorithm>
+#include <cmath>
+#include <utility>
+
 #include "configLoader/config_manager.h"
 
 AIBrain::AIBrain(QObject* parent)
@@ -50,6 +54,10 @@ void AIBrain::setAgentScheduler(AgentScheduler* scheduler) {
     m_scheduler = scheduler;
 }
 
+void AIBrain::setEmotionSnapshotProvider(EmotionSnapshotProvider provider) {
+    m_emotionSnapshotProvider = std::move(provider);
+}
+
 void AIBrain::setEnabled(bool enabled) {
     m_enabled = enabled;
     if (!m_enabled) {
@@ -71,7 +79,6 @@ void AIBrain::start() {
 
     m_running = true;
     scheduleTrigger("idle_action");
-    scheduleTrigger("emotion");
     scheduleTrigger("proactive_chat");
     if (m_daydreamConfig.enabled) {
         armDaydreamTimer();
@@ -85,7 +92,6 @@ void AIBrain::stop() {
     ++m_requestGeneration;
     m_running = false;
     m_idleTriggerTimer.stop();
-    m_emotionTriggerTimer.stop();
     m_chatTriggerTimer.stop();
     m_daydreamTimer.stop();
     m_idleRetryScheduled = false;
@@ -150,8 +156,13 @@ void AIBrain::processUserMemoryWrite(const QString& input,
         return;
     }
 
-    const QList<MemoryCandidate> candidates = m_memoryExtractor.extractFromUserInput(input, triggerTag);
+    QList<MemoryCandidate> candidates = m_memoryExtractor.extractFromUserInput(input, triggerTag);
     if (!candidates.isEmpty()) {
+        for (MemoryCandidate& candidate : candidates) {
+            if (candidate.operation == MemoryCandidateOperation::Write) {
+                annotateMemoryEntry(candidate.entry);
+            }
+        }
         // Explicit remember/forget requests keep their deterministic, immediate
         // semantics and must not also be duplicated into the Daydream inbox.
         m_memoryPolicy.applyCandidates(candidates, &m_memoryStore);
@@ -164,6 +175,7 @@ void AIBrain::processUserMemoryWrite(const QString& input,
 
     MemoryEntry impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
     if (impression.content.isEmpty()) return;
+    annotateMemoryEntry(impression);
 
     // Coalesce exact repeated self-disclosures so recurrence becomes a useful
     // consolidation signal instead of creating duplicate inbox rows.
@@ -189,5 +201,47 @@ void AIBrain::processUserMemoryWrite(const QString& input,
         return;
     }
     m_memoryStore.addEntry(impression);
+}
+
+std::optional<EmotionSnapshot> AIBrain::currentEmotionSnapshot() const {
+    if (!m_emotionSnapshotProvider) {
+        return std::nullopt;
+    }
+    const std::optional<EmotionSnapshot> snapshot = m_emotionSnapshotProvider();
+    const int activeEmotion = snapshot.has_value()
+        ? static_cast<int>(snapshot->active)
+        : -1;
+    if (!snapshot.has_value()
+        || !snapshot->updatedAt.isValid()
+        || activeEmotion < static_cast<int>(EmotionType::Neutral)
+        || activeEmotion > static_cast<int>(EmotionType::Surprise)
+        || !std::isfinite(snapshot->moodValence)
+        || !std::isfinite(snapshot->moodArousal)
+        || !std::isfinite(snapshot->intensity)
+        || !std::isfinite(snapshot->confidence)
+        || snapshot->moodValence < -1.0
+        || snapshot->moodValence > 1.0
+        || snapshot->moodArousal < 0.0
+        || snapshot->moodArousal > 1.0
+        || snapshot->intensity < 0.0
+        || snapshot->intensity > 1.0
+        || snapshot->confidence < 0.0
+        || snapshot->confidence > 1.0) {
+        return std::nullopt;
+    }
+    return snapshot;
+}
+
+void AIBrain::annotateMemoryEntry(MemoryEntry& entry) const {
+    const std::optional<EmotionSnapshot> snapshot = currentEmotionSnapshot();
+    if (!snapshot.has_value()
+        || snapshot->active == EmotionType::Neutral
+        || snapshot->intensity < 0.60
+        || snapshot->confidence < 0.60) {
+        return;
+    }
+    entry.emotion = snapshot->active;
+    entry.emotionIntensity = std::clamp(snapshot->intensity, 0.0, 1.0);
+    entry.emotionConfidence = std::clamp(snapshot->confidence, 0.0, 1.0);
 }
 

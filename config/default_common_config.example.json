@@ -220,7 +220,7 @@
               "maxIntervalMs": 180000
             },
             "emotion": {
-              "enabled": true,
+              "enabled": false,
               "minIntervalMs": 120000,
               "maxIntervalMs": 300000
             },

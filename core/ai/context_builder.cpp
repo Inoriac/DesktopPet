@@ -6,6 +6,9 @@
 
 #include <QDateTime>
 
+#include <algorithm>
+#include <cmath>
+
 #include "configLoader/config_manager.h"
 #include "statistic_manager.h"
 
@@ -17,6 +20,9 @@ QString ContextBuilder::buildSystemPrompt(const QString& petName) const {
         "目标：自然、简短、可执行。"
         "当可用工具能完成任务时，优先调用工具。"
         "回复尽量简洁，中文输出。"
+        "情绪状态只用于调整措辞和表现，不得降低命令成功率或阻止关闭、删除、隐私与安全操作。"
+        "不得用悲伤、生气、内疚、威胁、排他或依赖性表达要求用户安慰或继续互动。"
+        "不得把桌宠的情绪状态描述成对用户心理状态的判断或诊断。"
         "你拥有技能学习能力：当完成了一个具有通用性的复杂任务流程后，"
         "可调用 skill_create 将其固化为可复用技能；"
         "在技能步骤中使用{参数名}占位符实现泛化。"
@@ -28,7 +34,8 @@ QString ContextBuilder::buildRuntimeContext(const QString& petName,
                                            const QString& reason,
                                            const QString& currentState,
                                            const QString& triggerTag,
-                                           const QStringList& allowedActions) const {
+                                           const QStringList& allowedActions,
+                                           const std::optional<EmotionSnapshot>& emotion) const {
     const QString now = QDateTime::currentDateTime().toString(Qt::ISODate);
     const LlmConfig& cfg = ConfigManager::instance().getLlmConfig();
 
@@ -39,6 +46,18 @@ QString ContextBuilder::buildRuntimeContext(const QString& petName,
     context += QString("pet_name=%1\n").arg(petName.isEmpty() ? QString("UNKNOWN") : petName);
     context += QString("pet_state=%1\n").arg(currentState.isEmpty() ? QString("UNKNOWN") : currentState);
     context += QString("llm_model=%1\n").arg(cfg.model);
+    if (emotion.has_value()
+        && std::isfinite(emotion->moodValence)
+        && std::isfinite(emotion->moodArousal)
+        && std::isfinite(emotion->intensity)) {
+        context += QStringLiteral("mood_valence=%1\n")
+            .arg(std::clamp(emotion->moodValence, -1.0, 1.0), 0, 'f', 2);
+        context += QStringLiteral("mood_arousal=%1\n")
+            .arg(std::clamp(emotion->moodArousal, 0.0, 1.0), 0, 'f', 2);
+        context += QStringLiteral("active_emotion=%1\n").arg(emotionTypeToString(emotion->active));
+        context += QStringLiteral("emotion_intensity=%1\n")
+            .arg(std::clamp(emotion->intensity, 0.0, 1.0), 0, 'f', 2);
+    }
     if (!allowedActions.isEmpty()) {
         context += QString("allowed_actions=%1\n").arg(allowedActions.join(","));
     }

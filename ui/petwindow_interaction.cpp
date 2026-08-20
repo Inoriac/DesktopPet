@@ -6,6 +6,8 @@
 #include "statistic_manager.h"
 
 #include "configLoader/config_manager.h"
+#include "controller/pet_controller.h"
+#include "emotion/emotion_engine.h"
 #include "render_engine.h"
 #include "render_viewport.h"
 
@@ -63,6 +65,21 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
     } else {
         debugMenu->addAction("未加载动画系统")->setEnabled(false);
     }
+
+    contextMenu->addSeparator();
+
+    QMenu* emotionMenu = contextMenu->addMenu(QStringLiteral("情绪系统"));
+    QAction* emotionStatusAction = emotionMenu->addAction(emotionStatusText());
+    emotionStatusAction->setEnabled(false);
+    const bool emotionEnabled = emotionEngine && emotionEngine->isEnabled();
+    QAction* toggleEmotionAction = emotionMenu->addAction(
+        emotionEnabled ? QStringLiteral("关闭情绪") : QStringLiteral("启用情绪"));
+    connect(toggleEmotionAction, &QAction::triggered, this, [this, emotionEnabled]() {
+        setEmotionSystemEnabled(!emotionEnabled);
+    });
+    QAction* resetEmotionAction = emotionMenu->addAction(QStringLiteral("重置情绪"));
+    resetEmotionAction->setEnabled(emotionEnabled);
+    connect(resetEmotionAction, &QAction::triggered, this, &PetWindow::resetEmotionSystem);
 
     contextMenu->addSeparator();
 
@@ -141,6 +158,9 @@ void PetWindow::triggerTouchReaction(const std::string& tag) {
             StatisticManager::getInstance().recordTouchInteraction(
                 modelName,
                 QString::fromStdString(tag));
+            if (petController) {
+                petController->recordTouch(QString::fromStdString(tag));
+            }
         }
     }
 }

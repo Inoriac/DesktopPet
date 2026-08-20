@@ -782,6 +782,9 @@ void TestMemoryStrategy::testRetrieverEmotionBoost() {
     const QList<RetrievedMemory> result = retriever.retrieve(store, query);
     QCOMPARE(result.size(), 2);
     QCOMPARE(result.first().entry.key, QStringLiteral("happy:event"));
+    const double scoreDifference = result.first().score - result.last().score;
+    QVERIFY(scoreDifference > 0.0);
+    QVERIFY(scoreDifference <= 0.35 + 1e-9);
 }
 
 void TestMemoryStrategy::testRetrieverReinforcement() {

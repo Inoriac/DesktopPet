@@ -12,10 +12,12 @@
 #include <QList>
 #include <QStringList>
 #include <functional>
+#include <optional>
 
 #include "ai_types.h"
 #include "ai_call_logger.h"
 #include "context_builder.h"
+#include "emotion/emotion_types.h"
 #include "llm/llm_chat_service.h"
 #include "memory/daydream_consolidator.h"
 #include "memory/memory_extractor.h"
@@ -37,11 +39,14 @@ class AIBrain : public QObject {
     Q_OBJECT
 
 public:
+    using EmotionSnapshotProvider = std::function<std::optional<EmotionSnapshot>()>;
+
     explicit AIBrain(QObject* parent = nullptr);
 
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
     void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
+    void setEmotionSnapshotProvider(EmotionSnapshotProvider provider);
 
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
@@ -99,6 +104,8 @@ private:
                              const ToolExecutionOutcome& outcome);
     void processUserMemoryWrite(const QString& input,
                                 const QString& triggerTag);
+    std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
+    void annotateMemoryEntry(MemoryEntry& entry) const;
     QList<ChatMessage> buildBaseMessages(const QString& reason,
                                          const QString& triggerTag);
     QStringList retrieveMemoryHints(const QString& reason,
@@ -141,7 +148,6 @@ private:
     EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
 
     QTimer m_idleTriggerTimer;
-    QTimer m_emotionTriggerTimer;
     QTimer m_chatTriggerTimer;
     QTimer m_daydreamTimer;
     DaydreamConfig m_daydreamConfig;
@@ -171,6 +177,7 @@ private:
     QList<ChatMessage> m_memory;
     QHash<QString, std::function<void(bool)>> m_pendingToolConfirmations;
     AiCallLogger m_callLogger;
+    EmotionSnapshotProvider m_emotionSnapshotProvider;
 };
 
 #endif // DESKTOP_PET_AI_BRAIN_H

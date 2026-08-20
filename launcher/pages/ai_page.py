@@ -27,6 +27,12 @@ class AiPage(ScrollPage):
         sw.checkedChanged.connect(lambda c: setattr(state, "ai_enabled", c))
         beh_card.addRow("AI 开关", "aiSettings.profiles.default.enabled", sw)
 
+        emotion_switch = SwitchButton()
+        emotion_switch.setChecked(state.emotion_enabled)
+        emotion_switch.checkedChanged.connect(
+            lambda checked: setattr(state, "emotion_enabled", checked))
+        beh_card.addRow("情绪系统", "emotion.enabled", emotion_switch)
+
         asc = SwitchButton()
         asc.setChecked(state.auto_screen_chat)
         asc.checkedChanged.connect(lambda c: setattr(state, "auto_screen_chat", c))

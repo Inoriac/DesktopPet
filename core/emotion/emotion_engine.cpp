@@ -219,11 +219,21 @@ bool EmotionEngine::validateEvent(const AffectEvent& event, const QDateTime& now
         return false;
     }
     const QString id = event.id.trimmed();
+    const int kind = static_cast<int>(event.kind);
+    const int source = static_cast<int>(event.source);
+    const int agency = static_cast<int>(event.agency);
+    const int outcome = static_cast<int>(event.outcome);
     if (id.isEmpty()
         || id.size() > 128
         || event.sourceId.size() > 128
-        || event.kind == AffectEventKind::Unspecified
-        || event.source == AffectSource::Unknown) {
+        || kind <= static_cast<int>(AffectEventKind::Unspecified)
+        || kind > static_cast<int>(AffectEventKind::EmotionDisabled)
+        || source <= static_cast<int>(AffectSource::Unknown)
+        || source > static_cast<int>(AffectSource::Memory)
+        || agency < static_cast<int>(AffectAgency::Unknown)
+        || agency > static_cast<int>(AffectAgency::Environment)
+        || outcome < static_cast<int>(AffectOutcome::Unknown)
+        || outcome > static_cast<int>(AffectOutcome::Loss)) {
         return false;
     }
     if (!inSignedUnitRange(event.goalCongruence)

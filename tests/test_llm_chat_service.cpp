@@ -16,6 +16,7 @@
 #include "llm/llm_chat_service.h"
 #include "llm/llm_client.h"
 #include "configLoader/config_manager.h"
+#include "ai/context_builder.h"
 #include "statistic_manager.h"
 
 class FakeAsyncLlmClient : public LlmClient {
@@ -60,6 +61,7 @@ private slots:
     void testRequestReleasesCapturedState();
     void testDaydreamConfigLoadsAndClamps();
     void testEmotionConfigLoadsFromActiveProfile();
+    void testEmotionContextIsReadOnlyAndSafetyBounded();
 };
 
 void TestLlmChatService::testRequestAsyncDoesNotBlock() {
@@ -263,6 +265,35 @@ void TestLlmChatService::testEmotionConfigLoadsFromActiveProfile() {
     QCOMPARE(config.sameSourcePerMinute, 5);
     QCOMPARE(config.expressionDurationMs, static_cast<qint64>(7000));
     QCOMPARE(config.expressionCooldownMs, static_cast<qint64>(30000));
+}
+
+void TestLlmChatService::testEmotionContextIsReadOnlyAndSafetyBounded() {
+    EmotionSnapshot emotion;
+    emotion.moodValence = -0.25;
+    emotion.moodArousal = 0.72;
+    emotion.active = EmotionType::Fear;
+    emotion.intensity = 0.68;
+    emotion.confidence = 0.91;
+    emotion.sourceEventId = QStringLiteral("private-event-id");
+    emotion.updatedAt = QDateTime::currentDateTimeUtc();
+
+    ContextBuilder builder;
+    const QString context = builder.buildRuntimeContext(
+        QStringLiteral("TestPet"),
+        QStringLiteral("test"),
+        QStringLiteral("Idle"),
+        QStringLiteral("user_request"),
+        {},
+        emotion);
+    QVERIFY(context.contains(QStringLiteral("mood_valence=-0.25")));
+    QVERIFY(context.contains(QStringLiteral("mood_arousal=0.72")));
+    QVERIFY(context.contains(QStringLiteral("active_emotion=fear")));
+    QVERIFY(context.contains(QStringLiteral("emotion_intensity=0.68")));
+    QVERIFY(!context.contains(emotion.sourceEventId));
+
+    const QString systemPrompt = builder.buildSystemPrompt(QStringLiteral("TestPet"));
+    QVERIFY(systemPrompt.contains(QStringLiteral("不得降低命令成功率")));
+    QVERIFY(systemPrompt.contains(QStringLiteral("不得用悲伤、生气、内疚")));
 }
 
 QTEST_MAIN(TestLlmChatService)

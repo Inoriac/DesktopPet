@@ -41,7 +41,11 @@
 #endif
 
 #include "render_engine.h"
+#include "behavior/behavior_manager.h"
 #include "configLoader/config_manager.h"
+#include "controller/pet_controller.h"
+#include "emotion/emotion_engine.h"
+#include "emotion/sqlite_emotion_state_repository.h"
 #include "ai/tools/animation_tools.h"
 #include "ai/tools/companion_tools.h"
 #include "ai/tools/environment_tools.h"
@@ -73,6 +77,7 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
 
     setupWindow();
     setupRenderViewport();
+    setupEmotionSystem();
     setupContextMenu();
     setupWindowSnapping();
     setupDropAnimation();
@@ -80,6 +85,12 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     loadChatHistory();
 
     aiBrain = std::make_unique<AIBrain>(this);
+    aiBrain->setEmotionSnapshotProvider([this]() -> std::optional<EmotionSnapshot> {
+        if (!emotionEngine || !emotionEngine->isEnabled()) {
+            return std::nullopt;
+        }
+        return emotionEngine->snapshot(QDateTime::currentDateTimeUtc());
+    });
     connect(aiBrain.get(), &AIBrain::thinkingStarted, this, [this](const QString& reason) {
         qDebug() << "[AIBrain] thinking started:" << reason;
         startThinkingBubble(reason);
@@ -121,8 +132,9 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
     connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
         qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
         Q_UNUSED(payload);
-        Q_UNUSED(success);
-        // No further action required here for now; keep as diagnostic hook.
+        if (petController) {
+            petController->recordToolOutcome(toolName, success);
+        }
     });
     connect(aiBrain.get(), &AIBrain::toolConfirmationRequired, this,
             [this](const QString& requestId,
@@ -179,6 +191,12 @@ PetWindow::~PetWindow() {
     }
     if (dropTimer) {
         dropTimer->stop();
+    }
+    if (emotionTickTimer) {
+        emotionTickTimer->stop();
+    }
+    if (emotionBehaviorTimer) {
+        emotionBehaviorTimer->stop();
     }
     if (renderViewport) {
         delete renderViewport;
@@ -278,6 +296,9 @@ void PetWindow::openChatHistoryWindow() {
         chatHistoryWindow = new ChatHistoryWindow();
         connect(chatHistoryWindow, &ChatHistoryWindow::messageSubmitted, this, [this](const QString& text) {
             appendChatHistoryMessage(QStringLiteral("user"), text);
+            if (petController) {
+                petController->recordExplicitFeedbackText(text);
+            }
             if (!aiBrain || !aiBrain->isEnabled()) {
                 appendChatHistoryMessage(QStringLiteral("system"), QStringLiteral("AI 当前没有启用，暂时不能回复。"));
                 return;

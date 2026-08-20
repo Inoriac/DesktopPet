@@ -31,9 +31,9 @@ def load_template() -> Dict[str, Any]:
 def _profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
     """取 activeProfile 对应的 profile 对象（默认 'default'），供用户向字段写入。"""
     ai = cfg.setdefault("aiSettings", {})
-    ai.setdefault("activeProfile", "default")
+    active_profile = ai.setdefault("activeProfile", "default")
     profiles = ai.setdefault("profiles", {})
-    return profiles.setdefault("default", {})
+    return profiles.setdefault(active_profile, {})
 
 
 def _screen_chat(profile: Dict[str, Any]) -> Dict[str, Any]:
@@ -65,6 +65,8 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
     profile = _profile(cfg)
     if "aiEnabled" in settings:
         profile["enabled"] = bool(settings["aiEnabled"])
+    if "emotionEnabled" in settings:
+        profile.setdefault("emotion", {})["enabled"] = bool(settings["emotionEnabled"])
     if "provider" in settings:
         profile["provider"] = settings["provider"]
     if "baseUrl" in settings:

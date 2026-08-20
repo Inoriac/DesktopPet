@@ -264,6 +264,10 @@ void TestEmotionEngine::rejectsInvalidDuplicateAndRateLimitedEvents() {
     unknownSource.source = AffectSource::Unknown;
     QVERIFY(!engine.submitEvent(unknownSource, start));
 
+    AffectEvent invalidEnum = joyEvent(QStringLiteral("invalid-enum"));
+    invalidEnum.kind = static_cast<AffectEventKind>(999);
+    QVERIFY(!engine.submitEvent(invalidEnum, start));
+
     AffectEvent future = joyEvent(QStringLiteral("future"));
     future.occurredAt = start.addSecs(301);
     QVERIFY(!engine.submitEvent(future, start));
