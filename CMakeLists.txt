@@ -116,6 +116,10 @@ set(CORE_SOURCES
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
+    core/ai/identity/identity_baseline.h
+    core/ai/identity/identity_baseline.cpp
+    core/ai/identity/persona_projector.h
+    core/ai/identity/persona_projector.cpp
     core/ai/ai_call_logger.h
     core/ai/ai_call_logger.cpp
     core/ai/ai_brain.h
@@ -628,14 +632,19 @@ add_executable(llm_tests
     core/ai/llm/openai_compatible_client.cpp
     core/ai/context_builder.h
     core/ai/context_builder.cpp
+    core/ai/identity/identity_baseline.h
+    core/ai/identity/identity_baseline.cpp
+    core/ai/identity/persona_projector.h
+    core/ai/identity/persona_projector.cpp
+    core/ai/prompt/prompt_template_types.h
+    core/ai/prompt/prompt_renderer.h
+    core/ai/prompt/prompt_renderer.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
     core/emotion/emotion_types.cpp
     core/emotion/emotion_types.h
     core/emotion/emotion_config_json.cpp
     core/emotion/emotion_config_json.h
-    entity/pet_personality.h
-    entity/pet_personality.cpp
     statistic/statistic_manager.h
     statistic/statistic_manager.cpp
     include/statistic_types.h
@@ -649,7 +658,6 @@ target_include_directories(llm_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/llm
     ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-    ${CMAKE_CURRENT_SOURCE_DIR}/entity
 )
 
 target_link_libraries(llm_tests
@@ -661,8 +669,8 @@ target_link_libraries(llm_tests
 
 add_test(NAME LlmTests COMMAND llm_tests)
 
-# ---- 提示词模版 + 性格预设测试 ----
-# 验证 PromptRenderer 的 slot 替换/列表拼句/脱敏，以及 ContextBuilder 的零回归兜底与渲染。
+# ---- 提示词模版 + 身份基线测试 ----
+# 验证 IdentityBaseline、PersonaProjector、PromptRenderer 与固定安全边界。
 add_executable(prompt_tests
     tests/test_prompt_renderer.cpp
     core/ai/prompt/prompt_template_types.h
@@ -671,12 +679,18 @@ add_executable(prompt_tests
     core/ai/prompt/prompt_template_store.cpp
     core/ai/prompt/prompt_renderer.h
     core/ai/prompt/prompt_renderer.cpp
+    core/ai/identity/identity_baseline.h
+    core/ai/identity/identity_baseline.cpp
+    core/ai/identity/persona_projector.h
+    core/ai/identity/persona_projector.cpp
     core/ai/context_builder.h
     core/ai/context_builder.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
-    entity/pet_personality.h
-    entity/pet_personality.cpp
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_config_json.cpp
+    core/emotion/emotion_config_json.h
     statistic/statistic_manager.h
     statistic/statistic_manager.cpp
     include/statistic_types.h
@@ -689,7 +703,6 @@ target_include_directories(prompt_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
     ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-    ${CMAKE_CURRENT_SOURCE_DIR}/entity
 )
 
 target_link_libraries(prompt_tests

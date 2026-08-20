@@ -48,8 +48,8 @@ public:
     void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
     void setEmotionSnapshotProvider(EmotionSnapshotProvider provider);
 
-    // 注入通用提示词模版与性格预设（转发给 ContextBuilder，用于系统提示词渲染）
-    void setPersona(const PetPersonality& persona) { m_contextBuilder.setPersona(persona); }
+    // 注入通用提示词模版与独立身份基线（转发给 ContextBuilder）。
+    void setIdentityBaseline(const IdentityBaseline& baseline) { m_contextBuilder.setIdentityBaseline(baseline); }
     void setPromptTemplate(const PromptTemplate& templ) { m_contextBuilder.setPromptTemplate(templ); }
 
     void setEnabled(bool enabled);

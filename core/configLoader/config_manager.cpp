@@ -82,21 +82,6 @@ static QString cleanConfigPath(const QString& path) {
     return QDir::cleanPath(QDir::current().absoluteFilePath(cleaned));
 }
 
-// 内置基线性格预设：与 config/personalities.json 的「温和型」保持一致。
-// personalities.json 缺失/解析失败/预设名未命中时回退到此，保证系统提示词可渲染、零回归。
-static PetPersonality defaultBaselinePersonality() {
-    PetPersonality p(QStringLiteral("温和型"));
-    p.forgetProbability = 0.2;
-    p.randomVariance = 15;
-    p.reminderPhrases = {QStringLiteral("时间到啦，该做这件事咯～"), QStringLiteral("别忘喽～")};
-    p.forgetPhrases = {QStringLiteral("啊……我是不是漏了什么")};
-    p.gender = QStringLiteral("neutral");
-    p.tone = QStringLiteral("温和、简洁、自然");
-    p.traits = {QStringLiteral("平和"), QStringLiteral("体贴"), QStringLiteral("话不多")};
-    p.speakingStyle = QStringLiteral("口语化、短句为主、不夸张");
-    return p;
-}
-
 static VoiceConfig parseVoiceConfig(const QJsonObject& voiceObj) {
     VoiceConfig cfg;
     cfg.enabled = voiceObj.value("enabled").toBool(false);
@@ -297,6 +282,8 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiToolAccessPolicy = AiToolAccessPolicy{};
+    identityBaseline = IdentityBaseline::defaults();
+    m_activePromptTemplateName = QStringLiteral("default");
     aiToolAccessPolicy.allowedRoots = {
         QDir::cleanPath(QDir::currentPath())
     };
@@ -333,6 +320,11 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             }
         }
 
+        if (aiSettings.value("identityBaseline").isObject()) {
+            identityBaseline = IdentityBaseline::fromJson(
+                aiSettings.value("identityBaseline").toObject());
+        }
+
         llmConfig.enabled = aiRaw.value("enabled").toBool(false);
         llmConfig.provider = aiRaw.value("provider").toString("openai-compatible");
         llmConfig.baseUrl = aiRaw.value("baseUrl").toString("https://api.openai.com/v1");
@@ -350,11 +342,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             llmConfig.extraParams = aiRaw.value("extraParams").toObject();
         }
 
-        // 性格预设名与提示词模版名（缺失时沿用成员默认：温和型 / default）
-        const QString personaName = aiRaw.value("persona").toString().trimmed();
-        if (!personaName.isEmpty()) {
-            m_activePersonaName = personaName;
-        }
+        // 提示词模版属于活动模型配置；身份基线独立位于 aiSettings 根节点。
         const QString templateName = aiRaw.value("promptTemplate").toString().trimmed();
         if (!templateName.isEmpty()) {
             m_activePromptTemplateName = templateName;
@@ -475,33 +463,6 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
     }
     
-    // 根据当前 activePersonaName 从 personalities.json 解析性格预设（缺失则回退内置基线）
-    loadActivePersonality();
-
     qDebug() << "配置文件加载成功:" << configPath;
     return true;
-}
-void ConfigManager::loadActivePersonality() {
-    m_activePersonality = defaultBaselinePersonality();
-
-    QFile file(personalitiesPath);
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qDebug() << "性格预设文件缺失，使用内置基线:" << personalitiesPath;
-        return;
-    }
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
-    file.close();
-    if (!doc.isObject()) {
-        qDebug() << "性格预设文件格式错误，使用内置基线:" << personalitiesPath;
-        return;
-    }
-    const QJsonArray presets = doc.object().value("presets").toArray();
-    for (const auto& value : presets) {
-        const PetPersonality preset = PetPersonality::fromJson(value.toObject());
-        if (preset.name.trimmed() == m_activePersonaName.trimmed()) {
-            m_activePersonality = preset;
-            return;
-        }
-    }
-    qDebug() << "未找到性格预设" << m_activePersonaName << "，使用内置基线";
 }

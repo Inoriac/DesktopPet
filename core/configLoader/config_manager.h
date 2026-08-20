@@ -13,8 +13,8 @@
 
 #include "global_types.h"
 #include "ai_types.h"
+#include "ai/identity/identity_baseline.h"
 #include "emotion/emotion_types.h"
-#include "pet_personality.h"
 
 class ConfigManager {
 public:
@@ -72,9 +72,8 @@ public:
     const AiBehaviorPolicy& getAiBehaviorPolicy() const { return aiBehaviorPolicy; }
     const AiToolAccessPolicy& getAiToolAccessPolicy() const { return aiToolAccessPolicy; }
 
-    // 性格预设与提示词模版：系统提示词渲染的输入
-    const PetPersonality& getActivePersonality() const { return m_activePersonality; }
-    const QString& activePersonaName() const { return m_activePersonaName; }
+    // 独立身份基线与提示词模版：系统提示词渲染的输入
+    const IdentityBaseline& getIdentityBaseline() const { return identityBaseline; }
     const QString& activePromptTemplateName() const { return m_activePromptTemplateName; }
 
 private:
@@ -128,13 +127,8 @@ private:
     AiBehaviorPolicy aiBehaviorPolicy;
     AiToolAccessPolicy aiToolAccessPolicy;
 
-    // 性格预设（由 aiSettings.profiles.<active>.persona 指定，从 config/personalities.json 加载）
-    PetPersonality m_activePersonality;
-    QString m_activePersonaName = QStringLiteral("温和型");
+    IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     QString m_activePromptTemplateName = QStringLiteral("default");
-    QString personalitiesPath = QStringLiteral("config/personalities.json");
-
-    void loadActivePersonality();
 };
 
 #endif //DESKTOP_PET_CONFIG_MANAGER_H

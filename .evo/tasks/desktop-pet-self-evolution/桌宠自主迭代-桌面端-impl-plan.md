@@ -116,6 +116,10 @@ NullEmotionStateProvider.currentSnapshot:
 NullEmotionStateProvider.trajectory:
 - `trajectory_whenRangeIsValid_shouldReturnEmptyWithoutStorageOrModelCalls`（happy path）
 
+EmotionEngineStateProvider.currentSnapshot:
+- `currentSnapshot_whenEngineHasValidState_shouldReturnReadOnlyMappedSnapshot`（happy path）
+- `currentSnapshot_whenEngineIsUnavailable_shouldFallBackWithoutMutatingEmotionState`
+
 PersonalityService.recordEvidence:
 - `recordEvidence_whenExplicitCorrectionArrives_shouldPersistTraceableWeightedEvidence`（happy path）
 - `recordEvidence_whenSameSourceIsRepeated_shouldDeduplicateEvidence`
@@ -140,7 +144,7 @@ PersonaProjector.project:
 - `project_whenNullEmotionProviderUsed_shouldOmitEmotionPromptAndPrivateInternals`
 - `project_whenReminderPersonalityExists_shouldNotReadOrMutateReminderSettings`
 
-## Task 4: Daydream、内心活动、日记与睡眠循环
+## Task 4: 现有 Daydream 编排、内心活动、日记与睡眠循环
 
 - **关联设计**: §3.5 Daydream、内心活动、日记与睡眠循环
 - **状态**: [ ]
@@ -149,7 +153,7 @@ PersonaProjector.project:
 
 **文件**:
 - 实现: `core/ai/reflection/reflection_types.*`、`cancellation_token.*`、`private_key_provider.*`、`private_psyche_crypto.*`、`sqlite_private_psyche_repository.*`
-- 实现: `core/ai/reflection/inner_thought_service.*`、`daydream_service.*`、`diary_service.*`、`sleep_cycle_coordinator.*`
+- 实现: `core/ai/reflection/inner_thought_service.*`、`daydream_sleep_adapter.*`、`diary_service.*`、`sleep_cycle_coordinator.*`
 - 修改: `core/ai/memory/*`、`core/ai/scheduler/agent_scheduler.*`、`core/ai/ai_brain.h`
 - 修改: `CMakeLists.txt`（libsodium、Qt6Keychain、reflection 测试目标）
 - 测试: `tests/test_sleep_cycle.cpp`
@@ -161,9 +165,10 @@ InnerThoughtService.createAsync:
 - `createAsync_whenCallbackArrivesAfterCancellation_shouldDiscardResult`
 - `createAsync_whenModelReturnsReasoningTrace_shouldPersistOnlyRequestedSummaryFields`
 
-DaydreamService.consolidateAsync:
-- `consolidateAsync_whenPendingItemsExist_shouldStageBoundedDeduplicatedChanges`（happy path）
+DaydreamSleepAdapter.consolidateAsync:
+- `consolidateAsync_whenPendingItemsExist_shouldReuseExistingConsolidatorAndStageBoundedChanges`（happy path）
 - `consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUnchanged`
+- `consolidateAsync_whenCancelled_shouldFollowExistingGenerationAndRollbackRules`
 
 DiaryService.composeAsync:
 - `composeAsync_whenBedtimeContextIsValid_shouldStageOneEncryptedDiaryForLocalDate`（happy path）

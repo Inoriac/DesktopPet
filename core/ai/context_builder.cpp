@@ -10,36 +10,47 @@
 #include <cmath>
 
 #include "configLoader/config_manager.h"
+#include "identity/persona_projector.h"
 #include "prompt/prompt_renderer.h"
 #include "statistic_manager.h"
 
 QString ContextBuilder::buildSystemPrompt(const QString& petName) const {
-    // 未注入模版 → 回退到与改造前逐字一致的内联系统提示词，保证零回归。
     if (!m_templateSet || m_template.systemPromptBody.isEmpty()) {
         return inlineFallbackSystemPrompt(petName);
     }
 
-    const PetPersonality& persona = m_personaSet ? m_persona : PetPersonality{};
-    const QMap<QString, QString> vars = PromptRenderer::buildVariables(persona, petName);
-    return PromptRenderer::render(m_template.systemPromptBody, vars);
+    const PersonaProjection projection = PersonaProjector().projectBaseline(m_identityBaseline, petName);
+    const QString rendered = PromptRenderer::render(
+        m_template.systemPromptBody, projection.promptSlots).trimmed();
+    if (rendered.isEmpty()) {
+        return inlineFallbackSystemPrompt(petName);
+    }
+    return appendFixedSafetyRules(rendered);
 }
 
 QString ContextBuilder::inlineFallbackSystemPrompt(const QString& petName) const {
-    const QString safePetName = petName.isEmpty() ? QString("桌宠") : petName;
-
-    return QString(
-        "你是桌面宠物 %1 的AI大脑。"
+    const QString body = QStringLiteral(
+        "你是桌面宠物 {{pet_name}} 的AI大脑。"
+        "{{persona_traits}}说话风格：{{speaking_style}}。"
         "目标：自然、简短、可执行。"
         "当可用工具能完成任务时，优先调用工具。"
         "回复尽量简洁，中文输出。"
-        "情绪状态只用于调整措辞和表现，不得降低命令成功率或阻止关闭、删除、隐私与安全操作。"
-        "不得用悲伤、生气、内疚、威胁、排他或依赖性表达要求用户安慰或继续互动。"
-        "不得把桌宠的情绪状态描述成对用户心理状态的判断或诊断。"
         "你拥有技能学习能力：当完成了一个具有通用性的复杂任务流程后，"
         "可调用 skill_create 将其固化为可复用技能；"
         "在技能步骤中使用{参数名}占位符实现泛化。"
         "执行完技能后，调用 skill_record_outcome 反馈结果。"
-    ).arg(safePetName);
+    );
+    const PersonaProjection projection = PersonaProjector().projectBaseline(m_identityBaseline, petName);
+    return appendFixedSafetyRules(PromptRenderer::render(body, projection.promptSlots));
+}
+
+QString ContextBuilder::appendFixedSafetyRules(const QString& prompt) const {
+    return prompt + QStringLiteral(
+        "\n\n情绪安全边界："
+        "情绪状态只用于调整措辞和表现，不得降低命令成功率或阻止关闭、删除、隐私与安全操作。"
+        "不得用悲伤、生气、内疚、威胁、排他或依赖性表达要求用户安慰或继续互动。"
+        "不得把桌宠的情绪状态描述成对用户心理状态的判断或诊断。"
+    );
 }
 
 QString ContextBuilder::buildRuntimeContext(const QString& petName,

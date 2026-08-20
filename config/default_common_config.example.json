@@ -66,6 +66,16 @@
   },
   "aiSettings": {
     "activeProfile": "default",
+    "identityBaseline": {
+      "schemaVersion": 1,
+      "traits": {
+        "sociability": 0.45,
+        "initiative": 0.35,
+        "openness": 0.60
+      },
+      "speakingStyle": "自然、简短、重视真实经历",
+      "anchorStrength": 0.95
+    },
     "profiles": {
       "default": {
         "enabled": false,
@@ -79,7 +89,6 @@
         "temperature": 0.7,
         "retryCount": 1,
         "thinkIntervalMs": 30000,
-        "persona": "温和型",
         "promptTemplate": "default",
         "daydream": {
           "enabled": true,

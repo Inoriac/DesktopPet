@@ -152,7 +152,7 @@ void PetWindow::setupAiBrain() {
 
     aiBrain->setPetName(modelName);
 
-    // 注入通用提示词模版 + 性格预设：系统提示词渲染的输入。
+    // 注入通用提示词模版 + 独立身份基线：系统提示词渲染的输入。
     // 模版加载失败/未命中时不调用 setPromptTemplate，ContextBuilder 回退内联兜底模版（零回归）。
     PromptTemplateStore promptTemplateStore;
     promptTemplateStore.setStoragePath(QStringLiteral("config/prompts"));
@@ -168,7 +168,7 @@ void PetWindow::setupAiBrain() {
     } else {
         qWarning() << "[AIBrain] 提示词模版目录未加载，使用内联兜底模版";
     }
-    aiBrain->setPersona(ConfigManager::instance().getActivePersonality());
+    aiBrain->setIdentityBaseline(ConfigManager::instance().getIdentityBaseline());
 
     aiBrain->setToolRegistry(aiToolRegistry.get());
     aiBrain->setAgentScheduler(agentScheduler.get());
