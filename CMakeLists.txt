@@ -34,6 +34,31 @@ find_package(Qt6 COMPONENTS
         Test
         REQUIRED)
 
+# Private reflection is optional. Missing crypto/keychain dependencies must not
+# disable the non-private desktop pet targets.
+find_path(SODIUM_INCLUDE_DIR sodium.h)
+find_library(SODIUM_LIBRARY NAMES sodium libsodium)
+find_package(Qt6Keychain QUIET CONFIG)
+
+set(DESKTOP_PET_HAS_LIBSODIUM FALSE)
+if(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
+    set(DESKTOP_PET_HAS_LIBSODIUM TRUE)
+endif()
+
+set(DESKTOP_PET_QTKEYCHAIN_TARGET "")
+if(TARGET Qt6Keychain::Keychain)
+    set(DESKTOP_PET_QTKEYCHAIN_TARGET Qt6Keychain::Keychain)
+elseif(TARGET Qt6Keychain::Qt6Keychain)
+    set(DESKTOP_PET_QTKEYCHAIN_TARGET Qt6Keychain::Qt6Keychain)
+elseif(TARGET qt6keychain)
+    set(DESKTOP_PET_QTKEYCHAIN_TARGET qt6keychain)
+endif()
+
+set(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE FALSE)
+if(DESKTOP_PET_HAS_LIBSODIUM AND DESKTOP_PET_QTKEYCHAIN_TARGET)
+    set(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE TRUE)
+endif()
+
 # 收集所有源文件
 set(UI_SOURCES
     ui/animated_combo_box.cpp
@@ -126,6 +151,11 @@ set(CORE_SOURCES
     core/ai/ai_brain.cpp
     core/ai/ai_brain_router.cpp
     core/ai/ai_brain_loop.cpp
+
+    core/ai/runtime/profile_resolver.h
+    core/ai/runtime/profile_resolver.cpp
+    core/ai/runtime/profile_data_migrator.h
+    core/ai/runtime/profile_data_migrator.cpp
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -315,6 +345,29 @@ target_link_libraries(Desktop_Pet
         $<$<PLATFORM_ID:Windows>:psapi>
 )
 
+if(DESKTOP_PET_HAS_LIBSODIUM)
+    target_include_directories(Desktop_Pet PRIVATE ${SODIUM_INCLUDE_DIR})
+    target_link_libraries(Desktop_Pet ${SODIUM_LIBRARY})
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_LIBSODIUM=1)
+else()
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_LIBSODIUM=0)
+endif()
+
+if(DESKTOP_PET_QTKEYCHAIN_TARGET)
+    target_link_libraries(Desktop_Pet ${DESKTOP_PET_QTKEYCHAIN_TARGET})
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=1)
+else()
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=0)
+endif()
+
+if(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE)
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=1)
+    message(STATUS "Private reflection capability available")
+else()
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=0)
+    message(STATUS "Private reflection capability unavailable; non-private features remain enabled")
+endif()
+
 set(TEST_SOURCES
 #        tests/test_statistic_manager.cpp
 #        tests/test_pet_reminder_manager.cpp
@@ -366,7 +419,45 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_config.py)
     set_tests_properties(LauncherConfigTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME PetProfileIdTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pet_profile_id.py)
+    set_tests_properties(PetProfileIdTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
+
+# ---- Profile identity and legacy memory migration tests ----
+add_executable(profile_data_migrator_tests
+    tests/test_profile_data_migrator.cpp
+    core/ai/runtime/profile_resolver.h
+    core/ai/runtime/profile_resolver.cpp
+    core/ai/runtime/profile_data_migrator.h
+    core/ai/runtime/profile_data_migrator.cpp
+    entity/pet.h
+    entity/pet.cpp
+    core/ai/memory/memory_types.h
+    core/ai/memory/memory_store.h
+    core/ai/memory/memory_store.cpp
+    core/ai/memory/memory_repository.h
+    core/ai/memory/sqlite_memory_repository.h
+    core/ai/memory/sqlite_memory_repository.cpp
+    core/ai/memory/memory_relation.h
+    core/ai/memory/memory_relation_graph.h
+    core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/tag_cooccurrence_graph.h
+    core/ai/memory/tag_cooccurrence_graph.cpp
+)
+target_include_directories(profile_data_migrator_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/entity
+)
+target_link_libraries(profile_data_migrator_tests
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+)
+add_test(NAME ProfileDataMigratorTests COMMAND profile_data_migrator_tests)
 
 add_executable(statistic_manager_tests
         tests/test_statistic_manager.cpp

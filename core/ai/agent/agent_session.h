@@ -7,6 +7,8 @@
 #include <QString>
 
 #include "ai_types.h"
+#include "ai/domain/domain_result.h"
+#include "ai/runtime/runtime_types.h"
 #include "agent_state.h"
 
 struct AgentToolObservation {
@@ -51,6 +53,11 @@ public:
     const QString& errorMessage() const { return m_errorMessage; }
     void setErrorMessage(const QString& errorMessage);
 
+    Result<void, DomainError> bindRuntimeSnapshot(const RuntimeSnapshot& snapshot);
+    const std::optional<RuntimeSnapshot>& runtimeSnapshot() const {
+        return m_runtimeSnapshot;
+    }
+
     QJsonObject toJson() const;
 
 private:
@@ -67,6 +74,7 @@ private:
     QList<AgentToolObservation> m_observations;
     QString m_finalResponse;
     QString m_errorMessage;
+    std::optional<RuntimeSnapshot> m_runtimeSnapshot;
 };
 
 #endif // DESKTOP_PET_AGENT_SESSION_H

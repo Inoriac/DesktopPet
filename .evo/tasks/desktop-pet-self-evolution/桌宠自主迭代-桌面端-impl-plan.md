@@ -4,55 +4,129 @@
 
 ---
 
-## Task 1: 事件账本与运行时服务组装
+## Task 1A: 基线对齐、角色身份与数据迁移
 
-- **关联设计**: §3.2 事件账本与运行时服务组装
-- **状态**: [ ]
+- **关联设计**: §3.2 事件账本与运行时服务组装（基线与迁移子接口）；共享约束见 §1.8、§5.1、§6.5、§7.3
+- **状态**: [x]
 - **Wave**: 1
 - **依赖**: 无
 
 **文件**:
-- 实现: `core/ai/domain/domain_result.h`
-- 实现: `core/ai/event/event_types.*`、`core/ai/event/event_ledger.*`、`core/ai/event/sqlite_event_repository.*`
-- 实现: `core/ai/runtime/agent_runtime_services.*`、`core/ai/runtime/agent_bootstrap.*`
-- 修改: `core/ai/agent/agent_session.*`、`core/ai/ai_brain.*`、`core/ai/ai_brain_loop.cpp`、`core/ai/ai_brain_router.cpp`
-- 修改: `ui/petwindow_ai.cpp`、`ui/petwindow.h`、`CMakeLists.txt`
-- 测试: `tests/test_event_ledger.cpp`
+- 实现: `core/ai/runtime/profile_resolver.*`、`core/ai/runtime/profile_data_migrator.*`
+- 修改: `launcher/pet_registry.py`、`launcher/app_state.py`、`launcher/main.py`、`launcher/pages/pet_page.py`
+- 修改: `entity/pet.*`、`main.cpp`、`core/ai/memory/memory_store.*`
+- 修改: `CMakeLists.txt`（libsodium、QtKeychain 可选探测与能力宏，不要求本 Task 实现私有存储）
+- 测试: `tests/test_profile_data_migrator.cpp`
+- 测试: `tests/test_pet_profile_id.py`（沿用仓库现有 `tests/test_*.py` 布局）
 
 **测试用例**（按被测方法分组，每方法至少 1 条 happy path）:
+
+Pet registry migration:
+- `load_pets_whenLegacyEntriesExist_shouldAssignAndPersistStableProfileIds`（happy path）
+- `rename_pet_whenProfileExists_shouldPreserveProfileId`
+- `load_pets_whenExistingProfileIdsAreDuplicated_shouldRejectWithoutRewrite`
+
+ProfileResolver.resolve:
+- `resolve_whenPetAndProfileIdMatch_shouldReturnProfileWithoutOpeningStores`（happy path）
+- `resolve_whenPetAndProfileIdDoNotMatch_shouldRejectBeforeOpeningStores`
+- `resolve_whenProfileIdArgumentIsMissing_shouldResolveItFromPetRegistry`
+- `resolve_whenLegacyRegistryHasNoProfileId_shouldRequireLauncherUpgrade`
+- `resolve_whenRegistryProfileFieldsAreInvalid_shouldRejectEntireMapping`
+- `load_whenAnyRegistryEntryIsMalformed_shouldRejectEntireRegistry`
+
+ProfileDataMigrator.migrateLegacyMemory:
+- `migrateLegacyMemory_whenSingleProfileAndValidLegacyDb_shouldCopyVerifyAndAtomicallyActivate`（happy path）
+- `migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldPreserveLegacyDbAndRequireSelection`
+- `migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndKeepLegacyPath`
+- `migrateLegacyMemory_whenTargetAlreadyCommitted_shouldRemainIdempotent`
+- `migrateLegacyMemory_whenOnlyLegacyJsonExists_shouldImportIntoProfileDatabase`
+- `migrateLegacyMemory_whenRegisteredProfilesAreInvalid_shouldRejectRequest`
+
+**静态验收**:
+- CMake 缺少 libsodium 或 QtKeychain 时仍生成非私有目标，并把 private reflection capability 设为 unavailable；运行时降级行为由 Task 4 测试。
+
+## Task 1B: 事件账本与运行时服务组装
+
+- **关联设计**: §3.2 事件账本与运行时服务组装
+- **状态**: [ ]
+- **Wave**: 2
+- **依赖**: Task 1A
+
+**文件**:
+- 实现: `core/ai/domain/domain_result.h`
+- 实现: `core/ai/event/event_types.*`、`core/ai/event/event_schema_registry.*`、`core/ai/event/event_ledger.*`、`core/ai/event/event_outbox.*`、`core/ai/event/runtime_unit_of_work.*`、`core/ai/event/sqlite_event_repository.*`
+- 实现: `core/ai/runtime/runtime_types.h`、`core/ai/runtime/runtime_ui_bridge.*`、`core/ai/runtime/agent_runtime_services.*`、`core/ai/runtime/agent_bootstrap.*`
+- 修改: `core/ai/agent/agent_session.*`、`core/ai/ai_brain.*`、`core/ai/ai_brain_loop.cpp`、`core/ai/ai_brain_router.cpp`
+- 修改: `core/configLoader/config_manager.*`
+- 修改: `main.cpp`、`ui/petwindow.cpp`、`ui/petwindow_ai.cpp`、`ui/petwindow.h`、`CMakeLists.txt`
+- 测试: `tests/test_event_ledger.cpp`
+- 测试: `tests/test_agent_runtime_services.cpp`
+
+**测试用例**（按被测方法分组，每方法至少 1 条 happy path）:
+
+EventSchemaRegistry.registerSchema/validate:
+- `validate_whenBuiltInSchemaMatches_shouldAcceptDraftAndPreserveUnknownFields`（happy path）
+- `registerSchema_whenRegistryIsFrozen_shouldRejectWithoutReplacingDefinition`
+- `validate_whenPrivateDraftContainsBodyOrInvalidReference_shouldReject`
 
 EventLedger.append:
 - `append_whenDraftIsValid_shouldPersistAndReturnSequencedEvent`（happy path）
 - `append_whenOccurredAtMissing_shouldUseUtcClock`
-- `append_whenPrivatePayloadContainsBody_shouldPersistReferenceOnly`
+- `append_whenPrivateReferenceIsValid_shouldPersistReferenceWithoutBody`
+- `append_whenPrivatePayloadContainsBody_shouldRejectWithoutPartialRow`
 - `append_whenSchemaInvalid_shouldRejectWithoutPartialRow`
 
 EventLedger.readAfter:
 - `readAfter_whenEventsMatchFilter_shouldReturnOrderedBoundedBatch`（happy path）
-- `readAfter_whenConsumerCannotReadPrivate_shouldReturnOnlyAllowedReference`
+- `readAfter_whenConsumerCanReadPrivateReference_shouldReturnReferenceWithoutBody`
+- `readAfter_whenConsumerCannotReadPrivate_shouldFilterPrivateEvent`
+- `readAfter_whenAuthorizationProfileDoesNotMatch_shouldRejectRead`
 
-EventConsumerCheckpointStore.commit:
+EventConsumerCheckpointStore.current/commit:
 - `commit_whenExpectedSequenceMatches_shouldAdvanceCheckpoint`（happy path）
 - `commit_whenExpectedSequenceConflicts_shouldPreserveCurrentCheckpoint`
 
-AgentRuntimeServices.start:
-- `start_whenStoresAreAvailable_shouldMigrateAndAssembleServices`（happy path）
+RuntimeUnitOfWork/EventOutbox.enqueue:
+- `enqueue_whenDomainWriteUsesSameUnitOfWork_shouldCommitStateAndPendingEventTogether`（happy path）
+- `enqueue_whenOutboxWriteFails_shouldRollBackDomainState`
+
+EventOutbox.dispatchPending:
+- `dispatchPending_whenDomainTransactionCommitted_shouldAppendEventAndMarkDelivered`（happy path）
+- `dispatchPending_whenTransactionFailsAfterInsert_shouldRollBackEventAndKeepOutboxPending`
+- `dispatchPending_whenAppendTemporarilyFails_shouldKeepPendingAndAdvanceRetryMetadata`
+
+AgentBootstrap.start/AIBrain.initializeStorage:
+- `start_whenMigrationIsReady_shouldConfigureActivePathsBeforeFirstMemoryStoreOpen`（happy path）
+- `start_whenMigrationIsAmbiguous_shouldUseLegacyPathsAndDisableProfileGrowth`
 - `start_whenNewSchemaMigrationFails_shouldKeepLegacyChatToolAndSkillPathAvailable`
+- `initializeStorage_whenCalledTwice_shouldKeepFirstPathsAndRejectSecondCall`
 
 AgentRuntimeServices.captureSnapshot:
 - `captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions`（happy path）
 - `captureSnapshot_whenStateChangesLater_shouldKeepExistingSessionProjectionStable`
 
+AgentSession.bindRuntimeSnapshot:
+- `bindRuntimeSnapshot_whenSessionIdsMatch_shouldPinSnapshotOnce`（happy path）
+- `bindRuntimeSnapshot_whenCalledTwice_shouldPreserveOriginalSnapshot`
+
+ConfigManager.configHash/identityBaselineHash:
+- `configHash_whenSameEffectiveJsonHasDifferentKeyOrder_shouldRemainDeterministic`（happy path）
+- `identityBaselineHash_whenBaselineChanges_shouldProduceDifferentVersionHash`
+
 AgentRuntimeServices.stop:
 - `stop_whenRuntimeIsActive_shouldRejectNewSessionsAndCloseServices`（happy path）
 - `stop_whenCalledTwice_shouldRemainIdempotent`
+
+RuntimeUiBridge lifetime contract:
+- `start_whenBridgeIsValid_shouldUseUiCapabilitiesWithoutTakingOwnership`
+- `stop_whenRuntimeEnds_shouldReleaseBridgeBeforePetWindowDestroysUiObjects`
 
 ## Task 2: 多模型路由与上下文投影
 
 - **关联设计**: §3.3 多模型路由与上下文投影
 - **状态**: [ ]
-- **Wave**: 2
-- **依赖**: Task 1
+- **Wave**: 3
+- **依赖**: Task 1B
 
 **文件**:
 - 修改: `include/ai_types.h`、`core/configLoader/config_manager.*`
@@ -63,7 +137,7 @@ AgentRuntimeServices.stop:
 - 修改: `launcher/app_state.py`、`launcher/config_loader.py`、`launcher/pages/ai_page.py`
 - 修改: `CMakeLists.txt`
 - 测试: `tests/test_model_router.cpp`
-- 测试: `launcher/tests/test_model_role_config.py`（launcher 首次引入 Python 测试，采用该模块下 `tests/test_*.py` 的标准 unittest 布局）
+- 测试: `tests/test_model_role_config.py`（沿用仓库现有 `tests/test_*.py` 布局）
 
 **测试用例**（按被测方法分组，每方法至少 1 条 happy path）:
 
@@ -95,13 +169,13 @@ Launcher model-role config export:
 
 - **关联设计**: §3.4 情绪接入、人格、关系与自我模型
 - **状态**: [ ]
-- **Wave**: 3
-- **依赖**: Task 1、Task 2
+- **Wave**: 4
+- **依赖**: Task 1B、Task 2
 
 **文件**:
 - 实现: `core/ai/integration/emotion_state_provider.*`
-- 实现: `core/ai/identity/identity_baseline.*`、`core/ai/identity/identity_types.*`
-- 实现: `core/ai/identity/personality_service.*`、`relationship_service.*`、`self_model_service.*`、`persona_projector.*`、`sqlite_identity_repository.*`
+- 修改: `core/ai/identity/identity_baseline.*`、`persona_projector.*`（扩展现有类型和兼容入口）
+- 实现: `core/ai/identity/identity_types.*`、`personality_service.*`、`relationship_service.*`、`self_model_service.*`、`sqlite_identity_repository.*`
 - 修改: `core/ai/context/context_manager.*`、`core/configLoader/config_manager.*`
 - 修改: `config/default_common_config.json`、`config/default_common_config.example.json`
 - 修改: `CMakeLists.txt`
@@ -119,6 +193,9 @@ NullEmotionStateProvider.trajectory:
 EmotionEngineStateProvider.currentSnapshot:
 - `currentSnapshot_whenEngineHasValidState_shouldReturnReadOnlyMappedSnapshot`（happy path）
 - `currentSnapshot_whenEngineIsUnavailable_shouldFallBackWithoutMutatingEmotionState`
+
+EmotionEngineStateProvider.trajectory:
+- `trajectory_whenCurrentEngineHasNoHistoryContract_shouldReturnEmptyWithoutSchemaChanges`（happy path）
 
 PersonalityService.recordEvidence:
 - `recordEvidence_whenExplicitCorrectionArrives_shouldPersistTraceableWeightedEvidence`（happy path）
@@ -148,8 +225,8 @@ PersonaProjector.project:
 
 - **关联设计**: §3.5 Daydream、内心活动、日记与睡眠循环
 - **状态**: [ ]
-- **Wave**: 4
-- **依赖**: Task 1、Task 2、Task 3
+- **Wave**: 5
+- **依赖**: Task 1B、Task 2、Task 3
 
 **文件**:
 - 实现: `core/ai/reflection/reflection_types.*`、`cancellation_token.*`、`private_key_provider.*`、`private_psyche_crypto.*`、`sqlite_private_psyche_repository.*`
@@ -170,11 +247,17 @@ DaydreamSleepAdapter.consolidateAsync:
 - `consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUnchanged`
 - `consolidateAsync_whenCancelled_shouldFollowExistingGenerationAndRollbackRules`
 
+DaydreamConsolidator.buildChangeSet/applyChangeSet:
+- `buildChangeSet_whenDecisionsAreValid_shouldReturnDeterministicChangesWithoutMutatingStore`（happy path）
+- `applyChangeSet_whenCommitIsDurable_shouldMaterializeChangesOnce`
+- `applyDecisions_whenCalledByLegacyDaydream_shouldDelegateAndPreserveExistingBehavior`
+
 DiaryService.composeAsync:
 - `composeAsync_whenBedtimeContextIsValid_shouldStageOneEncryptedDiaryForLocalDate`（happy path）
 - `composeAsync_whenDateAlreadyCommitted_shouldReturnExistingEntryId`
 - `composeAsync_whenModelOutputIsEmptyAfterRepair_shouldKeepRetryablePendingState`
 - `composeAsync_whenKeychainUnavailable_shouldReturnPrivateStoreUnavailableWithoutPlaintextFallback`
+- `privateServices_whenBuildCapabilityIsUnavailable_shouldReturnPrivateStoreUnavailableWithoutPlaintextFallback`
 
 DiaryService.readForSelf:
 - `readForSelf_whenDiaryRoleHasEntryScope_shouldDecryptSelectedEntry`（happy path）
@@ -198,7 +281,7 @@ SleepCycleCoordinator.cancel:
 
 - **关联设计**: §3.6 OwnerDiaryServer 与 launcher 私有日记页
 - **状态**: [ ]
-- **Wave**: 5
+- **Wave**: 6
 - **依赖**: Task 4
 
 **文件**:
@@ -208,7 +291,7 @@ SleepCycleCoordinator.cancel:
 - 修改: `launcher/main.py`
 - 修改: `CMakeLists.txt`
 - 测试: `tests/test_owner_diary_server.cpp`
-- 测试: `launcher/tests/test_owner_diary_client.py`
+- 测试: `tests/test_owner_diary_client.py`（沿用仓库现有 `tests/test_*.py` 布局）
 
 **测试用例**（按被测方法分组，每方法至少 1 条 happy path）:
 
@@ -236,8 +319,10 @@ OwnerDiaryServer.stop:
 
 OwnerDiaryClient.connect/list_entries/get_entry/close:
 - `connect_then_list_and_get_whenServerAvailable_shouldRenderMetadataThenSingleBody`（happy path）
-- `close_whenBodyLoaded_shouldClearTokenAndDecryptedContent`
+- `pageDeactivate_whenBodyLoaded_shouldClearContentAndKeepLauncherSession`
+- `close_whenLauncherExits_shouldClearTokenAndDecryptedContent`
 - `request_whenServerOffline_shouldShowOfflineWithoutOpeningSQLite`
+- `connect_whenLauncherWasRestartedWithOldCoreRunning_shouldNotReuseConsumedTokenOrGuessSocket`
 
 Model invisibility regression:
 - `toolRegistry_whenOwnerDiaryEnabled_shouldNotExposeOwnerDiaryActions`（happy path）

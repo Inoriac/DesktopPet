@@ -74,6 +74,19 @@ void AgentSession::setErrorMessage(const QString& errorMessage) {
     touch();
 }
 
+Result<void, DomainError> AgentSession::bindRuntimeSnapshot(
+    const RuntimeSnapshot& snapshot) {
+    if (snapshot.sessionId != m_id || snapshot.sessionId.isEmpty()
+        || m_runtimeSnapshot.has_value()) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("STATE_VERSION_CONFLICT"),
+                        QStringLiteral("runtime snapshot cannot be rebound")));
+    }
+    m_runtimeSnapshot = snapshot;
+    touch();
+    return Result<void, DomainError>::success();
+}
+
 QJsonObject AgentSession::toJson() const {
     QJsonArray messages;
     for (const ChatMessage& message : m_messages) {
@@ -96,6 +109,26 @@ QJsonObject AgentSession::toJson() const {
     obj["observations"] = observations;
     if (!m_finalResponse.isEmpty()) obj["final_response"] = m_finalResponse;
     if (!m_errorMessage.isEmpty()) obj["error_message"] = m_errorMessage;
+    if (m_runtimeSnapshot.has_value()) {
+        QJsonObject snapshot;
+        snapshot["session_id"] = m_runtimeSnapshot->sessionId;
+        snapshot["profile_id"] = m_runtimeSnapshot->profileId;
+        snapshot["identity_baseline_schema_version"] =
+            m_runtimeSnapshot->identityBaselineSchemaVersion;
+        snapshot["identity_baseline_hash"] = m_runtimeSnapshot->identityBaselineHash;
+        snapshot["config_hash"] = m_runtimeSnapshot->configHash;
+        snapshot["captured_at"] = m_runtimeSnapshot->capturedAt.toString(Qt::ISODateWithMs);
+        if (m_runtimeSnapshot->personalityVersion.has_value()) {
+            snapshot["personality_version"] = *m_runtimeSnapshot->personalityVersion;
+        }
+        if (m_runtimeSnapshot->relationshipVersion.has_value()) {
+            snapshot["relationship_version"] = *m_runtimeSnapshot->relationshipVersion;
+        }
+        if (m_runtimeSnapshot->selfModelVersion.has_value()) {
+            snapshot["self_model_version"] = *m_runtimeSnapshot->selfModelVersion;
+        }
+        obj["runtime_snapshot"] = snapshot;
+    }
     return obj;
 }
 

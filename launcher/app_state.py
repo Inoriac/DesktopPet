@@ -14,6 +14,7 @@ from typing import Any, Dict
 class AppState:
     # 宠物设置
     pet_name: str = "Milltina"
+    pet_profile_id: str = ""
     scale_percent: int = 100
     always_on_top: bool = True
     click_through: bool = False
@@ -59,8 +60,9 @@ class AppState:
     def to_settings_dict(self) -> Dict[str, Any]:
         """映射到 config_loader.apply_settings 期望的扁平 settings 键名。"""
         d = asdict(self)
-        # 去掉 pet_name（它走 --pet 入参，不进配置）和 theme（走 QSettings）
+        # 角色身份走启动参数，不进模型配置。
         d.pop("pet_name", None)
+        d.pop("pet_profile_id", None)
         d.pop("theme", None)
         # 键名转换：snake_case → apply_settings 分支键名
         return {

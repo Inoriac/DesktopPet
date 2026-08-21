@@ -9,25 +9,25 @@
 #include <QVector>
 #include <QJsonObject>
 
+#include "ai/runtime/profile_resolver.h"
+
 class Pet {
 public:
     static Pet& instance();
 
-    // 加载和保存数据
-    void load();
-    void save();
+    // C++ 只读 launcher 管理的角色清单。
+    bool load(QString* errorMessage = nullptr);
 
-    // 管理桌宠列表
-    QStringList getPetNames() const { return pets.keys(); }
-    void addPet(const QString& name, const QString& modelPath);
-    void removePet(const QString& name);
-    bool hasPet(const QString& name) const { return pets.contains(name); }
+    QStringList getPetNames() const;
+    QList<PetProfile> getProfiles() const { return pets; }
+    bool hasPet(const QString& name) const;
+    std::optional<PetProfile> getProfile(const QString& name) const;
 
     // 根据名称获取模型路径
-    QString getModelPath(const QString& name);
+    QString getModelPath(const QString& name) const;
 private:
     Pet() = default;
-    QHash<QString, QString> pets;  // name -> modelPath
+    QList<PetProfile> pets;
     QString getDataPath() const;
 };
 

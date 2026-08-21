@@ -24,6 +24,8 @@ public:
 
     bool load(QString* errorMessage = nullptr);
     bool save(QString* errorMessage = nullptr) const;
+    bool importLegacyJson(const QString& jsonPath,
+                          QString* errorMessage = nullptr);
 
     MemoryEntry add(MemoryType type,
                     const QString& key,

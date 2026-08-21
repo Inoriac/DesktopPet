@@ -9,6 +9,7 @@
 #include "ui/theme_manager.h"
 #include "core/configLoader/config_manager.h"
 #include "statistic_manager.h"
+#include "ai/runtime/profile_resolver.h"
 
 int main(int argc, char *argv[])
 {
@@ -33,7 +34,8 @@ int main(int argc, char *argv[])
 
     // 命令行参数（供 Python launcher 调用）：
     //   --config <file>  指定启动配置文件（建议绝对路径）
-    //   --pet <name>     指定启动角色（须存在于宠物注册表 pets.json）
+    //   --pet <name>          指定启动角色
+    //   --profile-id <uuid>   指定不可变的角色身份
     // 主题不走命令行，由 ThemeManager 经同名 QSettings(键 ui/theme)读取，见前端修改计划 §3.1。
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop Pet Application");
@@ -44,42 +46,43 @@ int main(int argc, char *argv[])
         "Path to launch configuration file (absolute path recommended)", "config-file");
     QCommandLineOption petOption("pet",
         "Pet name to auto-start (must exist in pets.json registry)", "pet-name");
+    QCommandLineOption profileIdOption("profile-id",
+        "Immutable profile UUID (resolved from pets.json when omitted)", "profile-id");
     parser.addOption(configOption);
     parser.addOption(petOption);
+    parser.addOption(profileIdOption);
     parser.process(app);
 
     const QString configPath = parser.value(configOption);
-
-    // ConfigManager 构造时已自动 load 一次默认路径；此处二次 load 以启动器配置覆盖。
-    if (!configPath.isEmpty()) {
-        ConfigManager::instance().loadConfig(configPath);
-    }
-
-    // 初始化统计系统，启用落盘（默认 log/statistics.json）。
-    StatisticManager::getInstance().initialize();
 
     // —— 直接承载桌宠窗口（原控制面板 MainWindow 已由 Python launcher 取代）——
     // 角色来源：--pet 入参；未指定时退回注册表首个角色；都没有则提示用 launcher 启动。
     // 注意：Pet 注册表不会在 instance() 构造时自动载入 pets.json，必须显式 load()
     // （原由 MainWindow::loadPetList() 触发，移除面板后改由 main 直接调用）。
-    Pet::instance().load();
-    QString petName = parser.value(petOption);
-    if (petName.isEmpty()) {
-        const QStringList names = Pet::instance().getPetNames();
-        if (!names.isEmpty()) {
-            petName = names.first();
-        }
+    QString registryError;
+    if (!Pet::instance().load(&registryError)) {
+        qCritical() << "[main] PROFILE_ID_INVALID: failed to load pets.json:" << registryError;
+        return 1;
     }
-    if (petName.isEmpty() || !Pet::instance().hasPet(petName)) {
-        qWarning() << "[main] No valid pet to start. Please launch via the Python launcher.";
-        return 0;
+    const QString requestedPetName = parser.value(petOption);
+    const std::optional<QString> requestedProfileId = parser.isSet(profileIdOption)
+        ? std::optional<QString>{parser.value(profileIdOption)}
+        : std::nullopt;
+    const ProfileResolutionResult profileResult =
+        ProfileResolver(Pet::instance().getProfiles()).resolve(
+            requestedPetName, requestedProfileId);
+    if (!profileResult.isResolved()) {
+        qCritical() << "[main] PROFILE_ID_INVALID:" << profileResult.diagnostic;
+        return 1;
     }
+    const PetProfile profile = *profileResult.profile;
+    const QString petName = profile.name;
 
-    const QString modelPath = Pet::instance().getModelPath(petName);
-    if (modelPath.isEmpty()) {
-        qWarning() << "[main] Cannot find pet model for:" << petName;
-        return 0;
+    // 身份匹配完成后才读取运行配置或打开其他持久化服务。
+    if (!configPath.isEmpty()) {
+        ConfigManager::instance().loadConfig(configPath);
     }
+    StatisticManager::getInstance().initialize();
 
     // 配置全由 ConfigManager 提供（launcher 写入 launch_config.json 后经 loadConfig 载入），
     // 不再依赖任何 UI 控件读取——等价于原 MainWindow::OnStartPet 的核心逻辑。

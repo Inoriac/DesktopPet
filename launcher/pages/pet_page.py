@@ -11,7 +11,7 @@ from qfluentwidgets import ComboBox, Slider, SpinBox, SwitchButton, PrimaryPushB
 from qfluentwidgets import FluentIcon as FIF
 
 from app_state import AppState
-from pet_registry import list_pet_names
+from pet_registry import load_pets
 from ._ui import ScrollPage, Section
 
 
@@ -29,7 +29,7 @@ class PetPage(ScrollPage):
         self._refresh_pets()
         self.pet_combo.currentTextChanged.connect(self._on_pet_changed)
         char_card.addRow("角色选择",
-                         "来自 pets.json 注册表，启动时经 --pet 传给 C++",
+                         "来自 pets.json 角色清单",
                          self.pet_combo)
 
         # 尺寸：滑块 + 数字输入
@@ -82,7 +82,9 @@ class PetPage(ScrollPage):
         self.addStretch()
 
     def _refresh_pets(self):
-        names = list_pet_names() or ["Milltina"]
+        profiles = load_pets()
+        self._profiles_by_name = {profile.name: profile for profile in profiles}
+        names = list(self._profiles_by_name)
         self.pet_combo.clear()
         self.pet_combo.addItems(names)
         if self.state.pet_name in names:
@@ -90,9 +92,12 @@ class PetPage(ScrollPage):
         else:
             self.state.pet_name = names[0]
             self.pet_combo.setCurrentText(names[0])
+        self.state.pet_profile_id = self._profiles_by_name[self.state.pet_name].profile_id
 
     def _on_pet_changed(self, name: str):
         self.state.pet_name = name
+        profile = self._profiles_by_name.get(name)
+        self.state.pet_profile_id = profile.profile_id if profile else ""
 
     def _on_size_changed(self, value: int):
         self.state.scale_percent = value

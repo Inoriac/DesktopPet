@@ -17,7 +17,8 @@
 #include "skill/skill_matcher.h"
 
 bool AIBrain::tryHandleRoutedIntent(const QString& reason,
-                                    const QString& triggerTag) {
+                                    const QString& triggerTag,
+                                    const QString& sessionId) {
     const IntentRoute route = m_intentRouter.route(reason, triggerTag);
     if (route.type == IntentRouteType::NeedLLM) {
         return false;
@@ -30,6 +31,10 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         || route.type == IntentRouteType::NeedClarification
         || route.type == IntentRouteType::Rejected) {
         if (!route.reply.isEmpty()) {
+            appendRuntimeEvent(
+                QStringLiteral("AssistantResponseProduced"), sessionId,
+                {{QStringLiteral("text"), route.reply},
+                 {QStringLiteral("triggerTag"), triggerTag}});
             emit assistantResponseReady(route.reply);
 
             ChatMessage assistantMessage;
@@ -38,6 +43,7 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             appendToMemory(assistantMessage);
         }
 
+        finishRuntimeSession(sessionId);
         m_busy = false;
         emit thinkingFinished(route.type != IntentRouteType::Rejected, route.type == IntentRouteType::Rejected ? route.reason : QString());
         return true;
@@ -55,12 +61,12 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             const QString toolName = route.toolName;
             m_pendingToolConfirmations.insert(
                 confirmationId,
-                [this, confirmationId, toolName, triggerTag](bool approved) {
+                [this, confirmationId, toolName, triggerTag, sessionId](bool approved) {
                     const ToolExecutionOutcome resolved =
                         m_toolRuntime.resolveConfirmation(confirmationId, approved);
                     const QString resolvedPayload =
                         m_toolRuntime.sanitizer()->toPayload(resolved.result);
-                    rememberToolOutcome(toolName, triggerTag, false, resolved);
+                    rememberToolOutcome(toolName, triggerTag, false, resolved, sessionId);
                     emit toolExecuted(toolName, resolved.result.success, resolvedPayload);
 
                     ChatMessage toolMessage;
@@ -76,8 +82,13 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                     assistantMessage.role = "assistant";
                     assistantMessage.content = responseText;
                     appendToMemory(assistantMessage);
+                    appendRuntimeEvent(
+                        QStringLiteral("AssistantResponseProduced"), sessionId,
+                        {{QStringLiteral("text"), responseText},
+                         {QStringLiteral("triggerTag"), triggerTag}});
                     emit assistantResponseReady(responseText);
 
+                    finishRuntimeSession(sessionId);
                     m_busy = false;
                     emit thinkingFinished(resolved.result.success,
                                           resolved.result.success ? QString() : resolved.result.errorMessage);
@@ -89,7 +100,7 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             return true;
         }
         const QString payload = m_toolRuntime.sanitizer()->toPayload(outcome.result);
-        rememberToolOutcome(route.toolName, triggerTag, false, outcome);
+        rememberToolOutcome(route.toolName, triggerTag, false, outcome, sessionId);
 
         emit toolExecuted(route.toolName, outcome.result.success, payload);
 
@@ -166,6 +177,10 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             responseText = QString("执行失败：%1").arg(outcome.result.errorMessage);
         }
 
+        appendRuntimeEvent(
+            QStringLiteral("AssistantResponseProduced"), sessionId,
+            {{QStringLiteral("text"), responseText},
+             {QStringLiteral("triggerTag"), triggerTag}});
         emit assistantResponseReady(responseText);
 
         ChatMessage toolMessage;
@@ -179,11 +194,13 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         assistantMessage.content = responseText;
         appendToMemory(assistantMessage);
 
+        finishRuntimeSession(sessionId);
         m_busy = false;
         emit thinkingFinished(outcome.result.success, outcome.result.success ? QString() : outcome.result.errorMessage);
         return true;
     }
 
+    finishRuntimeSession(sessionId);
     m_busy = false;
     emit thinkingFinished(false, "unsupported route type");
     return true;
@@ -210,7 +227,24 @@ ToolPolicyContext AIBrain::buildToolPolicyContext(const QString& triggerTag,
 void AIBrain::rememberToolOutcome(const QString& toolName,
                                   const QString& triggerTag,
                                   bool initiatedByLlm,
-                                  const ToolExecutionOutcome& outcome) {
+                                  const ToolExecutionOutcome& outcome,
+                                  const QString& sessionId) {
+    QJsonObject runtimeEvent{
+        {QStringLiteral("toolName"), toolName},
+        {QStringLiteral("success"), outcome.result.success},
+        {QStringLiteral("resultSummary"), outcome.result.success
+             ? QStringLiteral("tool execution succeeded")
+             : QStringLiteral("tool execution failed")}
+    };
+    if (!outcome.result.success) {
+        runtimeEvent.insert(QStringLiteral("errorCode"),
+                            outcome.executed
+                                ? QStringLiteral("TOOL_EXECUTION_FAILED")
+                                : QStringLiteral("TOOL_NOT_EXECUTED"));
+    }
+    appendRuntimeEvent(QStringLiteral("ToolExecutionCompleted"), sessionId,
+                       runtimeEvent);
+
     QJsonObject event;
     event["tool_name"] = toolName;
     event["request_id"] = outcome.requestId;
@@ -342,4 +376,3 @@ void AIBrain::appendToMemory(const ChatMessage& message) {
         m_memory.removeAt(removeIndex);
     }
 }
-

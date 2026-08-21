@@ -4,11 +4,47 @@
 
 #include "config_manager.h"
 #include "emotion/emotion_config_json.h"
+#include <QCryptographicHash>
 #include <QDir>
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonValue>
 #include <QFile>
 #include <QDebug>
 #include <algorithm>
+
+namespace {
+
+QJsonValue canonicalJson(const QJsonValue& value) {
+    if (value.isArray()) {
+        QJsonArray canonical;
+        const QJsonArray source = value.toArray();
+        for (const QJsonValue& item : source) {
+            canonical.append(canonicalJson(item));
+        }
+        return canonical;
+    }
+    if (value.isObject()) {
+        const QJsonObject source = value.toObject();
+        QStringList keys = source.keys();
+        std::sort(keys.begin(), keys.end());
+        QJsonObject canonical;
+        for (const QString& key : keys) {
+            canonical.insert(key, canonicalJson(source.value(key)));
+        }
+        return canonical;
+    }
+    return value;
+}
+
+QString sha256Json(const QJsonObject& object) {
+    const QByteArray compact = QJsonDocument(canonicalJson(object).toObject())
+                                   .toJson(QJsonDocument::Compact);
+    return QString::fromLatin1(
+        QCryptographicHash::hash(compact, QCryptographicHash::Sha256).toHex());
+}
+
+} // namespace
 
 static QStringList jsonArrayToStringList(const QJsonArray& arr) {
     QStringList list;
@@ -147,6 +183,14 @@ ConfigManager::ConfigManager() {
 ConfigManager& ConfigManager::instance() {
     static ConfigManager instance;
     return instance;
+}
+
+QString ConfigManager::configHash() const {
+    return sha256Json(configJson);
+}
+
+QString ConfigManager::identityBaselineHash() const {
+    return sha256Json(identityBaseline.toJson());
 }
 
 bool ConfigManager::loadConfig(const QString& configPath) {

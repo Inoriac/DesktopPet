@@ -16,14 +16,48 @@
 #include <utility>
 
 #include "configLoader/config_manager.h"
+#include "runtime/agent_runtime_services.h"
+#include "event/event_ledger.h"
 
 AIBrain::AIBrain(QObject* parent)
     : QObject(parent) {
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
-    m_memoryStore.load();
     m_skillStore.load();
+}
+
+Result<void, DomainError> AIBrain::initializeStorage(
+    const AIBrainStorageConfig& config) {
+    if (m_storageInitialized || m_running) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("STATE_VERSION_CONFLICT"),
+                        QStringLiteral("AI brain storage is already initialized")));
+    }
+    if (config.databasePath.trimmed().isEmpty() || config.jsonPath.trimmed().isEmpty()) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("RUNTIME_START_INVALID"),
+                        QStringLiteral("AI brain storage paths are empty")));
+    }
+    m_memoryStore.setDatabasePath(config.databasePath);
+    m_memoryStore.setStoragePath(config.jsonPath);
+    QString errorMessage;
+    if (!m_memoryStore.load(&errorMessage)) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"), errorMessage));
+    }
+    m_storageInitialized = true;
+    return Result<void, DomainError>::success();
+}
+
+void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
+    if (m_runtimeServices == services) return;
+    ++m_requestGeneration;
+    m_toolRuntime.cancelPendingConfirmations(QStringLiteral("runtime services changed"));
+    m_pendingToolConfirmations.clear();
+    m_runtimeSessions.clear();
+    m_busy = false;
+    m_runtimeServices = services;
 }
 
 void AIBrain::resolveToolConfirmation(const QString& requestId, bool approved) {
@@ -44,6 +78,7 @@ void AIBrain::setToolRegistry(ToolRegistry* registry) {
     if (m_toolRegistry != registry) {
         ++m_requestGeneration;
         m_pendingToolConfirmations.clear();
+        m_runtimeSessions.clear();
         m_busy = false;
     }
     m_toolRegistry = registry;
@@ -73,7 +108,7 @@ void AIBrain::setThinkIntervalMs(int ms) {
 }
 
 void AIBrain::start() {
-    if (!m_enabled || m_running) {
+    if (!m_enabled || !m_storageInitialized || m_running) {
         return;
     }
 
@@ -97,6 +132,7 @@ void AIBrain::stop() {
     m_idleRetryScheduled = false;
     m_toolRuntime.cancelPendingConfirmations(QStringLiteral("AI brain stopped"));
     m_pendingToolConfirmations.clear();
+    m_runtimeSessions.clear();
     m_busy = false;
 }
 
@@ -117,20 +153,69 @@ void AIBrain::triggerThink(const QString& reason,
         return;
     }
 
+    const QString sessionId = beginRuntimeSession(reason, triggerTag);
+    if (m_runtimeServices && sessionId.isEmpty()) return;
+    if (m_runtimeServices && !appendRuntimeEvent(
+            QStringLiteral("UserMessageReceived"), sessionId,
+            {{QStringLiteral("text"), reason},
+             {QStringLiteral("triggerTag"), triggerTag}})) {
+        finishRuntimeSession(sessionId);
+        return;
+    }
+
     processUserMemoryWrite(reason, triggerTag);
 
-    if (shouldUseLocalRouter(triggerTag) && tryHandleRoutedIntent(reason, triggerTag)) {
+    if (shouldUseLocalRouter(triggerTag)
+        && tryHandleRoutedIntent(reason, triggerTag, sessionId)) {
         return;
     }
 
     QList<ChatMessage> base = buildBaseMessages(reason, triggerTag);
     if (base.isEmpty()) {
+        finishRuntimeSession(sessionId);
         return;
     }
 
     emit thinkingStarted(reason);
     m_busy = true;
-    thinkInternal(reason, triggerTag, 0, base);
+    thinkInternal(reason, triggerTag, sessionId, 0, base);
+}
+
+QString AIBrain::beginRuntimeSession(const QString& reason,
+                                     const QString& triggerTag) {
+    if (!m_runtimeServices) return QString();
+    AgentSession session = AgentSession::create(reason, triggerTag);
+    const QString sessionId = session.id();
+    const RuntimeSnapshot snapshot = m_runtimeServices->captureSnapshot(sessionId);
+    if (snapshot.sessionId.isEmpty() || !session.bindRuntimeSnapshot(snapshot).isOk()) {
+        return QString();
+    }
+    m_runtimeSessions.insert(sessionId, std::move(session));
+    return sessionId;
+}
+
+void AIBrain::finishRuntimeSession(const QString& sessionId) {
+    if (!sessionId.isEmpty()) m_runtimeSessions.remove(sessionId);
+}
+
+bool AIBrain::appendRuntimeEvent(const QString& type,
+                                 const QString& sessionId,
+                                 const QJsonObject& payload) {
+    if (!m_runtimeServices) return true;
+    EventLedger* ledger = m_runtimeServices->eventLedger();
+    if (!ledger) return true;
+    const auto session = m_runtimeSessions.constFind(sessionId);
+    if (session == m_runtimeSessions.constEnd()
+        || !session->runtimeSnapshot().has_value()) {
+        return false;
+    }
+    EventDraft draft;
+    draft.profileId = session->runtimeSnapshot()->profileId;
+    draft.type = type;
+    draft.source = QStringLiteral("AIBrain");
+    draft.sessionId = sessionId;
+    draft.payload = payload;
+    return ledger->append(draft).isOk();
 }
 
 void AIBrain::onUserInteraction(const QString& eventName, const QString& detail) {
@@ -244,4 +329,3 @@ void AIBrain::annotateMemoryEntry(MemoryEntry& entry) const {
     entry.emotionIntensity = std::clamp(snapshot->intensity, 0.0, 1.0);
     entry.emotionConfidence = std::clamp(snapshot->confidence, 0.0, 1.0);
 }
-

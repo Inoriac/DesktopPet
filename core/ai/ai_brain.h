@@ -15,7 +15,9 @@
 #include <optional>
 
 #include "ai_types.h"
+#include "agent/agent_session.h"
 #include "ai_call_logger.h"
+#include "domain/domain_result.h"
 #include "context_builder.h"
 #include "emotion/emotion_types.h"
 #include "llm/llm_chat_service.h"
@@ -26,9 +28,11 @@
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
 #include "scheduler/daydream_trigger_policy.h"
+#include "runtime/runtime_types.h"
 
 class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
 class AgentScheduler;  // Daydream 距待办判定用，可选注入
+class AgentRuntimeServices;
 #include "router/intent_router.h"
 #include "skill/skill_matcher.h"
 #include "skill/skill_store.h"
@@ -42,6 +46,10 @@ public:
     using EmotionSnapshotProvider = std::function<std::optional<EmotionSnapshot>()>;
 
     explicit AIBrain(QObject* parent = nullptr);
+
+    Result<void, DomainError> initializeStorage(const AIBrainStorageConfig& config);
+    bool isStorageInitialized() const { return m_storageInitialized; }
+    void setRuntimeServices(AgentRuntimeServices* services);
 
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
@@ -93,11 +101,13 @@ signals:
 private:
     void thinkInternal(const QString& reason,
                       const QString& triggerTag,
+                      const QString& sessionId,
                       int toolRound,
                       const QList<ChatMessage>& workingMessages);
 
     bool tryHandleRoutedIntent(const QString& reason,
-                               const QString& triggerTag);
+                               const QString& triggerTag,
+                               const QString& sessionId);
     bool shouldUseLocalRouter(const QString& triggerTag) const;
     ToolPolicyContext buildToolPolicyContext(const QString& triggerTag,
                                              const QString& userInput,
@@ -105,7 +115,8 @@ private:
     void rememberToolOutcome(const QString& toolName,
                              const QString& triggerTag,
                              bool initiatedByLlm,
-                             const ToolExecutionOutcome& outcome);
+                             const ToolExecutionOutcome& outcome,
+                             const QString& sessionId = QString());
     void processUserMemoryWrite(const QString& input,
                                 const QString& triggerTag);
     std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
@@ -116,6 +127,11 @@ private:
                                     const QString& triggerTag,
                                     int limit = 8);
     void appendToMemory(const ChatMessage& message);
+    bool appendRuntimeEvent(const QString& type,
+                            const QString& sessionId,
+                            const QJsonObject& payload);
+    QString beginRuntimeSession(const QString& reason, const QString& triggerTag);
+    void finishRuntimeSession(const QString& sessionId);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
     // Daydream: snapshot batches are decided asynchronously, then committed once.
@@ -137,6 +153,7 @@ private:
 private:
     QString m_petName;
     ToolRegistry* m_toolRegistry = nullptr; // non-owning
+    AgentRuntimeServices* m_runtimeServices = nullptr; // non-owning
 
     ContextBuilder m_contextBuilder;
     LlmChatService m_chatService;
@@ -170,6 +187,7 @@ private:
     int m_daydreamInvalidBatches = 0;
 
     bool m_enabled = true;
+    bool m_storageInitialized = false;
     bool m_running = false;
     bool m_busy = false;
     bool m_idleRetryScheduled = false;
@@ -179,6 +197,7 @@ private:
     int m_maxMemoryMessages = 20;
 
     QList<ChatMessage> m_memory;
+    QHash<QString, AgentSession> m_runtimeSessions;
     QHash<QString, std::function<void(bool)>> m_pendingToolConfirmations;
     AiCallLogger m_callLogger;
     EmotionSnapshotProvider m_emotionSnapshotProvider;

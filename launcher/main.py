@@ -5,7 +5,7 @@
    MSFluentWindow + 自定义标题栏 + 卡片分区页）；
 2. 收集各页配置 → config_loader 导出 launch_config.json；
 3. 主题与 C++ 经同名 QSettings (键 ui/theme) 共享 —— 关键：org/app 名逐字对齐 C++。
-4. 启动 C++ 核心：Desktop_Pet --config <abs> --pet <name>。
+4. 启动 C++ 核心：Desktop_Pet --config <abs> --pet <name> --profile-id <uuid>。
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from qfluentwidgets import (
 
 from app_state import AppState
 import config_loader
-from pet_registry import ORG_NAME, APP_NAME  # 逐字对齐 C++ main.cpp
+from pet_registry import APP_NAME, ORG_NAME, PetRegistryError, find_pet
 from pages.pet_page import PetPage
 from pages.ai_page import AiPage
 from pages.voice_page import VoicePage
@@ -181,6 +181,17 @@ class LauncherWindow(MSFluentWindow):
             InfoBar.warning("未选择角色", "请先在「宠物」页选择一个角色",
                             parent=self, position=InfoBarPosition.TOP, duration=3000)
             return
+        try:
+            profile = find_pet(self.state.pet_name)
+        except PetRegistryError as error:
+            InfoBar.error("角色清单不可用", str(error),
+                          parent=self, position=InfoBarPosition.TOP, duration=5000)
+            return
+        if profile is None:
+            InfoBar.warning("未找到角色", "请刷新角色清单后重试",
+                            parent=self, position=InfoBarPosition.TOP, duration=3000)
+            return
+        self.state.pet_profile_id = profile.profile_id
         if not os.path.exists(CPP_EXECUTABLE):
             InfoBar.error("找不到核心", f"未找到可执行文件：{CPP_EXECUTABLE}\n请先构建 C++ 部分",
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
@@ -209,7 +220,8 @@ class LauncherWindow(MSFluentWindow):
             args = [
                 CPP_EXECUTABLE,
                 "--config", config_path,  # 绝对路径，避开 QDir::setCurrent 歧义
-                "--pet", self.state.pet_name,
+                "--pet", profile.name,
+                "--profile-id", profile.profile_id,
             ]
             if sys.platform == "win32":
                 DETACHED_PROCESS = 0x00000008

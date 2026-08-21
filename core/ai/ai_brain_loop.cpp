@@ -85,11 +85,14 @@ QList<DaydreamConsolidator::Decision> preserveDecisions(const QList<MemoryEntry>
 
 void AIBrain::thinkInternal(const QString& reason,
                             const QString& triggerTag,
+                            const QString& sessionId,
                             int toolRound,
                             const QList<ChatMessage>& workingMessages) {
     const QJsonArray tools = m_toolRegistry ? m_toolRegistry->allToolSchemas() : QJsonArray{};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
+    const qint64 requestedAtMs = QDateTime::currentMSecsSinceEpoch();
+    const LlmConfig requestConfig = ConfigManager::instance().getLlmConfig();
     const QPointer<AIBrain> guard(this);
 
     m_callLogger.logRequest(requestId,
@@ -101,7 +104,8 @@ void AIBrain::thinkInternal(const QString& reason,
                             tools);
 
     m_chatService.requestAsync(workingMessages, tools,
-        [this, guard, requestGeneration, requestId, reason, triggerTag, toolRound, workingMessages]
+        [this, guard, requestGeneration, requestId, requestedAtMs, requestConfig,
+         reason, triggerTag, sessionId, toolRound, workingMessages]
         (bool ok, LlmResponse response, QString error) mutable {
             if (!guard || requestGeneration != m_requestGeneration) {
                 return;
@@ -112,7 +116,22 @@ void AIBrain::thinkInternal(const QString& reason,
                                      response,
                                      error);
 
+            QJsonObject modelEvent{
+                {QStringLiteral("role"), QStringLiteral("dialogue")},
+                {QStringLiteral("success"), ok},
+                {QStringLiteral("durationMs"), static_cast<double>(
+                    qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - requestedAtMs))},
+                {QStringLiteral("provider"), requestConfig.provider},
+                {QStringLiteral("model"), requestConfig.model}
+            };
             if (!ok) {
+                modelEvent.insert(QStringLiteral("errorCode"),
+                                  QStringLiteral("MODEL_CALL_FAILED"));
+            }
+            appendRuntimeEvent(QStringLiteral("ModelCallCompleted"), sessionId, modelEvent);
+
+            if (!ok) {
+                finishRuntimeSession(sessionId);
                 m_busy = false;
                 emit thinkingFinished(false, error);
                 if (m_running) {
@@ -128,12 +147,18 @@ void AIBrain::thinkInternal(const QString& reason,
             if (response.toolCalls.isEmpty() || !m_toolRegistry || toolRound >= m_maxToolRounds) {
                 appendToMemory(assistantMessage);
                 if (!response.content.isEmpty()) {
+                    appendRuntimeEvent(
+                        QStringLiteral("AssistantResponseProduced"), sessionId,
+                        {{QStringLiteral("text"), response.content},
+                         {QStringLiteral("triggerTag"), triggerTag},
+                         {QStringLiteral("modelRole"), QStringLiteral("dialogue")}});
                     emit assistantResponseReady(response.content);
                     if (triggerTag == "proactive_chat") {
                         emit proactiveResponseReady(response.content);
                     }
                 }
 
+                finishRuntimeSession(sessionId);
                 m_busy = false;
                 emit thinkingFinished(true, {});
                 if (m_running) {
@@ -171,6 +196,14 @@ void AIBrain::thinkInternal(const QString& reason,
                     deniedToolMessage.content = QString::fromUtf8(QJsonDocument(deniedObj).toJson(QJsonDocument::Compact));
                     nextMessages.append(deniedToolMessage);
                     appendToMemory(deniedToolMessage);
+                    appendRuntimeEvent(
+                        QStringLiteral("ToolExecutionCompleted"), sessionId,
+                        {{QStringLiteral("toolName"), call.name},
+                         {QStringLiteral("success"), false},
+                         {QStringLiteral("resultSummary"),
+                          QStringLiteral("tool call denied by policy")},
+                         {QStringLiteral("errorCode"),
+                          QStringLiteral("TOOL_POLICY_DENIED")}});
 
                     emit toolExecuted(call.name, false, deniedToolMessage.content);
                     continue;
@@ -191,13 +224,15 @@ void AIBrain::thinkInternal(const QString& reason,
                     const QString confirmationId = outcome.requestId;
                     m_pendingToolConfirmations.insert(
                         confirmationId,
-                        [this, confirmationId, call, reason, triggerTag, toolRound, nextMessages]
+                        [this, confirmationId, call, reason, triggerTag, sessionId,
+                         toolRound, nextMessages]
                         (bool approved) mutable {
                             const ToolExecutionOutcome resolved =
                                 m_toolRuntime.resolveConfirmation(confirmationId, approved);
                             const QString resolvedPayload =
                                 m_toolRuntime.sanitizer()->toPayload(resolved.result);
-                            rememberToolOutcome(call.name, triggerTag, true, resolved);
+                            rememberToolOutcome(call.name, triggerTag, true, resolved,
+                                                sessionId);
 
                             ChatMessage toolMessage;
                             toolMessage.role = "tool";
@@ -207,7 +242,8 @@ void AIBrain::thinkInternal(const QString& reason,
                             nextMessages.append(toolMessage);
                             appendToMemory(toolMessage);
                             emit toolExecuted(call.name, resolved.result.success, resolvedPayload);
-                            thinkInternal(reason, triggerTag, toolRound + 1, nextMessages);
+                            thinkInternal(reason, triggerTag, sessionId,
+                                          toolRound + 1, nextMessages);
                         });
                     emit toolConfirmationRequired(confirmationId,
                                                   call.name,
@@ -217,7 +253,7 @@ void AIBrain::thinkInternal(const QString& reason,
                 }
                 ToolResult result = outcome.result;
                 const QString payload = m_toolRuntime.sanitizer()->toPayload(result);
-                rememberToolOutcome(call.name, triggerTag, true, outcome);
+                rememberToolOutcome(call.name, triggerTag, true, outcome, sessionId);
 
                 if (!result.success) {
                     scheduleIdleRetryIfBusyFailure(call.name, payload);
@@ -238,7 +274,7 @@ void AIBrain::thinkInternal(const QString& reason,
             if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
                 nextMessages[assistantIndex].toolCalls = assistantToolCalls;
             }
-            thinkInternal(reason, triggerTag, toolRound + 1, nextMessages);
+            thinkInternal(reason, triggerTag, sessionId, toolRound + 1, nextMessages);
         },
         m_petName);
 }
@@ -602,4 +638,3 @@ void AIBrain::scheduleIdleRetryIfBusyFailure(const QString& toolName,
         triggerThink("busy_retry", "idle_action");
     });
 }
-

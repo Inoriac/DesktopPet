@@ -7,7 +7,10 @@
 #include <QJsonDocument>
 #include <QJsonParseError>
 #include <QSaveFile>
+#include <QSet>
 #include <QUuid>
+
+#include <utility>
 
 #include "memory_repository.h"
 #include "partition_policy.h"
@@ -67,24 +70,6 @@ QString confidenceLabel(double confidence) {
 bool shouldInjectIntoContext(const MemoryEntry& entry) {
     return entry.status == MemoryStatus::Active
         && entry.privacyLevel != PrivacyLevel::Sensitive;
-}
-
-bool importLegacyJson(const QString& jsonPath, MemoryRepository* repo) {
-    QFile file(jsonPath);
-    if (!file.exists() || !file.open(QIODevice::ReadOnly)) return false;
-
-    QJsonParseError parseError;
-    const QJsonDocument doc = QJsonDocument::fromJson(file.readAll(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !doc.isArray()) return false;
-
-    for (const QJsonValue& value : doc.array()) {
-        if (!value.isObject()) continue;
-        MemoryEntry entry = MemoryEntry::fromJson(value.toObject());
-        if (!entry.id.isEmpty()) {
-            repo->insert(entry);
-        }
-    }
-    return true;
 }
 
 }
@@ -221,11 +206,72 @@ bool MemoryStore::load(QString* errorMessage) {
     QList<MemoryEntry> existing = m_repository->loadAll();
 
     if (existing.isEmpty() && QFile::exists(m_memoryFilePath)) {
-        importLegacyJson(m_memoryFilePath, m_repository.get());
+        if (!importLegacyJson(m_memoryFilePath, errorMessage)) return false;
         existing = m_repository->loadAll();
     }
 
     m_entries = existing;
+    return true;
+}
+
+bool MemoryStore::importLegacyJson(const QString& jsonPath, QString* errorMessage) {
+    QFile file(jsonPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (errorMessage) *errorMessage = file.errorString();
+        return false;
+    }
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(file.readAll(), &parseError);
+    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
+        if (errorMessage) *errorMessage = QStringLiteral("legacy memory JSON must be an array");
+        return false;
+    }
+
+    QList<MemoryEntry> entries;
+    QSet<QString> ids;
+    for (const QJsonValue& value : document.array()) {
+        if (!value.isObject()) continue;
+        MemoryEntry entry = MemoryEntry::fromJson(value.toObject());
+        if (entry.id.isEmpty()) continue;
+        if (ids.contains(entry.id)) {
+            if (errorMessage) *errorMessage = QStringLiteral("legacy memory JSON contains duplicate ids");
+            return false;
+        }
+        ids.insert(entry.id);
+        entries.append(std::move(entry));
+    }
+
+    if (!m_repository->isOpen()) {
+        QString databaseError;
+        if (!m_repository->open(m_databasePath, &databaseError)) {
+            if (errorMessage) *errorMessage = databaseError;
+            return false;
+        }
+        m_relationGraph.setConnectionName(m_repository->connectionName());
+        m_tagCooccurrenceGraph.setConnectionName(m_repository->connectionName());
+    }
+    if (!m_repository->loadAll().isEmpty()) {
+        if (errorMessage) *errorMessage = QStringLiteral("legacy JSON target database is not empty");
+        return false;
+    }
+    if (!m_repository->beginTransaction()) {
+        if (errorMessage) *errorMessage = QStringLiteral("failed to begin legacy JSON import transaction");
+        return false;
+    }
+    for (const MemoryEntry& entry : entries) {
+        if (!m_repository->insert(entry)) {
+            m_repository->rollbackTransaction();
+            if (errorMessage) *errorMessage = QStringLiteral("failed to import legacy memory entry");
+            return false;
+        }
+    }
+    if (!m_repository->commitTransaction()) {
+        m_repository->rollbackTransaction();
+        if (errorMessage) *errorMessage = QStringLiteral("failed to commit legacy JSON import");
+        return false;
+    }
+    m_entries = m_repository->loadAll();
     return true;
 }
 

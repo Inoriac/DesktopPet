@@ -10,6 +10,8 @@
 #include <QStandardPaths>
 #include <QDir>
 
+#include <utility>
+
 Pet& Pet::instance() {
     static Pet inst;
     return inst;
@@ -24,88 +26,85 @@ QString Pet::getDataPath() const {
     return appData + "/pets.json";
 }
 
-void Pet::load() {
+bool Pet::load(QString* errorMessage) {
     QString path = getDataPath();
     QFile file(path);
 
+    pets.clear();
     if (!file.exists()) {
-        // 首次运行，添加默认桌宠
-        pets["Milltina"] = "assets/models/milltina/model/milltina.gltf";
-        save();
-        qDebug() << "Created default pet data at:" << path;
-        return;
+        if (errorMessage) *errorMessage = QStringLiteral("pets.json does not exist");
+        return false;
     }
 
     if (!file.open(QIODevice::ReadOnly)) {
-        qWarning() << "Failed to open pet data file:" << path;
-        return;
+        if (errorMessage) *errorMessage = file.errorString();
+        return false;
     }
 
     QByteArray data = file.readAll();
     file.close();
 
-    QJsonDocument doc = QJsonDocument::fromJson(data);
+    QJsonParseError parseError;
+    QJsonDocument doc = QJsonDocument::fromJson(data, &parseError);
+    if (parseError.error != QJsonParseError::NoError) {
+        if (errorMessage) *errorMessage = parseError.errorString();
+        return false;
+    }
     if (!doc.isArray()) {
-        qWarning() << "Invalid pet data format";
-        return;
+        if (errorMessage) *errorMessage = QStringLiteral("pets.json root must be an array");
+        return false;
     }
 
-    pets.clear();
+    QList<PetProfile> loadedProfiles;
     QJsonArray arr = doc.array();
+    if (arr.isEmpty()) {
+        if (errorMessage) *errorMessage = QStringLiteral("pets.json must contain a profile");
+        return false;
+    }
     for (const auto& val : arr) {
-        if (val.isObject()) {
-            QJsonObject obj = val.toObject();
-            QString name = obj["name"].toString();
-            QString modelPath = obj["modelPath"].toString();
-            if (!name.isEmpty() && !modelPath.isEmpty()) {
-                pets[name] = modelPath;
-            }
+        if (!val.isObject()) {
+            if (errorMessage) *errorMessage = QStringLiteral("pets.json entry must be an object");
+            return false;
         }
+        const QJsonObject obj = val.toObject();
+        const QJsonValue nameValue = obj.value(QStringLiteral("name"));
+        const QJsonValue modelPathValue = obj.value(QStringLiteral("modelPath"));
+        const QJsonValue profileIdValue = obj.value(QStringLiteral("profileId"));
+        if (!nameValue.isString() || nameValue.toString().trimmed().isEmpty()
+            || !modelPathValue.isString() || modelPathValue.toString().trimmed().isEmpty()
+            || (!profileIdValue.isUndefined() && !profileIdValue.isString())) {
+            if (errorMessage) {
+                *errorMessage = QStringLiteral("pets.json entry has invalid name, modelPath, or profileId");
+            }
+            return false;
+        }
+        loadedProfiles.append({nameValue.toString(), modelPathValue.toString(),
+                               profileIdValue.toString()});
     }
 
+    pets = std::move(loadedProfiles);
     qDebug() << "Loaded" << pets.size() << "pets from:" << path;
+    return true;
 }
 
-void Pet::save() {
-    QString path = getDataPath();
-    QFile file(path);
+QStringList Pet::getPetNames() const {
+    QStringList names;
+    for (const PetProfile& profile : pets) names.append(profile.name);
+    return names;
+}
 
-    if (!file.open(QIODevice::WriteOnly)) {
-        qWarning() << "Failed to save pet data file:" << path;
-        return;
+bool Pet::hasPet(const QString& name) const {
+    return getProfile(name).has_value();
+}
+
+std::optional<PetProfile> Pet::getProfile(const QString& name) const {
+    for (const PetProfile& profile : pets) {
+        if (profile.name == name) return profile;
     }
-
-    QJsonArray arr;
-    for (auto it = pets.begin(); it != pets.end(); ++it) {
-        QJsonObject obj;
-        obj["name"] = it.key();
-        obj["modelPath"] = it.value();
-        arr.append(obj);
-    }
-
-    QJsonDocument doc(arr);
-    file.write(doc.toJson());
-    file.close();
-
-    qDebug() << "Saved" << pets.size() << "pets to:" << path;
+    return std::nullopt;
 }
 
-void Pet::addPet(const QString& name, const QString& modelPath) {
-    pets[name] = modelPath;
-    save();
-}
-
-void Pet::removePet(const QString& name) {
-    pets.remove(name);
-    save();
-}
-
-QString Pet::getModelPath(const QString &name) {
-    QString path = pets.value(name);
-    if (path.isEmpty()) {
-        path = "assets/models/" + name + "/model/" + name + ".gltf";
-        pets[name] = path;
-    }
-
-    return path;
+QString Pet::getModelPath(const QString& name) const {
+    const std::optional<PetProfile> profile = getProfile(name);
+    return profile ? profile->modelPath : QString();
 }
