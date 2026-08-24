@@ -32,6 +32,8 @@
 - [2026-08-24] [code-impl Task 1B sanity check] §3.2.5 实现锚点已静态验证一致：`AgentBootstrap::start` 按 migrator -> `AIBrain::initializeStorage` -> runtime schema/services 组装的顺序执行；Event Schema registry、SQLite repository、RuntimeUnitOfWork/outbox、RuntimeSnapshot/AgentSession 与 PetWindow 所有权及销毁顺序均与系分契约一致。
 - [2026-08-24] [code-impl Task 1B 静态验收] impl-plan 中 Task 1B 的计划测试均存在对应定义，`EventLedgerTests`/`AgentRuntimeServicesTests` 及所需源码已注册到 CMake，`git diff --check` 通过；遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
 - [2026-08-24] [code-impl Task 1B 确认] 用户确认 Task 1B 当前结果并同意进入 Task 2；Wave 2 冲突、测试覆盖、测试位置、CMake 注册与实现锚点均已静态核对，运行验证继续保留为“未运行，待受支持环境验证”。
+- [2026-08-24] [code-impl Task 2 系分回溯] 首次 sanity check 确认现有 LlmChatService/ContextBuilder/ConfigManager/StatisticManager 锚点一致，但 §3.3 缺少可测试调用器、路由/请求/投影完整契约且事件名与 Task 1B 冲突，因此在写测试前停止，未产生代码变更。
+- [2026-08-24] [code-impl Task 2 方案确认] 用户选择 MVP 适配器方案：ModelCompletionClient + 有序 routes + 类型化 ContextProjection，复用 `ModelCallCompleted`；本期优先基本可用，可增强项留痕后延后。
 
 ## 设计偏差
 
@@ -55,3 +57,6 @@
 - 后续实现 Provider 契约时需直接适配现有 `EmotionSnapshot`/`EmotionEngine`，并把 Null Provider 仅作为未注册或读取失败时的 fallback。
 - [resolved] Task 1A 已回溯 §3.2：注册表改为 launcher 单写者，补充 ProfileResolver/ProfileDataMigrator 方法级契约与迁移校验；AgentRuntimeServices 生命周期测试归 Task 1B，私有能力运行时降级测试归 Task 4。
 - [resolved] Task 1B 已回溯 §3.2：补齐启动/快照/事件/权限/UoW 契约，并把 `main.cpp`、`ui/petwindow.cpp`、`core/configLoader/config_manager.*` 与新增 schema/UoW 类型纳入实现计划。
+- [deferred] Task 2 MVP 不实现完整 JSON Schema、provider 结构化错误码、自适应/持久化熔断、精确成本估算和高级多角色配置 UI；当实际 provider 或运维需求出现时再回溯 §3.3。
+- [deferred] Task 2 MVP 保留现有 LLM 总量统计，role/provider/model/routeId 先写入 `ModelCallCompleted`；如后续需要分角色费用与调用趋势，再扩展 StatisticManager 的持久化维度。
+- [deferred] Task 2 只接入 Dialogue 现有主链；Vision 的统一 Router 接入、Consolidation/Diary 的真实 ContextProjection 数据源分别随现有屏幕识别重构需求和 Task 3/4 领域服务落地后再补。

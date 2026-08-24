@@ -131,10 +131,11 @@ RuntimeUiBridge lifetime contract:
 **文件**:
 - 修改: `include/ai_types.h`、`core/configLoader/config_manager.*`
 - 实现: `core/ai/model/model_router.*`、`core/ai/model/model_role_registry.*`
-- 实现/修改: `core/ai/context/context_assembler.*`、`core/ai/context/context_manager.*`、`core/ai/context_builder.*`
-- 修改: `core/ai/llm/llm_chat_service.*`、`statistic/statistic_manager.*`、`include/statistic_types.h`
+- 实现: `core/ai/context/context_assembler.*`
+- 实现: `core/ai/llm/llm_chat_model_client.*`
+- 修改: `core/ai/ai_brain.h`、`core/ai/ai_brain_loop.cpp`（仅接入 Dialogue role，保留现有 tool round/session/事件行为）
 - 修改: `config/default_common_config.json`、`config/default_common_config.example.json`
-- 修改: `launcher/app_state.py`、`launcher/config_loader.py`、`launcher/pages/ai_page.py`
+- 修改: `launcher/config_loader.py`（现有基础 UI 同步 Dialogue/Vision 首 route，其他 route 原样保留）
 - 修改: `CMakeLists.txt`
 - 测试: `tests/test_model_router.cpp`
 - 测试: `tests/test_model_role_config.py`（沿用仓库现有 `tests/test_*.py` 布局）
@@ -164,6 +165,10 @@ ConfigManager.getModelRoleConfig:
 Launcher model-role config export:
 - `export_model_roles_whenMultipleProfilesConfigured_shouldPreserveEachRoleAndFallback`（happy path）
 - `export_model_roles_whenApiKeyPresent_shouldKeepExistingSecretHandlingBehavior`
+
+**MVP 边界**:
+- 仅实现有序 route fallback、单次 repair、进程内短暂熔断、顶层 JSON Object 基本类型校验和上下文分区白名单。
+- 本 Task 仅把现有对话主链接入 Dialogue role；Consolidation/Diary 的领域数据源由后续 Task 通过 `ContextProjection` 传入。
 
 ## Task 3: 情绪接入、人格、关系与自我模型
 
