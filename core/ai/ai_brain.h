@@ -187,6 +187,7 @@ private:
     int m_daydreamInvalidBatches = 0;
 
     bool m_enabled = true;
+    bool m_storageInitializationAttempted = false;
     bool m_storageInitialized = false;
     bool m_running = false;
     bool m_busy = false;

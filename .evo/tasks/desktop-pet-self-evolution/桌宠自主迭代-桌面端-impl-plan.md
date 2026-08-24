@@ -48,7 +48,7 @@ ProfileDataMigrator.migrateLegacyMemory:
 ## Task 1B: 事件账本与运行时服务组装
 
 - **关联设计**: §3.2 事件账本与运行时服务组装
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 2
 - **依赖**: Task 1A
 

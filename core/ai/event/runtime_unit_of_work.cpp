@@ -28,10 +28,14 @@ SqliteRuntimeUnitOfWork::begin(const QString& databasePath) {
         QSqlDatabase::removeDatabase(name);
         return Result<std::unique_ptr<RuntimeUnitOfWork>, DomainError>::failure(error);
     }
-    QSqlQuery pragma(database);
-    if (!pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"))
-        || !pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"))
-        || !database.transaction()) {
+    bool transactionStarted = false;
+    {
+        QSqlQuery pragma(database);
+        transactionStarted = pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"))
+            && pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"))
+            && database.transaction();
+    }
+    if (!transactionStarted) {
         const DomainError error = domainError(
             QStringLiteral("EVENT_OUTBOX_UNAVAILABLE"),
             QStringLiteral("failed to begin runtime unit of work: %1")

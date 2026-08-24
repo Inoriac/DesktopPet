@@ -3,8 +3,12 @@
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
+#include <QSet>
 #include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QUuid>
+#include <QVariant>
 
 #include "ai/agent/agent_session.h"
 #include "ai/ai_brain.h"
@@ -23,6 +27,73 @@ bool writeFile(const QString& path, const QByteArray& contents) {
     QFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
     return file.write(contents) == contents.size();
+}
+
+bool execSql(const QString& databasePath, const QString& sql) {
+    const QString connectionName = QStringLiteral("runtime_test_write_%1").arg(
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
+    bool ok = false;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(
+            QStringLiteral("QSQLITE"), connectionName);
+        database.setDatabaseName(databasePath);
+        if (database.open()) {
+            QSqlQuery query(database);
+            ok = query.exec(sql);
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return ok;
+}
+
+bool updateEventColumn(const QString& databasePath,
+                       qint64 sequence,
+                       const QString& column,
+                       const QVariant& value) {
+    static const QSet<QString> allowedColumns = {
+        QStringLiteral("event_id"),
+        QStringLiteral("schema_version"),
+        QStringLiteral("profile_id"),
+        QStringLiteral("type"),
+        QStringLiteral("source"),
+        QStringLiteral("privacy"),
+        QStringLiteral("payload_json"),
+        QStringLiteral("private_ref_json"),
+        QStringLiteral("occurred_at"),
+        QStringLiteral("created_at")
+    };
+    if (!allowedColumns.contains(column)) return false;
+
+    const QString connectionName = QStringLiteral("runtime_test_update_%1").arg(
+        QUuid::createUuid().toString(QUuid::WithoutBraces));
+    bool ok = false;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(
+            QStringLiteral("QSQLITE"), connectionName);
+        database.setDatabaseName(databasePath);
+        if (database.open()) {
+            QSqlQuery query(database);
+            query.prepare(QStringLiteral("UPDATE event_log SET %1=? WHERE sequence=?")
+                              .arg(column));
+            query.addBindValue(value);
+            query.addBindValue(sequence);
+            ok = query.exec() && query.numRowsAffected() == 1;
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+    return ok;
+}
+
+QString privateReferenceJson(
+    const QString& store = QStringLiteral("private_psyche"),
+    const QString& recordType = QStringLiteral("diary_entry"),
+    const QString& recordId = QStringLiteral("22222222-2222-4222-8222-222222222222"),
+    const QString& profileId = kProfileId) {
+    return QString::fromUtf8(QJsonDocument(privateEventReferenceToJson({
+        store, recordType, recordId, profileId
+    })).toJson(QJsonDocument::Compact));
 }
 
 RuntimeStartRequest requestFor(QTemporaryDir& directory,
@@ -117,12 +188,20 @@ private slots:
     void readAfter_whenEventsMatchFilter_shouldReturnOrderedBoundedBatch();
     void readAfter_whenConsumerCanReadPrivateReference_shouldReturnReferenceWithoutBody();
     void readAfter_whenConsumerCannotReadPrivate_shouldFilterPrivateEvent();
+    void readAfter_whenUnauthorizedPrivateRowIsCorrupted_shouldSkipItBeforeParsing();
+    void readAfter_whenAuthorizedPrivateRowViolatesInvariant_shouldReject_data();
+    void readAfter_whenAuthorizedPrivateRowViolatesInvariant_shouldReject();
+    void readAfter_whenStoredEnvelopeIsInvalid_shouldReject_data();
+    void readAfter_whenStoredEnvelopeIsInvalid_shouldReject();
+    void readAfter_whenStoredEventBelongsToAnotherProfile_shouldRejectEntireRead();
     void readAfter_whenAuthorizationProfileDoesNotMatch_shouldRejectRead();
 
     void start_whenMigrationIsReady_shouldConfigureActivePathsBeforeFirstMemoryStoreOpen();
     void start_whenMigrationIsAmbiguous_shouldUseLegacyPathsAndDisableProfileGrowth();
     void start_whenNewSchemaMigrationFails_shouldKeepLegacyChatToolAndSkillPathAvailable();
     void initializeStorage_whenCalledTwice_shouldKeepFirstPathsAndRejectSecondCall();
+    void initializeStorage_whenFirstAttemptFails_shouldRejectRetryWithoutSwitchingPaths();
+    void triggerThink_whenStorageIsNotInitialized_shouldRemainInert();
 
     void captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions();
     void captureSnapshot_whenStateChangesLater_shouldKeepExistingSessionProjectionStable();
@@ -193,6 +272,149 @@ void TestAgentRuntimeServices::readAfter_whenConsumerCannotReadPrivate_shouldFil
     QVERIFY(result.isOk());
     QCOMPARE(result.value().size(), 1);
     QCOMPARE(result.value().first().privacy, EventPrivacy::Normal);
+}
+
+void TestAgentRuntimeServices::readAfter_whenUnauthorizedPrivateRowIsCorrupted_shouldSkipItBeforeParsing() {
+    StartedRuntime runtime;
+    QVERIFY(runtime.ready());
+    QVERIFY(runtime.services.eventLedger()->append(privateDraft()).isOk());
+    QVERIFY(runtime.services.eventLedger()->append(normalDraft()).isOk());
+    const QString runtimeDatabasePath = QDir(runtime.directory.path()).filePath(
+        QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(kProfileId));
+    QVERIFY(execSql(runtimeDatabasePath, QStringLiteral(
+        "UPDATE event_log SET private_ref_json='{invalid json}' WHERE privacy='private'")));
+    auto authorization = runtime.services.authorizationFor(QStringLiteral("identity"));
+    QVERIFY(authorization.isOk());
+    EventFilter filter{{}, {}, authorization.value()};
+
+    const auto result = runtime.services.eventLedger()->readAfter(0, filter, 1);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().size(), 1);
+    QCOMPARE(result.value().first().sequence, 2);
+    QCOMPARE(result.value().first().privacy, EventPrivacy::Normal);
+}
+
+void TestAgentRuntimeServices::readAfter_whenAuthorizedPrivateRowViolatesInvariant_shouldReject_data() {
+    QTest::addColumn<QString>("column");
+    QTest::addColumn<QVariant>("value");
+
+    QTest::newRow("invalid store")
+        << QStringLiteral("private_ref_json")
+        << QVariant(privateReferenceJson(QStringLiteral("memory")));
+    QTest::newRow("invalid record type")
+        << QStringLiteral("private_ref_json")
+        << QVariant(privateReferenceJson(
+               QStringLiteral("private_psyche"), QStringLiteral("unknown")));
+    QTest::newRow("invalid record id")
+        << QStringLiteral("private_ref_json")
+        << QVariant(privateReferenceJson(
+               QStringLiteral("private_psyche"), QStringLiteral("diary_entry"),
+               QStringLiteral("not-a-uuid")));
+    QTest::newRow("invalid reference profile id")
+        << QStringLiteral("private_ref_json")
+        << QVariant(privateReferenceJson(
+               QStringLiteral("private_psyche"), QStringLiteral("diary_entry"),
+               QStringLiteral("22222222-2222-4222-8222-222222222222"),
+               QStringLiteral("not-a-uuid")));
+    QTest::newRow("reference belongs to another profile")
+        << QStringLiteral("private_ref_json")
+        << QVariant(privateReferenceJson(
+               QStringLiteral("private_psyche"), QStringLiteral("diary_entry"),
+               QStringLiteral("22222222-2222-4222-8222-222222222222"),
+               kOtherProfileId));
+    QTest::newRow("private payload contains body")
+        << QStringLiteral("payload_json")
+        << QVariant(QStringLiteral("{\"body\":\"secret\"}"));
+    QTest::newRow("non-private row contains reference")
+        << QStringLiteral("privacy") << QVariant(QStringLiteral("normal"));
+}
+
+void TestAgentRuntimeServices::readAfter_whenAuthorizedPrivateRowViolatesInvariant_shouldReject() {
+    QFETCH(QString, column);
+    QFETCH(QVariant, value);
+    StartedRuntime runtime;
+    QVERIFY(runtime.ready());
+    QVERIFY(runtime.services.eventLedger()->append(privateDraft()).isOk());
+    const QString runtimeDatabasePath = QDir(runtime.directory.path()).filePath(
+        QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(kProfileId));
+    QVERIFY(updateEventColumn(runtimeDatabasePath, 1, column, value));
+    auto authorization = runtime.services.authorizationFor(QStringLiteral("reflection"));
+    QVERIFY(authorization.isOk());
+    EventFilter filter{{}, {}, authorization.value()};
+
+    const auto result = runtime.services.eventLedger()->readAfter(0, filter, 10);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("EVT_SCHEMA_INVALID"));
+}
+
+void TestAgentRuntimeServices::readAfter_whenStoredEnvelopeIsInvalid_shouldReject_data() {
+    QTest::addColumn<QString>("column");
+    QTest::addColumn<QVariant>("value");
+
+    QTest::newRow("empty event id")
+        << QStringLiteral("event_id") << QVariant(QString());
+    QTest::newRow("invalid schema version")
+        << QStringLiteral("schema_version") << QVariant(0);
+    QTest::newRow("invalid profile id")
+        << QStringLiteral("profile_id") << QVariant(QStringLiteral("not-a-uuid"));
+    QTest::newRow("empty type")
+        << QStringLiteral("type") << QVariant(QString());
+    QTest::newRow("empty source")
+        << QStringLiteral("source") << QVariant(QString());
+    QTest::newRow("invalid privacy")
+        << QStringLiteral("privacy") << QVariant(QStringLiteral("unknown"));
+    QTest::newRow("invalid occurred-at")
+        << QStringLiteral("occurred_at") << QVariant(QStringLiteral("not-a-date"));
+    QTest::newRow("non-UTC occurred-at")
+        << QStringLiteral("occurred_at")
+        << QVariant(QStringLiteral("2026-08-24T12:00:00.000+08:00"));
+    QTest::newRow("invalid created-at")
+        << QStringLiteral("created_at") << QVariant(QStringLiteral("not-a-date"));
+    QTest::newRow("non-UTC created-at")
+        << QStringLiteral("created_at")
+        << QVariant(QStringLiteral("2026-08-24T12:00:00.000+08:00"));
+    QTest::newRow("payload violates registered schema")
+        << QStringLiteral("payload_json") << QVariant(QStringLiteral("{}"));
+}
+
+void TestAgentRuntimeServices::readAfter_whenStoredEnvelopeIsInvalid_shouldReject() {
+    QFETCH(QString, column);
+    QFETCH(QVariant, value);
+    StartedRuntime runtime;
+    QVERIFY(runtime.ready());
+    QVERIFY(runtime.services.eventLedger()->append(normalDraft()).isOk());
+    const QString runtimeDatabasePath = QDir(runtime.directory.path()).filePath(
+        QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(kProfileId));
+    QVERIFY(updateEventColumn(runtimeDatabasePath, 1, column, value));
+    auto authorization = runtime.services.authorizationFor(QStringLiteral("identity"));
+    QVERIFY(authorization.isOk());
+    EventFilter filter{{}, {}, authorization.value()};
+
+    const auto result = runtime.services.eventLedger()->readAfter(0, filter, 10);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("EVT_SCHEMA_INVALID"));
+}
+
+void TestAgentRuntimeServices::readAfter_whenStoredEventBelongsToAnotherProfile_shouldRejectEntireRead() {
+    StartedRuntime runtime;
+    QVERIFY(runtime.ready());
+    QVERIFY(runtime.services.eventLedger()->append(normalDraft()).isOk());
+    QVERIFY(runtime.services.eventLedger()->append(normalDraft()).isOk());
+    const QString runtimeDatabasePath = QDir(runtime.directory.path()).filePath(
+        QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(kProfileId));
+    QVERIFY(updateEventColumn(runtimeDatabasePath, 2, QStringLiteral("profile_id"),
+                              kOtherProfileId));
+    auto authorization = runtime.services.authorizationFor(QStringLiteral("identity"));
+    QVERIFY(authorization.isOk());
+    EventFilter filter{{}, {}, authorization.value()};
+
+    const auto result = runtime.services.eventLedger()->readAfter(0, filter, 10);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("EVT_READ_FORBIDDEN"));
 }
 
 void TestAgentRuntimeServices::readAfter_whenAuthorizationProfileDoesNotMatch_shouldRejectRead() {
@@ -301,6 +523,45 @@ void TestAgentRuntimeServices::initializeStorage_whenCalledTwice_shouldKeepFirst
     QCOMPARE(result.error().code, QStringLiteral("STATE_VERSION_CONFLICT"));
     QCOMPARE(brain.memoryStore()->databasePath(), first.databasePath);
     QCOMPARE(brain.memoryStore()->storagePath(), first.jsonPath);
+}
+
+void TestAgentRuntimeServices::initializeStorage_whenFirstAttemptFails_shouldRejectRetryWithoutSwitchingPaths() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QString blockedParent = directory.filePath(QStringLiteral("not-a-directory"));
+    QVERIFY(writeFile(blockedParent, "blocked"));
+    AIBrain brain;
+    const AIBrainStorageConfig first{
+        QDir(blockedParent).filePath(QStringLiteral("memory.db")),
+        directory.filePath(QStringLiteral("first.json"))
+    };
+    const AIBrainStorageConfig second{
+        directory.filePath(QStringLiteral("second.db")),
+        directory.filePath(QStringLiteral("second.json"))
+    };
+    const auto firstResult = brain.initializeStorage(first);
+    QVERIFY(!firstResult.isOk());
+    QCOMPARE(firstResult.error().code, QStringLiteral("MEMORY_STORE_UNAVAILABLE"));
+
+    const auto retryResult = brain.initializeStorage(second);
+
+    QVERIFY(!retryResult.isOk());
+    QCOMPARE(retryResult.error().code, QStringLiteral("STATE_VERSION_CONFLICT"));
+    QVERIFY(!brain.isStorageInitialized());
+    QCOMPARE(brain.memoryStore()->databasePath(), first.databasePath);
+    QCOMPARE(brain.memoryStore()->storagePath(), first.jsonPath);
+}
+
+void TestAgentRuntimeServices::triggerThink_whenStorageIsNotInitialized_shouldRemainInert() {
+    AIBrain brain;
+    QSignalSpy thinkingStarted(&brain, &AIBrain::thinkingStarted);
+    const int memoryCount = brain.memoryStore()->all().size();
+
+    brain.triggerThink(QStringLiteral("pre-bootstrap probe"),
+                       QStringLiteral("idle_action"));
+
+    QCOMPARE(brain.memoryStore()->all().size(), memoryCount);
+    QCOMPARE(thinkingStarted.count(), 0);
 }
 
 void TestAgentRuntimeServices::captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions() {

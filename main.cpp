@@ -1,6 +1,7 @@
 #include <QApplication>
 #include <QCommandLineParser>
 #include <QDir>
+#include <QStandardPaths>
 #include <QSurfaceFormat>
 
 #include "ai_types.h"
@@ -68,15 +69,28 @@ int main(int argc, char *argv[])
     const std::optional<QString> requestedProfileId = parser.isSet(profileIdOption)
         ? std::optional<QString>{parser.value(profileIdOption)}
         : std::nullopt;
+    const QList<PetProfile> profiles = Pet::instance().getProfiles();
     const ProfileResolutionResult profileResult =
-        ProfileResolver(Pet::instance().getProfiles()).resolve(
-            requestedPetName, requestedProfileId);
+        ProfileResolver(profiles).resolve(requestedPetName, requestedProfileId);
     if (!profileResult.isResolved()) {
         qCritical() << "[main] PROFILE_ID_INVALID:" << profileResult.diagnostic;
         return 1;
     }
     const PetProfile profile = *profileResult.profile;
     const QString petName = profile.name;
+    QStringList registeredProfileIds;
+    registeredProfileIds.reserve(profiles.size());
+    for (const PetProfile& registeredProfile : profiles) {
+        registeredProfileIds.append(registeredProfile.profileId);
+    }
+    ProfileMigrationRequest profileMigration;
+    profileMigration.profileId = profile.profileId;
+    profileMigration.registeredProfileIds = registeredProfileIds;
+    profileMigration.confirmedLegacyOwnerProfileId = std::nullopt;
+    profileMigration.appDataRoot =
+        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    profileMigration.legacyDatabasePath = QStringLiteral("runtime/memory/memory.db");
+    profileMigration.legacyJsonPath = QStringLiteral("log/ai_memory.json");
 
     // 身份匹配完成后才读取运行配置或打开其他持久化服务。
     if (!configPath.isEmpty()) {
@@ -96,7 +110,7 @@ int main(int argc, char *argv[])
     cfg.setLlmEnabled(aiEnabled);
     cfg.setVoiceConfig(voice);
 
-    PetWindow *pet = new PetWindow(petName, nullptr);
+    PetWindow *pet = new PetWindow(profile, profileMigration, nullptr);
     StatisticManager::getInstance().recordPetStart(petName);
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [petName]() {
         StatisticManager::getInstance().recordPetStop(petName);

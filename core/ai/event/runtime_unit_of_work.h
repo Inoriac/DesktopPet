@@ -9,6 +9,7 @@ class RuntimeUnitOfWork {
 public:
     virtual ~RuntimeUnitOfWork() = default;
     virtual QString connectionName() const = 0;
+    virtual bool isActive() const = 0;
     virtual Result<void, DomainError> commit() = 0;
     virtual void rollback() = 0;
 };
@@ -26,6 +27,7 @@ public:
     ~SqliteRuntimeUnitOfWork() override;
 
     QString connectionName() const override { return m_connectionName; }
+    bool isActive() const override { return m_active; }
     Result<void, DomainError> commit() override;
     void rollback() override;
 

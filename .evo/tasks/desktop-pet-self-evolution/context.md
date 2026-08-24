@@ -29,6 +29,9 @@
 - [2026-08-21] [code-impl Task 1B 设计回溯] `AIBrain` 可由 PetWindow 提前构造用于 Qt 信号连接，但构造阶段不得打开 MemoryStore；唯一启动入口由 `AgentBootstrap` 在同一调用栈执行 ProfileDataMigrator、消费 active DB/JSON path、一次性初始化 AIBrain storage，再打开 runtime DB。
 - [2026-08-21] [code-impl Task 1B 设计回溯] PetWindow 拥有 AIBrain、RuntimeUiBridge 和 AgentRuntimeServices；services 只拥有领域 Repository/Service，bridge/brain 均为 non-owning，并在窗口销毁 UI/渲染对象前先 stop/reset runtime。
 - [2026-08-21] [code-impl Task 1B 设计回溯] RuntimeSnapshot 固定 profile、identity baseline schema/hash、可选 personality/relationship/self-model version、config hash 和 capture time；Event private payload 只保存受类型约束的引用；同库领域写入统一使用 RuntimeUnitOfWork 与 outbox 同连接提交。
+- [2026-08-24] [code-impl Task 1B sanity check] §3.2.5 实现锚点已静态验证一致：`AgentBootstrap::start` 按 migrator -> `AIBrain::initializeStorage` -> runtime schema/services 组装的顺序执行；Event Schema registry、SQLite repository、RuntimeUnitOfWork/outbox、RuntimeSnapshot/AgentSession 与 PetWindow 所有权及销毁顺序均与系分契约一致。
+- [2026-08-24] [code-impl Task 1B 静态验收] impl-plan 中 Task 1B 的计划测试均存在对应定义，`EventLedgerTests`/`AgentRuntimeServicesTests` 及所需源码已注册到 CMake，`git diff --check` 通过；遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
+- [2026-08-24] [code-impl Task 1B 确认] 用户确认 Task 1B 当前结果并同意进入 Task 2；Wave 2 冲突、测试覆盖、测试位置、CMake 注册与实现锚点均已静态核对，运行验证继续保留为“未运行，待受支持环境验证”。
 
 ## 设计偏差
 

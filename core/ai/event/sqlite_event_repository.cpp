@@ -23,6 +23,47 @@ QString compactJson(const QJsonObject& object) {
     return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
 }
 
+Result<void, DomainError> validateStoredEventRecord(const EventRecord& record) {
+    if (record.sequence <= 0
+        || !isCanonicalEventUuid(record.eventId)
+        || record.schemaVersion <= 0
+        || !isCanonicalEventUuid(record.profileId)
+        || record.type.trimmed().isEmpty()
+        || record.source.trimmed().isEmpty()
+        || !record.occurredAt.isValid()
+        || record.occurredAt.timeSpec() != Qt::UTC
+        || !record.createdAt.isValid()
+        || record.createdAt.timeSpec() != Qt::UTC) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                        QStringLiteral("stored event envelope is invalid")));
+    }
+
+    if (record.privacy == EventPrivacy::Private) {
+        if (!record.payload.isEmpty() || !record.privateReference.has_value()) {
+            return Result<void, DomainError>::failure(
+                domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                            QStringLiteral("stored private event must contain only a reference")));
+        }
+        const PrivateEventReference& reference = *record.privateReference;
+        if (reference.store != QLatin1String("private_psyche")
+            || (reference.recordType != QLatin1String("inner_thought")
+                && reference.recordType != QLatin1String("diary_entry"))
+            || !isCanonicalEventUuid(reference.recordId)
+            || !isCanonicalEventUuid(reference.profileId)
+            || reference.profileId != record.profileId) {
+            return Result<void, DomainError>::failure(
+                domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                            QStringLiteral("stored private event reference is invalid")));
+        }
+    } else if (record.privateReference.has_value()) {
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                        QStringLiteral("stored non-private event contains a private reference")));
+    }
+    return Result<void, DomainError>::success();
+}
+
 Result<EventRecord, DomainError> recordFromQuery(const QSqlQuery& query) {
     EventRecord record;
     record.sequence = query.value(QStringLiteral("sequence")).toLongLong();
@@ -36,7 +77,8 @@ Result<EventRecord, DomainError> recordFromQuery(const QSqlQuery& query) {
         eventPrivacyFromString(query.value(QStringLiteral("privacy")).toString());
     if (!privacy.has_value()) {
         return Result<EventRecord, DomainError>::failure(
-            sqliteError(QStringLiteral("stored event privacy is invalid")));
+            domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                        QStringLiteral("stored event privacy is invalid")));
     }
     record.privacy = *privacy;
 
@@ -45,7 +87,8 @@ Result<EventRecord, DomainError> recordFromQuery(const QSqlQuery& query) {
         query.value(QStringLiteral("payload_json")).toByteArray(), &payloadError);
     if (payloadError.error != QJsonParseError::NoError || !payload.isObject()) {
         return Result<EventRecord, DomainError>::failure(
-            sqliteError(QStringLiteral("stored event payload is invalid")));
+            domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                        QStringLiteral("stored event payload is invalid")));
     }
     record.payload = payload.object();
 
@@ -56,7 +99,8 @@ Result<EventRecord, DomainError> recordFromQuery(const QSqlQuery& query) {
             referenceJson.toUtf8(), &referenceError);
         if (referenceError.error != QJsonParseError::NoError || !reference.isObject()) {
             return Result<EventRecord, DomainError>::failure(
-                sqliteError(QStringLiteral("stored private event reference is invalid")));
+                domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
+                            QStringLiteral("stored private event reference is invalid")));
         }
         auto parsed = privateEventReferenceFromJson(reference.object());
         if (!parsed.isOk()) {
@@ -65,9 +109,13 @@ Result<EventRecord, DomainError> recordFromQuery(const QSqlQuery& query) {
         record.privateReference = parsed.takeValue();
     }
     record.occurredAt = QDateTime::fromString(
-        query.value(QStringLiteral("occurred_at")).toString(), Qt::ISODateWithMs).toUTC();
+        query.value(QStringLiteral("occurred_at")).toString(), Qt::ISODateWithMs);
     record.createdAt = QDateTime::fromString(
-        query.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs).toUTC();
+        query.value(QStringLiteral("created_at")).toString(), Qt::ISODateWithMs);
+    const Result<void, DomainError> validation = validateStoredEventRecord(record);
+    if (!validation.isOk()) {
+        return Result<EventRecord, DomainError>::failure(validation.error());
+    }
     return Result<EventRecord, DomainError>::success(std::move(record));
 }
 
@@ -299,6 +347,9 @@ Result<QList<EventRecord>, DomainError> SqliteEventRepository::readAfter(
             sqliteError(QStringLiteral("runtime event repository is closed")));
     }
     QSqlDatabase database = QSqlDatabase::database(m_connectionName);
+    const bool allowsAllPrivateReferences =
+        filter.authorization.allowsPrivateReference(QStringLiteral("inner_thought"))
+        && filter.authorization.allowsPrivateReference(QStringLiteral("diary_entry"));
     QString sql = QStringLiteral("SELECT * FROM event_log WHERE sequence > ?");
     if (!filter.sessionId.isEmpty()) sql += QStringLiteral(" AND session_id = ?");
     if (!filter.types.isEmpty()) {
@@ -307,24 +358,38 @@ Result<QList<EventRecord>, DomainError> SqliteEventRepository::readAfter(
         sql += QStringLiteral(" AND type IN (") + placeholders.join(QLatin1Char(','))
             + QLatin1Char(')');
     }
-    sql += QStringLiteral(" ORDER BY sequence ASC");
+    sql += QStringLiteral(" AND (privacy='normal'");
+    if (filter.authorization.allowsSensitivePayload()) {
+        sql += QStringLiteral(" OR privacy='sensitive'");
+    }
+    if (allowsAllPrivateReferences) {
+        sql += QStringLiteral(" OR privacy='private'");
+    }
+    sql += QStringLiteral(" OR privacy NOT IN ('normal','sensitive','private')");
+    sql += QStringLiteral(") ORDER BY sequence ASC LIMIT ?");
     QSqlQuery query(database);
     query.prepare(sql);
     query.addBindValue(sequence);
     if (!filter.sessionId.isEmpty()) query.addBindValue(filter.sessionId);
     for (const QString& type : filter.types) query.addBindValue(type);
+    query.addBindValue(limit);
     if (!query.exec()) {
         return Result<QList<EventRecord>, DomainError>::failure(
             sqliteError(QStringLiteral("failed to read events"), query.lastError()));
     }
 
     QList<EventRecord> records;
-    while (query.next() && records.size() < limit) {
+    while (query.next()) {
         auto parsed = recordFromQuery(query);
         if (!parsed.isOk()) {
             return Result<QList<EventRecord>, DomainError>::failure(parsed.error());
         }
         EventRecord record = parsed.takeValue();
+        if (record.profileId != filter.authorization.profileId()) {
+            return Result<QList<EventRecord>, DomainError>::failure(
+                domainError(QStringLiteral("EVT_READ_FORBIDDEN"),
+                            QStringLiteral("stored event belongs to another profile")));
+        }
         if (record.privacy == EventPrivacy::Sensitive
             && !filter.authorization.allowsSensitivePayload()) {
             continue;
@@ -381,6 +446,7 @@ Result<void, DomainError> SqliteEventRepository::commitCheckpoint(
     }
     const bool exists = current.next();
     const qint64 actual = exists ? current.value(0).toLongLong() : 0;
+    current.finish();
     if (actual != expectedSequence) {
         database.rollback();
         return Result<void, DomainError>::failure(
@@ -405,11 +471,24 @@ Result<void, DomainError> SqliteEventRepository::commitCheckpoint(
         write.addBindValue(nextSequence);
         write.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
     }
-    if (!write.exec() || (exists && write.numRowsAffected() != 1) || !database.commit()) {
+    if (!write.exec()) {
         database.rollback();
         return Result<void, DomainError>::failure(
             sqliteError(QStringLiteral("failed to commit checkpoint"),
-                        write.lastError().isValid() ? write.lastError() : database.lastError()));
+                        write.lastError()));
+    }
+    if (exists && write.numRowsAffected() != 1) {
+        database.rollback();
+        return Result<void, DomainError>::failure(
+            domainError(QStringLiteral("STATE_VERSION_CONFLICT"),
+                        QStringLiteral("consumer checkpoint changed")));
+    }
+    write.finish();
+    if (!database.commit()) {
+        database.rollback();
+        return Result<void, DomainError>::failure(
+            sqliteError(QStringLiteral("failed to commit checkpoint"),
+                        database.lastError()));
     }
     return Result<void, DomainError>::success();
 }

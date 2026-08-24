@@ -1,6 +1,7 @@
 #include <QtTest>
 
 #include <QDir>
+#include <QJsonDocument>
 #include <QJsonObject>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -90,6 +91,39 @@ bool execSql(const QString& databasePath, const QString& sql) {
     return ok;
 }
 
+bool updateOutboxEnvelopeField(const QString& databasePath,
+                               const QString& field,
+                               const QString& value) {
+    const QString name = connectionName(QStringLiteral("event_test_mutate"));
+    bool ok = false;
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), name);
+        database.setDatabaseName(databasePath);
+        if (database.open()) {
+            QSqlQuery select(database);
+            if (select.exec(QStringLiteral(
+                    "SELECT outbox_id,payload_json FROM event_outbox LIMIT 1"))
+                && select.next()) {
+                const QString outboxId = select.value(0).toString();
+                QJsonDocument document = QJsonDocument::fromJson(
+                    select.value(1).toByteArray());
+                QJsonObject envelope = document.object();
+                envelope.insert(field, value);
+                QSqlQuery update(database);
+                update.prepare(QStringLiteral(
+                    "UPDATE event_outbox SET payload_json=? WHERE outbox_id=?"));
+                update.addBindValue(QString::fromUtf8(
+                    QJsonDocument(envelope).toJson(QJsonDocument::Compact)));
+                update.addBindValue(outboxId);
+                ok = update.exec() && update.numRowsAffected() == 1;
+            }
+            database.close();
+        }
+    }
+    QSqlDatabase::removeDatabase(name);
+    return ok;
+}
+
 struct EventFixture {
     QTemporaryDir directory;
     QString databasePath;
@@ -138,10 +172,14 @@ private slots:
 
     void enqueue_whenDomainWriteUsesSameUnitOfWork_shouldCommitStateAndPendingEventTogether();
     void enqueue_whenOutboxWriteFails_shouldRollBackDomainState();
+    void enqueue_whenUnitOfWorkIsCommittedOrRolledBack_shouldRejectWithoutOutboxWrite();
 
     void dispatchPending_whenDomainTransactionCommitted_shouldAppendEventAndMarkDelivered();
     void dispatchPending_whenTransactionFailsAfterInsert_shouldRollBackEventAndKeepOutboxPending();
     void dispatchPending_whenAppendTemporarilyFails_shouldKeepPendingAndAdvanceRetryMetadata();
+    void dispatchPending_whenReplayEnvelopeIsCorrupted_shouldKeepPendingAndAdvanceRetryMetadata_data();
+    void dispatchPending_whenReplayEnvelopeIsCorrupted_shouldKeepPendingAndAdvanceRetryMetadata();
+    void dispatchPending_whenRetryMetadataUpdateFails_shouldPreserveDeliveryError();
 };
 
 void TestEventLedger::validate_whenBuiltInSchemaMatches_shouldAcceptDraftAndPreserveUnknownFields() {
@@ -320,6 +358,28 @@ void TestEventLedger::enqueue_whenOutboxWriteFails_shouldRollBackDomainState() {
                     QStringLiteral("SELECT COUNT(*) FROM event_outbox")).toInt(), 0);
 }
 
+void TestEventLedger::enqueue_whenUnitOfWorkIsCommittedOrRolledBack_shouldRejectWithoutOutboxWrite() {
+    EventFixture fixture;
+    QVERIFY(fixture.ready());
+
+    auto committedResult = fixture.unitOfWorkFactory->begin();
+    QVERIFY(committedResult.isOk());
+    std::unique_ptr<RuntimeUnitOfWork> committed = committedResult.takeValue();
+    QVERIFY(committed->commit().isOk());
+    const auto enqueueAfterCommit = fixture.outbox->enqueue(*committed, userMessageDraft());
+
+    auto rolledBackResult = fixture.unitOfWorkFactory->begin();
+    QVERIFY(rolledBackResult.isOk());
+    std::unique_ptr<RuntimeUnitOfWork> rolledBack = rolledBackResult.takeValue();
+    rolledBack->rollback();
+    const auto enqueueAfterRollback = fixture.outbox->enqueue(*rolledBack, userMessageDraft());
+
+    QVERIFY(!enqueueAfterCommit.isOk());
+    QVERIFY(!enqueueAfterRollback.isOk());
+    QCOMPARE(scalar(fixture.databasePath,
+                    QStringLiteral("SELECT COUNT(*) FROM event_outbox")).toInt(), 0);
+}
+
 void TestEventLedger::dispatchPending_whenDomainTransactionCommitted_shouldAppendEventAndMarkDelivered() {
     EventFixture fixture;
     QVERIFY(fixture.ready());
@@ -381,6 +441,74 @@ void TestEventLedger::dispatchPending_whenAppendTemporarilyFails_shouldKeepPendi
                     QStringLiteral("SELECT attempt_count FROM event_outbox")).toInt(), 1);
     QVERIFY(!scalar(fixture.databasePath,
                     QStringLiteral("SELECT next_attempt_at FROM event_outbox")).toString().isEmpty());
+}
+
+void TestEventLedger::dispatchPending_whenReplayEnvelopeIsCorrupted_shouldKeepPendingAndAdvanceRetryMetadata_data() {
+    QTest::addColumn<QString>("field");
+    QTest::addColumn<QString>("value");
+
+    QTest::newRow("empty event id") << QStringLiteral("eventId") << QString();
+    QTest::newRow("invalid occurred-at")
+        << QStringLiteral("occurredAt") << QStringLiteral("not-a-date");
+    QTest::newRow("non-UTC occurred-at")
+        << QStringLiteral("occurredAt") << QStringLiteral("2026-08-24T12:00:00.000+08:00");
+}
+
+void TestEventLedger::dispatchPending_whenReplayEnvelopeIsCorrupted_shouldKeepPendingAndAdvanceRetryMetadata() {
+    QFETCH(QString, field);
+    QFETCH(QString, value);
+    EventFixture fixture;
+    QVERIFY(fixture.ready());
+    auto begun = fixture.unitOfWorkFactory->begin();
+    QVERIFY(begun.isOk());
+    std::unique_ptr<RuntimeUnitOfWork> unitOfWork = begun.takeValue();
+    QVERIFY(fixture.outbox->enqueue(*unitOfWork, userMessageDraft()).isOk());
+    QVERIFY(unitOfWork->commit().isOk());
+    QVERIFY(updateOutboxEnvelopeField(fixture.databasePath, field, value));
+
+    const auto dispatched = fixture.outbox->dispatchPending(10);
+
+    QVERIFY(!dispatched.isOk());
+    QCOMPARE(dispatched.error().code, QStringLiteral("EVT_SCHEMA_INVALID"));
+    QCOMPARE(scalar(fixture.databasePath,
+                    QStringLiteral("SELECT COUNT(*) FROM event_log")).toInt(), 0);
+    QCOMPARE(scalar(fixture.databasePath,
+                    QStringLiteral("SELECT status FROM event_outbox")).toString(),
+             QStringLiteral("Pending"));
+    QCOMPARE(scalar(fixture.databasePath,
+                    QStringLiteral("SELECT attempt_count FROM event_outbox")).toInt(), 1);
+    QVERIFY(!scalar(fixture.databasePath,
+                    QStringLiteral("SELECT next_attempt_at FROM event_outbox")).toString().isEmpty());
+}
+
+void TestEventLedger::dispatchPending_whenRetryMetadataUpdateFails_shouldPreserveDeliveryError() {
+    EventFixture fixture;
+    QVERIFY(fixture.ready());
+    auto begun = fixture.unitOfWorkFactory->begin();
+    QVERIFY(begun.isOk());
+    std::unique_ptr<RuntimeUnitOfWork> unitOfWork = begun.takeValue();
+    QVERIFY(fixture.outbox->enqueue(*unitOfWork, userMessageDraft()).isOk());
+    QVERIFY(unitOfWork->commit().isOk());
+    QVERIFY(execSql(fixture.databasePath,
+                    QStringLiteral("UPDATE event_outbox SET payload_json='{invalid json}'")));
+    QVERIFY(execSql(fixture.databasePath, QStringLiteral(
+        "CREATE TRIGGER reject_retry BEFORE UPDATE OF attempt_count ON event_outbox "
+        "BEGIN SELECT RAISE(ABORT, 'retry metadata failed'); END")));
+
+    const auto dispatched = fixture.outbox->dispatchPending(10);
+
+    QVERIFY(!dispatched.isOk());
+    QCOMPARE(dispatched.error().code, QStringLiteral("EVENT_OUTBOX_UNAVAILABLE"));
+    QVERIFY(dispatched.error().message.contains(
+        QStringLiteral("outbox payload is invalid JSON")));
+    QCOMPARE(dispatched.error().details.value(
+                 QStringLiteral("retryMetadataAdvanced")).toBool(), false);
+    QVERIFY(!dispatched.error().details.value(
+                 QStringLiteral("retryMetadataError")).toString().isEmpty());
+    QCOMPARE(scalar(fixture.databasePath,
+                    QStringLiteral("SELECT attempt_count FROM event_outbox")).toInt(), 0);
+    QVERIFY(scalar(fixture.databasePath,
+                   QStringLiteral("SELECT next_attempt_at FROM event_outbox")).isNull());
 }
 
 QTEST_APPLESS_MAIN(TestEventLedger)

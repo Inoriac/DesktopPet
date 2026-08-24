@@ -95,6 +95,32 @@ set(UI_SOURCES
     ui/trayicon.h
 )
 
+set(EVENT_LEDGER_SOURCES
+    core/ai/domain/domain_result.h
+    core/ai/event/event_types.h
+    core/ai/event/event_types.cpp
+    core/ai/event/event_schema_registry.h
+    core/ai/event/event_schema_registry.cpp
+    core/ai/event/event_ledger.h
+    core/ai/event/event_ledger.cpp
+    core/ai/event/event_outbox.h
+    core/ai/event/event_outbox.cpp
+    core/ai/event/runtime_unit_of_work.h
+    core/ai/event/runtime_unit_of_work.cpp
+    core/ai/event/sqlite_event_repository.h
+    core/ai/event/sqlite_event_repository.cpp
+)
+
+set(AGENT_RUNTIME_SOURCES
+    core/ai/runtime/runtime_types.h
+    core/ai/runtime/runtime_ui_bridge.h
+    core/ai/runtime/runtime_ui_bridge.cpp
+    core/ai/runtime/agent_runtime_services.h
+    core/ai/runtime/agent_runtime_services.cpp
+    core/ai/runtime/agent_bootstrap.h
+    core/ai/runtime/agent_bootstrap.cpp
+)
+
 set(CORE_SOURCES
     core/animation/animation_manager.cpp
     core/animation/animation_manager.h
@@ -156,6 +182,8 @@ set(CORE_SOURCES
     core/ai/runtime/profile_resolver.cpp
     core/ai/runtime/profile_data_migrator.h
     core/ai/runtime/profile_data_migrator.cpp
+    ${EVENT_LEDGER_SOURCES}
+    ${AGENT_RUNTIME_SOURCES}
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -458,6 +486,136 @@ target_link_libraries(profile_data_migrator_tests
     Qt::Test
 )
 add_test(NAME ProfileDataMigratorTests COMMAND profile_data_migrator_tests)
+
+# ---- Event ledger, checkpoint, outbox, and unit-of-work tests ----
+add_executable(event_ledger_tests
+    tests/test_event_ledger.cpp
+    ${EVENT_LEDGER_SOURCES}
+)
+target_include_directories(event_ledger_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+)
+target_link_libraries(event_ledger_tests
+    Qt::Core
+    Qt::Sql
+    Qt::Test
+)
+add_test(NAME EventLedgerTests COMMAND event_ledger_tests)
+
+# ---- Agent bootstrap and runtime service composition tests ----
+add_executable(agent_runtime_services_tests
+    tests/test_agent_runtime_services.cpp
+    ${EVENT_LEDGER_SOURCES}
+    ${AGENT_RUNTIME_SOURCES}
+    core/ai/runtime/profile_resolver.h
+    core/ai/runtime/profile_resolver.cpp
+    core/ai/runtime/profile_data_migrator.h
+    core/ai/runtime/profile_data_migrator.cpp
+    core/ai/ai_brain.h
+    core/ai/ai_brain.cpp
+    core/ai/ai_brain_router.cpp
+    core/ai/ai_brain_loop.cpp
+    core/ai/ai_call_logger.h
+    core/ai/ai_call_logger.cpp
+    core/ai/agent/agent_session.h
+    core/ai/agent/agent_session.cpp
+    core/ai/context_builder.h
+    core/ai/context_builder.cpp
+    core/ai/identity/identity_baseline.h
+    core/ai/identity/identity_baseline.cpp
+    core/ai/identity/persona_projector.h
+    core/ai/identity/persona_projector.cpp
+    core/ai/llm/llm_client.h
+    core/ai/llm/openai_compatible_client.h
+    core/ai/llm/openai_compatible_client.cpp
+    core/ai/llm/llm_chat_service.h
+    core/ai/llm/llm_chat_service.cpp
+    core/ai/prompt/prompt_template_types.h
+    core/ai/prompt/prompt_template_types.cpp
+    core/ai/prompt/prompt_renderer.h
+    core/ai/prompt/prompt_renderer.cpp
+    core/ai/router/intent_types.h
+    core/ai/router/intent_router.h
+    core/ai/router/intent_router.cpp
+    core/ai/tool_registry.h
+    core/ai/tool_registry.cpp
+    core/ai/tools/runtime/tool_policy.h
+    core/ai/tools/runtime/tool_policy.cpp
+    core/ai/tools/runtime/tool_result_sanitizer.h
+    core/ai/tools/runtime/tool_result_sanitizer.cpp
+    core/ai/tools/runtime/tool_runtime.h
+    core/ai/tools/runtime/tool_runtime.cpp
+    core/ai/tools/environment_tools.h
+    core/ai/tools/environment_tools.cpp
+    core/ai/memory/memory_types.h
+    core/ai/memory/memory_extractor.h
+    core/ai/memory/memory_extractor.cpp
+    core/ai/memory/memory_policy.h
+    core/ai/memory/memory_policy.cpp
+    core/ai/memory/memory_retriever.h
+    core/ai/memory/memory_retriever.cpp
+    core/ai/memory/memory_store.h
+    core/ai/memory/memory_store.cpp
+    core/ai/memory/memory_repository.h
+    core/ai/memory/sqlite_memory_repository.h
+    core/ai/memory/sqlite_memory_repository.cpp
+    core/ai/memory/memory_relation.h
+    core/ai/memory/memory_relation_graph.h
+    core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/tag_cooccurrence_graph.h
+    core/ai/memory/tag_cooccurrence_graph.cpp
+    core/ai/memory/working_memory_cache.h
+    core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/daydream_consolidator.h
+    core/ai/memory/daydream_consolidator.cpp
+    core/ai/memory/embedding_provider.h
+    core/ai/memory/embedding_index.h
+    core/ai/memory/partition_policy.h
+    core/ai/scheduler/scheduled_task.h
+    core/ai/scheduler/scheduled_task.cpp
+    core/ai/scheduler/agent_scheduler.h
+    core/ai/scheduler/agent_scheduler.cpp
+    core/ai/scheduler/daydream_trigger_policy.h
+    core/ai/scheduler/daydream_trigger_policy.cpp
+    core/ai/skill/skill_types.h
+    core/ai/skill/skill_types.cpp
+    core/ai/skill/skill_store.h
+    core/ai/skill/skill_store.cpp
+    core/ai/skill/skill_matcher.h
+    core/ai/skill/skill_matcher.cpp
+    core/configLoader/config_manager.h
+    core/configLoader/config_manager.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_config_json.h
+    core/emotion/emotion_config_json.cpp
+    statistic/statistic_manager.h
+    statistic/statistic_manager.cpp
+    include/statistic_types.h
+    include/ai_types.h
+    include/global_types.h
+)
+target_include_directories(agent_runtime_services_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(agent_runtime_services_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Sql
+    Qt::Test
+    $<$<PLATFORM_ID:Windows>:psapi>
+)
+if(APPLE)
+    target_link_libraries(agent_runtime_services_tests "-framework CoreGraphics")
+endif()
+add_test(NAME AgentRuntimeServicesTests COMMAND agent_runtime_services_tests)
 
 add_executable(statistic_manager_tests
         tests/test_statistic_manager.cpp

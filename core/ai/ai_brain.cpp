@@ -29,11 +29,12 @@ AIBrain::AIBrain(QObject* parent)
 
 Result<void, DomainError> AIBrain::initializeStorage(
     const AIBrainStorageConfig& config) {
-    if (m_storageInitialized || m_running) {
+    if (m_storageInitializationAttempted || m_running) {
         return Result<void, DomainError>::failure(
             domainError(QStringLiteral("STATE_VERSION_CONFLICT"),
-                        QStringLiteral("AI brain storage is already initialized")));
+                        QStringLiteral("AI brain storage initialization was already attempted")));
     }
+    m_storageInitializationAttempted = true;
     if (config.databasePath.trimmed().isEmpty() || config.jsonPath.trimmed().isEmpty()) {
         return Result<void, DomainError>::failure(
             domainError(QStringLiteral("RUNTIME_START_INVALID"),
@@ -149,7 +150,7 @@ void AIBrain::triggerThink(const QString& reason,
             return;
         }
     }
-    if (!m_enabled || m_busy) {
+    if (!m_storageInitialized || !m_enabled || m_busy) {
         return;
     }
 

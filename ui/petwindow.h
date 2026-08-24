@@ -16,6 +16,7 @@
 #include <memory>
 
 #include "ai/ai_brain.h"
+#include "ai/runtime/runtime_types.h"
 #include "ai/scheduler/agent_scheduler.h"
 #include "ai/tool_registry.h"
 #include "voice/voice_synthesis_service.h"
@@ -28,12 +29,16 @@ class BehaviorManager;
 class EmotionEngine;
 class PetController;
 class SQLiteEmotionStateRepository;
+class AgentRuntimeServices;
+class CallbackRuntimeUiBridge;
 
 class PetWindow : public QWidget{
     Q_OBJECT
 
 public:
-    explicit PetWindow(const QString modelName, QWidget *parent = nullptr);
+    explicit PetWindow(PetProfile profile,
+                       ProfileMigrationRequest profileMigration,
+                       QWidget *parent = nullptr);
     ~PetWindow();
 
     void applySettings(int sizePercent,
@@ -87,6 +92,7 @@ private:
     void resetEmotionSystem();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
     void setupAiBrain();
+    void teardownAiRuntime();
     void setupScreenChat();
     void updateScreenChatSchedule();
     void scheduleNextScreenChat();
@@ -172,6 +178,8 @@ private:
 
     // 渲染组件
     RenderViewport *renderViewport;
+    PetProfile profile;
+    ProfileMigrationRequest profileMigration;
     QString modelName;
 
     // 设置
@@ -184,6 +192,8 @@ private:
 
     VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
+    std::unique_ptr<CallbackRuntimeUiBridge> runtimeUiBridge;
+    std::unique_ptr<AgentRuntimeServices> runtimeServices;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
     std::unique_ptr<AgentScheduler> agentScheduler;
     std::unique_ptr<SQLiteEmotionStateRepository> emotionRepository;

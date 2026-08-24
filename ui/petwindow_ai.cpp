@@ -15,6 +15,9 @@
 #include "ai/tools/web_tools.h"
 #include "ai/skill/skill_tools.h"
 #include "ai/prompt/prompt_template_store.h"
+#include "ai/runtime/agent_bootstrap.h"
+#include "ai/runtime/agent_runtime_services.h"
+#include "ai/runtime/runtime_ui_bridge.h"
 #include "configLoader/config_manager.h"
 #include "controller/pet_controller.h"
 #include "render_engine.h"
@@ -24,6 +27,8 @@
 #include <QDebug>
 #include <QDir>
 #include <QMetaObject>
+
+#include <utility>
 
 void PetWindow::setupAiBrain() {
     if (!aiBrain || !renderViewport || !renderViewport->getRenderEngine()) {
@@ -40,9 +45,63 @@ void PetWindow::setupAiBrain() {
         qWarning() << "[AIBrain] AnimationManager not ready, skip setup";
         return;
     }
+    if (runtimeServices || runtimeUiBridge) {
+        qWarning() << "[AIBrain] runtime is already configured, skip duplicate setup";
+        return;
+    }
+
+    QPointer<PetWindow> window(this);
+    RuntimeUiCallbacks uiCallbacks;
+    uiCallbacks.showChatBubble = [window](const QString& text, int durationMs) {
+        if (!window) return;
+        QMetaObject::invokeMethod(window.data(), [window, text, durationMs]() {
+            if (!window) return;
+            window->showBubbleMessage(text, durationMs);
+            window->speakPetReply(text, QStringLiteral("toolBubble"));
+        }, Qt::QueuedConnection);
+    };
+    uiCallbacks.notifyUser =
+        [window](const QString& title, const QString& message, int durationMs) {
+            if (!window) return;
+            const QString bubbleText = title.trimmed().isEmpty()
+                ? message
+                : QStringLiteral("%1：%2").arg(title, message);
+            QMetaObject::invokeMethod(window.data(), [window, bubbleText, durationMs]() {
+                if (!window) return;
+                window->showBubbleMessage(bubbleText, durationMs);
+                window->speakPetReply(bubbleText, QStringLiteral("toolBubble"));
+            }, Qt::QueuedConnection);
+        };
+    runtimeUiBridge = std::make_unique<CallbackRuntimeUiBridge>(
+        std::move(uiCallbacks), player, animationManager);
+    runtimeServices = std::make_unique<AgentRuntimeServices>();
+
+    ConfigManager& config = ConfigManager::instance();
+    RuntimeStartRequest runtimeRequest;
+    runtimeRequest.profile = profile;
+    runtimeRequest.profileMigration = profileMigration;
+    runtimeRequest.configHash = config.configHash();
+    runtimeRequest.identityBaselineSchemaVersion = config.getIdentityBaseline().schemaVersion;
+    runtimeRequest.identityBaselineHash = config.identityBaselineHash();
+    runtimeRequest.aiBrain = aiBrain.get();
+    runtimeRequest.uiBridge = runtimeUiBridge.get();
+    const Result<RuntimeStartReport, DomainError> runtimeStarted =
+        AgentBootstrap::start(*runtimeServices, runtimeRequest);
+    if (!runtimeStarted.isOk()) {
+        qWarning() << "[AIBrain] runtime bootstrap failed:"
+                   << runtimeStarted.error().code << runtimeStarted.error().message;
+        runtimeServices.reset();
+        runtimeUiBridge.reset();
+        return;
+    }
+    const RuntimeStartReport& runtimeReport = runtimeStarted.value();
+    if (runtimeReport.mode == RuntimeMode::Degraded) {
+        qWarning() << "[AIBrain] runtime started in degraded mode:"
+                   << runtimeReport.diagnostics;
+    }
 
     // 设置文件/命令工具允许的根目录。默认来自配置，未配置时退回到应用目录和当前工作目录。
-    const AiToolAccessPolicy& toolAccessPolicy = ConfigManager::instance().getAiToolAccessPolicy();
+    const AiToolAccessPolicy& toolAccessPolicy = config.getAiToolAccessPolicy();
     m_allowedRoots.clear();
     m_allowedRoots.append(toolAccessPolicy.allowedRoots);
     if (m_allowedRoots.isEmpty()) {
@@ -180,3 +239,22 @@ void PetWindow::setupAiBrain() {
     }
 }
 
+void PetWindow::teardownAiRuntime() {
+    if (runtimeServices) {
+        runtimeServices->stop();
+        runtimeServices.reset();
+    }
+    runtimeUiBridge.reset();
+
+    if (agentScheduler) {
+        agentScheduler->stop();
+    }
+    if (aiBrain) {
+        aiBrain->setAgentScheduler(nullptr);
+        aiBrain->setToolRegistry(nullptr);
+        aiBrain->stop();
+    }
+    agentScheduler.reset();
+    aiToolRegistry.reset();
+    aiBrain.reset();
+}

@@ -40,7 +40,8 @@ SqliteEventOutbox::SqliteEventOutbox(QString databasePath,
 
 Result<QString, DomainError> SqliteEventOutbox::enqueue(
     RuntimeUnitOfWork& unitOfWork, const EventDraft& draft) {
-    if (!m_schemas || !QSqlDatabase::contains(unitOfWork.connectionName())) {
+    if (!m_schemas || !unitOfWork.isActive()
+        || !QSqlDatabase::contains(unitOfWork.connectionName())) {
         return Result<QString, DomainError>::failure(
             outboxError(QStringLiteral("runtime unit of work is unavailable")));
     }
@@ -145,32 +146,41 @@ Result<int, DomainError> SqliteEventOutbox::dispatchPending(int limit) {
             failed = true;
         } else {
             EventDraft draft = parsed.takeValue();
-            const Result<void, DomainError> validation = m_schemas->validate(draft);
-            if (!validation.isOk()) {
-                failure = validation.error();
-                failed = true;
-            } else if (!database.transaction()) {
-                failure = outboxError(QStringLiteral("failed to begin outbox delivery"),
-                                      database.lastError());
+            if (!isCanonicalEventUuid(draft.eventId)
+                || !draft.occurredAt.isValid()
+                || draft.occurredAt.timeSpec() != Qt::UTC) {
+                failure = domainError(
+                    QStringLiteral("EVT_SCHEMA_INVALID"),
+                    QStringLiteral("outbox event envelope is invalid"));
                 failed = true;
             } else {
-                auto inserted = SqliteEventRepository::insertEvent(database, draft, true);
-                QSqlQuery mark(database);
-                mark.prepare(QStringLiteral(
-                    "UPDATE event_outbox SET status='Delivered',delivered_at=? WHERE outbox_id=?"));
-                mark.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
-                mark.addBindValue(row.id);
-                if (!inserted.isOk() || !mark.exec() || mark.numRowsAffected() != 1
-                    || !database.commit()) {
-                    failure = inserted.isOk()
-                        ? outboxError(QStringLiteral("failed to mark outbox delivered"),
-                                      mark.lastError().isValid() ? mark.lastError()
-                                                                 : database.lastError())
-                        : inserted.error();
-                    database.rollback();
+                const Result<void, DomainError> validation = m_schemas->validate(draft);
+                if (!validation.isOk()) {
+                    failure = validation.error();
+                    failed = true;
+                } else if (!database.transaction()) {
+                    failure = outboxError(QStringLiteral("failed to begin outbox delivery"),
+                                          database.lastError());
                     failed = true;
                 } else {
-                    ++delivered;
+                    auto inserted = SqliteEventRepository::insertEvent(database, draft, true);
+                    QSqlQuery mark(database);
+                    mark.prepare(QStringLiteral(
+                        "UPDATE event_outbox SET status='Delivered',delivered_at=? WHERE outbox_id=?"));
+                    mark.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+                    mark.addBindValue(row.id);
+                    if (!inserted.isOk() || !mark.exec() || mark.numRowsAffected() != 1
+                        || !database.commit()) {
+                        failure = inserted.isOk()
+                            ? outboxError(QStringLiteral("failed to mark outbox delivered"),
+                                          mark.lastError().isValid() ? mark.lastError()
+                                                                     : database.lastError())
+                            : inserted.error();
+                        database.rollback();
+                        failed = true;
+                    } else {
+                        ++delivered;
+                    }
                 }
             }
         }
@@ -185,7 +195,14 @@ Result<int, DomainError> SqliteEventOutbox::dispatchPending(int limit) {
                 .addSecs(qMin(3600, 1 << qMin(nextAttempt, 10)))
                 .toString(Qt::ISODateWithMs));
             retry.addBindValue(row.id);
-            retry.exec();
+            const bool retryUpdated = retry.exec() && retry.numRowsAffected() == 1;
+            if (!retryUpdated) {
+                const QString retryError = retry.lastError().isValid()
+                    ? retry.lastError().text()
+                    : QStringLiteral("retry metadata update affected no pending row");
+                failure.details.insert(QStringLiteral("retryMetadataAdvanced"), false);
+                failure.details.insert(QStringLiteral("retryMetadataError"), retryError);
+            }
             break;
         }
     }

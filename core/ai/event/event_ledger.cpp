@@ -39,7 +39,8 @@ Result<EventRecord, DomainError> SqliteEventLedger::append(const EventDraft& dra
 
 Result<QList<EventRecord>, DomainError> SqliteEventLedger::readAfter(
     qint64 sequence, const EventFilter& filter, int limit) const {
-    if (!m_repository || filter.authorization.profileId() != m_profileId
+    if (!m_repository || !m_schemas
+        || filter.authorization.profileId() != m_profileId
         || filter.authorization.consumerId().trimmed().isEmpty()) {
         return Result<QList<EventRecord>, DomainError>::failure(
             domainError(QStringLiteral("EVT_READ_FORBIDDEN"),
@@ -50,7 +51,23 @@ Result<QList<EventRecord>, DomainError> SqliteEventLedger::readAfter(
             domainError(QStringLiteral("EVT_SCHEMA_INVALID"),
                         QStringLiteral("event read cursor or limit is invalid")));
     }
-    return m_repository->readAfter(sequence, filter, limit);
+    Result<QList<EventRecord>, DomainError> records =
+        m_repository->readAfter(sequence, filter, limit);
+    if (!records.isOk()) {
+        return records;
+    }
+    for (const EventRecord& record : records.value()) {
+        if (record.profileId != m_profileId) {
+            return Result<QList<EventRecord>, DomainError>::failure(
+                domainError(QStringLiteral("EVT_READ_FORBIDDEN"),
+                            QStringLiteral("stored event belongs to another runtime")));
+        }
+        const Result<void, DomainError> validation = m_schemas->validate(record);
+        if (!validation.isOk()) {
+            return Result<QList<EventRecord>, DomainError>::failure(validation.error());
+        }
+    }
+    return records;
 }
 
 Result<qint64, DomainError> SqliteEventConsumerCheckpointStore::current(

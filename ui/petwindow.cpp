@@ -6,7 +6,6 @@
 #include "chat_history_window.h"
 #include "liquidglasschatbubble.h"
 #include "render_viewport.h"
-#include "pet.h"
 
 #include <QApplication>
 #include <qboxlayout.h>
@@ -33,6 +32,7 @@
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
+#include <utility>
 
 #ifdef Q_OS_WIN
 #include <windows.h>
@@ -54,13 +54,19 @@
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/file_tools.h"
 #include "ai/tools/web_tools.h"
+#include "ai/runtime/agent_runtime_services.h"
+#include "ai/runtime/runtime_ui_bridge.h"
 
 
-PetWindow::PetWindow(const QString modelName, QWidget *parent)
+PetWindow::PetWindow(PetProfile profile,
+                     ProfileMigrationRequest profileMigration,
+                     QWidget *parent)
     : QWidget(parent)
     , isDragging(false)
     , renderViewport(nullptr)
-    , modelName(modelName)
+    , profile(std::move(profile))
+    , profileMigration(std::move(profileMigration))
+    , modelName(this->profile.name)
     , sizePercent(100)
     , alwaysOnTop(true)
     , clickThrough(false)
@@ -176,12 +182,7 @@ PetWindow::PetWindow(const QString modelName, QWidget *parent)
 }
 
 PetWindow::~PetWindow() {
-    if (agentScheduler) {
-        agentScheduler->stop();
-    }
-    if (aiBrain) {
-        aiBrain->stop();
-    }
+    teardownAiRuntime();
     voiceSynthesis.stop();
     if (snapFollowTimer) {
         snapFollowTimer->stop();
@@ -278,6 +279,13 @@ void PetWindow::applyRuntimeSettings(int sizePercent,
     }
     updateBubblePositions();
     updateScreenChatSchedule();
+
+    if (aiBrain && aiBrain->isStorageInitialized()) {
+        aiBrain->setEnabled(aiEnabled);
+        if (aiEnabled) {
+            aiBrain->start();
+        }
+    }
 }
 
 void PetWindow::previewBubble(const QString& message) {
@@ -404,13 +412,8 @@ void PetWindow::speakPetReply(const QString& text, const QString& source) {
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
     hideBubbleMessage();
-    if (aiBrain) {
-        aiBrain->stop();
-    }
+    teardownAiRuntime();
     voiceSynthesis.stop();
-    if (agentScheduler) {
-        agentScheduler->stop();
-    }
     unloadModel();
     emit aboutToClose();  // 可以发送信号给 MainWindow
     event->accept();
@@ -433,7 +436,7 @@ void PetWindow::setupWindow() {
     int y = screenGeometry.bottom() - height() - 20; // 距离底部20像素
     move(x, y);
 
-    qDebug() << "PetWindow create with model:" << Pet::instance().getModelPath(modelName);
+    qDebug() << "PetWindow create with model:" << profile.modelPath;
 }
 
 void PetWindow::setupRenderViewport() {
@@ -450,8 +453,8 @@ void PetWindow::setupRenderViewport() {
     // 连接渲染视口的初始化完成信号，确保只有在初始化完成后才加载模型
     connect(renderViewport, &RenderViewport::initializationCompleted, this, [this]() {
         qDebug() << "RenderViewport initialization completed, now loading model...";
-        if (!renderViewport->loadModel(Pet::instance().getModelPath(modelName))) {
-            qWarning() << "Failed to load model:" << Pet::instance().getModelPath(modelName);
+        if (!renderViewport->loadModel(profile.modelPath)) {
+            qWarning() << "Failed to load model:" << profile.modelPath;
         }
 
         setupAiBrain();
