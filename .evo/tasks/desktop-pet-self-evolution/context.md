@@ -41,6 +41,12 @@
 - [2026-08-25] [code-impl Task 3 系分回溯] §3.2/§3.4 与 impl-plan 已补充 `PersonalityChanged/v1` 注册、版本化 `ProvidedEmotionSnapshot`、PetWindow-owned Provider、AgentRuntimeServices-owned Identity 服务、subject-specific RuntimeSnapshot 及 AIBrain Dialogue PersonaProjection 消费路径；MVP 只做确定性门槛、版本追加和本机 `owner` subject。
 - [2026-08-25] [code-impl Task 3 sanity check] §3.4.5 实现锚点已静态验证一致：`IdentityBaseline`、`PersonaProjector`、`ContextManager`、`EmotionEngine/EmotionSnapshot`、`AgentRuntimeServices`、`AIBrain` Dialogue 投影链路及 `PersonalityChanged/v1` freeze 前注册均与修订后的系分契约一致。
 - [2026-08-25] [code-impl Task 3 静态验收] impl-plan 计划的 22 个测试均有对应定义；Emotion Provider、Identity Repository/Service、Runtime composition、PersonaProjection 与相关测试源码均已注册到 CMake，SQLite Unit-of-Work/outbox、版本追加/CAS、运行时降级与对象生命周期已完成静态审查，`git diff --check` 通过。遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
+- [2026-08-25] [code-impl Task 3 确认] 用户确认 Task 3 当前结果并同意进入 Task 4；Wave 4 单 Task 无文件冲突，测试定义、测试位置、CMake 注册、Dialogue 投影调用点与 §3.4.5 实现锚点均已静态核对；运行验证继续保留为“未运行，待受支持环境验证”。
+- [2026-08-25] [code-impl Task 4 首次 sanity check] §3.5 的现有 Daydream、AIBrain busy、AgentScheduler、ContextBuilder、libsodium/QtKeychain 探测锚点一致；写测试前发现 SleepPolicy 无配置类型/读取入口，Reflection/Sleep 无 production composition、三库路径与启动恢复入口，Memory staging 尚未落表，Task 4 文件清单也未覆盖相关 runtime/config/event 文件，因此停止且未产生 Task 4 代码。
+- [2026-08-25] [code-impl Task 4 系分回溯] §3.5 与 impl-plan 已补充 SleepPolicy 安全默认值、PetWindow-owned scheduler 注入、AgentRuntimeServices-owned Reflection/Sleep 服务、三库路径派生、启动恢复、唯一 sleep timer、旧 Daydream 降级保留、私有引用 Schema 及能力降级契约；本期不增加 launcher 配置 UI。
+- [2026-08-25] [code-impl Task 4 sanity check] §3.5.5 实现锚点已静态验证一致：AIBrain/AgentScheduler 只读查询、Daydream ChangeSet、libsodium/QtKeychain 降级、Runtime 三库组装与恢复、SleepPolicy active profile 读取及 PetWindow 所有权链路均有生产调用点。
+- [2026-08-25] [code-impl Task 4 静态验收] impl-plan 的 29 个用例与新增的同日 Bedtime 幂等用例共 30 个均有对应声明和定义；Reflection 的 10 个生产 `.cpp`、SleepCycleTests、条件私有依赖链接、私有引用 Schema 和 Runtime/AIBrain 调用链已静态核对。主审额外修正了 Finalized Memory staging 恢复校验、私有引用事件幂等 ID、SleepPolicy 非法值回退以及用户交互对 Pending Sleep 的即时取消链路。`git diff --check` 通过；构建、测试和程序均未运行，待受支持环境验证。
+- [2026-08-25] [code-impl Task 4 确认] 用户确认继续进入 Task 5；Wave 5 单 Task 无文件冲突，30 个测试定义、测试位置、CMake 注册、生产组装与 §3.5.5 实现锚点均已静态核对；运行验证继续保留为“未运行，待受支持环境验证”。
 
 ## 设计偏差
 
@@ -69,3 +75,5 @@
 - [deferred] Task 2 只接入 Dialogue 现有主链；Vision 的统一 Router 接入、Consolidation/Diary 的真实 ContextProjection 数据源分别随现有屏幕识别重构需求和 Task 3/4 领域服务落地后再补。
 - [deferred] Task 3 不扩展 EmotionEngine 历史 schema，真实与 Null Provider 的 `trajectory()` 均返回空；后续只有情绪模块提供稳定历史接口后才映射轨迹。
 - [deferred] Task 3 不实现自适应人格阈值、人格可视化/编辑 UI、多账户 subject 解析和自动参数调优；首版本机会话使用隔离键 `owner`，保留未来替换入口。
+- [deferred] Task 4 不实现自适应 bedtime、跨设备睡眠同步、密钥轮换/恢复 UI 和睡眠历史 UI；SleepPolicy 只由模板配置与安全默认值提供。
+- [deferred] Task 4 MVP 已接入真实 event cutoff 与高价值交互 InnerThought，但完整 SelfModel staging、更丰富的 Diary 事件/内心摘要/已提交记忆投影、情绪历史轨迹、Owner 读取安全日志和私有引用后台补发扫描延后；当实际使用需求出现时再回溯 §3.5。

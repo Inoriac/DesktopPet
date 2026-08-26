@@ -1,7 +1,9 @@
 #include "daydream_consolidator.h"
 
 #include <algorithm>
+#include <utility>
 
+#include <QCryptographicHash>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -102,7 +104,145 @@ int relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch
     return score;
 }
 
+QJsonObject decisionToJson(const DaydreamDecision& decision) {
+    QJsonObject object;
+    object.insert(QStringLiteral("sourceId"), decision.sourceId);
+    object.insert(QStringLiteral("action"), static_cast<int>(decision.action));
+    object.insert(QStringLiteral("targetType"), static_cast<int>(decision.targetType));
+    object.insert(QStringLiteral("targetMemoryId"), decision.targetMemoryId);
+    object.insert(QStringLiteral("mergedContent"), decision.mergedContent);
+    object.insert(QStringLiteral("qualityScore"), decision.qualityScore);
+    object.insert(QStringLiteral("tags"), QJsonArray::fromStringList(decision.tags));
+    if (!decision.expectedTarget.id.isEmpty()) {
+        object.insert(QStringLiteral("expectedTarget"), decision.expectedTarget.toJson());
+    }
+    return object;
+}
+
+QJsonObject changeSetContent(const DaydreamChangeSet& changeSet) {
+    QJsonArray snapshot;
+    for (const MemoryEntry& entry : changeSet.snapshot.items) {
+        snapshot.append(entry.toJson());
+    }
+    QJsonArray decisions;
+    for (const DaydreamDecision& decision : changeSet.decisions) {
+        decisions.append(decisionToJson(decision));
+    }
+    return {
+        {QStringLiteral("snapshot"), snapshot},
+        {QStringLiteral("decisions"), decisions}
+    };
+}
+
+QString jsonHash(const QJsonObject& object) {
+    return QString::fromLatin1(QCryptographicHash::hash(
+        QJsonDocument(object).toJson(QJsonDocument::Compact),
+        QCryptographicHash::Sha256).toHex());
+}
+
+bool structurallyValid(const DaydreamChangeSet& changeSet) {
+    if (changeSet.snapshot.size() != changeSet.decisions.size()) return false;
+    QSet<QString> sources;
+    for (const MemoryEntry& source : changeSet.snapshot.items) {
+        if (source.id.trimmed().isEmpty() || sources.contains(source.id)) return false;
+        sources.insert(source.id);
+    }
+    QSet<QString> decisions;
+    QSet<QString> targets;
+    for (const DaydreamDecision& decision : changeSet.decisions) {
+        const int action = static_cast<int>(decision.action);
+        const int targetType = static_cast<int>(decision.targetType);
+        if (!sources.contains(decision.sourceId)
+            || decisions.contains(decision.sourceId)
+            || action < static_cast<int>(DaydreamAction::Preserve)
+            || action > static_cast<int>(DaydreamAction::Discard)
+            || targetType < static_cast<int>(MemoryType::Working)
+            || targetType > static_cast<int>(MemoryType::Event)) {
+            return false;
+        }
+        decisions.insert(decision.sourceId);
+        if (decision.action == DaydreamAction::Update) {
+            if (decision.targetMemoryId.isEmpty()
+                || targets.contains(decision.targetMemoryId)
+                || decision.expectedTarget.id != decision.targetMemoryId) {
+                return false;
+            }
+            targets.insert(decision.targetMemoryId);
+        }
+    }
+    return sources == decisions;
+}
+
 } // namespace
+
+QJsonObject DaydreamChangeSet::toJson() const {
+    QJsonObject object = changeSetContent(*this);
+    object.insert(QStringLiteral("changeSetId"), changeSetId);
+    return object;
+}
+
+QString DaydreamChangeSet::payloadHash() const {
+    return jsonHash(toJson());
+}
+
+Result<DaydreamChangeSet, DomainError> DaydreamChangeSet::fromJson(
+    const QJsonObject& object) {
+    DaydreamChangeSet changeSet;
+    changeSet.changeSetId = object.value(QStringLiteral("changeSetId"))
+                                .toString().trimmed();
+    const QJsonArray snapshot = object.value(QStringLiteral("snapshot")).toArray();
+    for (const QJsonValue& value : snapshot) {
+        if (!value.isObject()) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("staged Daydream snapshot is invalid")));
+        }
+        changeSet.snapshot.items.append(MemoryEntry::fromJson(value.toObject()));
+    }
+    const QJsonArray decisions = object.value(QStringLiteral("decisions")).toArray();
+    for (const QJsonValue& value : decisions) {
+        if (!value.isObject()) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("staged Daydream decision is invalid")));
+        }
+        const QJsonObject decisionObject = value.toObject();
+        const int action = decisionObject.value(QStringLiteral("action")).toInt(-1);
+        const int targetType = decisionObject.value(QStringLiteral("targetType")).toInt(-1);
+        if (action < static_cast<int>(DaydreamAction::Preserve)
+            || action > static_cast<int>(DaydreamAction::Discard)
+            || targetType < static_cast<int>(MemoryType::Working)
+            || targetType > static_cast<int>(MemoryType::Event)) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("staged Daydream enum is invalid")));
+        }
+        DaydreamDecision decision;
+        decision.sourceId = decisionObject.value(QStringLiteral("sourceId")).toString();
+        decision.action = static_cast<DaydreamAction>(action);
+        decision.targetType = static_cast<MemoryType>(targetType);
+        decision.targetMemoryId = decisionObject
+                                      .value(QStringLiteral("targetMemoryId")).toString();
+        decision.mergedContent = decisionObject
+                                     .value(QStringLiteral("mergedContent")).toString();
+        decision.qualityScore = decisionObject
+                                    .value(QStringLiteral("qualityScore")).toDouble();
+        decision.tags = jsonStringList(
+            decisionObject.value(QStringLiteral("tags")).toArray());
+        if (decisionObject.value(QStringLiteral("expectedTarget")).isObject()) {
+            decision.expectedTarget = MemoryEntry::fromJson(
+                decisionObject.value(QStringLiteral("expectedTarget")).toObject());
+        }
+        changeSet.decisions.append(std::move(decision));
+    }
+    if (changeSet.changeSetId.isEmpty()
+        || changeSet.changeSetId != jsonHash(changeSetContent(changeSet))) {
+        return Result<DaydreamChangeSet, DomainError>::failure(
+            domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                        QStringLiteral("staged Daydream change set hash is invalid")));
+    }
+    return Result<DaydreamChangeSet, DomainError>::success(std::move(changeSet));
+}
 
 DaydreamConsolidator::DaydreamConsolidator(MemoryStore& store)
     : m_store(store) {}
@@ -274,6 +414,62 @@ QList<DaydreamConsolidator::Decision> DaydreamConsolidator::hardcodedDecisions(
     return decisions;
 }
 
+Result<DaydreamChangeSet, DomainError> DaydreamConsolidator::buildChangeSet(
+    const Snapshot& snapshot,
+    const QList<Decision>& decisions) const {
+    if (decisions.size() != snapshot.size()) {
+        return Result<DaydreamChangeSet, DomainError>::failure(
+            domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
+                        QStringLiteral("Daydream decisions do not cover the snapshot")));
+    }
+    QSet<QString> sourceIds;
+    QSet<QString> updateTargets;
+    for (const MemoryEntry& source : snapshot.items) {
+        if (source.id.trimmed().isEmpty() || sourceIds.contains(source.id)) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
+                            QStringLiteral("Daydream snapshot contains invalid sources")));
+        }
+        sourceIds.insert(source.id);
+    }
+    QSet<QString> decisionSources;
+    for (const Decision& decision : decisions) {
+        if (!sourceIds.contains(decision.sourceId)
+            || decisionSources.contains(decision.sourceId)) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
+                            QStringLiteral("Daydream decision sources are invalid")));
+        }
+        decisionSources.insert(decision.sourceId);
+        if (decision.action == Action::Update) {
+            if (decision.targetMemoryId.isEmpty()
+                || updateTargets.contains(decision.targetMemoryId)
+                || decision.expectedTarget.id != decision.targetMemoryId) {
+                return Result<DaydreamChangeSet, DomainError>::failure(
+                    domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
+                                QStringLiteral("Daydream update target is invalid")));
+            }
+            updateTargets.insert(decision.targetMemoryId);
+        }
+    }
+    if (decisionSources != sourceIds) {
+        return Result<DaydreamChangeSet, DomainError>::failure(
+            domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
+                        QStringLiteral("Daydream decisions are incomplete")));
+    }
+    if (!snapshotStillCurrent(snapshot) || !updateTargetsStillCurrent(decisions)) {
+        return Result<DaydreamChangeSet, DomainError>::failure(
+            domainError(QStringLiteral("STATE_VERSION_CONFLICT"),
+                        QStringLiteral("Daydream snapshot is stale")));
+    }
+
+    DaydreamChangeSet changeSet;
+    changeSet.snapshot = snapshot;
+    changeSet.decisions = decisions;
+    changeSet.changeSetId = jsonHash(changeSetContent(changeSet));
+    return Result<DaydreamChangeSet, DomainError>::success(std::move(changeSet));
+}
+
 bool DaydreamConsolidator::snapshotStillCurrent(const Snapshot& snapshot) const {
     for (const MemoryEntry& original : snapshot.items) {
         const MemoryEntry* current = m_store.findById(original.id);
@@ -389,55 +585,73 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
 
 DaydreamConsolidator::Stats DaydreamConsolidator::applyDecisions(
     const Snapshot& snapshot, const QList<Decision>& decisions) {
-    Stats stats;
-    stats.scanned = snapshot.size();
-    if (snapshot.isEmpty()) {
-        return stats;
-    }
-    if (decisions.size() != snapshot.size()) {
+    const auto changeSet = buildChangeSet(snapshot, decisions);
+    if (!changeSet.isOk()) {
+        Stats stats;
+        stats.scanned = snapshot.size();
         stats.failed = snapshot.size();
+        stats.staleSnapshot = changeSet.error().code == QLatin1String("STATE_VERSION_CONFLICT");
         return stats;
     }
+    return applyChangeSet(changeSet.value());
+}
 
+DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
+    const DaydreamChangeSet& changeSet) {
+    Stats stats;
+    stats.scanned = changeSet.snapshot.size();
+    const QString expectedId = jsonHash(changeSetContent(changeSet));
+    const QString payloadHash = changeSet.payloadHash();
+    if (changeSet.changeSetId.isEmpty() || changeSet.changeSetId != expectedId
+        || !structurallyValid(changeSet)) {
+        stats.failed = changeSet.snapshot.size();
+        return stats;
+    }
+    if (m_store.isSleepChangeFinalized(changeSet.changeSetId, payloadHash)) {
+        stats.committed = true;
+        return stats;
+    }
+    const auto validation = buildChangeSet(changeSet.snapshot, changeSet.decisions);
+    if (!validation.isOk() || validation.value().changeSetId != changeSet.changeSetId) {
+        stats.failed = changeSet.snapshot.size();
+        stats.staleSnapshot = !validation.isOk()
+            && validation.error().code == QLatin1String("STATE_VERSION_CONFLICT");
+        return stats;
+    }
+    if (!m_store.hasSleepChange(changeSet.changeSetId, payloadHash)) {
+        StagedMemoryChange legacy;
+        legacy.sessionId = QStringLiteral("legacy:%1").arg(changeSet.changeSetId);
+        legacy.changeId = changeSet.changeSetId;
+        legacy.targetType = QStringLiteral("daydream_change_set");
+        legacy.operation = QStringLiteral("apply");
+        legacy.payload = changeSet.toJson();
+        if (!m_store.stageSleepChange(legacy)) {
+            stats.failed = changeSet.snapshot.size();
+            return stats;
+        }
+    }
     QHash<QString, Decision> decisionsById;
-    QSet<QString> updatedTargetIds;
-    for (const Decision& decision : decisions) {
-        if (decision.sourceId.isEmpty() || decisionsById.contains(decision.sourceId)) {
-            stats.failed = snapshot.size();
-            return stats;
-        }
-        if (decision.action == Action::Update
-            && (decision.targetMemoryId.isEmpty()
-                || updatedTargetIds.contains(decision.targetMemoryId))) {
-            stats.failed = snapshot.size();
-            return stats;
-        }
-        if (decision.action == Action::Update) updatedTargetIds.insert(decision.targetMemoryId);
+    for (const Decision& decision : changeSet.decisions) {
         decisionsById.insert(decision.sourceId, decision);
     }
-    for (const MemoryEntry& source : snapshot.items) {
-        if (!decisionsById.contains(source.id)) {
-            stats.failed = snapshot.size();
-            return stats;
-        }
-    }
-
-    if (!snapshotStillCurrent(snapshot) || !updateTargetsStillCurrent(decisions)) {
-        stats.staleSnapshot = true;
-        return stats;
-    }
     if (!m_store.beginTransaction()) {
-        stats.failed = snapshot.size();
+        stats.failed = changeSet.snapshot.size();
         return stats;
     }
 
     bool ok = true;
-    for (const MemoryEntry& source : snapshot.items) {
+    for (const MemoryEntry& source : changeSet.snapshot.items) {
         if (!applyOne(source, decisionsById.value(source.id), &stats)) {
             ++stats.failed;
             ok = false;
             break;
         }
+    }
+
+    if (ok && !m_store.finalizeSleepChange(
+            changeSet.changeSetId, payloadHash)) {
+        ++stats.failed;
+        ok = false;
     }
 
     if (ok && m_store.commitTransaction()) {

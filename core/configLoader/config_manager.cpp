@@ -196,6 +196,34 @@ static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
     return cfg;
 }
 
+static SleepPolicy parseSleepPolicy(const QJsonObject& object) {
+    SleepPolicy policy;
+    policy.enabled = object.value(QStringLiteral("enabled")).toBool(policy.enabled);
+    const QTime bedtime = QTime::fromString(
+        object.value(QStringLiteral("bedtime")).toString(), QStringLiteral("HH:mm"));
+    if (bedtime.isValid()) policy.bedtime = bedtime;
+    const auto assignValidInt = [&object](const QString& key,
+                                          int minimum,
+                                          int maximum,
+                                          int* target) {
+        const QJsonValue value = object.value(key);
+        if (!value.isDouble()) return;
+        const int parsed = value.toInt(*target);
+        if (parsed >= minimum && parsed <= maximum) *target = parsed;
+    };
+    assignValidInt(QStringLiteral("minimumIdleSeconds"), 30, 24 * 60 * 60,
+                   &policy.minimumIdleSeconds);
+    assignValidInt(QStringLiteral("dueSoonThresholdSeconds"), 0, 24 * 60 * 60,
+                   &policy.dueSoonThresholdSeconds);
+    assignValidInt(QStringLiteral("maxItemsPerSession"), 1, 128,
+                   &policy.maxItemsPerSession);
+    assignValidInt(QStringLiteral("retryBackoffSeconds"), 0, 24 * 60 * 60,
+                   &policy.retryBackoffSeconds);
+    assignValidInt(QStringLiteral("tickIntervalSeconds"), 5, 60 * 60,
+                   &policy.tickIntervalSeconds);
+    return policy;
+}
+
 static QString cleanConfigPath(const QString& path) {
     const QString trimmed = path.trimmed();
     if (trimmed.isEmpty()) {
@@ -439,6 +467,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     modelRoleConfigs.clear();
     screenChatConfig = ScreenChatConfig{};
     daydreamConfig = DaydreamConfig{};
+    sleepPolicy = SleepPolicy{};
     emotionConfig = EmotionConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
@@ -563,6 +592,12 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
         if (aiRaw.contains("daydream") && aiRaw.value("daydream").isObject()) {
             daydreamConfig = parseDaydreamConfig(aiRaw.value("daydream").toObject());
+        }
+
+        if (aiRaw.contains(QStringLiteral("sleepPolicy"))
+            && aiRaw.value(QStringLiteral("sleepPolicy")).isObject()) {
+            sleepPolicy = parseSleepPolicy(
+                aiRaw.value(QStringLiteral("sleepPolicy")).toObject());
         }
 
         if (aiRaw.contains("emotion") && aiRaw.value("emotion").isObject()) {

@@ -348,7 +348,8 @@ void AIBrain::setupTriggerTimers() {
 }
 
 void AIBrain::armDaydreamTimer() {
-    if (!m_running || !m_daydreamConfig.enabled) return;
+    if (!m_running || !m_daydreamConfig.enabled
+        || m_externalSleepCoordinatorEnabled) return;
     const QDateTime now = QDateTime::currentDateTime();
     const qint64 msSinceLast = m_lastDaydreamAt.isValid()
         ? m_lastDaydreamAt.msecsTo(now)
@@ -357,7 +358,8 @@ void AIBrain::armDaydreamTimer() {
 }
 
 void AIBrain::checkDaydreamTrigger() {
-    if (!m_running || !m_daydreamConfig.enabled) return;
+    if (!m_running || !m_daydreamConfig.enabled
+        || m_externalSleepCoordinatorEnabled) return;
     if (m_daydreamRunning) {
         if (!canContinueDaydream()) {
             cancelDaydreamSession(QStringLiteral("idle conditions changed"));
@@ -385,7 +387,7 @@ void AIBrain::checkDaydreamTrigger() {
 }
 
 void AIBrain::runDaydreamSession() {
-    if (!m_daydreamConfig.enabled) return;
+    if (!m_daydreamConfig.enabled || m_externalSleepCoordinatorEnabled) return;
     DaydreamConsolidator consolidator(m_memoryStore);
     const DaydreamConsolidator::Snapshot snapshot = consolidator.createSnapshot(
         m_daydreamConfig.sessionLimit);
@@ -409,7 +411,7 @@ void AIBrain::runDaydreamSession() {
 }
 
 bool AIBrain::canContinueDaydream() const {
-    if (!m_running || m_busy) return false;
+    if (!m_running || m_busy || m_externalSleepCoordinatorEnabled) return false;
     const int idleSec = queryUserIdleSeconds();
     const qint64 msToNext = m_scheduler ? m_scheduler->msToNextDue() : -1;
     return m_daydreamPolicy.shouldContinue(idleSec, m_busy, msToNext);

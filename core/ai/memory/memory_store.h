@@ -5,6 +5,7 @@
 #include <QString>
 #include <memory>
 
+#include "ai/domain/domain_result.h"
 #include "memory_types.h"
 #include "memory_relation_graph.h"
 #include "tag_cooccurrence_graph.h"
@@ -66,6 +67,23 @@ public:
     bool beginTransaction();
     bool commitTransaction();
     bool rollbackTransaction();
+
+    bool stageSleepChange(const StagedMemoryChange& change);
+    // Finalize recovery must inspect both Prepared and Finalized markers so a
+    // missing staging row cannot be mistaken for an already materialized one.
+    Result<QList<StagedMemoryChange>, DomainError> preparedSleepChanges(
+        const QString& sessionId,
+        const QString& targetType = QString()) const;
+    bool markSleepChangeFinalized(const QString& sessionId,
+                                  const QString& changeId);
+    bool abortSleepChanges(const QString& sessionId);
+    int preparedSleepChangeCount(const QString& sessionId) const;
+    bool hasSleepChange(const QString& changeId,
+                        const QString& payloadHash) const;
+    bool isSleepChangeFinalized(const QString& changeId,
+                                const QString& payloadHash) const;
+    bool finalizeSleepChange(const QString& changeId,
+                             const QString& payloadHash);
 
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;

@@ -2,12 +2,62 @@
 #define DESKTOP_PET_DAYDREAM_CONSOLIDATOR_H
 
 #include <QList>
+#include <QJsonObject>
 #include <QString>
 #include <QStringList>
 
+#include "ai/domain/domain_result.h"
 #include "memory_types.h"
 
 class MemoryStore;
+
+enum class DaydreamAction {
+    Preserve,
+    Create,
+    Update,
+    KeepBoth,
+    Discard
+};
+
+struct DaydreamSnapshot {
+    QList<MemoryEntry> items;
+
+    bool isEmpty() const { return items.isEmpty(); }
+    int size() const { return items.size(); }
+};
+
+struct DaydreamDecision {
+    QString sourceId;
+    DaydreamAction action = DaydreamAction::Preserve;
+    MemoryType targetType = MemoryType::Episodic;
+    QString targetMemoryId;
+    QString mergedContent;
+    double qualityScore = 0.0;
+    QStringList tags;
+    MemoryEntry expectedTarget;
+};
+
+struct DaydreamStats {
+    int scanned = 0;
+    int upgraded = 0;
+    int updated = 0;
+    int discarded = 0;
+    int preserved = 0;
+    int failed = 0;
+    bool staleSnapshot = false;
+    bool committed = false;
+};
+
+struct DaydreamChangeSet {
+    QString changeSetId;
+    DaydreamSnapshot snapshot;
+    QList<DaydreamDecision> decisions;
+
+    QJsonObject toJson() const;
+    QString payloadHash() const;
+    static Result<DaydreamChangeSet, DomainError> fromJson(
+        const QJsonObject& object);
+};
 
 // Daydream uses snapshot -> decide -> short atomic commit. No SQLite transaction
 // remains open while an asynchronous LLM request is in flight.
@@ -17,42 +67,10 @@ public:
     static constexpr int BATCH_LIMIT = 8;
     static constexpr int INBOX_LIMIT = 200;
 
-    enum class Action {
-        Preserve,
-        Create,
-        Update,
-        KeepBoth,
-        Discard
-    };
-
-    struct Snapshot {
-        QList<MemoryEntry> items;
-
-        bool isEmpty() const { return items.isEmpty(); }
-        int size() const { return items.size(); }
-    };
-
-    struct Decision {
-        QString sourceId;
-        Action action = Action::Preserve;
-        MemoryType targetType = MemoryType::Episodic;
-        QString targetMemoryId;
-        QString mergedContent;
-        double qualityScore = 0.0;
-        QStringList tags;
-        MemoryEntry expectedTarget;
-    };
-
-    struct Stats {
-        int scanned = 0;
-        int upgraded = 0;
-        int updated = 0;
-        int discarded = 0;
-        int preserved = 0;
-        int failed = 0;
-        bool staleSnapshot = false;
-        bool committed = false;
-    };
+    using Action = DaydreamAction;
+    using Snapshot = DaydreamSnapshot;
+    using Decision = DaydreamDecision;
+    using Stats = DaydreamStats;
 
     explicit DaydreamConsolidator(MemoryStore& store);
 
@@ -70,6 +88,11 @@ public:
                                QString* errorMessage = nullptr);
     static bool requiresModelDecision(const MemoryEntry& entry);
     static QList<Decision> hardcodedDecisions(const QList<MemoryEntry>& batch);
+
+    Result<DaydreamChangeSet, DomainError> buildChangeSet(
+        const Snapshot& snapshot,
+        const QList<Decision>& decisions) const;
+    Stats applyChangeSet(const DaydreamChangeSet& changeSet);
 
     // Applies a fully staged session in one short transaction. If any source was
     // changed after snapshot creation, nothing is written and staleSnapshot=true.

@@ -48,10 +48,6 @@ EventDraft privateDiaryDraft() {
 
 void registerTestSchemas(EventSchemaRegistry& registry) {
     QVERIFY(registerBuiltInEventSchemas(registry).isOk());
-
-    EventSchemaDefinition privateSchema;
-    privateSchema.type = QStringLiteral("DiaryStored");
-    QVERIFY(registry.registerSchema(privateSchema).isOk());
     registry.freeze();
 }
 

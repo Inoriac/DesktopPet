@@ -4,6 +4,7 @@
 #include <QDir>
 
 #include "ai/ai_brain.h"
+#include "ai/context/context_assembler.h"
 #include "ai/event/event_ledger.h"
 #include "ai/event/event_outbox.h"
 #include "ai/event/event_schema_registry.h"
@@ -15,6 +16,15 @@
 #include "ai/identity/self_model_service.h"
 #include "ai/identity/sqlite_identity_repository.h"
 #include "ai/integration/emotion_state_provider.h"
+#include "ai/reflection/daydream_sleep_adapter.h"
+#include "ai/reflection/diary_service.h"
+#include "ai/reflection/inner_thought_service.h"
+#include "ai/reflection/private_key_provider.h"
+#include "ai/reflection/private_psyche_crypto.h"
+#include "ai/reflection/cancellation_token.h"
+#include "ai/reflection/sleep_cycle_coordinator.h"
+#include "ai/reflection/sleep_session_repository.h"
+#include "ai/reflection/sqlite_private_psyche_repository.h"
 #include "runtime_ui_bridge.h"
 
 AgentRuntimeServices::~AgentRuntimeServices() {
@@ -112,6 +122,74 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
         }
     }
 
+    if (report.capabilities.profileGrowth
+        && migration.profileStoreReady()
+        && privateReflectionBuildAvailable()
+        && request.agentScheduler) {
+        const QString privateDatabasePath = QDir(request.profileMigration.appDataRoot)
+            .filePath(QStringLiteral("profiles/%1/private_psyche.sqlite").arg(m_profileId));
+        m_privateKeyProvider = std::make_unique<QtKeychainPrivateKeyProvider>();
+        m_privateCrypto = std::make_unique<SodiumPrivatePsycheCrypto>();
+        const auto key = m_privateKeyProvider->loadOrCreate(m_profileId);
+        if (!key.isOk()) {
+            report.diagnostics.append(key.error().message);
+        } else {
+            m_privateRepository = std::make_unique<SqlitePrivatePsycheRepository>();
+            const auto privateOpened = m_privateRepository->open(privateDatabasePath);
+            m_sleepSessionRepository = std::make_unique<SleepSessionRepository>();
+            const auto sleepOpened = m_sleepSessionRepository->open(runtimeDatabasePath);
+            if (!privateOpened.isOk() || !sleepOpened.isOk()) {
+                report.diagnostics.append(
+                    !privateOpened.isOk() ? privateOpened.error().message
+                                          : sleepOpened.error().message);
+            } else {
+                m_agentScheduler = request.agentScheduler;
+                m_reflectionContextAssembler = std::make_unique<ContextAssembler>();
+                m_reflectionCancellation = std::make_unique<CancellationSource>();
+                m_innerThoughtService = std::make_unique<InnerThoughtService>(
+                    m_profileId, request.aiBrain->modelRouter(),
+                    m_privateKeyProvider.get(), m_privateCrypto.get(),
+                    m_privateRepository.get(), m_eventLedger.get());
+                m_diaryService = std::make_unique<DiaryService>(
+                    m_profileId, request.aiBrain->modelRouter(),
+                    m_reflectionContextAssembler.get(), m_privateKeyProvider.get(),
+                    m_privateCrypto.get(), m_privateRepository.get(),
+                    ModelRole::Diary, m_eventLedger.get());
+                m_daydreamSleepAdapter = std::make_unique<DaydreamSleepAdapter>(
+                    m_profileId, request.profile.name, request.aiBrain->memoryStore(),
+                    request.aiBrain->modelRouter());
+                m_sleepCycleCoordinator = std::make_unique<SleepCycleCoordinator>(
+                    m_profileId, request.sleepPolicy, m_sleepSessionRepository.get(),
+                    m_daydreamSleepAdapter.get(), m_diaryService.get(),
+                    m_privateRepository.get(), request.aiBrain,
+                    request.agentScheduler, SleepCycleHooks{});
+                m_sleepCycleCoordinator->start();
+                if (m_sleepCycleCoordinator->isStarted()) {
+                    report.capabilities.privateReflection = true;
+                    report.capabilities.sleepCycle = true;
+                } else {
+                    report.diagnostics.append(
+                        QStringLiteral("sleep recovery failed; private reflection disabled"));
+                }
+            }
+        }
+        if (!report.capabilities.sleepCycle) {
+            m_sleepCycleCoordinator.reset();
+            m_daydreamSleepAdapter.reset();
+            m_diaryService.reset();
+            m_innerThoughtService.reset();
+            m_reflectionCancellation.reset();
+            m_reflectionContextAssembler.reset();
+            m_sleepSessionRepository.reset();
+            m_privateRepository.reset();
+            m_privateCrypto.reset();
+            m_privateKeyProvider.reset();
+            m_agentScheduler = nullptr;
+        }
+    } else if (report.capabilities.profileGrowth) {
+        report.diagnostics.append(QStringLiteral(
+            "private reflection dependencies are unavailable; legacy Daydream retained"));
+    }
     report.mode = report.capabilities.profileGrowth
         ? RuntimeMode::Running
         : RuntimeMode::Degraded;
@@ -200,9 +278,89 @@ Result<EventReadAuthorization, DomainError> AgentRuntimeServices::authorizationF
                     QStringLiteral("event consumer is not registered")));
 }
 
+void AgentRuntimeServices::reflectOnCompletedSession(const QString& sessionId) {
+    if (!m_started || sessionId.trimmed().isEmpty() || !m_eventLedger
+        || !m_innerThoughtService || !m_reflectionCancellation) {
+        return;
+    }
+    const auto authorization = authorizationFor(QStringLiteral("reflection"));
+    if (!authorization.isOk()) return;
+    const EventFilter filter{
+        {QStringLiteral("UserMessageReceived"),
+         QStringLiteral("AssistantResponseProduced")},
+        sessionId,
+        authorization.value()
+    };
+    const auto events = m_eventLedger->readAfter(0, filter, 64);
+    if (!events.isOk()) return;
+
+    std::optional<EventRecord> userEvent;
+    std::optional<EventRecord> assistantEvent;
+    for (const EventRecord& event : events.value()) {
+        if (event.type == QLatin1String("UserMessageReceived")) {
+            userEvent = event;
+        } else if (event.type == QLatin1String("AssistantResponseProduced")) {
+            assistantEvent = event;
+        }
+    }
+    if (!userEvent.has_value() || !assistantEvent.has_value()
+        || assistantEvent->sequence <= userEvent->sequence) {
+        return;
+    }
+    const QString triggerTag = userEvent->payload
+                                   .value(QStringLiteral("triggerTag")).toString();
+    if (triggerTag != QLatin1String("manual")
+        && triggerTag != QLatin1String("user_request")
+        && triggerTag != QLatin1String("touch_event")) {
+        return;
+    }
+    const QString userText = userEvent->payload
+                                 .value(QStringLiteral("text")).toString().simplified();
+    const QString assistantText = assistantEvent->payload
+                                      .value(QStringLiteral("text")).toString().simplified();
+    if (userText.isEmpty() || assistantText.isEmpty()
+        || (userText.size() < 8 && userText.size() + assistantText.size() < 80)) {
+        return;
+    }
+
+    InnerThoughtRequest request;
+    request.profileId = m_profileId;
+    request.sourceEventId = assistantEvent->eventId;
+    request.contextSnapshot = {
+        {QStringLiteral("sessionId"), sessionId},
+        {QStringLiteral("user"), userText.left(2000)},
+        {QStringLiteral("assistant"), assistantText.left(2000)},
+        {QStringLiteral("triggerTag"), triggerTag}
+    };
+    if (m_emotionStateProvider) {
+        request.emotionSnapshot = m_emotionStateProvider->currentSnapshot(
+            m_profileId, assistantEvent->occurredAt);
+    }
+    m_innerThoughtService->createAsync(
+        request, m_reflectionCancellation->token(),
+        [](Result<QString, DomainError>) {});
+}
+
+void AgentRuntimeServices::cancelSleepForUserInteraction() {
+    if (m_sleepCycleCoordinator) {
+        m_sleepCycleCoordinator->cancelActive(SleepCancelReason::UserInteraction);
+    }
+}
+
 void AgentRuntimeServices::stop() {
     if (!m_started && !m_eventSchemas && !m_eventRepository) return;
-    if (m_aiBrain) m_aiBrain->setRuntimeServices(nullptr);
+    if (m_sleepCycleCoordinator) m_sleepCycleCoordinator->stop();
+    if (m_reflectionCancellation) m_reflectionCancellation->cancel();
+    m_sleepCycleCoordinator.reset();
+    m_daydreamSleepAdapter.reset();
+    m_diaryService.reset();
+    m_innerThoughtService.reset();
+    m_reflectionCancellation.reset();
+    m_reflectionContextAssembler.reset();
+    m_sleepSessionRepository.reset();
+    m_privateRepository.reset();
+    m_privateCrypto.reset();
+    m_privateKeyProvider.reset();
     m_personaProjector.reset();
     m_selfModelService.reset();
     m_relationshipService.reset();
@@ -216,6 +374,8 @@ void AgentRuntimeServices::stop() {
     m_eventLedger.reset();
     m_eventRepository.reset();
     m_eventSchemas.reset();
+    if (m_aiBrain) m_aiBrain->setRuntimeServices(nullptr);
+    m_agentScheduler = nullptr;
     m_uiBridge = nullptr;
     m_aiBrain = nullptr;
     m_profileId.clear();

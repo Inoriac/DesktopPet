@@ -155,6 +155,28 @@ set(IDENTITY_STATE_SOURCES
     core/ai/identity/self_model_service.cpp
 )
 
+set(REFLECTION_SOURCES
+    core/ai/reflection/reflection_types.h
+    core/ai/reflection/reflection_types.cpp
+    core/ai/reflection/cancellation_token.h
+    core/ai/reflection/cancellation_token.cpp
+    core/ai/reflection/private_key_provider.h
+    core/ai/reflection/private_key_provider.cpp
+    core/ai/reflection/private_psyche_crypto.h
+    core/ai/reflection/private_psyche_crypto.cpp
+    core/ai/reflection/sqlite_private_psyche_repository.h
+    core/ai/reflection/sqlite_private_psyche_repository.cpp
+    core/ai/reflection/inner_thought_service.h
+    core/ai/reflection/inner_thought_service.cpp
+    core/ai/reflection/daydream_sleep_adapter.h
+    core/ai/reflection/daydream_sleep_adapter.cpp
+    core/ai/reflection/diary_service.h
+    core/ai/reflection/diary_service.cpp
+    core/ai/reflection/sleep_session_repository.h
+    core/ai/reflection/sleep_session_repository.cpp
+    core/ai/reflection/sleep_cycle_coordinator.h
+    core/ai/reflection/sleep_cycle_coordinator.cpp
+)
 
 set(CORE_SOURCES
     core/animation/animation_manager.cpp
@@ -221,6 +243,7 @@ set(CORE_SOURCES
     ${AGENT_RUNTIME_SOURCES}
     ${MODEL_ROUTING_SOURCES}
     ${IDENTITY_STATE_SOURCES}
+    ${REFLECTION_SOURCES}
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -410,26 +433,33 @@ target_link_libraries(Desktop_Pet
         $<$<PLATFORM_ID:Windows>:psapi>
 )
 
-if(DESKTOP_PET_HAS_LIBSODIUM)
-    target_include_directories(Desktop_Pet PRIVATE ${SODIUM_INCLUDE_DIR})
-    target_link_libraries(Desktop_Pet ${SODIUM_LIBRARY})
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_LIBSODIUM=1)
-else()
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_LIBSODIUM=0)
-endif()
+function(configure_private_reflection target_name)
+    if(DESKTOP_PET_HAS_LIBSODIUM)
+        target_include_directories(${target_name} PRIVATE ${SODIUM_INCLUDE_DIR})
+        target_link_libraries(${target_name} ${SODIUM_LIBRARY})
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_LIBSODIUM=1)
+    else()
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_LIBSODIUM=0)
+    endif()
 
-if(DESKTOP_PET_QTKEYCHAIN_TARGET)
-    target_link_libraries(Desktop_Pet ${DESKTOP_PET_QTKEYCHAIN_TARGET})
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=1)
-else()
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=0)
-endif()
+    if(DESKTOP_PET_QTKEYCHAIN_TARGET)
+        target_link_libraries(${target_name} ${DESKTOP_PET_QTKEYCHAIN_TARGET})
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=1)
+    else()
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_QTKEYCHAIN=0)
+    endif()
 
+    if(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE)
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=1)
+    else()
+        target_compile_definitions(${target_name} PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=0)
+    endif()
+endfunction()
+
+configure_private_reflection(Desktop_Pet)
 if(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE)
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=1)
     message(STATUS "Private reflection capability available")
 else()
-    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_PRIVATE_REFLECTION=0)
     message(STATUS "Private reflection capability unavailable; non-private features remain enabled")
 endif()
 
@@ -551,6 +581,7 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     ${AGENT_RUNTIME_SOURCES}
     ${MODEL_ROUTING_SOURCES}
     ${IDENTITY_STATE_SOURCES}
+    ${REFLECTION_SOURCES}
     core/ai/runtime/profile_resolver.h
     core/ai/runtime/profile_resolver.cpp
     core/ai/runtime/profile_data_migrator.h
@@ -665,6 +696,7 @@ if(APPLE)
     target_link_libraries(agent_runtime_services_tests "-framework CoreGraphics")
 endif()
 add_test(NAME AgentRuntimeServicesTests COMMAND agent_runtime_services_tests)
+configure_private_reflection(agent_runtime_services_tests)
 
 # ---- Emotion provider read-only contract tests ----
 add_executable(emotion_provider_contract_tests
@@ -714,7 +746,33 @@ if(APPLE)
     target_link_libraries(identity_state_tests "-framework CoreGraphics")
 endif()
 add_test(NAME IdentityStateTests COMMAND identity_state_tests)
+configure_private_reflection(identity_state_tests)
 
+# ---- Reflection, private diary, and sleep coordinator tests ----
+add_executable(sleep_cycle_tests
+    tests/test_sleep_cycle.cpp
+    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+)
+target_include_directories(sleep_cycle_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(sleep_cycle_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Sql
+    Qt::Test
+    $<$<PLATFORM_ID:Windows>:psapi>
+)
+if(APPLE)
+    target_link_libraries(sleep_cycle_tests "-framework CoreGraphics")
+endif()
+configure_private_reflection(sleep_cycle_tests)
+add_test(NAME SleepCycleTests COMMAND sleep_cycle_tests)
 
 # ---- Model role routing, output repair, and context projection tests ----
 add_executable(model_router_tests

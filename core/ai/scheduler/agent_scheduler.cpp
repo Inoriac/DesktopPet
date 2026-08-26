@@ -414,6 +414,12 @@ qint64 AgentScheduler::msToNextDue() const {
     return diff < 0 ? 0 : diff; // 已过期算 0
 }
 
+bool AgentScheduler::hasTaskDueBefore(const QDateTime& boundary) const {
+    if (!boundary.isValid()) return false;
+    const QDateTime due = nearestDueAt();
+    return due.isValid() && due <= boundary;
+}
+
 QString AgentScheduler::defaultStoragePath() {
     const QString configDir = QDir::current().filePath("config");
     QDir().mkpath(configDir);

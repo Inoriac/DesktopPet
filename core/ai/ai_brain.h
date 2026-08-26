@@ -70,6 +70,15 @@ public:
 
     void setThinkIntervalMs(int ms);
 
+    bool isBusy() const { return m_busy; }
+    int userIdleSeconds() const;
+    ModelRoleRegistry* modelRoleRegistry() { return &m_modelRoleRegistry; }
+    ModelRouter* modelRouter() { return &m_modelRouter; }
+    void setExternalSleepCoordinatorEnabled(bool enabled);
+    bool isExternalSleepCoordinatorEnabled() const {
+        return m_externalSleepCoordinatorEnabled;
+    }
+
     void start();
     void stop();
 
@@ -185,6 +194,7 @@ private:
     DaydreamTriggerPolicy m_daydreamPolicy;
     AgentScheduler* m_scheduler = nullptr; // non-owning
     bool m_daydreamRunning = false;
+    bool m_externalSleepCoordinatorEnabled = false;
     QDateTime m_lastDaydreamAt;
     QDateTime m_daydreamHourAnchor;
     int m_daydreamCountThisHour = 0;

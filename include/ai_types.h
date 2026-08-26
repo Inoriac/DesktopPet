@@ -9,6 +9,7 @@
 #include <QJsonObject>
 #include <QJsonArray>
 #include <QDateTime>
+#include <QTime>
 #include <QList>
 #include <QStringList>
 
@@ -150,6 +151,16 @@ struct DaydreamConfig {
     QString model;
     int maxTokens = 1200;
     double temperature = 0.2;
+};
+
+struct SleepPolicy {
+    bool enabled = true;
+    QTime bedtime = QTime(23, 30);
+    int minimumIdleSeconds = 600;
+    int dueSoonThresholdSeconds = 600;
+    int maxItemsPerSession = 32;
+    int retryBackoffSeconds = 600;
+    int tickIntervalSeconds = 60;
 };
 
 // 自定义语音角色配置

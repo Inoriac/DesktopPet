@@ -7,12 +7,14 @@
 
 #include <optional>
 
+#include "ai_types.h"
 #include "ai/identity/identity_baseline.h"
 #include "ai/identity/identity_types.h"
 #include "profile_data_migrator.h"
 #include "profile_resolver.h"
 
 class AIBrain;
+class AgentScheduler;
 class EmotionStateProvider;
 class RuntimeUiBridge;
 
@@ -42,7 +44,9 @@ struct RuntimeStartRequest {
     QString identityBaselineHash;
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy personalityPolicy;
+    SleepPolicy sleepPolicy;
     EmotionStateProvider* emotionStateProvider = nullptr;
+    AgentScheduler* agentScheduler = nullptr;
     AIBrain* aiBrain = nullptr;
     RuntimeUiBridge* uiBridge = nullptr;
 };
@@ -56,6 +60,8 @@ struct RuntimeCapabilities {
     bool profileStore = false;
     bool eventLedger = false;
     bool profileGrowth = false;
+    bool privateReflection = false;
+    bool sleepCycle = false;
 };
 
 struct RuntimeStartReport {

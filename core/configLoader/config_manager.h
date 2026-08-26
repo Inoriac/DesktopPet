@@ -68,6 +68,7 @@ public:
     }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
     const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
+    const SleepPolicy& getSleepPolicy() const { return sleepPolicy; }
     EmotionConfig getEmotionConfig() const { return emotionConfig; }
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
@@ -135,6 +136,7 @@ private:
     QList<ModelRoleConfig> modelRoleConfigs;
     ScreenChatConfig screenChatConfig;
     DaydreamConfig daydreamConfig;
+    SleepPolicy sleepPolicy;
     EmotionConfig emotionConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;

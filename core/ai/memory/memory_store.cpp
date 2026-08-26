@@ -1,6 +1,7 @@
 #include "memory_store.h"
 
 #include <QDir>
+#include <QCryptographicHash>
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonArray>
@@ -8,6 +9,8 @@
 #include <QJsonParseError>
 #include <QSaveFile>
 #include <QSet>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include <QUuid>
 
 #include <utility>
@@ -179,6 +182,188 @@ bool MemoryStore::commitTransaction() {
 
 bool MemoryStore::rollbackTransaction() {
     return m_repository && m_repository->rollbackTransaction();
+}
+
+bool MemoryStore::stageSleepChange(const StagedMemoryChange& change) {
+    if (!m_repository || !m_repository->isOpen()
+        || change.sessionId.trimmed().isEmpty()
+        || change.changeId.trimmed().isEmpty()
+        || change.targetType.trimmed().isEmpty()
+        || change.operation.trimmed().isEmpty()) {
+        return false;
+    }
+    const QByteArray payload = QJsonDocument(change.payload)
+                                   .toJson(QJsonDocument::Compact);
+    const QString payloadHash = QString::fromLatin1(
+        QCryptographicHash::hash(payload, QCryptographicHash::Sha256).toHex());
+    QSqlDatabase database = QSqlDatabase::database(m_repository->connectionName());
+    QSqlQuery insert(database);
+    insert.prepare(QStringLiteral(
+        "INSERT OR IGNORE INTO sleep_staged_change("
+        "session_id,change_id,target_type,operation,target_id,payload_json,"
+        "payload_hash,status,created_at) VALUES(?,?,?,?,?,?,?,'Prepared',?)"));
+    insert.addBindValue(change.sessionId);
+    insert.addBindValue(change.changeId);
+    insert.addBindValue(change.targetType);
+    insert.addBindValue(change.operation);
+    insert.addBindValue(change.targetId);
+    insert.addBindValue(QString::fromUtf8(payload));
+    insert.addBindValue(payloadHash);
+    insert.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    if (!insert.exec()) return false;
+
+    QSqlQuery verify(database);
+    verify.prepare(QStringLiteral(
+        "SELECT target_type,operation,target_id,payload_hash FROM sleep_staged_change "
+        "WHERE session_id=? AND change_id=?"));
+    verify.addBindValue(change.sessionId);
+    verify.addBindValue(change.changeId);
+    return verify.exec() && verify.next()
+        && verify.value(0).toString() == change.targetType
+        && verify.value(1).toString() == change.operation
+        && verify.value(2).toString() == change.targetId
+        && verify.value(3).toString() == payloadHash;
+}
+
+Result<QList<StagedMemoryChange>, DomainError> MemoryStore::preparedSleepChanges(
+    const QString& sessionId,
+    const QString& targetType) const {
+    QList<StagedMemoryChange> changes;
+    if (!m_repository || !m_repository->isOpen()
+        || sessionId.trimmed().isEmpty()) {
+        return Result<QList<StagedMemoryChange>, DomainError>::failure(
+            domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                        QStringLiteral("memory sleep staging is unavailable")));
+    }
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    QString sql = QStringLiteral(
+        "SELECT session_id,change_id,target_type,operation,target_id,payload_json,"
+        "payload_hash FROM sleep_staged_change "
+        "WHERE session_id=? AND status IN ('Prepared','Finalized')");
+    if (!targetType.trimmed().isEmpty()) sql += QStringLiteral(" AND target_type=?");
+    sql += QStringLiteral(" ORDER BY created_at,change_id");
+    query.prepare(sql);
+    query.addBindValue(sessionId);
+    if (!targetType.trimmed().isEmpty()) query.addBindValue(targetType);
+    if (!query.exec()) {
+        return Result<QList<StagedMemoryChange>, DomainError>::failure(
+            domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                        QStringLiteral("failed to read memory sleep staging")));
+    }
+    while (query.next()) {
+        QJsonParseError parseError;
+        const QByteArray payloadBytes = query.value(5).toByteArray();
+        const QString expectedHash = QString::fromLatin1(
+            QCryptographicHash::hash(payloadBytes, QCryptographicHash::Sha256).toHex());
+        const QJsonDocument document = QJsonDocument::fromJson(payloadBytes, &parseError);
+        if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+            return Result<QList<StagedMemoryChange>, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("memory sleep staging payload is invalid")));
+        }
+        if (query.value(6).toString() != expectedHash) {
+            return Result<QList<StagedMemoryChange>, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("memory sleep staging hash mismatch")));
+        }
+        StagedMemoryChange change;
+        change.sessionId = query.value(0).toString();
+        change.changeId = query.value(1).toString();
+        change.targetType = query.value(2).toString();
+        change.operation = query.value(3).toString();
+        change.targetId = query.value(4).toString();
+        change.payload = document.object();
+        change.payloadHash = query.value(6).toString();
+        changes.append(std::move(change));
+    }
+    return Result<QList<StagedMemoryChange>, DomainError>::success(
+        std::move(changes));
+}
+
+bool MemoryStore::markSleepChangeFinalized(const QString& sessionId,
+                                           const QString& changeId) {
+    if (!m_repository || !m_repository->isOpen()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    query.prepare(QStringLiteral(
+        "UPDATE sleep_staged_change SET status='Finalized',finalized_at=? "
+        "WHERE session_id=? AND change_id=? AND status IN ('Prepared','Finalized')"));
+    query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    query.addBindValue(sessionId);
+    query.addBindValue(changeId);
+    if (!query.exec()) return false;
+    QSqlQuery verify(QSqlDatabase::database(m_repository->connectionName()));
+    verify.prepare(QStringLiteral(
+        "SELECT status FROM sleep_staged_change WHERE session_id=? AND change_id=?"));
+    verify.addBindValue(sessionId);
+    verify.addBindValue(changeId);
+    return verify.exec() && verify.next()
+        && verify.value(0).toString() == QLatin1String("Finalized");
+}
+
+bool MemoryStore::abortSleepChanges(const QString& sessionId) {
+    if (!m_repository || !m_repository->isOpen()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    query.prepare(QStringLiteral(
+        "DELETE FROM sleep_staged_change WHERE session_id=? AND status='Prepared'"));
+    query.addBindValue(sessionId);
+    return query.exec();
+}
+
+int MemoryStore::preparedSleepChangeCount(const QString& sessionId) const {
+    if (!m_repository || !m_repository->isOpen()) return 0;
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    query.prepare(QStringLiteral(
+        "SELECT COUNT(*) FROM sleep_staged_change "
+        "WHERE session_id=? AND status='Prepared'"));
+    query.addBindValue(sessionId);
+    return query.exec() && query.next() ? query.value(0).toInt() : 0;
+}
+
+bool MemoryStore::hasSleepChange(const QString& changeId,
+                                 const QString& payloadHash) const {
+    if (!m_repository || !m_repository->isOpen()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM sleep_staged_change WHERE change_id=? AND payload_hash=? LIMIT 1"));
+    query.addBindValue(changeId);
+    query.addBindValue(payloadHash);
+    return query.exec() && query.next();
+}
+
+bool MemoryStore::isSleepChangeFinalized(const QString& changeId,
+                                         const QString& payloadHash) const {
+    if (!m_repository || !m_repository->isOpen()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_repository->connectionName()));
+    query.prepare(QStringLiteral(
+        "SELECT 1 FROM sleep_staged_change "
+        "WHERE change_id=? AND payload_hash=? AND status='Finalized' LIMIT 1"));
+    query.addBindValue(changeId);
+    query.addBindValue(payloadHash);
+    return query.exec() && query.next();
+}
+
+bool MemoryStore::finalizeSleepChange(const QString& changeId,
+                                      const QString& payloadHash) {
+    if (!m_repository || !m_repository->isOpen()
+        || changeId.trimmed().isEmpty() || payloadHash.trimmed().isEmpty()) {
+        return false;
+    }
+    QSqlDatabase database = QSqlDatabase::database(m_repository->connectionName());
+    QSqlQuery update(database);
+    update.prepare(QStringLiteral(
+        "UPDATE sleep_staged_change SET status='Finalized',finalized_at=? "
+        "WHERE change_id=? AND payload_hash=? AND status IN ('Prepared','Finalized')"));
+    update.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+    update.addBindValue(changeId);
+    update.addBindValue(payloadHash);
+    if (!update.exec()) return false;
+    QSqlQuery verify(database);
+    verify.prepare(QStringLiteral(
+        "SELECT 1 FROM sleep_staged_change "
+        "WHERE change_id=? AND payload_hash=? AND status='Finalized' LIMIT 1"));
+    verify.addBindValue(changeId);
+    verify.addBindValue(payloadHash);
+    return verify.exec() && verify.next();
 }
 
 bool MemoryStore::removeEntryById(const QString& id) {

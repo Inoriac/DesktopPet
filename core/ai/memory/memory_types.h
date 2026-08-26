@@ -157,4 +157,14 @@ struct MemoryEntry {
     static MemoryEntry fromJson(const QJsonObject& object);
 };
 
+struct StagedMemoryChange {
+    QString sessionId;
+    QString changeId;
+    QString targetType;
+    QString operation;
+    QString targetId;
+    QJsonObject payload;
+    QString payloadHash;
+};
+
 #endif // DESKTOP_PET_MEMORY_TYPES_H

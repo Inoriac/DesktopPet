@@ -173,6 +173,14 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     };
     definitions.append(personalityChanged);
 
+    EventSchemaDefinition innerThoughtStored;
+    innerThoughtStored.type = QStringLiteral("InnerThoughtStored");
+    definitions.append(innerThoughtStored);
+
+    EventSchemaDefinition diaryStored;
+    diaryStored.type = QStringLiteral("DiaryStored");
+    definitions.append(diaryStored);
+
     for (const EventSchemaDefinition& definition : definitions) {
         Result<void, DomainError> result = registry.registerSchema(definition);
         if (!result.isOk()) return result;

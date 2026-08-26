@@ -18,6 +18,7 @@
 #include "configLoader/config_manager.h"
 #include "runtime/agent_runtime_services.h"
 #include "event/event_ledger.h"
+#include "tools/environment_tools.h"
 
 AIBrain::AIBrain(QObject* parent)
     : QObject(parent) {
@@ -108,6 +109,23 @@ void AIBrain::setThinkIntervalMs(int ms) {
     m_idleTriggerTimer.setInterval(ms);
 }
 
+int AIBrain::userIdleSeconds() const {
+    return queryUserIdleSeconds();
+}
+
+void AIBrain::setExternalSleepCoordinatorEnabled(bool enabled) {
+    if (m_externalSleepCoordinatorEnabled == enabled) return;
+    m_externalSleepCoordinatorEnabled = enabled;
+    if (enabled) {
+        if (m_daydreamRunning) {
+            cancelDaydreamSession(QStringLiteral("external sleep coordinator took ownership"));
+        }
+        m_daydreamTimer.stop();
+    } else if (m_running && m_daydreamConfig.enabled) {
+        armDaydreamTimer();
+    }
+}
+
 void AIBrain::start() {
     if (!m_enabled || !m_storageInitialized || m_running) {
         return;
@@ -116,7 +134,7 @@ void AIBrain::start() {
     m_running = true;
     scheduleTrigger("idle_action");
     scheduleTrigger("proactive_chat");
-    if (m_daydreamConfig.enabled) {
+    if (m_daydreamConfig.enabled && !m_externalSleepCoordinatorEnabled) {
         armDaydreamTimer();
     }
 }
@@ -139,10 +157,13 @@ void AIBrain::stop() {
 
 void AIBrain::triggerThink(const QString& reason,
                            const QString& triggerTag) {
+    const bool userInitiated = triggerTag == QLatin1String("manual")
+        || triggerTag == QLatin1String("user_request")
+        || triggerTag == QLatin1String("touch_event");
+    if (m_runtimeServices && userInitiated) {
+        m_runtimeServices->cancelSleepForUserInteraction();
+    }
     if (m_daydreamRunning) {
-        const bool userInitiated = triggerTag == QLatin1String("manual")
-            || triggerTag == QLatin1String("user_request")
-            || triggerTag == QLatin1String("touch_event");
         if (userInitiated) {
             cancelDaydreamSession(QStringLiteral("user interaction"));
         } else {
@@ -197,7 +218,11 @@ QString AIBrain::beginRuntimeSession(const QString& reason,
 }
 
 void AIBrain::finishRuntimeSession(const QString& sessionId) {
-    if (!sessionId.isEmpty()) m_runtimeSessions.remove(sessionId);
+    if (sessionId.isEmpty()) return;
+    if (m_runtimeServices && m_runtimeSessions.contains(sessionId)) {
+        m_runtimeServices->reflectOnCompletedSession(sessionId);
+    }
+    m_runtimeSessions.remove(sessionId);
 }
 
 bool AIBrain::appendRuntimeEvent(const QString& type,

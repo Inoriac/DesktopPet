@@ -8,20 +8,31 @@
 #include "runtime_types.h"
 
 class AgentBootstrap;
+class AgentScheduler;
+class ContextAssembler;
+class CancellationSource;
+class DaydreamSleepAdapter;
+class DiaryService;
+class EmotionStateProvider;
 class EventConsumerCheckpointStore;
 class EventLedger;
-class EmotionStateProvider;
 class EventOutbox;
 class EventSchemaRegistry;
 class NullEmotionStateProvider;
+class InnerThoughtService;
 class PersonaProjector;
 struct PersonaProjection;
 class PersonalityService;
 class RelationshipService;
 class RuntimeUnitOfWorkFactory;
 class SelfModelService;
-class SqliteEventRepository;
+class SleepCycleCoordinator;
+class SleepSessionRepository;
+class SodiumPrivatePsycheCrypto;
+class SqlitePrivatePsycheRepository;
+class QtKeychainPrivateKeyProvider;
 class SqliteIdentityRepository;
+class SqliteEventRepository;
 
 class AgentRuntimeServices {
 public:
@@ -50,6 +61,15 @@ public:
     PersonalityService* personalityService() const { return m_personalityService.get(); }
     RelationshipService* relationshipService() const { return m_relationshipService.get(); }
     SelfModelService* selfModelService() const { return m_selfModelService.get(); }
+    InnerThoughtService* innerThoughtService() const {
+        return m_innerThoughtService.get();
+    }
+    DiaryService* diaryService() const { return m_diaryService.get(); }
+    SleepCycleCoordinator* sleepCycleCoordinator() const {
+        return m_sleepCycleCoordinator.get();
+    }
+    void reflectOnCompletedSession(const QString& sessionId);
+    void cancelSleepForUserInteraction();
     bool isStarted() const { return m_started; }
     void stop();
 
@@ -66,6 +86,7 @@ private:
     IdentityBaseline m_identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy m_personalityPolicy;
     EmotionStateProvider* m_emotionStateProvider = nullptr;
+    AgentScheduler* m_agentScheduler = nullptr;
     AIBrain* m_aiBrain = nullptr;
     RuntimeUiBridge* m_uiBridge = nullptr;
     bool m_started = false;
@@ -82,6 +103,16 @@ private:
     std::unique_ptr<RelationshipService> m_relationshipService;
     std::unique_ptr<SelfModelService> m_selfModelService;
     std::unique_ptr<PersonaProjector> m_personaProjector;
+    std::unique_ptr<QtKeychainPrivateKeyProvider> m_privateKeyProvider;
+    std::unique_ptr<SodiumPrivatePsycheCrypto> m_privateCrypto;
+    std::unique_ptr<SqlitePrivatePsycheRepository> m_privateRepository;
+    std::unique_ptr<SleepSessionRepository> m_sleepSessionRepository;
+    std::unique_ptr<ContextAssembler> m_reflectionContextAssembler;
+    std::unique_ptr<InnerThoughtService> m_innerThoughtService;
+    std::unique_ptr<DiaryService> m_diaryService;
+    std::unique_ptr<DaydreamSleepAdapter> m_daydreamSleepAdapter;
+    std::unique_ptr<SleepCycleCoordinator> m_sleepCycleCoordinator;
+    std::unique_ptr<CancellationSource> m_reflectionCancellation;
 };
 
 #endif // DESKTOP_PET_AGENT_RUNTIME_SERVICES_H

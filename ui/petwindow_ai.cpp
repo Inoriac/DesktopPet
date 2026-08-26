@@ -75,6 +75,10 @@ void PetWindow::setupAiBrain() {
     runtimeUiBridge = std::make_unique<CallbackRuntimeUiBridge>(
         std::move(uiCallbacks), player, animationManager);
     runtimeServices = std::make_unique<AgentRuntimeServices>();
+    agentScheduler = std::make_unique<AgentScheduler>(this);
+    if (!agentScheduler->load()) {
+        qWarning() << "[AgentScheduler] failed to load persisted tasks";
+    }
 
     ConfigManager& config = ConfigManager::instance();
     RuntimeStartRequest runtimeRequest;
@@ -85,7 +89,9 @@ void PetWindow::setupAiBrain() {
     runtimeRequest.identityBaselineHash = config.identityBaselineHash();
     runtimeRequest.identityBaseline = config.getIdentityBaseline();
     runtimeRequest.personalityPolicy = config.getPersonalityPolicy();
+    runtimeRequest.sleepPolicy = config.getSleepPolicy();
     runtimeRequest.emotionStateProvider = emotionStateProvider.get();
+    runtimeRequest.agentScheduler = agentScheduler.get();
     runtimeRequest.aiBrain = aiBrain.get();
     runtimeRequest.uiBridge = runtimeUiBridge.get();
     const Result<RuntimeStartReport, DomainError> runtimeStarted =
@@ -95,6 +101,7 @@ void PetWindow::setupAiBrain() {
                    << runtimeStarted.error().code << runtimeStarted.error().message;
         runtimeServices.reset();
         runtimeUiBridge.reset();
+        agentScheduler.reset();
         return;
     }
     const RuntimeStartReport& runtimeReport = runtimeStarted.value();
@@ -113,7 +120,6 @@ void PetWindow::setupAiBrain() {
     }
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
-    agentScheduler = std::make_unique<AgentScheduler>(this);
     aiToolRegistry->registerTool(std::make_unique<ShowChatBubbleTool>([this](const QString& text, int durationMs) {
         QMetaObject::invokeMethod(this, [this, text, durationMs]() {
             showBubbleMessage(text, durationMs);
@@ -197,7 +203,6 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<DailyBriefingTool>());
 
     agentScheduler->setToolRegistry(aiToolRegistry.get());
-    agentScheduler->load();
     connect(agentScheduler.get(), &AgentScheduler::taskTriggered, this, [this](const QString& id, const QString& title) {
         qDebug() << "[AgentScheduler] task triggered:" << id << title;
         if (petController) {

@@ -165,6 +165,15 @@
           "maxTokens": 1200,
           "temperature": 0.2
         },
+        "sleepPolicy": {
+          "enabled": true,
+          "bedtime": "23:30",
+          "minimumIdleSeconds": 600,
+          "dueSoonThresholdSeconds": 600,
+          "maxItemsPerSession": 32,
+          "retryBackoffSeconds": 600,
+          "tickIntervalSeconds": 60
+        },
         "emotion": {
           "enabled": true,
           "baseline": {

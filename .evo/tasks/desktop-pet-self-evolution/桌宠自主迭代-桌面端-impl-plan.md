@@ -255,14 +255,17 @@ AIBrain Dialogue projection:
 ## Task 4: 现有 Daydream 编排、内心活动、日记与睡眠循环
 
 - **关联设计**: §3.5 Daydream、内心活动、日记与睡眠循环
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 5
 - **依赖**: Task 1B、Task 2、Task 3
 
 **文件**:
 - 实现: `core/ai/reflection/reflection_types.*`、`cancellation_token.*`、`private_key_provider.*`、`private_psyche_crypto.*`、`sqlite_private_psyche_repository.*`
-- 实现: `core/ai/reflection/inner_thought_service.*`、`daydream_sleep_adapter.*`、`diary_service.*`、`sleep_cycle_coordinator.*`
+- 实现: `core/ai/reflection/inner_thought_service.*`、`daydream_sleep_adapter.*`、`diary_service.*`、`sleep_session_repository.*`、`sleep_cycle_coordinator.*`
 - 修改: `core/ai/memory/*`、`core/ai/scheduler/agent_scheduler.*`、`core/ai/ai_brain.h`
+- 修改: `core/ai/ai_brain.cpp`、`core/ai/ai_brain_loop.cpp`、`core/ai/event/event_schema_registry.cpp`
+- 修改: `include/ai_types.h`、`core/configLoader/config_manager.*`、`config/default_common_config.example.json`
+- 修改: `core/ai/runtime/runtime_types.h`、`agent_runtime_services.*`、`ui/petwindow_ai.cpp`
 - 修改: `CMakeLists.txt`（libsodium、Qt6Keychain、reflection 测试目标）
 - 测试: `tests/test_sleep_cycle.cpp`
 
@@ -301,12 +304,27 @@ DiaryService.readForOwner:
 SleepCycleCoordinator.tryStart:
 - `tryStart_whenBedtimeIdleAndNoDueTask_shouldCreateDurablePendingSession`（happy path）
 - `tryStart_whenBrainBusyOrTaskDueSoon_shouldNotStart`
+- `tryStart_whenDiaryAlreadyCommitted_shouldSkipBedtimeButAllowManual`
 - `tryStart_whenAllParticipantsPrepared_shouldPersistCommitThenFinalizeAllStores`
 - `tryStart_whenRestartFindsCommittedSession_shouldIdempotentlyFinishFinalize`
 
 SleepCycleCoordinator.cancel:
 - `cancel_whenDecisionPending_shouldAbortAllStagingAndPreserveFormalState`（happy path）
 - `cancel_whenDecisionCommitted_shouldKeepCommitAndFinishFinalize`
+
+SleepCycleCoordinator.recoverIncomplete/start/stop:
+- `recoverIncomplete_whenCommittedSessionExists_shouldFinalizeBeforePublishingCapability`（happy path）
+- `start_whenCoordinatorTakesOwnership_shouldDisableLegacyDaydreamTimer`
+- `stop_whenCallbacksAreLate_shouldInvalidateGenerationAndPerformNoWrites`
+
+ConfigManager.getSleepPolicy:
+- `getSleepPolicy_whenConfigured_shouldReturnSanitizedPolicy`（happy path）
+- `getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults`
+
+**MVP 边界**:
+- SleepPolicy 只支持模板配置与安全默认值，不增加 launcher 编辑 UI；模板整体导出会保留配置块。
+- 单进程、单 profile 同时最多一个睡眠 session；不实现跨设备同步、密钥轮换 UI、睡眠历史 UI 或自适应 bedtime。
+- 私有记录是正文权威；私有引用事件只保存类型化引用，补发采用启动/定时幂等扫描，不把正文或明文 hash 写入 runtime outbox。
 
 ## Task 5: OwnerDiaryServer 与 launcher 私有日记页
 

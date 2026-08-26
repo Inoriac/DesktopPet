@@ -8,6 +8,7 @@
 #include <QSqlDriver>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QUuid>
 
 #include "partition_policy.h"
@@ -73,6 +74,7 @@ bool SQLiteMemoryRepository::open(const QString& path, QString* errorMessage) {
         QSqlQuery pragma(db);
         pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
         pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
+        pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
     }
 
     if (!initSchema(errorMessage)) {
@@ -124,6 +126,29 @@ bool SQLiteMemoryRepository::rollbackTransaction() {
 bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
+
+    if (!query.exec(QStringLiteral("PRAGMA user_version")) || !query.next()) {
+        if (errorMessage) *errorMessage = query.lastError().text();
+        return false;
+    }
+    const int schemaVersion = query.value(0).toInt();
+    if (schemaVersion < 0 || schemaVersion > 1) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("memory schema version is newer than supported");
+        }
+        return false;
+    }
+    struct MigrationGuard {
+        QSqlDatabase* database = nullptr;
+        bool active = false;
+        ~MigrationGuard() {
+            if (active && database) database->rollback();
+        }
+    } guard{&db, schemaVersion == 0};
+    if (guard.active && !db.transaction()) {
+        if (errorMessage) *errorMessage = db.lastError().text();
+        return false;
+    }
 
     const QStringList statements = {
         QStringLiteral(
@@ -227,6 +252,25 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "  PRIMARY KEY(memory_id, model)"
             ")"
         ),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS sleep_staged_change ("
+            "  session_id TEXT NOT NULL,"
+            "  change_id TEXT NOT NULL,"
+            "  target_type TEXT NOT NULL,"
+            "  operation TEXT NOT NULL,"
+            "  target_id TEXT,"
+            "  payload_json TEXT NOT NULL,"
+            "  payload_hash TEXT NOT NULL,"
+            "  status TEXT NOT NULL DEFAULT 'Prepared',"
+            "  created_at TEXT NOT NULL,"
+            "  finalized_at TEXT,"
+            "  PRIMARY KEY(session_id, change_id)"
+            ")"
+        ),
+        QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_memory_sleep_staged_status "
+            "ON sleep_staged_change(session_id, status)"
+        ),
     };
 
     for (const QString& sql : statements) {
@@ -271,6 +315,43 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             if (errorMessage) *errorMessage = query.lastError().text();
             return false;
         }
+    }
+
+    QSet<QString> memoryColumns;
+    if (!query.exec(QStringLiteral("PRAGMA table_info(memory_items)"))) {
+        if (errorMessage) *errorMessage = query.lastError().text();
+        return false;
+    }
+    while (query.next()) memoryColumns.insert(query.value(1).toString());
+    const QSet<QString> requiredColumns{
+        QStringLiteral("id"), QStringLiteral("type"),
+        QStringLiteral("status"), QStringLiteral("privacy_level"),
+        QStringLiteral("partition"), QStringLiteral("payload_json")
+    };
+    bool compatible = true;
+    for (const QString& column : requiredColumns) {
+        if (!memoryColumns.contains(column)) {
+            compatible = false;
+            break;
+        }
+    }
+    if (!compatible) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("memory formal table structure is incompatible");
+        }
+        return false;
+    }
+    if (schemaVersion == 0
+        && !query.exec(QStringLiteral("PRAGMA user_version=1"))) {
+        if (errorMessage) *errorMessage = query.lastError().text();
+        return false;
+    }
+    if (schemaVersion == 0) {
+        if (!db.commit()) {
+            if (errorMessage) *errorMessage = db.lastError().text();
+            return false;
+        }
+        guard.active = false;
     }
 
     return true;
