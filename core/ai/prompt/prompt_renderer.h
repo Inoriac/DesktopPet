@@ -16,7 +16,7 @@ public:
     static QString render(const QString& body, const QMap<QString, QString>& vars);
 
     // 脱敏：把 api_key/password/token/secret 关键词替换为 [redacted]。
-    // 与 ContextManager::sanitizeForLlm 共用同一份关键词，集中维护。
+    // AIBrain 上下文装配与提示词渲染统一复用此入口。
     static QString redactSecrets(const QString& text);
 };
 

@@ -6,7 +6,7 @@
 
 - `assets/embeddings/`:**bge-small-zh-v1.5 int8 ONNX 已导出**(`model_quantized.onnx` ~57MB + vocab.txt + tokenizer.json + export_meta.json)。导出脚本 `tools/export_bge_onnx.py`(走 ModelScope,bypass HF 不可达)。
 - `core/ai/memory/onnx_embedding_provider.{h,cpp}`:OnnxEmbeddingProvider 实现。自写 WordPiece 中文分词(只读 vocab.txt,不依赖 HF tokenizers C 绑定)→ onnxruntime 前向 → mean-pool + L2 归一化 → 512 维。失败时 `dimension()==0`、`embed` 返回空,与 Noop 等价,不崩。
-- 两个 retrieve 调用点已注入 `embeddingIndex`:`ai_brain_router.cpp` / `agent_core.cpp`;`AIBrain` 与 `AgentCore` 加了 `m_embeddingIndex` 成员 + `setEmbeddingIndex` setter(non-owning,空则走关键词路径)。
+- 生产 retrieve 调用点 `ai_brain_router.cpp` 已支持注入 `embeddingIndex`；`AIBrain` 提供 non-owning `setEmbeddingIndex`，为空时走关键词路径。
 - CMake:`third_party/onnxruntime/` 软依赖探测。**ort 可用 → 编入 OnnxEmbeddingProvider + 链接 dylib;ort 缺失 → 跳过,退 Noop,不阻塞构建**。
 - 单测 `testOnnxEmbeddingProviderLoadsAndEmbeds`(条件编译 `DESKTOP_PET_HAS_ORT`),未生成模型时 QSKIP。
 

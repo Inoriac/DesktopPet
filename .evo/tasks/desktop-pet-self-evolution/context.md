@@ -52,6 +52,8 @@
 - [2026-08-26] [code-impl Task 5 sanity check] §3.6.5 实现锚点已静态验证一致：launcher navigation、4-byte big-endian `QLocalSocket` 协议、`DiaryService::listForOwner/readForOwner`、当前用户 bootstrap 权限校验、一次性 token、runtime composition 与 Server -> Facade -> DiaryService 停机顺序均有生产调用点。
 - [2026-08-26] [code-impl Task 5 静态审查] impl-plan 的 14 个 C++ 用例和 5 个 Python 用例均有对应定义；OwnerDiary 六个生产源文件、C++ 测试和 Python 测试已注册到 CMake。主审补齐了末页 cursor、业务错误保留会话、意外断线清理、当前用户 Windows DACL、连接/认证/请求限额、session 到期撤销、出站 frame 与解密响应缓存字节上限，并静态核对 launcher 不直连 SQLite/Keychain、OwnerDiary 不进入 ToolRegistry/Prompt/EventLedger。`git diff --check` 通过；程序、构建、CMake、Python 和测试均未运行，待受支持环境验证。
 - [2026-08-26] [code-impl Task 5 确认] 用户授权在任务达到可提交节点时直接提交；Task 5 静态审查通过并标记完成。Wave 6 单 Task 无文件冲突，测试定义、测试位置、CMake 注册、模型不可见性与 §3.6.5 实现锚点均已静态核对，运行验证继续保留为“未运行，待受支持环境验证”。
+- [2026-08-26] [code-impl 审阅修复 sanity check] §3.2 已明确 `AIBrain` 是生产主链路；`AgentCore`、`ContextManager` 与 `ContextBudget` 无生产或测试调用，移除后保留 `AgentSession` 的 runtime snapshot 契约与现有行为。
+- [2026-08-26] [code-impl 审阅修复静态审查] CMake 统一 C++ 测试 helper 后，19 个 target、CTest 名、sources/includes/libraries、4 个 private reflection 配置、6 个 Apple CoreGraphics 条件及 ONNX 后置配置均静态核对一致；未运行 CMake、构建、程序、Python 或测试。
 
 ## 设计偏差
 

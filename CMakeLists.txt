@@ -261,8 +261,6 @@ set(CORE_SOURCES
     core/ai/agent/agent_state.h
     core/ai/agent/agent_session.h
     core/ai/agent/agent_session.cpp
-    core/ai/agent/agent_core.h
-    core/ai/agent/agent_core.cpp
     core/ai/router/intent_types.h
     core/ai/router/intent_router.h
     core/ai/router/intent_router.cpp
@@ -278,9 +276,6 @@ set(CORE_SOURCES
     core/ai/tools/runtime/tool_result_sanitizer.cpp
     core/ai/tools/runtime/tool_runtime.h
     core/ai/tools/runtime/tool_runtime.cpp
-    core/ai/context/context_budget.h
-    core/ai/context/context_manager.h
-    core/ai/context/context_manager.cpp
     core/ai/memory/memory_types.h
     core/ai/memory/memory_extractor.h
     core/ai/memory/memory_extractor.cpp
@@ -474,6 +469,27 @@ else()
     message(STATUS "Private reflection capability unavailable; non-private features remain enabled")
 endif()
 
+enable_testing()
+
+function(add_desktop_pet_cpp_test target_name ctest_name)
+    set(options APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
+    set(multi_value_args SOURCES INCLUDE_DIRS LIBRARIES)
+    cmake_parse_arguments(CPP_TEST "${options}" "" "${multi_value_args}" ${ARGN})
+
+    add_executable(${target_name} ${CPP_TEST_SOURCES})
+    target_include_directories(${target_name} PRIVATE ${CPP_TEST_INCLUDE_DIRS})
+    target_link_libraries(${target_name} ${CPP_TEST_LIBRARIES})
+
+    if(CPP_TEST_APPLE_CORE_GRAPHICS AND APPLE)
+        target_link_libraries(${target_name} "-framework CoreGraphics")
+    endif()
+    if(CPP_TEST_PRIVATE_REFLECTION)
+        configure_private_reflection(${target_name})
+    endif()
+
+    add_test(NAME ${ctest_name} COMMAND ${target_name})
+endfunction()
+
 set(TEST_SOURCES
 #        tests/test_statistic_manager.cpp
 #        tests/test_pet_reminder_manager.cpp
@@ -481,43 +497,37 @@ set(TEST_SOURCES
         tests/test_animation_player.cpp
 )
 
-add_executable(statistic_tests ${TEST_SOURCES}
-                               core/animation/animation_player.cpp
-                               core/animation/animation_player.h
-                               core/animation/animation_crossfader.cpp
-                               core/animation/animation_crossfader.h
-                               core/animation/animation_importer.cpp
-                               core/animation/animation_importer.h
-                               engine/model_loader.cpp
-                               engine/model_loader_geometry.cpp
-                               engine/model_loader_skeleton.cpp
-                               engine/model_loader.h
-                               ${TINYGLTF_SOURCES}
-
-)
-
-target_include_directories(statistic_tests PRIVATE
+add_desktop_pet_cpp_test(statistic_tests StatisticTests
+    SOURCES
+        ${TEST_SOURCES}
+        core/animation/animation_player.cpp
+        core/animation/animation_player.h
+        core/animation/animation_crossfader.cpp
+        core/animation/animation_crossfader.h
+        core/animation/animation_importer.cpp
+        core/animation/animation_importer.h
+        engine/model_loader.cpp
+        engine/model_loader_geometry.cpp
+        engine/model_loader_skeleton.cpp
+        engine/model_loader.h
+        ${TINYGLTF_SOURCES}
+    INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/statistic
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/entity
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
-)
-
-target_link_libraries(statistic_tests
+    LIBRARIES
         Qt::Core
         Qt::Test
         Qt::Widgets
-    Qt::Network
+        Qt::Network
         Qt::OpenGL
         Qt::OpenGLWidgets
         Qt::Sql
         $<$<PLATFORM_ID:Windows>:psapi>
 )
-
-enable_testing()
-add_test(NAME StatisticTests COMMAND statistic_tests)
 
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
@@ -536,55 +546,51 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # ---- Profile identity and legacy memory migration tests ----
-add_executable(profile_data_migrator_tests
-    tests/test_profile_data_migrator.cpp
-    core/ai/runtime/profile_resolver.h
-    core/ai/runtime/profile_resolver.cpp
-    core/ai/runtime/profile_data_migrator.h
-    core/ai/runtime/profile_data_migrator.cpp
-    entity/pet.h
-    entity/pet.cpp
-    core/ai/memory/memory_types.h
-    core/ai/memory/memory_store.h
-    core/ai/memory/memory_store.cpp
-    core/ai/memory/memory_repository.h
-    core/ai/memory/sqlite_memory_repository.h
-    core/ai/memory/sqlite_memory_repository.cpp
-    core/ai/memory/memory_relation.h
-    core/ai/memory/memory_relation_graph.h
-    core/ai/memory/memory_relation_graph.cpp
-    core/ai/memory/tag_cooccurrence_graph.h
-    core/ai/memory/tag_cooccurrence_graph.cpp
+add_desktop_pet_cpp_test(profile_data_migrator_tests ProfileDataMigratorTests
+    SOURCES
+        tests/test_profile_data_migrator.cpp
+        core/ai/runtime/profile_resolver.h
+        core/ai/runtime/profile_resolver.cpp
+        core/ai/runtime/profile_data_migrator.h
+        core/ai/runtime/profile_data_migrator.cpp
+        entity/pet.h
+        entity/pet.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/entity
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
 )
-target_include_directories(profile_data_migrator_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/entity
-)
-target_link_libraries(profile_data_migrator_tests
-    Qt::Core
-    Qt::Sql
-    Qt::Test
-)
-add_test(NAME ProfileDataMigratorTests COMMAND profile_data_migrator_tests)
 
 # ---- Event ledger, checkpoint, outbox, and unit-of-work tests ----
-add_executable(event_ledger_tests
-    tests/test_event_ledger.cpp
-    ${EVENT_LEDGER_SOURCES}
+add_desktop_pet_cpp_test(event_ledger_tests EventLedgerTests
+    SOURCES
+        tests/test_event_ledger.cpp
+        ${EVENT_LEDGER_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
 )
-target_include_directories(event_ledger_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-)
-target_link_libraries(event_ledger_tests
-    Qt::Core
-    Qt::Sql
-    Qt::Test
-)
-add_test(NAME EventLedgerTests COMMAND event_ledger_tests)
 
 # ---- Agent bootstrap and runtime service composition test support ----
 set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
@@ -685,132 +691,114 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     include/global_types.h
 )
 
-add_executable(agent_runtime_services_tests
-    tests/test_agent_runtime_services.cpp
-    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+add_desktop_pet_cpp_test(agent_runtime_services_tests AgentRuntimeServicesTests
+    SOURCES
+        tests/test_agent_runtime_services.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
 )
-target_include_directories(agent_runtime_services_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-target_link_libraries(agent_runtime_services_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-    $<$<PLATFORM_ID:Windows>:psapi>
-)
-if(APPLE)
-    target_link_libraries(agent_runtime_services_tests "-framework CoreGraphics")
-endif()
-add_test(NAME AgentRuntimeServicesTests COMMAND agent_runtime_services_tests)
-configure_private_reflection(agent_runtime_services_tests)
 
 # ---- Emotion provider read-only contract tests ----
-add_executable(emotion_provider_contract_tests
-    tests/test_emotion_provider_contract.cpp
-    ${EMOTION_PROVIDER_SOURCES}
-    core/emotion/emotion_types.h
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_state_repository.h
-    core/emotion/emotion_engine.h
-    core/emotion/emotion_engine.cpp
+add_desktop_pet_cpp_test(emotion_provider_contract_tests EmotionProviderContractTests
+    SOURCES
+        tests/test_emotion_provider_contract.cpp
+        ${EMOTION_PROVIDER_SOURCES}
+        core/emotion/emotion_types.h
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_state_repository.h
+        core/emotion/emotion_engine.h
+        core/emotion/emotion_engine.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES
+        Qt::Core
+        Qt::Test
 )
-target_include_directories(emotion_provider_contract_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-)
-target_link_libraries(emotion_provider_contract_tests
-    Qt::Core
-    Qt::Test
-)
-add_test(NAME EmotionProviderContractTests COMMAND emotion_provider_contract_tests)
 
 # ---- Identity state, projection, and runtime composition tests ----
-add_executable(identity_state_tests
-    tests/test_identity_state.cpp
-    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
-    entity/pet_personality.h
-    entity/pet_personality.cpp
+add_desktop_pet_cpp_test(identity_state_tests IdentityStateTests
+    SOURCES
+        tests/test_identity_state.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+        entity/pet_personality.h
+        entity/pet_personality.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/entity
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
 )
-target_include_directories(identity_state_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/entity
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-target_link_libraries(identity_state_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-    $<$<PLATFORM_ID:Windows>:psapi>
-)
-if(APPLE)
-    target_link_libraries(identity_state_tests "-framework CoreGraphics")
-endif()
-add_test(NAME IdentityStateTests COMMAND identity_state_tests)
-configure_private_reflection(identity_state_tests)
 
 # ---- Reflection, private diary, and sleep coordinator tests ----
-add_executable(sleep_cycle_tests
-    tests/test_sleep_cycle.cpp
-    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+add_desktop_pet_cpp_test(sleep_cycle_tests SleepCycleTests
+    SOURCES
+        tests/test_sleep_cycle.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
 )
-target_include_directories(sleep_cycle_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-target_link_libraries(sleep_cycle_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-    $<$<PLATFORM_ID:Windows>:psapi>
-)
-if(APPLE)
-    target_link_libraries(sleep_cycle_tests "-framework CoreGraphics")
-endif()
-configure_private_reflection(sleep_cycle_tests)
-add_test(NAME SleepCycleTests COMMAND sleep_cycle_tests)
 
 # ---- Read-only owner diary facade, IPC authentication, and model invisibility ----
-add_executable(owner_diary_server_tests
-    tests/test_owner_diary_server.cpp
-    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+add_desktop_pet_cpp_test(owner_diary_server_tests OwnerDiaryServerTests
+    SOURCES
+        tests/test_owner_diary_server.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
 )
-target_include_directories(owner_diary_server_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-target_link_libraries(owner_diary_server_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-    $<$<PLATFORM_ID:Windows>:psapi>
-)
-if(APPLE)
-    target_link_libraries(owner_diary_server_tests "-framework CoreGraphics")
-endif()
-configure_private_reflection(owner_diary_server_tests)
-add_test(NAME OwnerDiaryServerTests COMMAND owner_diary_server_tests)
 
 if(Python3_Interpreter_FOUND)
     add_test(NAME OwnerDiaryClientTests
@@ -820,77 +808,80 @@ if(Python3_Interpreter_FOUND)
 endif()
 
 # ---- Model role routing, output repair, and context projection tests ----
-add_executable(model_router_tests
-    tests/test_model_router.cpp
-    ${MODEL_ROUTING_SOURCES}
-    core/ai/llm/llm_client.h
-    core/ai/llm/openai_compatible_client.h
-    core/ai/llm/openai_compatible_client.cpp
-    core/ai/llm/llm_chat_service.h
-    core/ai/llm/llm_chat_service.cpp
-    core/configLoader/config_manager.h
-    core/configLoader/config_manager.cpp
-    core/ai/identity/identity_baseline.h
-    core/ai/identity/identity_baseline.cpp
-    core/ai/identity/identity_types.h
-    core/ai/identity/identity_types.cpp
-    core/emotion/emotion_types.h
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_config_json.h
-    core/emotion/emotion_config_json.cpp
-    statistic/statistic_manager.h
-    statistic/statistic_manager.cpp
-    include/statistic_types.h
-    include/ai_types.h
+add_desktop_pet_cpp_test(model_router_tests ModelRouterTests
+    SOURCES
+        tests/test_model_router.cpp
+        ${MODEL_ROUTING_SOURCES}
+        core/ai/llm/llm_client.h
+        core/ai/llm/openai_compatible_client.h
+        core/ai/llm/openai_compatible_client.cpp
+        core/ai/llm/llm_chat_service.h
+        core/ai/llm/llm_chat_service.cpp
+        core/configLoader/config_manager.h
+        core/configLoader/config_manager.cpp
+        core/ai/identity/identity_baseline.h
+        core/ai/identity/identity_baseline.cpp
+        core/ai/identity/identity_types.h
+        core/ai/identity/identity_types.cpp
+        core/emotion/emotion_types.h
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_config_json.h
+        core/emotion/emotion_config_json.cpp
+        statistic/statistic_manager.h
+        statistic/statistic_manager.cpp
+        include/statistic_types.h
+        include/ai_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Test
 )
-target_include_directories(model_router_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-target_link_libraries(model_router_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Test
-)
-add_test(NAME ModelRouterTests COMMAND model_router_tests)
 
-add_executable(statistic_manager_tests
+add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests
+    SOURCES
         tests/test_statistic_manager.cpp
         statistic/statistic_manager.cpp
         statistic/statistic_manager.h
         include/statistic_types.h
         include/ai_types.h
-)
-target_include_directories(statistic_manager_tests PRIVATE
+    INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Test
+        Qt::Widgets
 )
-target_link_libraries(statistic_manager_tests Qt::Core Qt::Test Qt::Widgets)
-add_test(NAME StatisticManagerTests COMMAND statistic_manager_tests)
 
-add_executable(model_loader_tests
+add_desktop_pet_cpp_test(model_loader_tests ModelLoaderTests
+    SOURCES
         tests/test_model_loader.cpp
         engine/model_loader.cpp
         engine/model_loader_geometry.cpp
         engine/model_loader_skeleton.cpp
         engine/model_loader.h
         ${TINYGLTF_SOURCES}
-)
-target_include_directories(model_loader_tests PRIVATE
+    INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Test
 )
-target_link_libraries(model_loader_tests Qt::Core Qt::Gui Qt::Test)
-add_test(NAME ModelLoaderTests COMMAND model_loader_tests)
 
 # ---- Tool 系统测试 ----
 # 轻量测试，不依赖 OpenGL / 模型文件
-add_executable(tool_tests
+add_desktop_pet_cpp_test(tool_tests ToolTests
+    SOURCES
         tests/test_tool_registry.cpp
         core/ai/tool_registry.cpp
         core/ai/tool_registry.h
@@ -910,9 +901,7 @@ add_executable(tool_tests
         core/ai/scheduler/agent_scheduler.cpp
         include/ai_types.h
         ${STATISTIC_SOURCES}
-)
-
-target_include_directories(tool_tests PRIVATE
+    INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
         ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/tools
@@ -920,151 +909,123 @@ target_include_directories(tool_tests PRIVATE
         ${CMAKE_CURRENT_SOURCE_DIR}/statistic
         ${CMAKE_CURRENT_SOURCE_DIR}/engine
         ${CMAKE_CURRENT_SOURCE_DIR}/entity
-)
-
-target_link_libraries(tool_tests
+    LIBRARIES
         Qt::Core
-    Qt::Network
+        Qt::Network
         Qt::Test
 )
 
-add_test(NAME ToolTests COMMAND tool_tests)
-
 # ---- Intent 路由测试 ----
-add_executable(intent_router_tests
+add_desktop_pet_cpp_test(intent_router_tests IntentRouterTests
+    SOURCES
         tests/test_intent_router.cpp
         core/ai/router/intent_router.h
         core/ai/router/intent_router.cpp
         core/ai/router/intent_types.h
-)
-
-target_include_directories(intent_router_tests PRIVATE
+    INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-)
-
-target_link_libraries(intent_router_tests
+    LIBRARIES
         Qt::Core
         Qt::Test
 )
 
-add_test(NAME IntentRouterTests COMMAND intent_router_tests)
-
 # ---- Emotion deterministic core tests ----
-add_executable(emotion_tests
-    tests/test_emotion_engine.cpp
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_types.h
-    core/emotion/emotion_config_json.cpp
-    core/emotion/emotion_config_json.h
-    core/emotion/emotion_state_repository.h
-    core/emotion/emotion_engine.cpp
-    core/emotion/emotion_engine.h
+add_desktop_pet_cpp_test(emotion_tests EmotionTests
+    SOURCES
+        tests/test_emotion_engine.cpp
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_types.h
+        core/emotion/emotion_config_json.cpp
+        core/emotion/emotion_config_json.h
+        core/emotion/emotion_state_repository.h
+        core/emotion/emotion_engine.cpp
+        core/emotion/emotion_engine.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Test
 )
-
-target_include_directories(emotion_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-)
-
-target_link_libraries(emotion_tests
-    Qt::Core
-    Qt::Test
-)
-
-add_test(NAME EmotionTests COMMAND emotion_tests)
 
 # ---- Emotion runtime adapters and SQLite tests ----
-add_executable(emotion_runtime_tests
-    tests/test_emotion_runtime.cpp
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_types.h
-    core/emotion/emotion_engine.cpp
-    core/emotion/emotion_engine.h
-    core/emotion/emotion_state_repository.h
-    core/emotion/sqlite_emotion_state_repository.cpp
-    core/emotion/sqlite_emotion_state_repository.h
-    core/behavior/behavior_manager.cpp
-    core/behavior/behavior_manager.h
-    core/controller/pet_controller.cpp
-    core/controller/pet_controller.h
+add_desktop_pet_cpp_test(emotion_runtime_tests EmotionRuntimeTests
+    SOURCES
+        tests/test_emotion_runtime.cpp
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_types.h
+        core/emotion/emotion_engine.cpp
+        core/emotion/emotion_engine.h
+        core/emotion/emotion_state_repository.h
+        core/emotion/sqlite_emotion_state_repository.cpp
+        core/emotion/sqlite_emotion_state_repository.h
+        core/behavior/behavior_manager.cpp
+        core/behavior/behavior_manager.h
+        core/controller/pet_controller.cpp
+        core/controller/pet_controller.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
 )
-
-target_include_directories(emotion_runtime_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-)
-
-target_link_libraries(emotion_runtime_tests
-    Qt::Core
-    Qt::Sql
-    Qt::Test
-)
-
-add_test(NAME EmotionRuntimeTests COMMAND emotion_runtime_tests)
 
 # ---- Memory 写入策略测试 ----
-add_executable(memory_strategy_tests
-    tests/test_memory_strategy.cpp
-    core/ai/memory/memory_types.h
-    core/ai/memory/memory_extractor.h
-    core/ai/memory/memory_extractor.cpp
-    core/ai/memory/memory_policy.h
-    core/ai/memory/memory_policy.cpp
-    core/ai/memory/memory_retriever.h
-    core/ai/memory/memory_retriever.cpp
-    core/ai/memory/memory_store.h
-    core/ai/memory/memory_store.cpp
-    core/ai/memory/memory_repository.h
-    core/ai/memory/sqlite_memory_repository.h
-    core/ai/memory/sqlite_memory_repository.cpp
-    core/ai/memory/memory_json_codec.h
-    core/ai/memory/memory_json_codec.cpp
-    core/ai/memory/memory_relation.h
-    core/ai/memory/memory_relation_graph.h
-    core/ai/memory/memory_relation_graph.cpp
-    core/ai/memory/tag_cooccurrence_graph.h
-    core/ai/memory/tag_cooccurrence_graph.cpp
-    core/ai/memory/working_memory_cache.h
-    core/ai/memory/working_memory_cache.cpp
-    core/ai/tools/memory_tools.h
-    core/ai/tools/memory_tools.cpp
-    core/ai/memory/embedding_provider.h
-    core/ai/memory/embedding_index.h
-    core/ai/memory/noop_embedding_index.h
-    core/ai/memory/partition_policy.h
-    core/ai/memory/sqlite_embedding_index.h
-    core/ai/memory/sqlite_embedding_index.cpp
-    core/ai/memory/model_downloader.h
-    core/ai/memory/model_downloader.cpp
-    core/ai/memory/daydream_consolidator.h
-    core/ai/memory/daydream_consolidator.cpp
-    core/ai/scheduler/daydream_trigger_policy.h
-    core/ai/scheduler/daydream_trigger_policy.cpp
-    core/ai/skill/skill_types.h
-    core/ai/skill/skill_types.cpp
-    core/ai/skill/skill_store.h
-    core/ai/skill/skill_store.cpp
+add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
+    SOURCES
+        tests/test_memory_strategy.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/memory_extractor.h
+        core/ai/memory/memory_extractor.cpp
+        core/ai/memory/memory_policy.h
+        core/ai/memory/memory_policy.cpp
+        core/ai/memory/memory_retriever.h
+        core/ai/memory/memory_retriever.cpp
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_json_codec.h
+        core/ai/memory/memory_json_codec.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+        core/ai/memory/working_memory_cache.h
+        core/ai/memory/working_memory_cache.cpp
+        core/ai/tools/memory_tools.h
+        core/ai/tools/memory_tools.cpp
+        core/ai/memory/embedding_provider.h
+        core/ai/memory/embedding_index.h
+        core/ai/memory/noop_embedding_index.h
+        core/ai/memory/partition_policy.h
+        core/ai/memory/sqlite_embedding_index.h
+        core/ai/memory/sqlite_embedding_index.cpp
+        core/ai/memory/model_downloader.h
+        core/ai/memory/model_downloader.cpp
+        core/ai/memory/daydream_consolidator.h
+        core/ai/memory/daydream_consolidator.cpp
+        core/ai/scheduler/daydream_trigger_policy.h
+        core/ai/scheduler/daydream_trigger_policy.cpp
+        core/ai/skill/skill_types.h
+        core/ai/skill/skill_types.cpp
+        core/ai/skill/skill_store.h
+        core/ai/skill/skill_store.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Network
+        Qt::Test
+    APPLE_CORE_GRAPHICS
 )
-
-target_include_directories(memory_strategy_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-)
-
-target_link_libraries(memory_strategy_tests
-    Qt::Core
-    Qt::Sql
-    Qt::Network
-    Qt::Test
-)
-
-if(APPLE)
-    # environment_tools.cpp 的 macOS 空闲检测用到 CGEventSource（CoreGraphics）
-    target_link_libraries(memory_strategy_tests "-framework CoreGraphics")
-endif()
-
-add_test(NAME MemoryStrategyTests COMMAND memory_strategy_tests)
 
 # ---- onnxruntime (third_party, optional软依赖) ----
 # 探测 third_party/onnxruntime/onnxruntime-<platform>-<ver>/，找到则把
@@ -1113,138 +1074,119 @@ else()
 endif()
 
 # ---- LLM 异步服务测试 ----
-add_executable(llm_tests
-    tests/test_llm_chat_service.cpp
-    core/ai/llm/llm_chat_service.h
-    core/ai/llm/llm_chat_service.cpp
-    core/ai/llm/llm_client.h
-    core/ai/llm/openai_compatible_client.h
-    core/ai/llm/openai_compatible_client.cpp
-    core/ai/context_builder.h
-    core/ai/context_builder.cpp
-    core/ai/identity/identity_baseline.h
-    core/ai/identity/identity_baseline.cpp
-    core/ai/identity/persona_projector.h
-    core/ai/identity/persona_projector.cpp
-    ${IDENTITY_STORAGE_SOURCES}
-    core/ai/prompt/prompt_template_types.h
-    core/ai/prompt/prompt_renderer.h
-    core/ai/prompt/prompt_renderer.cpp
-    core/configLoader/config_manager.h
-    core/configLoader/config_manager.cpp
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_types.h
-    core/emotion/emotion_config_json.cpp
-    core/emotion/emotion_config_json.h
-    statistic/statistic_manager.h
-    statistic/statistic_manager.cpp
-    include/statistic_types.h
-    include/ai_types.h
-    include/global_types.h
+add_desktop_pet_cpp_test(llm_tests LlmTests
+    SOURCES
+        tests/test_llm_chat_service.cpp
+        core/ai/llm/llm_chat_service.h
+        core/ai/llm/llm_chat_service.cpp
+        core/ai/llm/llm_client.h
+        core/ai/llm/openai_compatible_client.h
+        core/ai/llm/openai_compatible_client.cpp
+        core/ai/context_builder.h
+        core/ai/context_builder.cpp
+        core/ai/identity/identity_baseline.h
+        core/ai/identity/identity_baseline.cpp
+        core/ai/identity/persona_projector.h
+        core/ai/identity/persona_projector.cpp
+        ${IDENTITY_STORAGE_SOURCES}
+        core/ai/prompt/prompt_template_types.h
+        core/ai/prompt/prompt_renderer.h
+        core/ai/prompt/prompt_renderer.cpp
+        core/configLoader/config_manager.h
+        core/configLoader/config_manager.cpp
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_types.h
+        core/emotion/emotion_config_json.cpp
+        core/emotion/emotion_config_json.h
+        statistic/statistic_manager.h
+        statistic/statistic_manager.cpp
+        include/statistic_types.h
+        include/ai_types.h
+        include/global_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/llm
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
 )
-
-target_include_directories(llm_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/llm
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-
-target_link_libraries(llm_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-)
-
-add_test(NAME LlmTests COMMAND llm_tests)
 
 # ---- 提示词模版 + 身份基线测试 ----
 # 验证 IdentityBaseline、PersonaProjector、PromptRenderer 与固定安全边界。
-add_executable(prompt_tests
-    tests/test_prompt_renderer.cpp
-    core/ai/prompt/prompt_template_types.h
-    core/ai/prompt/prompt_template_types.cpp
-    core/ai/prompt/prompt_template_store.h
-    core/ai/prompt/prompt_template_store.cpp
-    core/ai/prompt/prompt_renderer.h
-    core/ai/prompt/prompt_renderer.cpp
-    core/ai/identity/identity_baseline.h
-    core/ai/identity/identity_baseline.cpp
-    core/ai/identity/persona_projector.h
-    core/ai/identity/persona_projector.cpp
-    ${IDENTITY_STORAGE_SOURCES}
-    core/ai/context_builder.h
-    core/ai/context_builder.cpp
-    core/configLoader/config_manager.h
-    core/configLoader/config_manager.cpp
-    core/emotion/emotion_types.cpp
-    core/emotion/emotion_types.h
-    core/emotion/emotion_config_json.cpp
-    core/emotion/emotion_config_json.h
-    statistic/statistic_manager.h
-    statistic/statistic_manager.cpp
-    include/statistic_types.h
-    include/ai_types.h
-    include/global_types.h
+add_desktop_pet_cpp_test(prompt_tests PromptRendererTests
+    SOURCES
+        tests/test_prompt_renderer.cpp
+        core/ai/prompt/prompt_template_types.h
+        core/ai/prompt/prompt_template_types.cpp
+        core/ai/prompt/prompt_template_store.h
+        core/ai/prompt/prompt_template_store.cpp
+        core/ai/prompt/prompt_renderer.h
+        core/ai/prompt/prompt_renderer.cpp
+        core/ai/identity/identity_baseline.h
+        core/ai/identity/identity_baseline.cpp
+        core/ai/identity/persona_projector.h
+        core/ai/identity/persona_projector.cpp
+        ${IDENTITY_STORAGE_SOURCES}
+        core/ai/context_builder.h
+        core/ai/context_builder.cpp
+        core/configLoader/config_manager.h
+        core/configLoader/config_manager.cpp
+        core/emotion/emotion_types.cpp
+        core/emotion/emotion_types.h
+        core/emotion/emotion_config_json.cpp
+        core/emotion/emotion_config_json.h
+        statistic/statistic_manager.h
+        statistic/statistic_manager.cpp
+        include/statistic_types.h
+        include/ai_types.h
+        include/global_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
 )
-
-target_include_directories(prompt_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
-)
-
-target_link_libraries(prompt_tests
-    Qt::Core
-    Qt::Gui
-    Qt::Network
-    Qt::Sql
-    Qt::Test
-)
-
-add_test(NAME PromptRendererTests COMMAND prompt_tests)
 
 # ---- 文件和网络工具测试 ----
-add_executable(file_web_tool_tests
-    tests/test_file_and_web_tools.cpp
-    core/ai/tools/file_tools.cpp
-    core/ai/tools/web_tools.cpp
-    core/ai/tool_registry.cpp
-    core/ai/ai_tool.h
-    core/ai/tools/runtime/tool_policy.h
-    core/ai/tools/runtime/tool_policy.cpp
-    core/ai/tools/runtime/tool_result_sanitizer.h
-    core/ai/tools/runtime/tool_result_sanitizer.cpp
-    core/ai/tools/runtime/tool_runtime.h
-    core/ai/tools/runtime/tool_runtime.cpp
-    core/ai/tools/environment_tools.h
-    core/ai/tools/environment_tools.cpp
-    include/ai_types.h
+add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
+    SOURCES
+        tests/test_file_and_web_tools.cpp
+        core/ai/tools/file_tools.cpp
+        core/ai/tools/web_tools.cpp
+        core/ai/tool_registry.cpp
+        core/ai/ai_tool.h
+        core/ai/tools/runtime/tool_policy.h
+        core/ai/tools/runtime/tool_policy.cpp
+        core/ai/tools/runtime/tool_result_sanitizer.h
+        core/ai/tools/runtime/tool_result_sanitizer.cpp
+        core/ai/tools/runtime/tool_runtime.h
+        core/ai/tools/runtime/tool_runtime.cpp
+        core/ai/tools/environment_tools.h
+        core/ai/tools/environment_tools.cpp
+        include/ai_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/tools
+    LIBRARIES
+        Qt::Core
+        Qt::Network
+        Qt::Test
+    APPLE_CORE_GRAPHICS
 )
-
-target_include_directories(file_web_tool_tests PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/core
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
-    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/tools
-)
-
-target_link_libraries(file_web_tool_tests
-    Qt::Core
-    Qt::Network
-    Qt::Test
-)
-
-if(APPLE)
-    # environment_tools.cpp 的 macOS 空闲检测用到 CGEventSource（CoreGraphics）
-    target_link_libraries(file_web_tool_tests "-framework CoreGraphics")
-endif()
-
-add_test(NAME FileWebToolTests COMMAND file_web_tool_tests)
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----

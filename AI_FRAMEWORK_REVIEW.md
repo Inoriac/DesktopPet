@@ -30,16 +30,16 @@
 
 ---
 
-## 3. L3 “需用户确认” 权限闸门是死胡同，永远无法完成
+## 3. L3 “需用户确认” 权限闸门（已解决）
 
-**问题**：`ToolRuntime::execute` 在 `needsConfirmation() && !userConfirmed` 时返回失败并 emit `toolConfirmationRequired`，但**全代码库中 `userConfirmed` 在三个调用点恒为 `false`，且没有任何路径在用户确认后带 `userConfirmed=true` 重新提交同一请求**。因此 `write_text_file`、`execute_whitelisted_command` 等即便在配置中显式开启（`allowFileWrite`/`allowCommandExecution`），实际永远只能拿到“需要确认”的失败结果，LLM 会一直循环到 `maxToolRounds`。确认式权限控制形同虚设。
+**当前状态**：`ToolRuntime` 会暂存待确认请求，`AIBrain` 将确认请求交给 UI，并通过同一 requestId 调用 `resolveConfirmation`。批准后以已确认状态执行，拒绝后返回受控失败；运行时切换或停止时会清理待确认请求。
 
 **代码位置**：
-- `core/ai/tools/runtime/tool_runtime.cpp:54`（确认分支）
-- `core/ai/ai_brain_router.cpp:53`、`core/ai/ai_brain_loop.cpp:114`、`core/ai/agent/agent_core.cpp:196-208`（`userConfirmed` 恒为 false）
-- 全局 grep `userConfirmed` 仅以上 3 处设值，无 `true` 分支
+- `core/ai/tools/runtime/tool_runtime.cpp`（`resolveConfirmation` / `executeImpl`）
+- `core/ai/ai_brain_router.cpp`、`core/ai/ai_brain_loop.cpp`（确认 continuation）
+- `ui/petwindow.cpp`（用户确认 UI）
 
-**解决方向**：在 `ToolRuntime` 增加 pending-request 暂存与 `confirm(requestId, accepted)` 接口；`AIBrain`/`AgentCore` 监听 `toolConfirmationRequired` 交由 UI 确认后，用同一 `requestId` 带 `userConfirmed=true` 重跑；`AgentCore` 还需把确认结果作为新的 tool observation 回灌会话。
+**结论**：该问题已由 `AIBrain` 单主链路闭环，不再保留第二套 Agent 确认实现。
 
 ---
 
