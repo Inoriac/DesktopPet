@@ -90,6 +90,7 @@ void PetWindow::setupAiBrain() {
     runtimeRequest.identityBaseline = config.getIdentityBaseline();
     runtimeRequest.personalityPolicy = config.getPersonalityPolicy();
     runtimeRequest.sleepPolicy = config.getSleepPolicy();
+    runtimeRequest.ownerDiaryBootstrapPath = ownerDiaryBootstrapPath;
     runtimeRequest.emotionStateProvider = emotionStateProvider.get();
     runtimeRequest.agentScheduler = agentScheduler.get();
     runtimeRequest.aiBrain = aiBrain.get();

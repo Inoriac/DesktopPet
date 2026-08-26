@@ -329,13 +329,15 @@ ConfigManager.getSleepPolicy:
 ## Task 5: OwnerDiaryServer 与 launcher 私有日记页
 
 - **关联设计**: §3.6 OwnerDiaryServer 与 launcher 私有日记页
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 6
 - **依赖**: Task 4
 
 **文件**:
 - 实现: `core/ai/owner/owner_diary_protocol.*`、`owner_diary_facade.*`、`owner_diary_server.*`
-- 修改: `core/ai/runtime/agent_bootstrap.*`、`main.cpp`
+- 修改: `core/ai/reflection/reflection_types.h`、`diary_service.*`、`sqlite_private_psyche_repository.*`（只读元数据分页，不读取正文列）
+- 修改: `core/ai/runtime/runtime_types.h`、`agent_runtime_services.*`、`agent_bootstrap.*`
+- 修改: `main.cpp`、`ui/petwindow.h`、`ui/petwindow.cpp`、`ui/petwindow_ai.cpp`（bootstrap path 纯值传递）
 - 实现: `launcher/owner_diary_client.py`、`launcher/pages/private_diary_page.py`
 - 修改: `launcher/main.py`
 - 修改: `CMakeLists.txt`
@@ -376,3 +378,8 @@ OwnerDiaryClient.connect/list_entries/get_entry/close:
 Model invisibility regression:
 - `toolRegistry_whenOwnerDiaryEnabled_shouldNotExposeOwnerDiaryActions`（happy path）
 - `dialogueContext_whenOwnerReadsDiary_shouldNotContainAccessEventOrDiaryBody`
+
+**MVP 边界**:
+- OwnerDiary 只支持同一 launcher 生命周期内的一次认证会话，不扫描旧 socket、不复用已消费 capability token、不实现重连配对。
+- list 只返回 `entryId/localDate/index/createdAt` 与 nextCursor；不读取或批量解密正文，不实现全文搜索、安全访问日志持久化或导出。
+- bootstrap/监听失败只关闭 ownerDiary capability，保留既有聊天、事件、身份和私有反思能力。

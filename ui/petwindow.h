@@ -39,6 +39,7 @@ class PetWindow : public QWidget{
 public:
     explicit PetWindow(PetProfile profile,
                        ProfileMigrationRequest profileMigration,
+                       QString ownerDiaryBootstrapPath = {},
                        QWidget *parent = nullptr);
     ~PetWindow();
 
@@ -181,6 +182,7 @@ private:
     RenderViewport *renderViewport;
     PetProfile profile;
     ProfileMigrationRequest profileMigration;
+    QString ownerDiaryBootstrapPath;
     QString modelName;
 
     // 设置

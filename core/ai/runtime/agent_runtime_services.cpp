@@ -16,6 +16,9 @@
 #include "ai/identity/self_model_service.h"
 #include "ai/identity/sqlite_identity_repository.h"
 #include "ai/integration/emotion_state_provider.h"
+#include "ai/owner/owner_diary_facade.h"
+#include "ai/owner/owner_diary_protocol.h"
+#include "ai/owner/owner_diary_server.h"
 #include "ai/reflection/daydream_sleep_adapter.h"
 #include "ai/reflection/diary_service.h"
 #include "ai/reflection/inner_thought_service.h"
@@ -170,6 +173,36 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
                 } else {
                     report.diagnostics.append(
                         QStringLiteral("sleep recovery failed; private reflection disabled"));
+                }
+                if (report.capabilities.privateReflection
+                    && !request.ownerDiaryBootstrapPath.isEmpty()) {
+                    auto bootstrap = consumeOwnerDiaryBootstrap(
+                        request.ownerDiaryBootstrapPath, m_profileId);
+                    if (!bootstrap.isOk()) {
+                        report.diagnostics.append(QStringLiteral(
+                            "owner diary bootstrap was rejected"));
+                    } else {
+                        OwnerDiaryBootstrap settings = bootstrap.takeValue();
+                        m_ownerDiaryFacade = std::make_unique<OwnerDiaryFacade>(
+                            m_diaryService.get());
+                        m_ownerDiaryServer = std::make_unique<OwnerDiaryServer>(
+                            m_ownerDiaryFacade.get(), m_profileId);
+                        const auto listening = m_ownerDiaryServer->listen(
+                            settings.socketName,
+                            settings.capabilityToken,
+                            settings.maxFrameBytes,
+                            settings.sessionTtlSeconds);
+                        settings.capabilityToken.fill('\0');
+                        settings.capabilityToken.clear();
+                        if (listening.isOk()) {
+                            report.capabilities.ownerDiary = true;
+                        } else {
+                            report.diagnostics.append(QStringLiteral(
+                                "owner diary listener is unavailable"));
+                            m_ownerDiaryServer.reset();
+                            m_ownerDiaryFacade.reset();
+                        }
+                    }
                 }
             }
         }
@@ -349,6 +382,9 @@ void AgentRuntimeServices::cancelSleepForUserInteraction() {
 
 void AgentRuntimeServices::stop() {
     if (!m_started && !m_eventSchemas && !m_eventRepository) return;
+    if (m_ownerDiaryServer) m_ownerDiaryServer->stop();
+    m_ownerDiaryServer.reset();
+    m_ownerDiaryFacade.reset();
     if (m_sleepCycleCoordinator) m_sleepCycleCoordinator->stop();
     if (m_reflectionCancellation) m_reflectionCancellation->cancel();
     m_sleepCycleCoordinator.reset();

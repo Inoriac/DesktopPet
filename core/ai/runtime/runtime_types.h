@@ -45,6 +45,7 @@ struct RuntimeStartRequest {
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy personalityPolicy;
     SleepPolicy sleepPolicy;
+    QString ownerDiaryBootstrapPath;
     EmotionStateProvider* emotionStateProvider = nullptr;
     AgentScheduler* agentScheduler = nullptr;
     AIBrain* aiBrain = nullptr;
@@ -62,6 +63,7 @@ struct RuntimeCapabilities {
     bool profileGrowth = false;
     bool privateReflection = false;
     bool sleepCycle = false;
+    bool ownerDiary = false;
 };
 
 struct RuntimeStartReport {

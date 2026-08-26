@@ -66,6 +66,25 @@ struct DiaryEntry {
     QDateTime createdAt;
 };
 
+struct DiaryListQuery {
+    QDate from;
+    QDate to;
+    QString cursor;
+    int limit = 20;
+};
+
+struct DiaryMetadata {
+    QString entryId;
+    QDate localDate;
+    QJsonObject index;
+    QDateTime createdAt;
+};
+
+struct DiaryPage {
+    QList<DiaryMetadata> entries;
+    QString nextCursor;
+};
+
 struct OwnerAuthContext {
     QString profileId;
     bool authenticated = false;

@@ -269,6 +269,22 @@ Result<DiaryEntry, DomainError> DiaryService::readForOwner(
     return readEntry(entryId);
 }
 
+Result<DiaryPage, DomainError> DiaryService::listForOwner(
+    const DiaryListQuery& query,
+    const OwnerAuthContext& auth) const {
+    if (!auth.authenticated || auth.profileId != m_profileId) {
+        return Result<DiaryPage, DomainError>::failure(
+            domainError(QStringLiteral("OWNER_AUTH_FAILED"),
+                        QStringLiteral("owner diary authorization failed")));
+    }
+    if (!m_repository) {
+        return Result<DiaryPage, DomainError>::failure(
+            domainError(QStringLiteral("PRIVATE_STORE_UNAVAILABLE"),
+                        QStringLiteral("diary metadata is unavailable")));
+    }
+    return m_repository->diaryMetadataPage(m_profileId, query);
+}
+
 Result<bool, DomainError> DiaryService::hasCommittedDiaryForDate(
     const QDate& localDate) const {
     if (!m_repository || !localDate.isValid()) {

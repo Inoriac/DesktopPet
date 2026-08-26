@@ -37,6 +37,7 @@ int main(int argc, char *argv[])
     //   --config <file>  指定启动配置文件（建议绝对路径）
     //   --pet <name>          指定启动角色
     //   --profile-id <uuid>   指定不可变的角色身份
+    //   --owner-diary-bootstrap <file>  launcher 私有日记一次性凭据
     // 主题不走命令行，由 ThemeManager 经同名 QSettings(键 ui/theme)读取，见前端修改计划 §3.1。
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop Pet Application");
@@ -49,9 +50,12 @@ int main(int argc, char *argv[])
         "Pet name to auto-start (must exist in pets.json registry)", "pet-name");
     QCommandLineOption profileIdOption("profile-id",
         "Immutable profile UUID (resolved from pets.json when omitted)", "profile-id");
+    QCommandLineOption ownerDiaryBootstrapOption("owner-diary-bootstrap",
+        "Path to the one-time owner diary bootstrap file", "bootstrap-file");
     parser.addOption(configOption);
     parser.addOption(petOption);
     parser.addOption(profileIdOption);
+    parser.addOption(ownerDiaryBootstrapOption);
     parser.process(app);
 
     const QString configPath = parser.value(configOption);
@@ -110,7 +114,8 @@ int main(int argc, char *argv[])
     cfg.setLlmEnabled(aiEnabled);
     cfg.setVoiceConfig(voice);
 
-    PetWindow *pet = new PetWindow(profile, profileMigration, nullptr);
+    PetWindow *pet = new PetWindow(
+        profile, profileMigration, parser.value(ownerDiaryBootstrapOption), nullptr);
     StatisticManager::getInstance().recordPetStart(petName);
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [petName]() {
         StatisticManager::getInstance().recordPetStop(petName);

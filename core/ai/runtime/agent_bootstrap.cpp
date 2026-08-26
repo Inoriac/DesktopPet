@@ -1,6 +1,7 @@
 #include "agent_bootstrap.h"
 
 #include <QRegularExpression>
+#include <QFileInfo>
 
 #include "ai/ai_brain.h"
 #include "ai/event/event_types.h"
@@ -34,8 +35,13 @@ Result<RuntimeStartReport, DomainError> AgentBootstrap::start(
                         QStringLiteral("agent bootstrap request is invalid")));
     }
 
+    RuntimeStartRequest sanitizedRequest = request;
+    const bool ownerDiaryPathInvalid = !request.ownerDiaryBootstrapPath.isEmpty()
+        && !QFileInfo(request.ownerDiaryBootstrapPath).isAbsolute();
+    if (ownerDiaryPathInvalid) sanitizedRequest.ownerDiaryBootstrapPath.clear();
+
     const ProfileMigrationResult migration =
-        ProfileDataMigrator().migrateLegacyMemory(request.profileMigration);
+        ProfileDataMigrator().migrateLegacyMemory(sanitizedRequest.profileMigration);
     const Result<void, DomainError> storage = request.aiBrain->initializeStorage({
         migration.activeDatabasePath,
         migration.activeJsonPath
@@ -45,7 +51,11 @@ Result<RuntimeStartReport, DomainError> AgentBootstrap::start(
     }
 
     Result<RuntimeStartReport, DomainError> started =
-        services.startAfterStorageReady(request, migration);
+        services.startAfterStorageReady(sanitizedRequest, migration);
+    if (started.isOk() && ownerDiaryPathInvalid) {
+        started.value().diagnostics.append(QStringLiteral(
+            "owner diary bootstrap path must be absolute"));
+    }
     if (started.isOk()) request.aiBrain->setRuntimeServices(&services);
     return started;
 }

@@ -20,6 +20,8 @@ class EventOutbox;
 class EventSchemaRegistry;
 class NullEmotionStateProvider;
 class InnerThoughtService;
+class OwnerDiaryFacade;
+class OwnerDiaryServer;
 class PersonaProjector;
 struct PersonaProjection;
 class PersonalityService;
@@ -68,6 +70,7 @@ public:
     SleepCycleCoordinator* sleepCycleCoordinator() const {
         return m_sleepCycleCoordinator.get();
     }
+    OwnerDiaryServer* ownerDiaryServer() const { return m_ownerDiaryServer.get(); }
     void reflectOnCompletedSession(const QString& sessionId);
     void cancelSleepForUserInteraction();
     bool isStarted() const { return m_started; }
@@ -110,6 +113,8 @@ private:
     std::unique_ptr<ContextAssembler> m_reflectionContextAssembler;
     std::unique_ptr<InnerThoughtService> m_innerThoughtService;
     std::unique_ptr<DiaryService> m_diaryService;
+    std::unique_ptr<OwnerDiaryFacade> m_ownerDiaryFacade;
+    std::unique_ptr<OwnerDiaryServer> m_ownerDiaryServer;
     std::unique_ptr<DaydreamSleepAdapter> m_daydreamSleepAdapter;
     std::unique_ptr<SleepCycleCoordinator> m_sleepCycleCoordinator;
     std::unique_ptr<CancellationSource> m_reflectionCancellation;

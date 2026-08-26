@@ -31,6 +31,9 @@ public:
                       const CancellationToken& token,
                       DiaryHandler handler);
     Result<DiaryEntry, DomainError> readForSelf(const QString& entryId) const;
+    Result<DiaryPage, DomainError> listForOwner(
+        const DiaryListQuery& query,
+        const OwnerAuthContext& auth) const;
     Result<DiaryEntry, DomainError> readForOwner(
         const QString& entryId,
         const OwnerAuthContext& auth) const;

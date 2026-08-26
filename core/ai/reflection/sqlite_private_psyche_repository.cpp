@@ -7,6 +7,7 @@
 #include <QUuid>
 #include <QVariant>
 
+#include <algorithm>
 #include <utility>
 
 namespace {
@@ -25,6 +26,43 @@ DomainError sqlError(const QString& message, const QSqlError& error = {}) {
 QJsonObject parseObject(const QString& value) {
     const QJsonDocument document = QJsonDocument::fromJson(value.toUtf8());
     return document.isObject() ? document.object() : QJsonObject{};
+}
+
+QString metadataCursor(const DiaryMetadata& metadata) {
+    const QJsonObject object{
+        {QStringLiteral("localDate"),
+         metadata.localDate.toString(Qt::ISODate)},
+        {QStringLiteral("entryId"), metadata.entryId}
+    };
+    return QString::fromLatin1(
+        QJsonDocument(object).toJson(QJsonDocument::Compact).toBase64(
+            QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals));
+}
+
+Result<QPair<QDate, QString>, DomainError> parseMetadataCursor(
+    const QString& cursor) {
+    if (cursor.isEmpty()) {
+        return Result<QPair<QDate, QString>, DomainError>::success({{}, {}});
+    }
+    const QByteArray decoded = QByteArray::fromBase64(
+        cursor.toLatin1(),
+        QByteArray::Base64UrlEncoding | QByteArray::AbortOnBase64DecodingErrors);
+    const QJsonDocument document = QJsonDocument::fromJson(decoded);
+    if (!document.isObject()) {
+        return Result<QPair<QDate, QString>, DomainError>::failure(
+            domainError(QStringLiteral("DIARY_QUERY_INVALID"),
+                        QStringLiteral("diary cursor is invalid")));
+    }
+    const QJsonObject object = document.object();
+    const QDate date = QDate::fromString(
+        object.value(QStringLiteral("localDate")).toString(), Qt::ISODate);
+    const QString entryId = object.value(QStringLiteral("entryId")).toString();
+    if (!date.isValid() || entryId.trimmed().isEmpty()) {
+        return Result<QPair<QDate, QString>, DomainError>::failure(
+            domainError(QStringLiteral("DIARY_QUERY_INVALID"),
+                        QStringLiteral("diary cursor fields are invalid")));
+    }
+    return Result<QPair<QDate, QString>, DomainError>::success({date, entryId});
 }
 
 StoredPrivateRecord recordFromQuery(QSqlQuery& query,
@@ -306,6 +344,79 @@ Result<std::optional<StoredPrivateRecord>, DomainError>
 SqlitePrivatePsycheRepository::diary(const QString& entryId) const {
     return readRecord(QStringLiteral("diary_entry"), QStringLiteral("entry_id"),
                       QStringLiteral("diary_entry"), entryId);
+}
+
+Result<DiaryPage, DomainError>
+SqlitePrivatePsycheRepository::diaryMetadataPage(
+    const QString& profileId,
+    const DiaryListQuery& query) const {
+    if (!isOpen()) {
+        return Result<DiaryPage, DomainError>::failure(
+            sqlError(QStringLiteral("private repository is closed")));
+    }
+    if (profileId.trimmed().isEmpty()
+        || (query.from.isValid() && query.to.isValid() && query.from > query.to)) {
+        return Result<DiaryPage, DomainError>::failure(
+            domainError(QStringLiteral("DIARY_QUERY_INVALID"),
+                        QStringLiteral("diary metadata query is invalid")));
+    }
+    const auto cursor = parseMetadataCursor(query.cursor);
+    if (!cursor.isOk()) {
+        return Result<DiaryPage, DomainError>::failure(cursor.error());
+    }
+
+    QStringList predicates{QStringLiteral("profile_id=?")};
+    QVariantList bindings{profileId};
+    if (query.from.isValid()) {
+        predicates.append(QStringLiteral("local_date>=?"));
+        bindings.append(query.from.toString(Qt::ISODate));
+    }
+    if (query.to.isValid()) {
+        predicates.append(QStringLiteral("local_date<=?"));
+        bindings.append(query.to.toString(Qt::ISODate));
+    }
+    if (cursor.value().first.isValid()) {
+        predicates.append(QStringLiteral(
+            "(local_date<? OR (local_date=? AND entry_id<?))"));
+        bindings.append(cursor.value().first.toString(Qt::ISODate));
+        bindings.append(cursor.value().first.toString(Qt::ISODate));
+        bindings.append(cursor.value().second);
+    }
+    const int limit = std::clamp(query.limit, 1, 100);
+    QSqlQuery sql(QSqlDatabase::database(m_connectionName));
+    sql.prepare(QStringLiteral(
+        "SELECT entry_id,local_date,index_json,created_at FROM diary_entry "
+        "WHERE %1 ORDER BY local_date DESC,entry_id DESC LIMIT ?")
+                    .arg(predicates.join(QStringLiteral(" AND "))));
+    for (const QVariant& binding : bindings) sql.addBindValue(binding);
+    sql.addBindValue(limit + 1);
+    if (!sql.exec()) {
+        return Result<DiaryPage, DomainError>::failure(
+            sqlError(QStringLiteral("failed to list diary metadata"), sql.lastError()));
+    }
+
+    DiaryPage page;
+    while (page.entries.size() < limit && sql.next()) {
+        DiaryMetadata metadata;
+        metadata.entryId = sql.value(QStringLiteral("entry_id")).toString();
+        metadata.localDate = QDate::fromString(
+            sql.value(QStringLiteral("local_date")).toString(), Qt::ISODate);
+        metadata.index = parseObject(
+            sql.value(QStringLiteral("index_json")).toString());
+        metadata.createdAt = QDateTime::fromString(
+            sql.value(QStringLiteral("created_at")).toString(),
+            Qt::ISODateWithMs);
+        if (metadata.entryId.isEmpty() || !metadata.localDate.isValid()) {
+            return Result<DiaryPage, DomainError>::failure(
+                sqlError(QStringLiteral("stored diary metadata is invalid")));
+        }
+        page.entries.append(std::move(metadata));
+    }
+    const bool hasMore = sql.next();
+    if (hasMore && !page.entries.isEmpty()) {
+        page.nextCursor = metadataCursor(page.entries.last());
+    }
+    return Result<DiaryPage, DomainError>::success(std::move(page));
 }
 
 Result<std::optional<StoredPrivateRecord>, DomainError>

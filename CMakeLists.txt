@@ -178,6 +178,15 @@ set(REFLECTION_SOURCES
     core/ai/reflection/sleep_cycle_coordinator.cpp
 )
 
+set(OWNER_DIARY_SOURCES
+    core/ai/owner/owner_diary_protocol.h
+    core/ai/owner/owner_diary_protocol.cpp
+    core/ai/owner/owner_diary_facade.h
+    core/ai/owner/owner_diary_facade.cpp
+    core/ai/owner/owner_diary_server.h
+    core/ai/owner/owner_diary_server.cpp
+)
+
 set(CORE_SOURCES
     core/animation/animation_manager.cpp
     core/animation/animation_manager.h
@@ -244,6 +253,7 @@ set(CORE_SOURCES
     ${MODEL_ROUTING_SOURCES}
     ${IDENTITY_STATE_SOURCES}
     ${REFLECTION_SOURCES}
+    ${OWNER_DIARY_SOURCES}
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -434,6 +444,7 @@ target_link_libraries(Desktop_Pet
 )
 
 function(configure_private_reflection target_name)
+    target_link_libraries(${target_name} $<$<PLATFORM_ID:Windows>:advapi32>)
     if(DESKTOP_PET_HAS_LIBSODIUM)
         target_include_directories(${target_name} PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(${target_name} ${SODIUM_LIBRARY})
@@ -582,6 +593,7 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     ${MODEL_ROUTING_SOURCES}
     ${IDENTITY_STATE_SOURCES}
     ${REFLECTION_SOURCES}
+    ${OWNER_DIARY_SOURCES}
     core/ai/runtime/profile_resolver.h
     core/ai/runtime/profile_resolver.cpp
     core/ai/runtime/profile_data_migrator.h
@@ -773,6 +785,39 @@ if(APPLE)
 endif()
 configure_private_reflection(sleep_cycle_tests)
 add_test(NAME SleepCycleTests COMMAND sleep_cycle_tests)
+
+# ---- Read-only owner diary facade, IPC authentication, and model invisibility ----
+add_executable(owner_diary_server_tests
+    tests/test_owner_diary_server.cpp
+    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+)
+target_include_directories(owner_diary_server_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(owner_diary_server_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Sql
+    Qt::Test
+    $<$<PLATFORM_ID:Windows>:psapi>
+)
+if(APPLE)
+    target_link_libraries(owner_diary_server_tests "-framework CoreGraphics")
+endif()
+configure_private_reflection(owner_diary_server_tests)
+add_test(NAME OwnerDiaryServerTests COMMAND owner_diary_server_tests)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME OwnerDiaryClientTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_owner_diary_client.py)
+    set_tests_properties(OwnerDiaryClientTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+endif()
 
 # ---- Model role routing, output repair, and context projection tests ----
 add_executable(model_router_tests

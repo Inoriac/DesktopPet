@@ -47,6 +47,11 @@
 - [2026-08-25] [code-impl Task 4 sanity check] §3.5.5 实现锚点已静态验证一致：AIBrain/AgentScheduler 只读查询、Daydream ChangeSet、libsodium/QtKeychain 降级、Runtime 三库组装与恢复、SleepPolicy active profile 读取及 PetWindow 所有权链路均有生产调用点。
 - [2026-08-25] [code-impl Task 4 静态验收] impl-plan 的 29 个用例与新增的同日 Bedtime 幂等用例共 30 个均有对应声明和定义；Reflection 的 10 个生产 `.cpp`、SleepCycleTests、条件私有依赖链接、私有引用 Schema 和 Runtime/AIBrain 调用链已静态核对。主审额外修正了 Finalized Memory staging 恢复校验、私有引用事件幂等 ID、SleepPolicy 非法值回退以及用户交互对 Pending Sleep 的即时取消链路。`git diff --check` 通过；构建、测试和程序均未运行，待受支持环境验证。
 - [2026-08-25] [code-impl Task 4 确认] 用户确认继续进入 Task 5；Wave 5 单 Task 无文件冲突，30 个测试定义、测试位置、CMake 注册、生产组装与 §3.5.5 实现锚点均已静态核对；运行验证继续保留为“未运行，待受支持环境验证”。
+- [2026-08-26] [code-impl Task 5 首次 sanity check] §3.6.5 的 launcher navigation、Qt local transport 与 secret handling 锚点一致；但 `DiaryService`/私有 repository 缺少分页元数据接口，bootstrap path 也无法从 `main.cpp` 传入实际位于 `PetWindow::setupAiBrain` 的 runtime composition，因此按跨 §3.5/§3.2 契约停止，未产生 Task 5 代码。
+- [2026-08-26] [code-impl Task 5 系分回溯] §3.5/§3.6 与 impl-plan 已补充只查询元数据列的 `DiaryService::listForOwner`/repository 分页契约，以及 `main.cpp -> PetWindow -> RuntimeStartRequest -> AgentRuntimeServices` 的 bootstrap 纯值传递和 server 所有权/降级顺序；MVP 不实现重连配对、全文搜索、导出或安全日志持久化。
+- [2026-08-26] [code-impl Task 5 sanity check] §3.6.5 实现锚点已静态验证一致：launcher navigation、4-byte big-endian `QLocalSocket` 协议、`DiaryService::listForOwner/readForOwner`、当前用户 bootstrap 权限校验、一次性 token、runtime composition 与 Server -> Facade -> DiaryService 停机顺序均有生产调用点。
+- [2026-08-26] [code-impl Task 5 静态审查] impl-plan 的 14 个 C++ 用例和 5 个 Python 用例均有对应定义；OwnerDiary 六个生产源文件、C++ 测试和 Python 测试已注册到 CMake。主审补齐了末页 cursor、业务错误保留会话、意外断线清理、当前用户 Windows DACL、连接/认证/请求限额、session 到期撤销、出站 frame 与解密响应缓存字节上限，并静态核对 launcher 不直连 SQLite/Keychain、OwnerDiary 不进入 ToolRegistry/Prompt/EventLedger。`git diff --check` 通过；程序、构建、CMake、Python 和测试均未运行，待受支持环境验证。
+- [2026-08-26] [code-impl Task 5 确认] 用户授权在任务达到可提交节点时直接提交；Task 5 静态审查通过并标记完成。Wave 6 单 Task 无文件冲突，测试定义、测试位置、CMake 注册、模型不可见性与 §3.6.5 实现锚点均已静态核对，运行验证继续保留为“未运行，待受支持环境验证”。
 
 ## 设计偏差
 
@@ -77,3 +82,4 @@
 - [deferred] Task 3 不实现自适应人格阈值、人格可视化/编辑 UI、多账户 subject 解析和自动参数调优；首版本机会话使用隔离键 `owner`，保留未来替换入口。
 - [deferred] Task 4 不实现自适应 bedtime、跨设备睡眠同步、密钥轮换/恢复 UI 和睡眠历史 UI；SleepPolicy 只由模板配置与安全默认值提供。
 - [deferred] Task 4 MVP 已接入真实 event cutoff 与高价值交互 InnerThought，但完整 SelfModel staging、更丰富的 Diary 事件/内心摘要/已提交记忆投影、情绪历史轨迹、Owner 读取安全日志和私有引用后台补发扫描延后；当实际使用需求出现时再回溯 §3.5。
+- [deferred] Task 5 MVP 不实现 detached 核心重连配对、全文搜索、日记导出或持久化安全访问日志；连接数、认证等待、请求频率与 session TTL 先使用本地固定上限，只有出现实际配置或可观测性需求时再扩展策略配置和可注入时钟测试。

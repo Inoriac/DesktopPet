@@ -41,6 +41,9 @@ public:
         const QString& profileId, const QDate& localDate) const;
     Result<std::optional<StoredPrivateRecord>, DomainError> diary(
         const QString& entryId) const;
+    Result<DiaryPage, DomainError> diaryMetadataPage(
+        const QString& profileId,
+        const DiaryListQuery& query) const;
 
     Result<void, DomainError> abortSession(const QString& sessionId);
 

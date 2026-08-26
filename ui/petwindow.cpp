@@ -61,12 +61,14 @@
 
 PetWindow::PetWindow(PetProfile profile,
                      ProfileMigrationRequest profileMigration,
+                     QString ownerDiaryBootstrapPath,
                      QWidget *parent)
     : QWidget(parent)
     , isDragging(false)
     , renderViewport(nullptr)
     , profile(std::move(profile))
     , profileMigration(std::move(profileMigration))
+    , ownerDiaryBootstrapPath(std::move(ownerDiaryBootstrapPath))
     , modelName(this->profile.name)
     , sizePercent(100)
     , alwaysOnTop(true)
