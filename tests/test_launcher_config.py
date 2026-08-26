@@ -4,6 +4,7 @@ import os
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -13,7 +14,7 @@ import config_loader  # noqa: E402
 from app_state import AppState  # noqa: E402
 
 
-class LauncherEmotionConfigTests(unittest.TestCase):
+class LauncherConfigTests(unittest.TestCase):
     def test_app_state_exports_emotion_setting(self):
         state = AppState(emotion_enabled=False)
         settings = state.to_settings_dict()
@@ -52,6 +53,50 @@ class LauncherEmotionConfigTests(unittest.TestCase):
                 loaded = json.load(handle)
         self.assertFalse(
             loaded["aiSettings"]["profiles"]["default"]["emotion"]["enabled"])
+
+    def test_saved_config_restores_api_and_launcher_fields(self):
+        state = AppState(
+            ai_enabled=True,
+            auto_screen_chat=True,
+            provider="openai-compatible",
+            base_url="https://provider.example/v1",
+            api_key="saved-secret",
+            model="text-model",
+            visual_model="vision-model",
+            scale_percent=135,
+            snap_enabled=False,
+        )
+        config = config_loader.apply_settings(
+            config_loader.load_template(), state.to_settings_dict())
+        overrides = state.to_advanced_overrides()
+        config["renderSettings"].update(overrides["renderSettings"])
+        config["interactionSettings"].update({
+            "dragThreshold": overrides["interactionSettings"]["dragThreshold"],
+            "clickTimeout": overrides["interactionSettings"]["clickTimeout"],
+        })
+        config["interactionSettings"]["windowSnapping"].update(
+            overrides["interactionSettings"]["windowSnapping"])
+
+        restored = AppState.from_config(config)
+
+        self.assertTrue(restored.ai_enabled)
+        self.assertTrue(restored.auto_screen_chat)
+        self.assertEqual(restored.base_url, "https://provider.example/v1")
+        self.assertEqual(restored.api_key, "saved-secret")
+        self.assertEqual(restored.model, "text-model")
+        self.assertEqual(restored.visual_model, "vision-model")
+        self.assertEqual(restored.scale_percent, 135)
+        self.assertFalse(restored.snap_enabled)
+
+    def test_export_then_load_saved_config_round_trips_json(self):
+        config = {"aiSettings": {"activeProfile": "default"}}
+        with tempfile.TemporaryDirectory() as directory, patch.object(
+                config_loader, "_app_data_dir", return_value=directory):
+            path = config_loader.export_config(config)
+            restored = config_loader.load_saved_config()
+
+        self.assertEqual(path, os.path.join(directory, "launch_config.json"))
+        self.assertEqual(restored, config)
 
 
 if __name__ == "__main__":

@@ -13,6 +13,7 @@
 #include "ai/tools/music_tools.h"
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/web_tools.h"
+#include "ai/integration/emotion_state_provider.h"
 #include "ai/skill/skill_tools.h"
 #include "ai/prompt/prompt_template_store.h"
 #include "ai/runtime/agent_bootstrap.h"

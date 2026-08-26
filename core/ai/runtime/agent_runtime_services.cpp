@@ -30,6 +30,8 @@
 #include "ai/reflection/sqlite_private_psyche_repository.h"
 #include "runtime_ui_bridge.h"
 
+AgentRuntimeServices::AgentRuntimeServices() = default;
+
 AgentRuntimeServices::~AgentRuntimeServices() {
     stop();
 }

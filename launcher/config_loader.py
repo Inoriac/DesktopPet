@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import tempfile
 from typing import Any, Dict
 
 from pet_registry import _app_data_dir  # 复用同一 AppData 根以放 launch_config.json
@@ -20,12 +21,27 @@ TEMPLATE_PATH = os.path.join(
     "config",
     "default_common_config.example.json",
 )
+SAVED_CONFIG_NAME = "launch_config.json"
 
 
 def load_template() -> Dict[str, Any]:
     """加载默认配置模板。文件不存在则抛错（仓库应自带 .example）。"""
     with open(TEMPLATE_PATH, "r", encoding="utf-8") as f:
         return json.load(f)
+
+
+def saved_config_path() -> str:
+    return os.path.join(_app_data_dir(), SAVED_CONFIG_NAME)
+
+
+def load_saved_config() -> Dict[str, Any] | None:
+    """Load the last explicitly saved/exported launcher configuration."""
+    try:
+        with open(saved_config_path(), "r", encoding="utf-8") as handle:
+            config = json.load(handle)
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return None
+    return config if isinstance(config, dict) else None
 
 
 def _profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -161,10 +177,23 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
 
 def export_config(cfg: Dict[str, Any]) -> str:
     """导出到 AppData/launch_config.json，返回绝对路径（供 --config 传给 C++）。"""
-    os.makedirs(_app_data_dir(), exist_ok=True)
-    out_path = os.path.join(_app_data_dir(), "launch_config.json")
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+    directory = _app_data_dir()
+    os.makedirs(directory, exist_ok=True)
+    out_path = saved_config_path()
+    descriptor, temporary_path = tempfile.mkstemp(
+        prefix=".launch_config-", suffix=".tmp", dir=directory)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(cfg, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary_path, out_path)
+    except Exception:
+        try:
+            os.unlink(temporary_path)
+        except OSError:
+            pass
+        raise
     return out_path
 
 

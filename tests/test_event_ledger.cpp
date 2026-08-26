@@ -507,5 +507,5 @@ void TestEventLedger::dispatchPending_whenRetryMetadataUpdateFails_shouldPreserv
                    QStringLiteral("SELECT next_attempt_at FROM event_outbox")).isNull());
 }
 
-QTEST_APPLESS_MAIN(TestEventLedger)
+QTEST_GUILESS_MAIN(TestEventLedger)
 #include "test_event_ledger.moc"

@@ -23,6 +23,8 @@ python3 -m venv .venv
 - C++ 核心须已构建：`scripts/build_mac.sh`（产物 `build/Desktop_Pet`）。
 - 启动器回写配置到 `~/Library/Application Support/Desktop Pet Team/Desktop Pet/launch_config.json`，
   并以 `--config <绝对路径> --pet <角色名>` 启动核心。
+- Windows 下配置保存在 `%APPDATA%\Desktop Pet Team\Desktop Pet\launch_config.json`。
+  AI 页面可显式保存配置，launcher 下次启动时会自动恢复用户字段。
 
 ## 主题共享
 

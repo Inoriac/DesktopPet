@@ -65,8 +65,7 @@ public:
     void setBigScreenAlarm(bool on);
 
 signals:
-    void aboutToClose();  // 窗口即将关闭时发送
-    void requestStop();
+    void aboutToClose();
 
 protected:
     // 鼠标事件处理

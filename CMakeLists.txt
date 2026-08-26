@@ -529,6 +529,13 @@ add_desktop_pet_cpp_test(statistic_tests StatisticTests
         $<$<PLATFORM_ID:Windows>:psapi>
 )
 
+if(WIN32
+    AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe"
+    AND (NOT Python3_EXECUTABLE OR NOT EXISTS "${Python3_EXECUTABLE}"))
+    set(Python3_EXECUTABLE
+        "${CMAKE_CURRENT_SOURCE_DIR}/.venv/Scripts/python.exe"
+        CACHE FILEPATH "Python interpreter used by Desktop Pet tests" FORCE)
+endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
     add_test(NAME LauncherConfigTests
@@ -538,6 +545,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME PetProfileIdTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pet_profile_id.py)
     set_tests_properties(PetProfileIdTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME LauncherProcessTrackerTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_process_tracker.py)
+    set_tests_properties(LauncherProcessTrackerTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME ModelRoleConfigTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_model_role_config.py)

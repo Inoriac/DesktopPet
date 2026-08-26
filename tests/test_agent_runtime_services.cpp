@@ -12,6 +12,7 @@
 
 #include "ai/agent/agent_session.h"
 #include "ai/ai_brain.h"
+#include "ai/event/event_ledger.h"
 #include "ai/memory/memory_store.h"
 #include "ai/runtime/agent_bootstrap.h"
 #include "ai/runtime/agent_runtime_services.h"
@@ -354,15 +355,15 @@ void TestAgentRuntimeServices::readAfter_whenStoredEnvelopeIsInvalid_shouldRejec
     QTest::addColumn<QVariant>("value");
 
     QTest::newRow("empty event id")
-        << QStringLiteral("event_id") << QVariant(QString());
+        << QStringLiteral("event_id") << QVariant(QStringLiteral(""));
     QTest::newRow("invalid schema version")
         << QStringLiteral("schema_version") << QVariant(0);
     QTest::newRow("invalid profile id")
         << QStringLiteral("profile_id") << QVariant(QStringLiteral("not-a-uuid"));
     QTest::newRow("empty type")
-        << QStringLiteral("type") << QVariant(QString());
+        << QStringLiteral("type") << QVariant(QStringLiteral(""));
     QTest::newRow("empty source")
-        << QStringLiteral("source") << QVariant(QString());
+        << QStringLiteral("source") << QVariant(QStringLiteral(""));
     QTest::newRow("invalid privacy")
         << QStringLiteral("privacy") << QVariant(QStringLiteral("unknown"));
     QTest::newRow("invalid occurred-at")
@@ -709,5 +710,5 @@ void TestAgentRuntimeServices::stop_whenRuntimeEnds_shouldReleaseBridgeBeforePet
     QVERIFY(services.eventLedger() == nullptr);
 }
 
-QTEST_APPLESS_MAIN(TestAgentRuntimeServices)
+QTEST_GUILESS_MAIN(TestAgentRuntimeServices)
 #include "test_agent_runtime_services.moc"

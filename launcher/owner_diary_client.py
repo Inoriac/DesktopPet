@@ -86,7 +86,7 @@ class OwnerDiaryClient(QObject):
         connected = state_enum.ConnectedState
         return self._socket.state() == connected
 
-    def connect(self, socket_name: str, capability_token: str) -> None:
+    def connect_to_server(self, socket_name: str, capability_token: str) -> None:
         if not socket_name or len(_decode_token(capability_token)) != 32:
             raise OwnerDiaryProtocolError(
                 "OWNER_AUTH_FAILED", "Owner diary credentials are invalid")
@@ -230,9 +230,13 @@ class OwnerDiaryClient(QObject):
         self._socket_name = None
         self._socket = None
         if socket is not None:
+            state_enum = getattr(QLocalSocket, "LocalSocketState", QLocalSocket)
+            unconnected = state_enum.UnconnectedState
             try:
-                socket.disconnectFromServer()
-                socket.waitForDisconnected(100)
+                if socket.state() != unconnected:
+                    socket.disconnectFromServer()
+                    if socket.state() != unconnected:
+                        socket.waitForDisconnected(100)
             except Exception:
                 pass
             try:

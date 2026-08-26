@@ -39,6 +39,7 @@ class FakeLocalSocket:
         self.connected = False
         self.incoming = bytearray()
         self.actions = []
+        self.wait_for_disconnected_calls = 0
         self.disconnected = FakeSignal()
         self.error_by_action = {}
         self.disconnect_on_action = set()
@@ -123,6 +124,7 @@ class FakeLocalSocket:
             self.disconnected.emit()
 
     def waitForDisconnected(self, _timeout):
+        self.wait_for_disconnected_calls += 1
         return True
 
     def abort(self):
@@ -145,7 +147,7 @@ class OwnerDiaryClientTests(unittest.TestCase):
     def test_connect_then_list_and_get_whenServerAvailable_shouldRenderMetadataThenSingleBody(self):
         socket = FakeLocalSocket()
         client = OwnerDiaryClient(socket_factory=lambda: socket)
-        client.connect("owner-socket", self.token())
+        client.connect_to_server("owner-socket", self.token())
         page = PrivateDiaryPage()
         page.set_client(client)
         page.activate()
@@ -166,7 +168,7 @@ class OwnerDiaryClientTests(unittest.TestCase):
     def test_pageDeactivate_whenBodyLoaded_shouldClearContentAndKeepLauncherSession(self):
         socket = FakeLocalSocket()
         client = OwnerDiaryClient(socket_factory=lambda: socket)
-        client.connect("owner-socket", self.token())
+        client.connect_to_server("owner-socket", self.token())
         page = PrivateDiaryPage()
         page.set_client(client)
         page.activate()
@@ -191,7 +193,7 @@ class OwnerDiaryClientTests(unittest.TestCase):
     def test_close_whenLauncherExits_shouldClearTokenAndDecryptedContent(self):
         socket = FakeLocalSocket()
         client = OwnerDiaryClient(socket_factory=lambda: socket)
-        client.connect("owner-socket", self.token())
+        client.connect_to_server("owner-socket", self.token())
         page = PrivateDiaryPage()
         page.set_client(client)
         page.activate()
@@ -209,7 +211,7 @@ class OwnerDiaryClientTests(unittest.TestCase):
         socket = FakeLocalSocket(available=False)
         client = OwnerDiaryClient(socket_factory=lambda: socket)
         with self.assertRaises(OwnerDiaryOfflineError):
-            client.connect("missing-socket", self.token())
+            client.connect_to_server("missing-socket", self.token())
         page = PrivateDiaryPage()
         page.set_client(client)
         page.activate()
@@ -217,11 +219,12 @@ class OwnerDiaryClientTests(unittest.TestCase):
         self.assertIn("离线", page.status_label.text())
         self.assertEqual(socket.actions, [])
         self.assertFalse(hasattr(owner_diary_client, "sqlite3"))
+        self.assertEqual(socket.wait_for_disconnected_calls, 0)
 
     def test_connect_whenLauncherWasRestartedWithOldCoreRunning_shouldNotReuseConsumedTokenOrGuessSocket(self):
         old_socket = FakeLocalSocket()
         old_client = OwnerDiaryClient(socket_factory=lambda: old_socket)
-        old_client.connect("old-random-socket", self.token())
+        old_client.connect_to_server("old-random-socket", self.token())
         old_client.close()
 
         new_socket = FakeLocalSocket(available=False)

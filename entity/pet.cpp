@@ -27,7 +27,10 @@ QString Pet::getDataPath() const {
 }
 
 bool Pet::load(QString* errorMessage) {
-    QString path = getDataPath();
+    return loadFromPath(getDataPath(), errorMessage);
+}
+
+bool Pet::loadFromPath(const QString& path, QString* errorMessage) {
     QFile file(path);
 
     pets.clear();

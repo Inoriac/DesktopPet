@@ -12,6 +12,7 @@
 #include <QUuid>
 
 #include "configLoader/config_manager.h"
+#include "runtime/agent_runtime_services.h"
 #include "tools/runtime/tool_policy.h"
 #include "memory/working_memory_cache.h"
 #include "skill/skill_matcher.h"

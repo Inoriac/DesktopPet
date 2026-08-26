@@ -419,7 +419,7 @@ void PetWindow::closeEvent(QCloseEvent *event) {
     teardownAiRuntime();
     voiceSynthesis.stop();
     unloadModel();
-    emit aboutToClose();  // 可以发送信号给 MainWindow
+    emit aboutToClose();
     event->accept();
 }
 

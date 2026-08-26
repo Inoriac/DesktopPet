@@ -114,13 +114,11 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
 
     contextMenu->addSeparator();
 
-    closeAction = new QAction("关闭", this);
-    contextMenu->addAction(closeAction);
+    closeAction = contextMenu->addAction("关闭");
 
-    // 转发关闭信号至 mainwindow，确保状态一致与内存释放
     connect(closeAction, &QAction::triggered, this, [this]() {
-        qDebug() << "Requesting stop from context menu";
-        emit requestStop();
+        qDebug() << "Closing pet from context menu";
+        close();
     });
 
     contextMenu->exec(event->globalPos());

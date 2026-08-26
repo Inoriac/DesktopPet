@@ -43,12 +43,14 @@ from pages.advanced_page import AdvancedPage
 from pages.about_page import AboutPage
 from pages.private_diary_page import PrivateDiaryPage
 from owner_diary_client import OwnerDiaryClient, OwnerDiaryError
+from process_tracker import PetProcessTracker
 
 # C++ 可执行文件位置（构建产物）。Windows 下产物带 .exe 后缀。
 _EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
-CPP_EXECUTABLE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-    "build", f"Desktop_Pet{_EXE_SUFFIX}",
+_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CPP_EXECUTABLE = os.environ.get(
+    "DESKTOP_PET_EXECUTABLE",
+    os.path.join(_PROJECT_ROOT, "build", f"Desktop_Pet{_EXE_SUFFIX}"),
 )
 
 THEME_KEY = "ui/theme"  # 与 C++ ThemeManager 逐字一致
@@ -211,7 +213,7 @@ class TitleBar(MSFluentTitleBar):
 class LauncherWindow(MSFluentWindow):
     def __init__(self):
         super().__init__()
-        self.state = AppState()
+        self.state = AppState.from_config(config_loader.load_saved_config())
         self.setTitleBar(TitleBar(self))
         self.setWindowTitle("DesktopPet 启动器")
         self.resize(1000, 720)
@@ -220,13 +222,14 @@ class LauncherWindow(MSFluentWindow):
         self._owner_capability_token: str | None = None
         self._owner_bootstrap_path: str | None = None
         self._owner_connect_generation = 0
+        self._pet_process_tracker = PetProcessTracker()
 
         # 主题：从共享 QSettings 读取并应用
         self._apply_theme(self._read_theme())
 
         # 宠物页为首页，承载底部「启动桌宠」主按钮
         self.pet_page = PetPage(self.state, on_start=self._on_start)
-        self.ai_page = AiPage(self.state)
+        self.ai_page = AiPage(self.state, on_save=self._on_save_configuration)
         self.voice_page = VoicePage(self.state)
         self.bubble_page = BubblePage(self.state)
         self.advanced_page = AdvancedPage(self.state)
@@ -262,6 +265,12 @@ class LauncherWindow(MSFluentWindow):
         # 内容区透明，让卡片背景自然呈现（对齐 demo.py）
         self.stackedWidget.setStyleSheet("QWidget{background: transparent}")
 
+        self._pet_process_timer = QTimer(self)
+        self._pet_process_timer.setInterval(500)
+        self._pet_process_timer.timeout.connect(self._refresh_alive_pet_count)
+        self._pet_process_timer.start()
+        self._refresh_alive_pet_count()
+
     # —— 主题（与 C++ 共享 QSettings）——
     def _read_theme(self) -> str:
         return QSettings().value(THEME_KEY, "dark", type=str)
@@ -290,6 +299,37 @@ class LauncherWindow(MSFluentWindow):
         QSettings().setValue(THEME_KEY, new_theme)
         self._apply_theme(new_theme)
 
+    def _refresh_alive_pet_count(self) -> int:
+        count = self._pet_process_tracker.refresh()
+        self.pet_page.set_alive_count(count)
+        return count
+
+    def _export_current_configuration(self) -> str:
+        template = config_loader.load_template()
+        cfg = config_loader.apply_settings(
+            template, self.state.to_settings_dict())
+        overrides = self.state.to_advanced_overrides()
+        cfg["renderSettings"].update(overrides["renderSettings"])
+        cfg["interactionSettings"]["dragThreshold"] = \
+            overrides["interactionSettings"]["dragThreshold"]
+        cfg["interactionSettings"]["clickTimeout"] = \
+            overrides["interactionSettings"]["clickTimeout"]
+        cfg["interactionSettings"]["windowSnapping"].update(
+            overrides["interactionSettings"]["windowSnapping"])
+        return config_loader.export_config(cfg)
+
+    def _on_save_configuration(self) -> None:
+        try:
+            self._export_current_configuration()
+        except Exception as error:
+            InfoBar.error(
+                "保存失败", str(error), parent=self,
+                position=InfoBarPosition.TOP, duration=5000)
+            return
+        InfoBar.success(
+            "配置已保存", "AI 与 API 配置将在下次启动时自动恢复",
+            parent=self, position=InfoBarPosition.TOP, duration=3000)
+
     # —— 启动 C++ 核心 ——
     def _on_start(self):
         if not self.state.pet_name:
@@ -313,16 +353,8 @@ class LauncherWindow(MSFluentWindow):
             return
 
         try:
-            # 1) 模板 + 用户字段覆盖 + 导出
-            template = config_loader.load_template()
-            cfg = config_loader.apply_settings(template, self.state.to_settings_dict())
-            overrides = self.state.to_advanced_overrides()
-            cfg["renderSettings"].update(overrides["renderSettings"])
-            cfg["interactionSettings"]["dragThreshold"] = overrides["interactionSettings"]["dragThreshold"]
-            cfg["interactionSettings"]["clickTimeout"] = overrides["interactionSettings"]["clickTimeout"]
-            cfg["interactionSettings"]["windowSnapping"].update(
-                overrides["interactionSettings"]["windowSnapping"])
-            config_path = config_loader.export_config(cfg)
+            # 1) 导出当前配置，启动与显式保存共用同一持久化路径。
+            config_path = self._export_current_configuration()
         except Exception as e:
             InfoBar.error("导出配置失败", str(e),
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
@@ -356,22 +388,25 @@ class LauncherWindow(MSFluentWindow):
             if sys.platform == "win32":
                 DETACHED_PROCESS = 0x00000008
                 CREATE_NEW_PROCESS_GROUP = 0x00000200
-                subprocess.Popen(
+                core_process = subprocess.Popen(
                     args,
                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
                     close_fds=True)
             else:
-                subprocess.Popen(args, start_new_session=True)
+                core_process = subprocess.Popen(args, start_new_session=True)
         except OSError as e:
             self._close_owner_diary_session()
             InfoBar.error("启动失败", str(e),
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
             return
 
+        alive_count = self._pet_process_tracker.add(core_process)
+        self.pet_page.set_alive_count(alive_count)
+
         QTimer.singleShot(
             200, lambda: self._connect_owner_diary(generation, 0))
 
-        InfoBar.success("已启动", f"已唤起 {self.state.pet_name}（核心进程已启动）",
+        InfoBar.success("已启动", f"已唤起 {self.state.pet_name}（运行中：{alive_count}）",
                         parent=self, position=InfoBarPosition.TOP, duration=3000)
 
     def _create_owner_diary_bootstrap(self, profile_id: str) -> dict:
@@ -421,7 +456,8 @@ class LauncherWindow(MSFluentWindow):
             return
         client = OwnerDiaryClient(timeout_ms=150)
         try:
-            client.connect(self._owner_socket_name, self._owner_capability_token)
+            client.connect_to_server(
+                self._owner_socket_name, self._owner_capability_token)
         except OwnerDiaryError:
             client.close()
             if attempt < 59:

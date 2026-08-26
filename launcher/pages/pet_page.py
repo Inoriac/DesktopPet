@@ -7,7 +7,9 @@ from __future__ import annotations
 
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout
-from qfluentwidgets import ComboBox, Slider, SpinBox, SwitchButton, PrimaryPushButton
+from qfluentwidgets import (
+    BodyLabel, ComboBox, PrimaryPushButton, Slider, SpinBox, SwitchButton,
+)
 from qfluentwidgets import FluentIcon as FIF
 
 from app_state import AppState
@@ -70,12 +72,15 @@ class PetPage(ScrollPage):
         rl = QHBoxLayout(start_row)
         rl.setContentsMargins(0, 8, 0, 0)
         rl.setSpacing(12)
+        self.alive_count_label = BodyLabel("运行中：0", start_row)
+        self.alive_count_label.setMinimumWidth(88)
         self.start_btn = PrimaryPushButton(FIF.PLAY, "启动桌宠", start_row)
         self.start_btn.setFixedHeight(44)
         self.start_btn.setMinimumWidth(180)
         if self._on_start is not None:
             self.start_btn.clicked.connect(self._on_start)
         rl.addStretch(1)
+        rl.addWidget(self.alive_count_label, 0, Qt.AlignRight | Qt.AlignVCenter)
         rl.addWidget(self.start_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.addCard(start_row)
 
@@ -93,6 +98,9 @@ class PetPage(ScrollPage):
             self.state.pet_name = names[0]
             self.pet_combo.setCurrentText(names[0])
         self.state.pet_profile_id = self._profiles_by_name[self.state.pet_name].profile_id
+
+    def set_alive_count(self, count: int) -> None:
+        self.alive_count_label.setText(f"运行中：{max(0, int(count))}")
 
     def _on_pet_changed(self, name: str):
         self.state.pet_name = name

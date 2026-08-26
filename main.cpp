@@ -116,6 +116,8 @@ int main(int argc, char *argv[])
 
     PetWindow *pet = new PetWindow(
         profile, profileMigration, parser.value(ownerDiaryBootstrapOption), nullptr);
+    QObject::connect(pet, &PetWindow::aboutToClose,
+                     &app, &QCoreApplication::quit);
     StatisticManager::getInstance().recordPetStart(petName);
     QObject::connect(&app, &QCoreApplication::aboutToQuit, &app, [petName]() {
         StatisticManager::getInstance().recordPetStop(petName);

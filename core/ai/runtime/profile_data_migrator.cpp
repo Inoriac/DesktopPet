@@ -14,7 +14,7 @@
 #include <QUrl>
 #include <QUuid>
 
-#include "memory/memory_store.h"
+#include "ai/memory/memory_store.h"
 
 namespace {
 

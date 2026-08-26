@@ -93,7 +93,7 @@ Result<void, DomainError> EventSchemaRegistry::validate(const EventDraft& draft)
         }
     }
     if (!schema.preserveUnknownFields) {
-        for (auto it = draft.payload.cbegin(); it != draft.payload.cend(); ++it) {
+        for (auto it = draft.payload.constBegin(); it != draft.payload.constEnd(); ++it) {
             if (!schema.requiredFields.contains(it.key())
                 && !schema.optionalFields.contains(it.key())) {
                 return invalid(QStringLiteral("event payload contains an unknown field"));

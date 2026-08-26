@@ -1,4 +1,3 @@
-#include <QCoreApplication>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -7,7 +6,6 @@
 #include <QJsonObject>
 #include <QSqlDatabase>
 #include <QSqlQuery>
-#include <QStandardPaths>
 #include <QTemporaryDir>
 #include <QTest>
 #include <QUuid>
@@ -142,11 +140,8 @@ void TestProfileDataMigrator::resolve_whenRegistryProfileFieldsAreInvalid_should
 }
 
 void TestProfileDataMigrator::load_whenAnyRegistryEntryIsMalformed_shouldRejectEntireRegistry() {
-    QStandardPaths::setTestModeEnabled(true);
-    QCoreApplication::setOrganizationName(QStringLiteral("Desktop Pet Team Tests"));
-    QCoreApplication::setApplicationName(QStringLiteral("Profile Registry Tests"));
-    const QString appData = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
-    QVERIFY(QDir().mkpath(appData));
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
     const QJsonArray entries{
         QJsonObject{{QStringLiteral("name"), QStringLiteral("Milltina")},
                     {QStringLiteral("modelPath"), QStringLiteral("one.gltf")},
@@ -155,13 +150,13 @@ void TestProfileDataMigrator::load_whenAnyRegistryEntryIsMalformed_shouldRejectE
                     {QStringLiteral("profileId"),
                      QStringLiteral("f8685597-fc48-4df7-a15a-8ccfde643c52")}},
     };
-    QFile registry(QDir(appData).filePath(QStringLiteral("pets.json")));
+    QFile registry(directory.filePath(QStringLiteral("pets.json")));
     QVERIFY(registry.open(QIODevice::WriteOnly | QIODevice::Truncate));
     QVERIFY(registry.write(QJsonDocument(entries).toJson()) > 0);
     registry.close();
 
     QString errorMessage;
-    QVERIFY(!Pet::instance().load(&errorMessage));
+    QVERIFY(!Pet::instance().loadFromPath(registry.fileName(), &errorMessage));
     QVERIFY(!errorMessage.isEmpty());
     QVERIFY(Pet::instance().getProfiles().isEmpty());
 }
@@ -279,6 +274,6 @@ void TestProfileDataMigrator::migrateLegacyMemory_whenRegisteredProfilesAreInval
     QVERIFY(QFile::exists(request.legacyDatabasePath));
 }
 
-QTEST_APPLESS_MAIN(TestProfileDataMigrator)
+QTEST_GUILESS_MAIN(TestProfileDataMigrator)
 
 #include "test_profile_data_migrator.moc"

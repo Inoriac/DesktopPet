@@ -38,7 +38,7 @@ class SqliteEventRepository;
 
 class AgentRuntimeServices {
 public:
-    AgentRuntimeServices() = default;
+    AgentRuntimeServices();
     ~AgentRuntimeServices();
 
     AgentRuntimeServices(const AgentRuntimeServices&) = delete;

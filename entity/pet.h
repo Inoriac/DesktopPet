@@ -17,6 +17,7 @@ public:
 
     // C++ 只读 launcher 管理的角色清单。
     bool load(QString* errorMessage = nullptr);
+    bool loadFromPath(const QString& path, QString* errorMessage = nullptr);
 
     QStringList getPetNames() const;
     QList<PetProfile> getProfiles() const { return pets; }
