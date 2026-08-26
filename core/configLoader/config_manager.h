@@ -56,7 +56,15 @@ public:
 
     // LLM 配置
     const LlmConfig& getLlmConfig() const { return llmConfig; }
-    void setLlmEnabled(bool enabled) { llmConfig.enabled = enabled; }
+    ModelRoleConfig getModelRoleConfig(ModelRole role) const;
+    void setLlmEnabled(bool enabled) {
+        llmConfig.enabled = enabled;
+        for (ModelRoleConfig& config : modelRoleConfigs) {
+            for (ModelRouteConfig& route : config.routes) {
+                route.llm.enabled = enabled && route.enabled;
+            }
+        }
+    }
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
     const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
     EmotionConfig getEmotionConfig() const { return emotionConfig; }
@@ -122,6 +130,7 @@ private:
     bool petClickThrough = false;
 
     LlmConfig llmConfig;
+    QList<ModelRoleConfig> modelRoleConfigs;
     ScreenChatConfig screenChatConfig;
     DaydreamConfig daydreamConfig;
     EmotionConfig emotionConfig;

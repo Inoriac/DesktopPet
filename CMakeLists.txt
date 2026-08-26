@@ -121,6 +121,17 @@ set(AGENT_RUNTIME_SOURCES
     core/ai/runtime/agent_bootstrap.cpp
 )
 
+set(MODEL_ROUTING_SOURCES
+    core/ai/model/model_role_registry.h
+    core/ai/model/model_role_registry.cpp
+    core/ai/model/model_router.h
+    core/ai/model/model_router.cpp
+    core/ai/context/context_assembler.h
+    core/ai/context/context_assembler.cpp
+    core/ai/llm/llm_chat_model_client.h
+    core/ai/llm/llm_chat_model_client.cpp
+)
+
 set(CORE_SOURCES
     core/animation/animation_manager.cpp
     core/animation/animation_manager.h
@@ -184,6 +195,7 @@ set(CORE_SOURCES
     core/ai/runtime/profile_data_migrator.cpp
     ${EVENT_LEDGER_SOURCES}
     ${AGENT_RUNTIME_SOURCES}
+    ${MODEL_ROUTING_SOURCES}
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -451,6 +463,10 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pet_profile_id.py)
     set_tests_properties(PetProfileIdTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME ModelRoleConfigTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_model_role_config.py)
+    set_tests_properties(ModelRoleConfigTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # ---- Profile identity and legacy memory migration tests ----
@@ -509,6 +525,7 @@ add_executable(agent_runtime_services_tests
     tests/test_agent_runtime_services.cpp
     ${EVENT_LEDGER_SOURCES}
     ${AGENT_RUNTIME_SOURCES}
+    ${MODEL_ROUTING_SOURCES}
     core/ai/runtime/profile_resolver.h
     core/ai/runtime/profile_resolver.cpp
     core/ai/runtime/profile_data_migrator.h
@@ -616,6 +633,43 @@ if(APPLE)
     target_link_libraries(agent_runtime_services_tests "-framework CoreGraphics")
 endif()
 add_test(NAME AgentRuntimeServicesTests COMMAND agent_runtime_services_tests)
+
+# ---- Model role routing, output repair, and context projection tests ----
+add_executable(model_router_tests
+    tests/test_model_router.cpp
+    ${MODEL_ROUTING_SOURCES}
+    core/ai/llm/llm_client.h
+    core/ai/llm/openai_compatible_client.h
+    core/ai/llm/openai_compatible_client.cpp
+    core/ai/llm/llm_chat_service.h
+    core/ai/llm/llm_chat_service.cpp
+    core/configLoader/config_manager.h
+    core/configLoader/config_manager.cpp
+    core/ai/identity/identity_baseline.h
+    core/ai/identity/identity_baseline.cpp
+    core/emotion/emotion_types.h
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_config_json.h
+    core/emotion/emotion_config_json.cpp
+    statistic/statistic_manager.h
+    statistic/statistic_manager.cpp
+    include/statistic_types.h
+    include/ai_types.h
+)
+target_include_directories(model_router_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(model_router_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Test
+)
+add_test(NAME ModelRouterTests COMMAND model_router_tests)
 
 add_executable(statistic_manager_tests
         tests/test_statistic_manager.cpp

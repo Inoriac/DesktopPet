@@ -44,6 +44,50 @@ def _voice(profile: Dict[str, Any]) -> Dict[str, Any]:
     return profile.setdefault("voice", {})
 
 
+def _first_model_role_route(
+    profile: Dict[str, Any], role: str, route_id: str, supports_vision: bool
+) -> Dict[str, Any]:
+    """Return the UI-managed first route without replacing existing fallbacks."""
+    roles = profile.setdefault("modelRoles", {})
+    role_config = roles.setdefault(role, {})
+    routes = role_config.setdefault("routes", [])
+    if not routes:
+        routes.append({
+            "routeId": route_id,
+            "enabled": True,
+            "supportsVision": supports_vision,
+        })
+    first = routes[0]
+    first.setdefault("routeId", route_id)
+    first.setdefault("enabled", True)
+    first.setdefault("supportsVision", supports_vision)
+    return first
+
+
+def _sync_ui_managed_model_routes(
+    profile: Dict[str, Any], settings: Dict[str, Any]
+) -> None:
+    dialogue = _first_model_role_route(
+        profile, "dialogue", "dialogue-primary", False)
+    vision = _first_model_role_route(
+        profile, "vision", "vision-primary", True)
+
+    shared_fields = {
+        "aiEnabled": "enabled",
+        "provider": "provider",
+        "baseUrl": "baseUrl",
+        "apiKey": "apiKey",
+    }
+    for setting_name, route_name in shared_fields.items():
+        if setting_name in settings:
+            dialogue[route_name] = settings[setting_name]
+            vision[route_name] = settings[setting_name]
+    if "model" in settings:
+        dialogue["model"] = settings["model"]
+    if "visualModel" in settings:
+        vision["model"] = settings["visualModel"]
+
+
 def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
     """将用户向 settings 覆盖到模板副本上，返回新对象（不修改入参）。
 
@@ -77,6 +121,7 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
         profile["model"] = settings["model"]
     if "visualModel" in settings:
         profile["visual_model"] = settings["visualModel"]  # 真实字段名下划线
+    _sync_ui_managed_model_routes(profile, settings)
     sc = _screen_chat(profile)
     if "autoScreenChat" in settings:
         sc["enabled"] = bool(settings["autoScreenChat"])

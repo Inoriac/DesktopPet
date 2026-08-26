@@ -34,6 +34,9 @@
 - [2026-08-24] [code-impl Task 1B 确认] 用户确认 Task 1B 当前结果并同意进入 Task 2；Wave 2 冲突、测试覆盖、测试位置、CMake 注册与实现锚点均已静态核对，运行验证继续保留为“未运行，待受支持环境验证”。
 - [2026-08-24] [code-impl Task 2 系分回溯] 首次 sanity check 确认现有 LlmChatService/ContextBuilder/ConfigManager/StatisticManager 锚点一致，但 §3.3 缺少可测试调用器、路由/请求/投影完整契约且事件名与 Task 1B 冲突，因此在写测试前停止，未产生代码变更。
 - [2026-08-24] [code-impl Task 2 方案确认] 用户选择 MVP 适配器方案：ModelCompletionClient + 有序 routes + 类型化 ContextProjection，复用 `ModelCallCompleted`；本期优先基本可用，可增强项留痕后延后。
+- [2026-08-25] [code-impl Task 2 sanity check] §3.3.5 实现锚点已静态验证一致：`LlmChatService::requestAsyncWithConfig`、`ContextBuilder::buildSystemPrompt/buildRuntimeContext`、`ConfigManager::getLlmConfig`、`StatisticManager::recordLlmUsage`、`AIBrain::thinkInternal` Dialogue 调用点与 `ModelCallCompleted` Schema 均与系分契约一致。
+- [2026-08-25] [code-impl Task 2 静态审查] impl-plan 计划的 14 个用例与 §3.3.7 补充的 2 个 happy path 均有对应定义；ModelRouter/ModelRoleConfig 测试、生产源码和 AgentRuntimeServices 链接依赖已注册到 CMake，tracked 示例配置已同步，本地 `default_common_config.json` 继续按 `.gitignore` 保护；`git diff --check` 与新文件空白检查通过。遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
+- [2026-08-25] [code-impl Task 2 确认] 用户确认 Task 2 当前结果并同意进入 Task 3；Wave 3 单 Task 无文件冲突，16 个测试定义、测试位置、CMake 注册、Dialogue 调用点与 §3.3.5 实现锚点均已静态核对；运行验证继续保留为“未运行，待受支持环境验证”。
 
 ## 设计偏差
 

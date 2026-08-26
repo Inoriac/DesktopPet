@@ -12,6 +12,8 @@
 #include <QTimer>
 #include <QUuid>
 
+#include <utility>
+
 #include "configLoader/config_manager.h"
 #include "memory/daydream_consolidator.h"
 #include "scheduler/agent_scheduler.h"
@@ -83,6 +85,17 @@ QList<DaydreamConsolidator::Decision> preserveDecisions(const QList<MemoryEntry>
 
 } // namespace
 
+QList<ModelRoleConfig> AIBrain::configuredModelRoles() {
+    ConfigManager& config = ConfigManager::instance();
+    return {
+        config.getModelRoleConfig(ModelRole::Dialogue),
+        config.getModelRoleConfig(ModelRole::FastExtract),
+        config.getModelRoleConfig(ModelRole::Consolidation),
+        config.getModelRoleConfig(ModelRole::Diary),
+        config.getModelRoleConfig(ModelRole::Vision)
+    };
+}
+
 void AIBrain::thinkInternal(const QString& reason,
                             const QString& triggerTag,
                             const QString& sessionId,
@@ -92,8 +105,19 @@ void AIBrain::thinkInternal(const QString& reason,
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
     const qint64 requestedAtMs = QDateTime::currentMSecsSinceEpoch();
-    const LlmConfig requestConfig = ConfigManager::instance().getLlmConfig();
     const QPointer<AIBrain> guard(this);
+
+    ModelRequest modelRequest;
+    modelRequest.role = ModelRole::Dialogue;
+    modelRequest.messages = workingMessages;
+    modelRequest.tools = tools;
+    modelRequest.sessionId = sessionId;
+    modelRequest.petName = m_petName;
+    const auto session = m_runtimeSessions.constFind(sessionId);
+    if (session != m_runtimeSessions.constEnd()
+        && session->runtimeSnapshot().has_value()) {
+        modelRequest.profileId = session->runtimeSnapshot()->profileId;
+    }
 
     m_callLogger.logRequest(requestId,
                             m_petName,
@@ -103,12 +127,31 @@ void AIBrain::thinkInternal(const QString& reason,
                             workingMessages,
                             tools);
 
-    m_chatService.requestAsync(workingMessages, tools,
-        [this, guard, requestGeneration, requestId, requestedAtMs, requestConfig,
+    m_modelRouter.completeAsync(modelRequest,
+        [this, guard, requestGeneration, requestId, requestedAtMs,
          reason, triggerTag, sessionId, toolRound, workingMessages]
-        (bool ok, LlmResponse response, QString error) mutable {
+        (Result<ModelCompletion, DomainError> modelResult) mutable {
             if (!guard || requestGeneration != m_requestGeneration) {
                 return;
+            }
+            const bool ok = modelResult.isOk();
+            LlmResponse response;
+            LlmCallDimensions dimensions;
+            QString error;
+            QString errorCode;
+            if (ok) {
+                ModelCompletion completion = modelResult.takeValue();
+                response = std::move(completion.response);
+                dimensions = std::move(completion.dimensions);
+            } else {
+                error = modelResult.error().message;
+                errorCode = modelResult.error().code;
+                dimensions.provider = modelResult.error().details
+                                          .value(QStringLiteral("provider")).toString();
+                dimensions.model = modelResult.error().details
+                                       .value(QStringLiteral("model")).toString();
+                dimensions.routeId = modelResult.error().details
+                                         .value(QStringLiteral("routeId")).toString();
             }
             m_callLogger.logResponse(requestId,
                                      m_petName,
@@ -121,12 +164,14 @@ void AIBrain::thinkInternal(const QString& reason,
                 {QStringLiteral("success"), ok},
                 {QStringLiteral("durationMs"), static_cast<double>(
                     qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - requestedAtMs))},
-                {QStringLiteral("provider"), requestConfig.provider},
-                {QStringLiteral("model"), requestConfig.model}
+                {QStringLiteral("provider"), dimensions.provider},
+                {QStringLiteral("model"), dimensions.model}
             };
             if (!ok) {
                 modelEvent.insert(QStringLiteral("errorCode"),
-                                  QStringLiteral("MODEL_CALL_FAILED"));
+                                  errorCode.isEmpty()
+                                      ? QStringLiteral("MODEL_CALL_FAILED")
+                                      : errorCode);
             }
             appendRuntimeEvent(QStringLiteral("ModelCallCompleted"), sessionId, modelEvent);
 
@@ -275,8 +320,7 @@ void AIBrain::thinkInternal(const QString& reason,
                 nextMessages[assistantIndex].toolCalls = assistantToolCalls;
             }
             thinkInternal(reason, triggerTag, sessionId, toolRound + 1, nextMessages);
-        },
-        m_petName);
+        });
 }
 
 void AIBrain::setupTriggerTimers() {

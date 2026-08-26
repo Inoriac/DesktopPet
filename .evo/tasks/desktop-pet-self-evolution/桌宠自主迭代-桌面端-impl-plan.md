@@ -124,7 +124,7 @@ RuntimeUiBridge lifetime contract:
 ## Task 2: 多模型路由与上下文投影
 
 - **关联设计**: §3.3 多模型路由与上下文投影
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 3
 - **依赖**: Task 1B
 
@@ -151,6 +151,12 @@ ModelRouter.completeAsync:
 - `completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions`（happy path）
 - `completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse`
 - `completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope`
+
+LlmChatModelClient.completeOnce:
+- `completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries`（happy path）
+
+ModelRoleRegistry.configFor:
+- `configFor_whenRoleExists_shouldReturnOnlyRequestedRole`（happy path）
 
 ContextAssembler.assemble:
 - `assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary`（happy path）

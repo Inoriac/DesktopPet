@@ -1,0 +1,478 @@
+#include <QtTest>
+
+#include <QFile>
+#include <QJsonDocument>
+#include <QTemporaryDir>
+
+#include <optional>
+#include <memory>
+
+#include "ai/context/context_assembler.h"
+#include "ai/llm/llm_chat_model_client.h"
+#include "ai/llm/llm_chat_service.h"
+#include "ai/model/model_role_registry.h"
+#include "ai/model/model_router.h"
+#include "configLoader/config_manager.h"
+
+namespace {
+
+ModelRouteConfig route(const QString& id,
+                       const QString& model,
+                       bool supportsVision = false) {
+    ModelRouteConfig config;
+    config.routeId = id;
+    config.enabled = true;
+    config.llm.enabled = true;
+    config.llm.provider = QStringLiteral("openai-compatible");
+    config.llm.baseUrl = QStringLiteral("https://models.example/v1");
+    config.llm.apiKey = QStringLiteral("test-key");
+    config.llm.model = model;
+    config.llm.timeoutMs = 1000;
+    config.supportsVision = supportsVision;
+    return config;
+}
+
+ModelRoleConfig roleConfig(ModelRole role,
+                           const QList<ModelRouteConfig>& routes) {
+    ModelRoleConfig config;
+    config.role = role;
+    config.routes = routes;
+    return config;
+}
+
+LlmResponse responseWithContent(const QString& content) {
+    LlmResponse response;
+    response.content = content;
+    return response;
+}
+
+class FakeModelCompletionClient final : public ModelCompletionClient {
+public:
+    struct Reply {
+        bool success = false;
+        LlmResponse response;
+        QString error;
+    };
+
+    QList<Reply> replies;
+    QList<QString> routeIds;
+    QList<QList<ChatMessage>> messageBatches;
+
+    void completeOnce(const ModelRouteConfig& selectedRoute,
+                      const QList<ChatMessage>& messages,
+                      const QJsonArray& tools,
+                      LlmCompletionHandler callback,
+                      const QString& petName) override {
+        Q_UNUSED(tools)
+        Q_UNUSED(petName)
+        routeIds.append(selectedRoute.routeId);
+        messageBatches.append(messages);
+        if (replies.isEmpty()) {
+            callback(false, {}, QStringLiteral("missing fake reply"));
+            return;
+        }
+        const Reply reply = replies.takeFirst();
+        callback(reply.success, reply.response, reply.error);
+    }
+};
+
+class CapturingLlmClient final : public LlmClient {
+public:
+    QList<LlmConfig> configs;
+
+    void sendChatCompletionAsync(const LlmConfig& config,
+                                 const QList<ChatMessage>& messages,
+                                 const QJsonArray& tools,
+                                 LlmCompletionHandler callback) override {
+        Q_UNUSED(messages)
+        Q_UNUSED(tools)
+        configs.append(config);
+        callback(true, responseWithContent(QStringLiteral("ok")), {});
+    }
+};
+
+ChatMessage message(const QString& role, const QString& content) {
+    ChatMessage value;
+    value.role = role;
+    value.content = content;
+    return value;
+}
+
+ContextProjection projection(ContextPartition partition,
+                             const QString& content) {
+    ContextProjection value;
+    value.partition = partition;
+    value.messages = {message(QStringLiteral("system"), content)};
+    return value;
+}
+
+QJsonObject objectSchema() {
+    const QJsonObject answerProperty{
+        {QStringLiteral("type"), QStringLiteral("string")}
+    };
+    return {
+        {QStringLiteral("type"), QStringLiteral("object")},
+        {QStringLiteral("required"), QJsonArray{QStringLiteral("answer")}},
+        {QStringLiteral("properties"), QJsonObject{
+             {QStringLiteral("answer"), answerProperty}}}
+    };
+}
+
+QString writeConfig(QTemporaryDir& directory, const QJsonObject& config) {
+    const QString path = directory.filePath(QStringLiteral("model-role-config.json"));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) {
+        return QString();
+    }
+    file.write(QJsonDocument(config).toJson(QJsonDocument::Compact));
+    file.close();
+    return path;
+}
+
+} // namespace
+
+class ModelRouterTests : public QObject {
+    Q_OBJECT
+
+private slots:
+    void resolve_whenPrimaryRouteMeetsConstraints_shouldReturnPrimary();
+    void resolve_whenPrimaryIsOpenCircuit_shouldReturnConfiguredFallback();
+    void resolve_whenNoRouteSupportsVision_shouldReturnRoleUnavailable();
+
+    void completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions();
+    void completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse();
+    void completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope();
+
+    void assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary();
+    void assemble_whenDialogueRole_shouldExcludeDiaryInnerThoughtAndOwnerAccess();
+    void assemble_whenDiaryRole_shouldExposeOnlyDiaryProjectionWithinBudget();
+    void assemble_whenRequestedPartitionIsForbidden_shouldReturnScopeDenied();
+
+    void getModelRoleConfig_whenRoleConfigured_shouldReturnRoleSpecificModel();
+    void getModelRoleConfig_whenOnlyLegacyConfigExists_shouldMapItToDialogue();
+    void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
+    void completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries();
+};
+
+void ModelRouterTests::resolve_whenPrimaryRouteMeetsConstraints_shouldReturnPrimary() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("primary"), QStringLiteral("model-a")),
+         route(QStringLiteral("fallback"), QStringLiteral("model-b"))})});
+    FakeModelCompletionClient client;
+    ModelRouter router(&registry, &client);
+
+    const auto result = router.resolve(ModelRole::Dialogue, {});
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().routeId, QStringLiteral("primary"));
+}
+
+void ModelRouterTests::resolve_whenPrimaryIsOpenCircuit_shouldReturnConfiguredFallback() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("primary"), QStringLiteral("model-a")),
+         route(QStringLiteral("fallback"), QStringLiteral("model-b"))})});
+    FakeModelCompletionClient client;
+    client.replies = {
+        {false, {}, QStringLiteral("network timeout")},
+        {true, responseWithContent(QStringLiteral("ok")), {}}
+    };
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Dialogue;
+    request.messages = {message(QStringLiteral("user"), QStringLiteral("hello"))};
+    std::optional<Result<ModelCompletion, DomainError>> completion;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> result) {
+        completion.emplace(std::move(result));
+    });
+    const auto resolved = router.resolve(ModelRole::Dialogue, {});
+
+    QVERIFY(completion.has_value());
+    QVERIFY(completion->isOk());
+    QVERIFY(resolved.isOk());
+    QCOMPARE(resolved.value().routeId, QStringLiteral("fallback"));
+}
+
+void ModelRouterTests::resolve_whenNoRouteSupportsVision_shouldReturnRoleUnavailable() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Vision,
+        {route(QStringLiteral("text-only"), QStringLiteral("model-a"), false)})});
+    FakeModelCompletionClient client;
+    ModelRouter router(&registry, &client);
+    ModelConstraints constraints;
+    constraints.requiresVision = true;
+
+    const auto result = router.resolve(ModelRole::Vision, constraints);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("MODEL_ROLE_UNAVAILABLE"));
+}
+
+void ModelRouterTests::completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("dialogue-primary"), QStringLiteral("model-a"))})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent(QStringLiteral("{\"answer\":\"ok\"}")), {}}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Dialogue;
+    request.responseSchema = objectSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> value) {
+        result.emplace(std::move(value));
+    });
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QCOMPARE(result->value().response.content, QStringLiteral("{\"answer\":\"ok\"}"));
+    QCOMPARE(result->value().dimensions.role, ModelRole::Dialogue);
+    QCOMPARE(result->value().dimensions.provider, QStringLiteral("openai-compatible"));
+    QCOMPARE(result->value().dimensions.model, QStringLiteral("model-a"));
+    QCOMPARE(result->value().dimensions.routeId, QStringLiteral("dialogue-primary"));
+    QVERIFY(!result->value().fallbackUsed);
+}
+
+void ModelRouterTests::completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::FastExtract,
+        {route(QStringLiteral("extract-primary"), QStringLiteral("model-a"))})});
+    FakeModelCompletionClient client;
+    client.replies = {
+        {true, responseWithContent(QStringLiteral("not-json")), {}},
+        {true, responseWithContent(QStringLiteral("{\"answer\":\"fixed\"}")), {}}
+    };
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::FastExtract;
+    request.responseSchema = objectSchema();
+    request.messages = {message(QStringLiteral("user"), QStringLiteral("extract"))};
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> value) {
+        result.emplace(std::move(value));
+    });
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QCOMPARE(client.routeIds, QList<QString>({QStringLiteral("extract-primary"),
+                                              QStringLiteral("extract-primary")}));
+    QCOMPARE(client.messageBatches.at(1).size(), request.messages.size() + 1);
+    QVERIFY(client.messageBatches.at(1).last().content.contains(QStringLiteral("JSON")));
+}
+
+void ModelRouterTests::completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Diary,
+        {route(QStringLiteral("diary-primary"), QStringLiteral("model-a")),
+         route(QStringLiteral("diary-fallback"), QStringLiteral("model-b"))})});
+    FakeModelCompletionClient client;
+    client.replies = {
+        {false, {}, QStringLiteral("provider timeout")},
+        {true, responseWithContent(QStringLiteral("done")), {}}
+    };
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Diary;
+    request.messages = {message(QStringLiteral("user"), QStringLiteral("diary-projection-ref"))};
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> value) {
+        result.emplace(std::move(value));
+    });
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QVERIFY(result->value().fallbackUsed);
+    QCOMPARE(result->value().dimensions.routeId, QStringLiteral("diary-fallback"));
+    QCOMPARE(client.messageBatches.size(), 2);
+    QCOMPARE(client.messageBatches.at(0).at(0).content,
+             client.messageBatches.at(1).at(0).content);
+    QCOMPARE(client.messageBatches.at(1).size(), request.messages.size());
+}
+
+void ModelRouterTests::assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {
+        ContextPartition::CurrentInput,
+        ContextPartition::Persona,
+        ContextPartition::RelevantMemory,
+        ContextPartition::SkillSummary
+    };
+    request.projections = {
+        projection(ContextPartition::CurrentInput, QStringLiteral("input")),
+        projection(ContextPartition::Persona, QStringLiteral("persona")),
+        projection(ContextPartition::RelevantMemory, QStringLiteral("memory")),
+        projection(ContextPartition::SkillSummary, QStringLiteral("skills"))
+    };
+
+    const auto result = assembler.assemble(ModelRole::Dialogue, request);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().size(), 4);
+    QCOMPARE(result.value().at(0).content, QStringLiteral("input"));
+    QCOMPARE(result.value().at(1).content, QStringLiteral("persona"));
+    QCOMPARE(result.value().at(2).content, QStringLiteral("memory"));
+    QCOMPARE(result.value().at(3).content, QStringLiteral("skills"));
+}
+
+void ModelRouterTests::assemble_whenDialogueRole_shouldExcludeDiaryInnerThoughtAndOwnerAccess() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {ContextPartition::CurrentInput};
+    request.projections = {
+        projection(ContextPartition::CurrentInput, QStringLiteral("visible")),
+        projection(ContextPartition::DiaryProjection, QStringLiteral("private diary")),
+        projection(ContextPartition::InnerThought, QStringLiteral("inner thought")),
+        projection(ContextPartition::OwnerAccess, QStringLiteral("owner access"))
+    };
+
+    const auto result = assembler.assemble(ModelRole::Dialogue, request);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().size(), 1);
+    QCOMPARE(result.value().first().content, QStringLiteral("visible"));
+}
+
+void ModelRouterTests::assemble_whenDiaryRole_shouldExposeOnlyDiaryProjectionWithinBudget() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.queryBudgetChars = 8;
+    request.requestedPartitions = {ContextPartition::DiaryProjection};
+    request.projections = {
+        projection(ContextPartition::CurrentInput, QStringLiteral("not-visible")),
+        projection(ContextPartition::DiaryProjection, QStringLiteral("1234567890"))
+    };
+
+    const auto result = assembler.assemble(ModelRole::Diary, request);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().size(), 1);
+    QCOMPARE(result.value().first().content, QStringLiteral("12345678"));
+}
+
+void ModelRouterTests::assemble_whenRequestedPartitionIsForbidden_shouldReturnScopeDenied() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {
+        ContextPartition::CurrentInput,
+        ContextPartition::OwnerAccess
+    };
+
+    const auto result = assembler.assemble(ModelRole::Dialogue, request);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("CONTEXT_SCOPE_DENIED"));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenRoleConfigured_shouldReturnRoleSpecificModel() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject diaryRoute{
+        {QStringLiteral("routeId"), QStringLiteral("diary-primary")},
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://diary.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("diary-key")},
+        {QStringLiteral("model"), QStringLiteral("diary-model")}
+    };
+    const QJsonObject diaryRole{
+        {QStringLiteral("routes"), QJsonArray{diaryRoute}}
+    };
+    const QJsonObject profile{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("provider"), QStringLiteral("legacy")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://legacy.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("legacy-key")},
+        {QStringLiteral("model"), QStringLiteral("legacy-model")},
+        {QStringLiteral("modelRoles"), QJsonObject{
+             {QStringLiteral("diary"), diaryRole}}}
+    };
+    const QJsonObject root{
+        {QStringLiteral("aiSettings"), QJsonObject{
+             {QStringLiteral("activeProfile"), QStringLiteral("default")},
+             {QStringLiteral("profiles"), QJsonObject{
+                  {QStringLiteral("default"), profile}}}}}
+    };
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Diary);
+
+    QCOMPARE(config.role, ModelRole::Diary);
+    QCOMPARE(config.routes.size(), 1);
+    QCOMPARE(config.routes.first().routeId, QStringLiteral("diary-primary"));
+    QCOMPARE(config.routes.first().llm.model, QStringLiteral("diary-model"));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenOnlyLegacyConfigExists_shouldMapItToDialogue() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject root{
+        {QStringLiteral("aiSettings"), QJsonObject{
+             {QStringLiteral("enabled"), true},
+             {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+             {QStringLiteral("baseUrl"), QStringLiteral("https://legacy.example/v1")},
+             {QStringLiteral("apiKey"), QStringLiteral("legacy-key")},
+             {QStringLiteral("model"), QStringLiteral("legacy-model")}}}};
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Dialogue);
+
+    QCOMPARE(config.role, ModelRole::Dialogue);
+    QCOMPARE(config.routes.size(), 1);
+    QCOMPARE(config.routes.first().llm.model, QStringLiteral("legacy-model"));
+    QCOMPARE(config.routes.first().llm.apiKey, QStringLiteral("legacy-key"));
+}
+
+void ModelRouterTests::configFor_whenRoleExists_shouldReturnOnlyRequestedRole() {
+    ModelRoleRegistry registry({
+        roleConfig(ModelRole::Dialogue,
+                   {route(QStringLiteral("dialogue"), QStringLiteral("model-a"))}),
+        roleConfig(ModelRole::Diary,
+                   {route(QStringLiteral("diary"), QStringLiteral("model-b"))})
+    });
+
+    const auto result = registry.configFor(ModelRole::Diary);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().role, ModelRole::Diary);
+    QCOMPARE(result.value().routes.size(), 1);
+    QCOMPARE(result.value().routes.first().routeId, QStringLiteral("diary"));
+}
+
+void ModelRouterTests::completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries() {
+    auto transport = std::make_shared<CapturingLlmClient>();
+    LlmChatService service(transport);
+    LlmChatModelClient client(&service);
+    ModelRouteConfig selected = route(
+        QStringLiteral("dialogue-primary"), QStringLiteral("model-a"));
+    selected.llm.retryCount = 5;
+    bool callbackCalled = false;
+
+    client.completeOnce(
+        selected, {}, {},
+        [&](bool success, LlmResponse response, QString error) {
+            Q_UNUSED(error)
+            callbackCalled = true;
+            QVERIFY(success);
+            QCOMPARE(response.content, QStringLiteral("ok"));
+        },
+        QStringLiteral("Milltina"));
+
+    QVERIFY(callbackCalled);
+    QCOMPARE(transport->configs.size(), 1);
+    QCOMPARE(transport->configs.first().retryCount, 0);
+}
+
+QTEST_MAIN(ModelRouterTests)
+#include "test_model_router.moc"

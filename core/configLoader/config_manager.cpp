@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QDebug>
 #include <algorithm>
+#include <utility>
 
 namespace {
 
@@ -73,6 +74,80 @@ static AiTriggerConfig parseTriggerConfig(const QJsonObject& triggerObj,
 
 static int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
+}
+
+static QString modelRoleConfigKey(ModelRole role) {
+    switch (role) {
+    case ModelRole::Dialogue: return QStringLiteral("dialogue");
+    case ModelRole::FastExtract: return QStringLiteral("fastExtract");
+    case ModelRole::Consolidation: return QStringLiteral("consolidation");
+    case ModelRole::Diary: return QStringLiteral("diary");
+    case ModelRole::Vision: return QStringLiteral("vision");
+    }
+    return QString();
+}
+
+static QList<ModelRole> allModelRoles() {
+    return {ModelRole::Dialogue, ModelRole::FastExtract,
+            ModelRole::Consolidation, ModelRole::Diary, ModelRole::Vision};
+}
+
+static ModelRouteConfig parseModelRouteConfig(const QJsonObject& object,
+                                              const LlmConfig& defaults) {
+    ModelRouteConfig route;
+    route.routeId = object.value(QStringLiteral("routeId")).toString().trimmed();
+    route.enabled = object.value(QStringLiteral("enabled")).toBool(true);
+    route.llm = defaults;
+    route.llm.enabled = defaults.enabled && route.enabled;
+    route.llm.provider = object.value(QStringLiteral("provider"))
+                             .toString(defaults.provider).trimmed();
+    route.llm.baseUrl = object.value(QStringLiteral("baseUrl"))
+                            .toString(defaults.baseUrl).trimmed();
+    route.llm.apiKey = object.value(QStringLiteral("apiKey"))
+                           .toString(defaults.apiKey);
+    route.llm.model = object.value(QStringLiteral("model"))
+                          .toString(defaults.model).trimmed();
+    route.llm.timeoutMs = clampInt(
+        object.value(QStringLiteral("timeoutMs")).toInt(defaults.timeoutMs),
+        1000, 10 * 60 * 1000);
+    route.llm.maxTokens = clampInt(
+        object.value(QStringLiteral("maxTokens")).toInt(defaults.maxTokens),
+        1, 128 * 1024);
+    route.llm.temperature = std::clamp(
+        object.value(QStringLiteral("temperature")).toDouble(defaults.temperature),
+        0.0, 2.0);
+    route.llm.retryCount = 0;
+    route.llm.thinkIntervalMs = defaults.thinkIntervalMs;
+    if (object.value(QStringLiteral("extraParams")).isObject()) {
+        route.llm.extraParams = object.value(QStringLiteral("extraParams")).toObject();
+    }
+    route.supportsVision =
+        object.value(QStringLiteral("supportsVision")).toBool(false);
+    route.estimatedCostMicros = qMax<qint64>(
+        0, static_cast<qint64>(
+               object.value(QStringLiteral("estimatedCostMicros")).toDouble(0)));
+    return route;
+}
+
+static ModelRoleConfig parseModelRoleConfig(ModelRole role,
+                                            const QJsonObject& object,
+                                            const LlmConfig& defaults) {
+    ModelRoleConfig config;
+    config.role = role;
+    const QJsonObject limits = object.value(QStringLiteral("limits")).toObject();
+    config.limits.maxLatencyMs = qMax(
+        0, limits.value(QStringLiteral("maxLatencyMs")).toInt(0));
+    config.limits.maxEstimatedCostMicros = qMax<qint64>(
+        0, static_cast<qint64>(
+               limits.value(QStringLiteral("maxEstimatedCostMicros")).toDouble(0)));
+    const QJsonArray routes = object.value(QStringLiteral("routes")).toArray();
+    for (const QJsonValue& value : routes) {
+        if (!value.isObject()) continue;
+        ModelRouteConfig route = parseModelRouteConfig(value.toObject(), defaults);
+        if (route.routeId.isEmpty()) continue;
+        config.routes.append(std::move(route));
+    }
+    return config;
 }
 
 static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
@@ -191,6 +266,31 @@ QString ConfigManager::configHash() const {
 
 QString ConfigManager::identityBaselineHash() const {
     return sha256Json(identityBaseline.toJson());
+}
+
+ModelRoleConfig ConfigManager::getModelRoleConfig(ModelRole role) const {
+    for (const ModelRoleConfig& config : modelRoleConfigs) {
+        if (config.role == role) return config;
+    }
+
+    ModelRoleConfig compatible;
+    compatible.role = role;
+    if (role != ModelRole::Dialogue && role != ModelRole::Vision) {
+        return compatible;
+    }
+
+    ModelRouteConfig route;
+    route.routeId = role == ModelRole::Dialogue
+        ? QStringLiteral("dialogue-legacy")
+        : QStringLiteral("vision-legacy");
+    route.enabled = llmConfig.enabled;
+    route.llm = llmConfig;
+    route.supportsVision = role == ModelRole::Vision;
+    if (role == ModelRole::Vision) {
+        route.llm.model = llmConfig.visualModel;
+    }
+    compatible.routes.append(std::move(route));
+    return compatible;
 }
 
 bool ConfigManager::loadConfig(const QString& configPath) {
@@ -320,6 +420,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     // 1) aiSettings 直接包含字段
     // 2) aiSettings.profiles + activeProfile
     llmConfig = LlmConfig{};
+    modelRoleConfigs.clear();
     screenChatConfig = ScreenChatConfig{};
     daydreamConfig = DaydreamConfig{};
     emotionConfig = EmotionConfig{};
@@ -384,6 +485,17 @@ bool ConfigManager::loadConfig(const QString& configPath) {
 
         if (aiRaw.contains("extraParams") && aiRaw.value("extraParams").isObject()) {
             llmConfig.extraParams = aiRaw.value("extraParams").toObject();
+        }
+
+        if (aiRaw.value(QStringLiteral("modelRoles")).isObject()) {
+            const QJsonObject roles =
+                aiRaw.value(QStringLiteral("modelRoles")).toObject();
+            for (ModelRole role : allModelRoles()) {
+                const QString key = modelRoleConfigKey(role);
+                if (!roles.value(key).isObject()) continue;
+                modelRoleConfigs.append(parseModelRoleConfig(
+                    role, roles.value(key).toObject(), llmConfig));
+            }
         }
 
         // 提示词模版属于活动模型配置；身份基线独立位于 aiSettings 根节点。

@@ -64,6 +64,58 @@ struct LlmConfig {
     QJsonObject extraParams;
 };
 
+enum class ModelRole {
+    Dialogue,
+    FastExtract,
+    Consolidation,
+    Diary,
+    Vision
+};
+
+enum class ContextPartition {
+    CurrentInput,
+    Persona,
+    RelevantMemory,
+    SkillSummary,
+    EvidenceWindow,
+    DiaryProjection,
+    InnerThought,
+    VisionInput,
+    OwnerAccess
+};
+
+struct ModelLimits {
+    int maxLatencyMs = 0;
+    qint64 maxEstimatedCostMicros = 0;
+};
+
+struct ModelRouteConfig {
+    QString routeId;
+    bool enabled = true;
+    LlmConfig llm;
+    bool supportsVision = false;
+    qint64 estimatedCostMicros = 0;
+};
+
+struct ModelRoleConfig {
+    ModelRole role = ModelRole::Dialogue;
+    QList<ModelRouteConfig> routes;
+    ModelLimits limits;
+};
+
+struct ModelConstraints {
+    int maxLatencyMs = 0;
+    qint64 maxEstimatedCostMicros = 0;
+    bool requiresVision = false;
+};
+
+struct LlmCallDimensions {
+    ModelRole role = ModelRole::Dialogue;
+    QString provider;
+    QString model;
+    QString routeId;
+};
+
 // 屏幕识别对话配置
 struct ScreenChatConfig {
     bool enabled = false;
@@ -212,6 +264,34 @@ struct LlmResponse {
     QString finishReason;
     LlmUsage usage;
     QList<LlmToolCall> toolCalls;
+};
+
+struct ModelRequest {
+    ModelRole role = ModelRole::Dialogue;
+    QList<ChatMessage> messages;
+    QJsonArray tools;
+    QJsonObject responseSchema;
+    ModelConstraints constraints;
+    QString profileId;
+    QString sessionId;
+    QString petName;
+};
+
+struct ModelCompletion {
+    LlmResponse response;
+    LlmCallDimensions dimensions;
+    bool fallbackUsed = false;
+};
+
+struct ContextProjection {
+    ContextPartition partition = ContextPartition::CurrentInput;
+    QList<ChatMessage> messages;
+};
+
+struct ContextRequest {
+    int queryBudgetChars = 12000;
+    QList<ContextPartition> requestedPartitions;
+    QList<ContextProjection> projections;
 };
 
 #endif //DESKTOP_PET_AI_TYPES_H

@@ -21,6 +21,7 @@
 #include "context_builder.h"
 #include "emotion/emotion_types.h"
 #include "llm/llm_chat_service.h"
+#include "llm/llm_chat_model_client.h"
 #include "memory/daydream_consolidator.h"
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
@@ -29,6 +30,8 @@
 #include "memory/working_memory_cache.h"
 #include "scheduler/daydream_trigger_policy.h"
 #include "runtime/runtime_types.h"
+#include "model/model_role_registry.h"
+#include "model/model_router.h"
 
 class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
 class AgentScheduler;  // Daydream 距待办判定用，可选注入
@@ -149,6 +152,7 @@ private:
                            QString& denialReason) const;
     void scheduleIdleRetryIfBusyFailure(const QString& toolName,
                                         const QString& toolPayload);
+    static QList<ModelRoleConfig> configuredModelRoles();
 
 private:
     QString m_petName;
@@ -157,6 +161,9 @@ private:
 
     ContextBuilder m_contextBuilder;
     LlmChatService m_chatService;
+    ModelRoleRegistry m_modelRoleRegistry{configuredModelRoles()};
+    LlmChatModelClient m_modelClient{&m_chatService};
+    ModelRouter m_modelRouter{&m_modelRoleRegistry, &m_modelClient};
     IntentRouter m_intentRouter;
     ToolRuntime m_toolRuntime;
     MemoryStore m_memoryStore;
