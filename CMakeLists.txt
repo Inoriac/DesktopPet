@@ -132,6 +132,30 @@ set(MODEL_ROUTING_SOURCES
     core/ai/llm/llm_chat_model_client.cpp
 )
 
+set(IDENTITY_STORAGE_SOURCES
+    core/ai/identity/identity_types.h
+    core/ai/identity/identity_types.cpp
+    core/ai/identity/sqlite_identity_repository.h
+    core/ai/identity/sqlite_identity_repository.cpp
+)
+
+set(EMOTION_PROVIDER_SOURCES
+    core/ai/integration/emotion_state_provider.h
+    core/ai/integration/emotion_state_provider.cpp
+)
+
+set(IDENTITY_STATE_SOURCES
+    ${IDENTITY_STORAGE_SOURCES}
+    ${EMOTION_PROVIDER_SOURCES}
+    core/ai/identity/personality_service.h
+    core/ai/identity/personality_service.cpp
+    core/ai/identity/relationship_service.h
+    core/ai/identity/relationship_service.cpp
+    core/ai/identity/self_model_service.h
+    core/ai/identity/self_model_service.cpp
+)
+
+
 set(CORE_SOURCES
     core/animation/animation_manager.cpp
     core/animation/animation_manager.h
@@ -196,6 +220,7 @@ set(CORE_SOURCES
     ${EVENT_LEDGER_SOURCES}
     ${AGENT_RUNTIME_SOURCES}
     ${MODEL_ROUTING_SOURCES}
+    ${IDENTITY_STATE_SOURCES}
 
     core/ai/ai_tool.h
     core/ai/tool_registry.cpp
@@ -520,12 +545,12 @@ target_link_libraries(event_ledger_tests
 )
 add_test(NAME EventLedgerTests COMMAND event_ledger_tests)
 
-# ---- Agent bootstrap and runtime service composition tests ----
-add_executable(agent_runtime_services_tests
-    tests/test_agent_runtime_services.cpp
+# ---- Agent bootstrap and runtime service composition test support ----
+set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     ${EVENT_LEDGER_SOURCES}
     ${AGENT_RUNTIME_SOURCES}
     ${MODEL_ROUTING_SOURCES}
+    ${IDENTITY_STATE_SOURCES}
     core/ai/runtime/profile_resolver.h
     core/ai/runtime/profile_resolver.cpp
     core/ai/runtime/profile_data_migrator.h
@@ -608,11 +633,18 @@ add_executable(agent_runtime_services_tests
     core/emotion/emotion_types.cpp
     core/emotion/emotion_config_json.h
     core/emotion/emotion_config_json.cpp
+    core/emotion/emotion_engine.h
+    core/emotion/emotion_engine.cpp
     statistic/statistic_manager.h
     statistic/statistic_manager.cpp
     include/statistic_types.h
     include/ai_types.h
     include/global_types.h
+)
+
+add_executable(agent_runtime_services_tests
+    tests/test_agent_runtime_services.cpp
+    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
 )
 target_include_directories(agent_runtime_services_tests PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -634,6 +666,56 @@ if(APPLE)
 endif()
 add_test(NAME AgentRuntimeServicesTests COMMAND agent_runtime_services_tests)
 
+# ---- Emotion provider read-only contract tests ----
+add_executable(emotion_provider_contract_tests
+    tests/test_emotion_provider_contract.cpp
+    ${EMOTION_PROVIDER_SOURCES}
+    core/emotion/emotion_types.h
+    core/emotion/emotion_types.cpp
+    core/emotion/emotion_state_repository.h
+    core/emotion/emotion_engine.h
+    core/emotion/emotion_engine.cpp
+)
+target_include_directories(emotion_provider_contract_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+)
+target_link_libraries(emotion_provider_contract_tests
+    Qt::Core
+    Qt::Test
+)
+add_test(NAME EmotionProviderContractTests COMMAND emotion_provider_contract_tests)
+
+# ---- Identity state, projection, and runtime composition tests ----
+add_executable(identity_state_tests
+    tests/test_identity_state.cpp
+    ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    entity/pet_personality.h
+    entity/pet_personality.cpp
+)
+target_include_directories(identity_state_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    ${CMAKE_CURRENT_SOURCE_DIR}/entity
+    ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+)
+target_link_libraries(identity_state_tests
+    Qt::Core
+    Qt::Gui
+    Qt::Network
+    Qt::Sql
+    Qt::Test
+    $<$<PLATFORM_ID:Windows>:psapi>
+)
+if(APPLE)
+    target_link_libraries(identity_state_tests "-framework CoreGraphics")
+endif()
+add_test(NAME IdentityStateTests COMMAND identity_state_tests)
+
+
 # ---- Model role routing, output repair, and context projection tests ----
 add_executable(model_router_tests
     tests/test_model_router.cpp
@@ -647,6 +729,8 @@ add_executable(model_router_tests
     core/configLoader/config_manager.cpp
     core/ai/identity/identity_baseline.h
     core/ai/identity/identity_baseline.cpp
+    core/ai/identity/identity_types.h
+    core/ai/identity/identity_types.cpp
     core/emotion/emotion_types.h
     core/emotion/emotion_types.cpp
     core/emotion/emotion_config_json.h
@@ -939,6 +1023,7 @@ add_executable(llm_tests
     core/ai/identity/identity_baseline.cpp
     core/ai/identity/persona_projector.h
     core/ai/identity/persona_projector.cpp
+    ${IDENTITY_STORAGE_SOURCES}
     core/ai/prompt/prompt_template_types.h
     core/ai/prompt/prompt_renderer.h
     core/ai/prompt/prompt_renderer.cpp
@@ -967,6 +1052,7 @@ target_link_libraries(llm_tests
     Qt::Core
     Qt::Gui
     Qt::Network
+    Qt::Sql
     Qt::Test
 )
 
@@ -986,6 +1072,7 @@ add_executable(prompt_tests
     core/ai/identity/identity_baseline.cpp
     core/ai/identity/persona_projector.h
     core/ai/identity/persona_projector.cpp
+    ${IDENTITY_STORAGE_SOURCES}
     core/ai/context_builder.h
     core/ai/context_builder.cpp
     core/configLoader/config_manager.h
@@ -1012,6 +1099,7 @@ target_link_libraries(prompt_tests
     Qt::Core
     Qt::Gui
     Qt::Network
+    Qt::Sql
     Qt::Test
 )
 

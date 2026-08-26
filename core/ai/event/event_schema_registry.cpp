@@ -161,6 +161,18 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     };
     definitions.append(degraded);
 
+    EventSchemaDefinition personalityChanged;
+    personalityChanged.type = QStringLiteral("PersonalityChanged");
+    personalityChanged.requiredFields = {
+        {QStringLiteral("stateId"), EventFieldType::String},
+        {QStringLiteral("version"), EventFieldType::Number},
+        {QStringLiteral("operation"), EventFieldType::String}
+    };
+    personalityChanged.optionalFields = {
+        {QStringLiteral("reason"), EventFieldType::String}
+    };
+    definitions.append(personalityChanged);
+
     for (const EventSchemaDefinition& definition : definitions) {
         Result<void, DomainError> result = registry.registerSchema(definition);
         if (!result.isOk()) return result;

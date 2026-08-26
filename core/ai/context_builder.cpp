@@ -14,21 +14,27 @@
 #include "prompt/prompt_renderer.h"
 #include "statistic_manager.h"
 
-QString ContextBuilder::buildSystemPrompt(const QString& petName) const {
+QString ContextBuilder::buildSystemPrompt(
+    const QString& petName,
+    const std::optional<PersonaProjection>& projection) const {
     if (!m_templateSet || m_template.systemPromptBody.isEmpty()) {
-        return inlineFallbackSystemPrompt(petName);
+        return inlineFallbackSystemPrompt(petName, projection);
     }
 
-    const PersonaProjection projection = PersonaProjector().projectBaseline(m_identityBaseline, petName);
+    const PersonaProjection effectiveProjection = projection.has_value()
+        ? *projection
+        : PersonaProjector().projectBaseline(m_identityBaseline, petName);
     const QString rendered = PromptRenderer::render(
-        m_template.systemPromptBody, projection.promptSlots).trimmed();
+        m_template.systemPromptBody, effectiveProjection.promptSlots).trimmed();
     if (rendered.isEmpty()) {
-        return inlineFallbackSystemPrompt(petName);
+        return inlineFallbackSystemPrompt(petName, projection);
     }
     return appendFixedSafetyRules(rendered);
 }
 
-QString ContextBuilder::inlineFallbackSystemPrompt(const QString& petName) const {
+QString ContextBuilder::inlineFallbackSystemPrompt(
+    const QString& petName,
+    const std::optional<PersonaProjection>& projection) const {
     const QString body = QStringLiteral(
         "你是桌面宠物 {{pet_name}} 的AI大脑。"
         "{{persona_traits}}说话风格：{{speaking_style}}。"
@@ -40,8 +46,11 @@ QString ContextBuilder::inlineFallbackSystemPrompt(const QString& petName) const
         "在技能步骤中使用{参数名}占位符实现泛化。"
         "执行完技能后，调用 skill_record_outcome 反馈结果。"
     );
-    const PersonaProjection projection = PersonaProjector().projectBaseline(m_identityBaseline, petName);
-    return appendFixedSafetyRules(PromptRenderer::render(body, projection.promptSlots));
+    const PersonaProjection effectiveProjection = projection.has_value()
+        ? *projection
+        : PersonaProjector().projectBaseline(m_identityBaseline, petName);
+    return appendFixedSafetyRules(
+        PromptRenderer::render(body, effectiveProjection.promptSlots));
 }
 
 QString ContextBuilder::appendFixedSafetyRules(const QString& prompt) const {

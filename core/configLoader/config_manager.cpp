@@ -76,6 +76,22 @@ static int clampInt(int value, int minValue, int maxValue) {
     return std::max(minValue, std::min(value, maxValue));
 }
 
+static PersonalityPolicy parsePersonalityPolicy(const QJsonObject& object) {
+    PersonalityPolicy policy;
+    policy.minimumIndependentEvidence = object.value(
+        QStringLiteral("minimumIndependentEvidence"))
+        .toInt(policy.minimumIndependentEvidence);
+    policy.minimumContextKeys = object.value(QStringLiteral("minimumContextKeys"))
+        .toInt(policy.minimumContextKeys);
+    policy.minimumWindowDays = object.value(QStringLiteral("minimumWindowDays"))
+        .toInt(policy.minimumWindowDays);
+    policy.maxDeltaPerWindow = object.value(QStringLiteral("maxDeltaPerWindow"))
+        .toDouble(policy.maxDeltaPerWindow);
+    policy.maxPromptSlotChars = object.value(QStringLiteral("maxPromptSlotChars"))
+        .toInt(policy.maxPromptSlotChars);
+    return sanitizePersonalityPolicy(policy);
+}
+
 static QString modelRoleConfigKey(ModelRole role) {
     switch (role) {
     case ModelRole::Dialogue: return QStringLiteral("dialogue");
@@ -428,6 +444,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     aiBehaviorPolicy = AiBehaviorPolicy{};
     aiToolAccessPolicy = AiToolAccessPolicy{};
     identityBaseline = IdentityBaseline::defaults();
+    personalityPolicy = PersonalityPolicy{};
     m_activePromptTemplateName = QStringLiteral("default");
     aiToolAccessPolicy.allowedRoots = {
         QDir::cleanPath(QDir::currentPath())
@@ -468,6 +485,10 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         if (aiSettings.value("identityBaseline").isObject()) {
             identityBaseline = IdentityBaseline::fromJson(
                 aiSettings.value("identityBaseline").toObject());
+        }
+        if (aiSettings.value(QStringLiteral("personalityPolicy")).isObject()) {
+            personalityPolicy = parsePersonalityPolicy(
+                aiSettings.value(QStringLiteral("personalityPolicy")).toObject());
         }
 
         llmConfig.enabled = aiRaw.value("enabled").toBool(false);

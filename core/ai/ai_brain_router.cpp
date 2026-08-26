@@ -280,12 +280,25 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
 }
 
 QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
-                                              const QString& triggerTag) {
+                                              const QString& triggerTag,
+                                              const QString& sessionId) {
     QList<ChatMessage> messages;
+
+    std::optional<PersonaProjection> personaProjection;
+    if (m_runtimeServices && !sessionId.isEmpty()) {
+        const auto session = m_runtimeSessions.constFind(sessionId);
+        if (session != m_runtimeSessions.constEnd()
+            && session->runtimeSnapshot().has_value()) {
+            personaProjection = m_runtimeServices->projectPersona(
+                *session->runtimeSnapshot(),
+                {m_petName, QDateTime::currentDateTimeUtc()});
+        }
+    }
 
     ChatMessage systemMessage;
     systemMessage.role = "system";
-    systemMessage.content = m_contextBuilder.buildSystemPrompt(m_petName);
+    systemMessage.content = m_contextBuilder.buildSystemPrompt(
+        m_petName, personaProjection);
     messages.append(systemMessage);
 
     for (const ChatMessage& memoryMsg : m_memory) {
@@ -294,13 +307,15 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
 
     ChatMessage contextMessage;
     contextMessage.role = "user";
+    const std::optional<EmotionSnapshot> legacyEmotion = personaProjection.has_value()
+        ? std::nullopt : currentEmotionSnapshot();
     contextMessage.content = m_contextBuilder.buildRuntimeContext(
         m_petName,
         reason,
         "Idle",
         triggerTag,
         allowedActionsForTrigger(triggerTag),
-        currentEmotionSnapshot()
+        legacyEmotion
     );
     const QStringList memoryHints = retrieveMemoryHints(reason, triggerTag);
     if (!memoryHints.isEmpty()) {

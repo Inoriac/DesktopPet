@@ -13,7 +13,8 @@ QList<ChatMessage> ContextManager::buildMessages(const AgentContextRequest& requ
 
     ChatMessage systemMessage;
     systemMessage.role = "system";
-    systemMessage.content = m_builder.buildSystemPrompt(request.petName)
+    systemMessage.content = m_builder.buildSystemPrompt(
+        request.petName, request.personaProjection)
         + "\n\n你现在通过 AgentCore 工作。只在必要时调用工具；高风险工具必须等待用户确认。";
     messages.append(systemMessage);
 

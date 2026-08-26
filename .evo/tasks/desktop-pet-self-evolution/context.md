@@ -37,6 +37,10 @@
 - [2026-08-25] [code-impl Task 2 sanity check] §3.3.5 实现锚点已静态验证一致：`LlmChatService::requestAsyncWithConfig`、`ContextBuilder::buildSystemPrompt/buildRuntimeContext`、`ConfigManager::getLlmConfig`、`StatisticManager::recordLlmUsage`、`AIBrain::thinkInternal` Dialogue 调用点与 `ModelCallCompleted` Schema 均与系分契约一致。
 - [2026-08-25] [code-impl Task 2 静态审查] impl-plan 计划的 14 个用例与 §3.3.7 补充的 2 个 happy path 均有对应定义；ModelRouter/ModelRoleConfig 测试、生产源码和 AgentRuntimeServices 链接依赖已注册到 CMake，tracked 示例配置已同步，本地 `default_common_config.json` 继续按 `.gitignore` 保护；`git diff --check` 与新文件空白检查通过。遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
 - [2026-08-25] [code-impl Task 2 确认] 用户确认 Task 2 当前结果并同意进入 Task 3；Wave 3 单 Task 无文件冲突，16 个测试定义、测试位置、CMake 注册、Dialogue 调用点与 §3.3.5 实现锚点均已静态核对；运行验证继续保留为“未运行，待受支持环境验证”。
+- [2026-08-25] [code-impl Task 3 首次 sanity check] §3.4.5 的 IdentityBaseline、PersonaProjector、ContextManager、EmotionEngine/EmotionSnapshot 与 MemoryRetriever 锚点一致；写测试前进一步核对生产组装链，发现 `PersonalityChanged` 未在 freeze 前注册且 Identity/Emotion Provider 没有 runtime composition 路径，因此按跨 §3.2 契约停止，未产生 Task 3 代码。
+- [2026-08-25] [code-impl Task 3 系分回溯] §3.2/§3.4 与 impl-plan 已补充 `PersonalityChanged/v1` 注册、版本化 `ProvidedEmotionSnapshot`、PetWindow-owned Provider、AgentRuntimeServices-owned Identity 服务、subject-specific RuntimeSnapshot 及 AIBrain Dialogue PersonaProjection 消费路径；MVP 只做确定性门槛、版本追加和本机 `owner` subject。
+- [2026-08-25] [code-impl Task 3 sanity check] §3.4.5 实现锚点已静态验证一致：`IdentityBaseline`、`PersonaProjector`、`ContextManager`、`EmotionEngine/EmotionSnapshot`、`AgentRuntimeServices`、`AIBrain` Dialogue 投影链路及 `PersonalityChanged/v1` freeze 前注册均与修订后的系分契约一致。
+- [2026-08-25] [code-impl Task 3 静态验收] impl-plan 计划的 22 个测试均有对应定义；Emotion Provider、Identity Repository/Service、Runtime composition、PersonaProjection 与相关测试源码均已注册到 CMake，SQLite Unit-of-Work/outbox、版本追加/CAS、运行时降级与对象生命周期已完成静态审查，`git diff --check` 通过。遵循用户约束，RED/GREEN、构建与测试状态均为“未运行，待受支持环境验证”。
 
 ## 设计偏差
 
@@ -57,9 +61,11 @@
 
 ## 待回溯设计的发现
 
-- 后续实现 Provider 契约时需直接适配现有 `EmotionSnapshot`/`EmotionEngine`，并把 Null Provider 仅作为未注册或读取失败时的 fallback。
+- [resolved] Task 3 Provider 契约直接包装现有 `EmotionSnapshot`/`EmotionEngine` 为 schema v1，并把 Null Provider 限定为未注册、不可用、未知版本或非法数值时的 fallback；不修改情绪状态所有权。
 - [resolved] Task 1A 已回溯 §3.2：注册表改为 launcher 单写者，补充 ProfileResolver/ProfileDataMigrator 方法级契约与迁移校验；AgentRuntimeServices 生命周期测试归 Task 1B，私有能力运行时降级测试归 Task 4。
 - [resolved] Task 1B 已回溯 §3.2：补齐启动/快照/事件/权限/UoW 契约，并把 `main.cpp`、`ui/petwindow.cpp`、`core/configLoader/config_manager.*` 与新增 schema/UoW 类型纳入实现计划。
 - [deferred] Task 2 MVP 不实现完整 JSON Schema、provider 结构化错误码、自适应/持久化熔断、精确成本估算和高级多角色配置 UI；当实际 provider 或运维需求出现时再回溯 §3.3。
 - [deferred] Task 2 MVP 保留现有 LLM 总量统计，role/provider/model/routeId 先写入 `ModelCallCompleted`；如后续需要分角色费用与调用趋势，再扩展 StatisticManager 的持久化维度。
 - [deferred] Task 2 只接入 Dialogue 现有主链；Vision 的统一 Router 接入、Consolidation/Diary 的真实 ContextProjection 数据源分别随现有屏幕识别重构需求和 Task 3/4 领域服务落地后再补。
+- [deferred] Task 3 不扩展 EmotionEngine 历史 schema，真实与 Null Provider 的 `trajectory()` 均返回空；后续只有情绪模块提供稳定历史接口后才映射轨迹。
+- [deferred] Task 3 不实现自适应人格阈值、人格可视化/编辑 UI、多账户 subject 解析和自动参数调优；首版本机会话使用隔离键 `owner`，保留未来替换入口。

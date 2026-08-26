@@ -7,10 +7,13 @@
 
 #include <optional>
 
+#include "ai/identity/identity_baseline.h"
+#include "ai/identity/identity_types.h"
 #include "profile_data_migrator.h"
 #include "profile_resolver.h"
 
 class AIBrain;
+class EmotionStateProvider;
 class RuntimeUiBridge;
 
 struct AIBrainStorageConfig {
@@ -21,6 +24,7 @@ struct AIBrainStorageConfig {
 struct RuntimeSnapshot {
     QString sessionId;
     QString profileId;
+    QString subjectId;
     int identityBaselineSchemaVersion = 1;
     QString identityBaselineHash;
     std::optional<qint64> personalityVersion;
@@ -36,6 +40,9 @@ struct RuntimeStartRequest {
     QString configHash;
     int identityBaselineSchemaVersion = 1;
     QString identityBaselineHash;
+    IdentityBaseline identityBaseline = IdentityBaseline::defaults();
+    PersonalityPolicy personalityPolicy;
+    EmotionStateProvider* emotionStateProvider = nullptr;
     AIBrain* aiBrain = nullptr;
     RuntimeUiBridge* uiBridge = nullptr;
 };

@@ -13,6 +13,7 @@
 
 #include "emotion/emotion_types.h"
 #include "identity/identity_baseline.h"
+#include "identity/persona_projector.h"
 #include "prompt/prompt_template_types.h"
 
 class ContextBuilder {
@@ -21,7 +22,9 @@ public:
     void setPromptTemplate(const PromptTemplate& templ) { m_template = templ; m_templateSet = true; }
     void setIdentityBaseline(const IdentityBaseline& baseline) { m_identityBaseline = baseline; }
 
-    QString buildSystemPrompt(const QString& petName) const;
+    QString buildSystemPrompt(
+        const QString& petName,
+        const std::optional<PersonaProjection>& projection = std::nullopt) const;
     QString buildRuntimeContext(const QString& petName,
                                 const QString& reason,
                                 const QString& currentState = QString(),
@@ -32,7 +35,9 @@ public:
 private:
     QString buildStatisticsSummary(const QString& petName) const;
     QString appendFixedSafetyRules(const QString& prompt) const;
-    QString inlineFallbackSystemPrompt(const QString& petName) const;
+    QString inlineFallbackSystemPrompt(
+        const QString& petName,
+        const std::optional<PersonaProjection>& projection) const;
 
     PromptTemplate m_template;
     IdentityBaseline m_identityBaseline = IdentityBaseline::defaults();

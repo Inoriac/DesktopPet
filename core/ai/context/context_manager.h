@@ -6,6 +6,8 @@
 #include <QString>
 #include <QStringList>
 
+#include <optional>
+
 #include "ai_types.h"
 #include "context_budget.h"
 #include "ai/context_builder.h"
@@ -20,6 +22,7 @@ struct AgentContextRequest {
     QStringList memoryHints;
     QList<ChatMessage> shortTermMessages;
     QJsonArray availableTools;
+    std::optional<PersonaProjection> personaProjection;
 };
 
 class ContextManager {

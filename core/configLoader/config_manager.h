@@ -14,6 +14,7 @@
 #include "global_types.h"
 #include "ai_types.h"
 #include "ai/identity/identity_baseline.h"
+#include "ai/identity/identity_types.h"
 #include "emotion/emotion_types.h"
 
 class ConfigManager {
@@ -82,6 +83,7 @@ public:
 
     // 独立身份基线与提示词模版：系统提示词渲染的输入
     const IdentityBaseline& getIdentityBaseline() const { return identityBaseline; }
+    const PersonalityPolicy& getPersonalityPolicy() const { return personalityPolicy; }
     const QString& activePromptTemplateName() const { return m_activePromptTemplateName; }
     QString configHash() const;
     QString identityBaselineHash() const;
@@ -139,6 +141,7 @@ private:
     AiToolAccessPolicy aiToolAccessPolicy;
 
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
+    PersonalityPolicy personalityPolicy;
     QString m_activePromptTemplateName = QStringLiteral("default");
 };
 

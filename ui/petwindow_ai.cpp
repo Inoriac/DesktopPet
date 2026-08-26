@@ -83,6 +83,9 @@ void PetWindow::setupAiBrain() {
     runtimeRequest.configHash = config.configHash();
     runtimeRequest.identityBaselineSchemaVersion = config.getIdentityBaseline().schemaVersion;
     runtimeRequest.identityBaselineHash = config.identityBaselineHash();
+    runtimeRequest.identityBaseline = config.getIdentityBaseline();
+    runtimeRequest.personalityPolicy = config.getPersonalityPolicy();
+    runtimeRequest.emotionStateProvider = emotionStateProvider.get();
     runtimeRequest.aiBrain = aiBrain.get();
     runtimeRequest.uiBridge = runtimeUiBridge.get();
     const Result<RuntimeStartReport, DomainError> runtimeStarted =
@@ -245,6 +248,7 @@ void PetWindow::teardownAiRuntime() {
         runtimeServices.reset();
     }
     runtimeUiBridge.reset();
+    emotionStateProvider.reset();
 
     if (agentScheduler) {
         agentScheduler->stop();

@@ -45,6 +45,8 @@ class AgentRuntimeServices;
 class AIBrain : public QObject {
     Q_OBJECT
 
+    friend class TestIdentityState;
+
 public:
     using EmotionSnapshotProvider = std::function<std::optional<EmotionSnapshot>()>;
 
@@ -125,7 +127,8 @@ private:
     std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
     void annotateMemoryEntry(MemoryEntry& entry) const;
     QList<ChatMessage> buildBaseMessages(const QString& reason,
-                                         const QString& triggerTag);
+                                         const QString& triggerTag,
+                                         const QString& sessionId = QString());
     QStringList retrieveMemoryHints(const QString& reason,
                                     const QString& triggerTag,
                                     int limit = 8);

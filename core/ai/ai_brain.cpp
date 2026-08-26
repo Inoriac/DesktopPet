@@ -171,7 +171,7 @@ void AIBrain::triggerThink(const QString& reason,
         return;
     }
 
-    QList<ChatMessage> base = buildBaseMessages(reason, triggerTag);
+    QList<ChatMessage> base = buildBaseMessages(reason, triggerTag, sessionId);
     if (base.isEmpty()) {
         finishRuntimeSession(sessionId);
         return;
@@ -187,7 +187,8 @@ QString AIBrain::beginRuntimeSession(const QString& reason,
     if (!m_runtimeServices) return QString();
     AgentSession session = AgentSession::create(reason, triggerTag);
     const QString sessionId = session.id();
-    const RuntimeSnapshot snapshot = m_runtimeServices->captureSnapshot(sessionId);
+    const RuntimeSnapshot snapshot = m_runtimeServices->captureSnapshot(
+        sessionId, QStringLiteral("owner"));
     if (snapshot.sessionId.isEmpty() || !session.bindRuntimeSnapshot(snapshot).isOk()) {
         return QString();
     }

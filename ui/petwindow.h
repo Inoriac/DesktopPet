@@ -27,6 +27,7 @@ class LiquidGlassChatBubble;
 class RenderViewport;
 class BehaviorManager;
 class EmotionEngine;
+class EmotionEngineStateProvider;
 class PetController;
 class SQLiteEmotionStateRepository;
 class AgentRuntimeServices;
@@ -193,6 +194,7 @@ private:
     VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<CallbackRuntimeUiBridge> runtimeUiBridge;
+    std::unique_ptr<EmotionEngineStateProvider> emotionStateProvider;
     std::unique_ptr<AgentRuntimeServices> runtimeServices;
     std::unique_ptr<ToolRegistry> aiToolRegistry;
     std::unique_ptr<AgentScheduler> agentScheduler;

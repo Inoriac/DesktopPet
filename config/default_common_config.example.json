@@ -65,6 +65,13 @@
     ]
   },
   "aiSettings": {
+    "personalityPolicy": {
+      "minimumIndependentEvidence": 3,
+      "minimumContextKeys": 2,
+      "minimumWindowDays": 14,
+      "maxDeltaPerWindow": 0.05,
+      "maxPromptSlotChars": 512
+    },
     "activeProfile": "default",
     "identityBaseline": {
       "schemaVersion": 1,

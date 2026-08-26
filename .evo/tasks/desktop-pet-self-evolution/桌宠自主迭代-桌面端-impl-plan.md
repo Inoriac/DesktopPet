@@ -179,7 +179,7 @@ Launcher model-role config export:
 ## Task 3: 情绪接入、人格、关系与自我模型
 
 - **关联设计**: §3.4 情绪接入、人格、关系与自我模型
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 4
 - **依赖**: Task 1B、Task 2
 
@@ -187,7 +187,11 @@ Launcher model-role config export:
 - 实现: `core/ai/integration/emotion_state_provider.*`
 - 修改: `core/ai/identity/identity_baseline.*`、`persona_projector.*`（扩展现有类型和兼容入口）
 - 实现: `core/ai/identity/identity_types.*`、`personality_service.*`、`relationship_service.*`、`self_model_service.*`、`sqlite_identity_repository.*`
-- 修改: `core/ai/context/context_manager.*`、`core/configLoader/config_manager.*`
+- 修改: `core/ai/event/event_schema_registry.*`（freeze 前注册 `PersonalityChanged/v1`）
+- 修改: `core/ai/runtime/runtime_types.h`、`agent_runtime_services.*`、`agent_bootstrap.*`（组装服务并发布固定版本）
+- 修改: `core/ai/ai_brain.h`、`core/ai/ai_brain.cpp`、`core/ai/ai_brain_router.cpp`（当前会话实际消费 PersonaProjection）
+- 修改: `core/ai/context_builder.*`、`core/ai/context/context_manager.*`、`core/configLoader/config_manager.*`
+- 修改: `ui/petwindow.h`、`ui/petwindow.cpp`、`ui/petwindow_ai.cpp`（持有并注入 EmotionEngine adapter）
 - 修改: `config/default_common_config.json`、`config/default_common_config.example.json`
 - 修改: `CMakeLists.txt`
 - 测试: `tests/test_emotion_provider_contract.cpp`
@@ -231,6 +235,22 @@ PersonaProjector.project:
 - `project_whenSessionSnapshotIsValid_shouldMergeBaselineRelationshipAndBoundedSlots`（happy path）
 - `project_whenNullEmotionProviderUsed_shouldOmitEmotionPromptAndPrivateInternals`
 - `project_whenReminderPersonalityExists_shouldNotReadOrMutateReminderSettings`
+
+ConfigManager.getPersonalityPolicy:
+- `getPersonalityPolicy_whenConfigured_shouldReturnSanitizedLimits`（happy path）
+- `getPersonalityPolicy_whenMissing_shouldUseSafeDefaults`
+
+AgentRuntimeServices identity composition:
+- `start_whenIdentityDependenciesAreValid_shouldExposeServicesAndRegisterPersonalityEvent`（happy path）
+- `captureSnapshot_whenIdentityVersionsExist_shouldPinSubjectSpecificCommittedVersions`
+
+AIBrain Dialogue projection:
+- `buildBaseMessages_whenRuntimeSnapshotIsBound_shouldUseProjectedPersonaWithoutNumericEmotion`（happy path）
+
+**MVP 边界**:
+- Provider 只包装现有当前快照为 schema v1；真实与 Null `trajectory()` 均返回空，不扩展情绪存储。
+- 人格只实现确定性证据门槛、单窗口限幅、版本追加、一次 CAS 重算和 rollback 追加版本；不实现自适应阈值、可视化编辑器或自动调参。
+- 首版本机会话 subject 固定为 `owner`；保留 subjectId 隔离，不实现账户体系。
 
 ## Task 4: 现有 Daydream 编排、内心活动、日记与睡眠循环
 

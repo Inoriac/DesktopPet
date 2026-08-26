@@ -54,6 +54,7 @@
 #include "ai/tools/schedule_tools.h"
 #include "ai/tools/file_tools.h"
 #include "ai/tools/web_tools.h"
+#include "ai/integration/emotion_state_provider.h"
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
 
@@ -84,6 +85,7 @@ PetWindow::PetWindow(PetProfile profile,
     setupWindow();
     setupRenderViewport();
     setupEmotionSystem();
+    emotionStateProvider = std::make_unique<EmotionEngineStateProvider>(emotionEngine.get());
     setupContextMenu();
     setupWindowSnapping();
     setupDropAnimation();
