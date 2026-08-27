@@ -226,6 +226,11 @@ set(CORE_SOURCES
     core/animation/animation_crossfader.cpp
     core/animation/animation_crossfader.h
     core/ai/llm/llm_client.h
+    core/ai/llm/llm_stream_types.h
+    core/ai/llm/sse_event_parser.h
+    core/ai/llm/sse_event_parser.cpp
+    core/ai/llm/anthropic_messages_client.h
+    core/ai/llm/anthropic_messages_client.cpp
     core/ai/llm/openai_compatible_client.h
     core/ai/llm/openai_compatible_client.cpp
     core/ai/llm/llm_chat_service.h
@@ -630,6 +635,11 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/identity/persona_projector.h
     core/ai/identity/persona_projector.cpp
     core/ai/llm/llm_client.h
+    core/ai/llm/llm_stream_types.h
+    core/ai/llm/sse_event_parser.h
+    core/ai/llm/sse_event_parser.cpp
+    core/ai/llm/anthropic_messages_client.h
+    core/ai/llm/anthropic_messages_client.cpp
     core/ai/llm/openai_compatible_client.h
     core/ai/llm/openai_compatible_client.cpp
     core/ai/llm/llm_chat_service.h
@@ -824,6 +834,11 @@ add_desktop_pet_cpp_test(model_router_tests ModelRouterTests
         tests/test_model_router.cpp
         ${MODEL_ROUTING_SOURCES}
         core/ai/llm/llm_client.h
+        core/ai/llm/llm_stream_types.h
+        core/ai/llm/sse_event_parser.h
+        core/ai/llm/sse_event_parser.cpp
+        core/ai/llm/anthropic_messages_client.h
+        core/ai/llm/anthropic_messages_client.cpp
         core/ai/llm/openai_compatible_client.h
         core/ai/llm/openai_compatible_client.cpp
         core/ai/llm/llm_chat_service.h
@@ -1091,6 +1106,11 @@ add_desktop_pet_cpp_test(llm_tests LlmTests
         core/ai/llm/llm_chat_service.h
         core/ai/llm/llm_chat_service.cpp
         core/ai/llm/llm_client.h
+        core/ai/llm/llm_stream_types.h
+        core/ai/llm/sse_event_parser.h
+        core/ai/llm/sse_event_parser.cpp
+        core/ai/llm/anthropic_messages_client.h
+        core/ai/llm/anthropic_messages_client.cpp
         core/ai/llm/openai_compatible_client.h
         core/ai/llm/openai_compatible_client.cpp
         core/ai/context_builder.h
@@ -1125,6 +1145,30 @@ add_desktop_pet_cpp_test(llm_tests LlmTests
         Qt::Gui
         Qt::Network
         Qt::Sql
+        Qt::Test
+)
+
+# ---- Anthropic Messages SSE protocol tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(anthropic_messages_client_tests AnthropicMessagesClientTests
+    SOURCES
+        tests/test_anthropic_messages_client.cpp
+        core/ai/llm/llm_stream_types.h
+        core/ai/llm/sse_event_parser.h
+        core/ai/llm/sse_event_parser.cpp
+        core/ai/llm/anthropic_messages_client.h
+        core/ai/llm/anthropic_messages_client.cpp
+        core/ai/llm/llm_client.h
+        core/ai/llm/openai_compatible_client.h
+        core/ai/llm/openai_compatible_client.cpp
+        include/ai_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai/llm
+    LIBRARIES
+        Qt::Core
+        Qt::Network
         Qt::Test
 )
 

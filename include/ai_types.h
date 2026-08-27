@@ -61,6 +61,9 @@ struct LlmConfig {
     int retryCount = 1;
     int thinkIntervalMs = 30000;
 
+    QString anthropicVersion = "2023-06-01";
+    QJsonObject extraHeaders;
+
     // 为兼容不同网关保留扩展参数。
     QJsonObject extraParams;
 };
@@ -242,6 +245,7 @@ struct ChatMessage {
     QString name;       // 可选
     QString toolCallId; // tool 角色消息使用
     QJsonArray toolCalls; // assistant 角色在 function calling 场景下使用
+    QJsonArray transportBlocks; // provider 原生块，仅在当前请求链内续传
 };
 
 // LLM 返回的单个 tool_call
@@ -275,6 +279,7 @@ struct LlmResponse {
     QString finishReason;
     LlmUsage usage;
     QList<LlmToolCall> toolCalls;
+    QJsonArray transportBlocks;
 };
 
 struct ModelRequest {

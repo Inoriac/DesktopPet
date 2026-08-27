@@ -20,9 +20,20 @@ public:
                                  const QJsonArray& tools,
                                  LlmCompletionHandler callback) override;
 
+    std::shared_ptr<LlmRequestHandle> sendChatCompletionStreamAsync(
+        const LlmConfig& config,
+        const QList<ChatMessage>& messages,
+        const QJsonArray& tools,
+        LlmStreamObserver observer,
+        LlmCompletionHandler completion) override;
+
 private:
     QNetworkAccessManager m_network;
 
+    QNetworkReply* startChatCompletionRequest(const LlmConfig& config,
+                                              const QList<ChatMessage>& messages,
+                                              const QJsonArray& tools,
+                                              LlmCompletionHandler callback);
     static QJsonArray buildMessagesArray(const QList<ChatMessage>& messages);
     static QUrl buildCompletionsUrl(const QString& baseUrl);
     static bool parseResponseBody(const QByteArray& body,

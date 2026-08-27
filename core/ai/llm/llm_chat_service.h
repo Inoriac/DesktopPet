@@ -12,6 +12,7 @@
 #include <memory>
 
 #include "ai_types.h"
+#include "anthropic_messages_client.h"
 #include "openai_compatible_client.h"
 
 class LlmChatService {
@@ -31,8 +32,27 @@ public:
                                 LlmCompletionHandler callback,
                                 const QString& petName = "AI_GLOBAL");
 
+    std::shared_ptr<LlmRequestHandle> requestStreamAsync(
+        const QList<ChatMessage>& messages,
+        const QJsonArray& tools,
+        LlmStreamObserver observer,
+        LlmCompletionHandler completion,
+        const QString& petName = "AI_GLOBAL");
+
+    std::shared_ptr<LlmRequestHandle> requestStreamAsyncWithConfig(
+        const LlmConfig& cfg,
+        const QList<ChatMessage>& messages,
+        const QJsonArray& tools,
+        LlmStreamObserver observer,
+        LlmCompletionHandler completion,
+        const QString& petName = "AI_GLOBAL");
+
 private:
-    std::shared_ptr<LlmClient> m_client;
+    std::shared_ptr<LlmClient> clientForConfig(const LlmConfig& cfg) const;
+
+    std::shared_ptr<LlmClient> m_clientOverride;
+    std::shared_ptr<LlmClient> m_openAiClient;
+    std::shared_ptr<LlmClient> m_anthropicClient;
 };
 
 #endif // DESKTOP_PET_LLM_CHAT_SERVICE_H

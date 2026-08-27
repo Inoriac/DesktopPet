@@ -11,10 +11,28 @@
 #include "statistic_manager.h"
 
 LlmChatService::LlmChatService(std::shared_ptr<LlmClient> client)
-    : m_client(std::move(client)) {
-    if (!m_client) {
-        m_client = std::make_shared<OpenAICompatibleClient>();
+    : m_clientOverride(std::move(client)) {
+    if (!m_clientOverride) {
+        m_openAiClient = std::make_shared<OpenAICompatibleClient>();
+        m_anthropicClient = std::make_shared<AnthropicMessagesClient>();
     }
+}
+
+std::shared_ptr<LlmClient> LlmChatService::clientForConfig(const LlmConfig& cfg) const {
+    if (m_clientOverride) {
+        return m_clientOverride;
+    }
+    const QString provider = cfg.provider.trimmed().toLower();
+    if (provider == QStringLiteral("anthropic") ||
+        provider == QStringLiteral("anthropic-messages")) {
+        return m_anthropicClient;
+    }
+    if (provider.isEmpty() || provider == QStringLiteral("openai") ||
+        provider == QStringLiteral("openai-compatible") ||
+        provider == QStringLiteral("openai_compatible")) {
+        return m_openAiClient;
+    }
+    return {};
 }
 
 void LlmChatService::requestAsync(const QList<ChatMessage>& messages,
@@ -30,8 +48,9 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
                                             const QJsonArray& tools,
                                             LlmCompletionHandler callback,
                                             const QString& petName) {
-    if (!m_client) {
-        callback(false, {}, "LLM client is not initialized");
+    const auto selectedClient = clientForConfig(cfg);
+    if (!selectedClient) {
+        callback(false, {}, "LLM_PROVIDER_UNSUPPORTED: no client registered for provider");
         return;
     }
 
@@ -42,7 +61,7 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
 
     const int attempts = qMax(1, cfg.retryCount + 1);
     auto attemptIndex = std::make_shared<int>(0);
-    auto client = m_client;
+    auto client = selectedClient;
     auto retryInvoker = std::make_shared<std::function<void()>>();
     std::weak_ptr<std::function<void()>> weakRetryInvoker = retryInvoker;
 
@@ -75,4 +94,46 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
     };
 
     (*retryInvoker)();
+}
+
+std::shared_ptr<LlmRequestHandle> LlmChatService::requestStreamAsync(
+    const QList<ChatMessage>& messages,
+    const QJsonArray& tools,
+    LlmStreamObserver observer,
+    LlmCompletionHandler completion,
+    const QString& petName) {
+    return requestStreamAsyncWithConfig(ConfigManager::instance().getLlmConfig(),
+                                        messages, tools, std::move(observer),
+                                        std::move(completion), petName);
+}
+
+std::shared_ptr<LlmRequestHandle> LlmChatService::requestStreamAsyncWithConfig(
+    const LlmConfig& cfg,
+    const QList<ChatMessage>& messages,
+    const QJsonArray& tools,
+    LlmStreamObserver observer,
+    LlmCompletionHandler completion,
+    const QString& petName) {
+    const auto selectedClient = clientForConfig(cfg);
+    if (!selectedClient) {
+        auto handle = std::make_shared<llm_client_detail::LegacyRequestHandle>();
+        handle->terminal.store(true);
+        if (completion) {
+            completion(false, {}, QStringLiteral("LLM_PROVIDER_UNSUPPORTED: no client registered for provider"));
+        }
+        return handle;
+    }
+
+    return selectedClient->sendChatCompletionStreamAsync(
+        cfg, messages, tools, std::move(observer),
+        [completion = std::move(completion), petName]
+        (bool ok, LlmResponse response, QString error) mutable {
+            if (ok) {
+                const QString statsPetName = petName.isEmpty() ? QStringLiteral("AI_GLOBAL") : petName;
+                StatisticManager::getInstance().recordLlmUsage(statsPetName, response.usage);
+            }
+            if (completion) {
+                completion(ok, std::move(response), std::move(error));
+            }
+        });
 }

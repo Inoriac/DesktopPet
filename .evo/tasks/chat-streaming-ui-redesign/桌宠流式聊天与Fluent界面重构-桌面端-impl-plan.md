@@ -7,7 +7,7 @@
 ## Task 1: Anthropic Messages 流式客户端
 
 - **关联设计**: §3.2 Anthropic Messages 流式客户端
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 1
 - **依赖**: 无
 
@@ -42,6 +42,7 @@ AnthropicMessagesClient.sendChatCompletionStreamAsync:
 - `sendChatCompletionStreamAsync_whenBaseUrlHasRootV1OrMessages_shouldNormalizeOneEndpoint`
 - `sendChatCompletionStreamAsync_whenToolInputArrivesInFragments_shouldCompleteOneValidatedToolCall`
 - `sendChatCompletionStreamAsync_whenThinkingAndSignatureArrive_shouldKeepThemOutOfVisibleEvents`
+- `sendChatCompletionStreamAsync_whenContinuationHasTransportBlocks_shouldReplayExactAssistantBlocks`
 - `sendChatCompletionStreamAsync_whenMessageStopIsMissing_shouldFailExactlyOnce`
 
 LlmRequestHandle.cancel:

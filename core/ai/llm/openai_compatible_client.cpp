@@ -8,33 +8,153 @@
 #include <QJsonObject>
 #include <QNetworkReply>
 #include <QNetworkRequest>
+#include <QPointer>
+#include <QUuid>
 #include <QDebug>
+#include <atomic>
+#include <memory>
+#include <utility>
+
+namespace {
+
+struct OpenAiStreamState;
+
+class OpenAiRequestHandle final : public LlmRequestHandle {
+public:
+    explicit OpenAiRequestHandle(std::shared_ptr<OpenAiStreamState> state)
+        : m_state(std::move(state)) {}
+
+    void cancel() override;
+    bool isCancelled() const override;
+
+private:
+    std::shared_ptr<OpenAiStreamState> m_state;
+};
+
+struct OpenAiStreamState {
+    QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    QPointer<QNetworkReply> reply;
+    LlmStreamObserver observer;
+    LlmCompletionHandler completion;
+    std::atomic_bool cancelled{false};
+    std::atomic_bool terminal{false};
+
+    void complete(bool ok, LlmResponse response, QString error) {
+        if (terminal.exchange(true)) {
+            return;
+        }
+        auto callback = std::move(completion);
+        observer = {};
+        if (callback) {
+            callback(ok, std::move(response), std::move(error));
+        }
+    }
+
+    void cancel() {
+        if (terminal.load()) {
+            return;
+        }
+        cancelled.store(true);
+        if (reply) {
+            reply->abort();
+        }
+        complete(false, {}, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
+    }
+};
+
+void OpenAiRequestHandle::cancel() {
+    if (m_state) {
+        m_state->cancel();
+    }
+}
+
+bool OpenAiRequestHandle::isCancelled() const {
+    return m_state && m_state->cancelled.load();
+}
+
+QString redactSecret(QString message, const QString& secret) {
+    if (!secret.isEmpty()) {
+        message.replace(secret, QStringLiteral("[REDACTED]"), Qt::CaseSensitive);
+    }
+    return message;
+}
+
+} // namespace
 
 OpenAICompatibleClient::OpenAICompatibleClient() = default;
+
+std::shared_ptr<LlmRequestHandle> OpenAICompatibleClient::sendChatCompletionStreamAsync(
+    const LlmConfig& config,
+    const QList<ChatMessage>& messages,
+    const QJsonArray& tools,
+    LlmStreamObserver observer,
+    LlmCompletionHandler completion) {
+    auto state = std::make_shared<OpenAiStreamState>();
+    state->observer = std::move(observer);
+    state->completion = std::move(completion);
+    auto handle = std::make_shared<OpenAiRequestHandle>(state);
+
+    if (state->observer) {
+        state->observer({LlmStreamEventType::Started, state->requestId,
+                         ChatActivityStage::WaitingForModel, {}});
+    }
+    state->reply = startChatCompletionRequest(
+        config, messages, tools,
+        [state](bool ok, LlmResponse response, QString error) mutable {
+            if (state->terminal.load()) {
+                return;
+            }
+            if (state->cancelled.load()) {
+                state->complete(false, {}, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
+                return;
+            }
+            if (ok && state->observer && !response.content.isEmpty()) {
+                state->observer({LlmStreamEventType::StageChanged, state->requestId,
+                                 ChatActivityStage::StreamingText, {}});
+                state->observer({LlmStreamEventType::TextDelta, state->requestId,
+                                 ChatActivityStage::StreamingText, response.content});
+            }
+            state->complete(ok, std::move(response), std::move(error));
+        });
+    return handle;
+}
 
 // 发送异步请求，回调在 Qt 事件循环中触发，统一返回成功结果或错误
 void OpenAICompatibleClient::sendChatCompletionAsync(const LlmConfig& config,
                                                      const QList<ChatMessage>& messages,
                                                      const QJsonArray& tools,
                                                      LlmCompletionHandler callback) {
+    startChatCompletionRequest(config, messages, tools, std::move(callback));
+}
+
+QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
+    const LlmConfig& config,
+    const QList<ChatMessage>& messages,
+    const QJsonArray& tools,
+    LlmCompletionHandler callback) {
+    const auto fail = [&callback](const QString& error) {
+        if (callback) {
+            callback(false, {}, error);
+        }
+    };
     if (!config.enabled) {
-        callback(false, {}, "LLM is disabled in config");
-        return;
+        fail(QStringLiteral("LLM is disabled in config"));
+        return nullptr;
     }
 
     if (config.baseUrl.trimmed().isEmpty()) {
-        callback(false, {}, "LLM baseUrl is empty");
-        return;
+        fail(QStringLiteral("LLM baseUrl is empty"));
+        return nullptr;
     }
 
     if (config.apiKey.trimmed().isEmpty()) {
-        callback(false, {}, "LLM apiKey is empty");
-        return;
+        fail(QStringLiteral("LLM apiKey is empty"));
+        return nullptr;
     }
 
     if (config.model.trimmed().isEmpty()) {
-        callback(false, {}, "LLM model is empty");
-        return;
+        fail(QStringLiteral("LLM model is empty"));
+        return nullptr;
     }
 
     QNetworkRequest request(buildCompletionsUrl(config.baseUrl));
@@ -68,20 +188,20 @@ void OpenAICompatibleClient::sendChatCompletionAsync(const LlmConfig& config,
 
     QNetworkReply* reply = m_network.post(request, body);
 
-    QObject::connect(reply, &QNetworkReply::finished, reply, [reply, callback = std::move(callback)]() mutable {
-        const QByteArray responseBytes = reply->readAll();
+    QObject::connect(reply, &QNetworkReply::finished, reply,
+                     [reply, apiKey = config.apiKey, callback = std::move(callback)]() mutable {
+        const QByteArray responseBytes = reply->isOpen() ? reply->readAll() : QByteArray{};
         const QNetworkReply::NetworkError networkError = reply->error();
 
         if (networkError != QNetworkReply::NoError) {
-            QString errorMessage = QString("Network error (%1): %2")
-                                       .arg(static_cast<int>(networkError))
-                                       .arg(reply->errorString());
-
-            if (!responseBytes.isEmpty()) {
-                errorMessage += QString(" | Response: %1").arg(QString::fromUtf8(responseBytes));
+            const QString errorMessage = redactSecret(
+                QStringLiteral("Network error (%1): %2")
+                    .arg(static_cast<int>(networkError))
+                    .arg(reply->errorString()),
+                apiKey);
+            if (callback) {
+                callback(false, {}, errorMessage);
             }
-
-            callback(false, {}, errorMessage);
             reply->deleteLater();
             return;
         }
@@ -89,9 +209,12 @@ void OpenAICompatibleClient::sendChatCompletionAsync(const LlmConfig& config,
         LlmResponse response;
         QString parseError;
         const bool ok = parseResponseBody(responseBytes, response, parseError);
-        callback(ok, std::move(response), parseError);
+        if (callback) {
+            callback(ok, std::move(response), redactSecret(parseError, apiKey));
+        }
         reply->deleteLater();
     });
+    return reply;
 }
 
 QJsonArray OpenAICompatibleClient::buildMessagesArray(const QList<ChatMessage>& messages) {

@@ -87,6 +87,15 @@ struct LlmStreamEvent {
     QString textDelta;
 };
 
+struct ChatMessage {
+    QString role;
+    QString content;
+    QString name;
+    QString toolCallId;
+    QJsonArray toolCalls;
+    QJsonArray transportBlocks; // 仅当前 provider 请求链内使用
+};
+
 struct ChatHistoryEntry {
     QString id;
     QString role;       // user / assistant / system
@@ -97,7 +106,7 @@ struct ChatHistoryEntry {
 };
 ```
 
-`LlmResponse` 新增仅在当前工具轮次内存在的 Anthropic transport blocks，用于原样回传 extended-thinking 签名块和 `tool_use` 块。该字段不进入 `AiCallLogger`、聊天历史、长期记忆或 UI 信号。
+`LlmResponse::transportBlocks` 保存当前 Anthropic 响应按原顺序完成的 provider-native content blocks；§3.3 将其原样赋给下一轮 assistant `ChatMessage::transportBlocks`。该字段只在当前工具请求链内存在，不进入 `AiCallLogger`、聊天历史、长期记忆或 UI 信号。Anthropic adapter 遇到非空 `transportBlocks` 时必须原样回传，不能从可见正文和工具调用重新拼装，以保留 extended-thinking 签名和块顺序。
 
 ### 1.5 全局异常与重试策略
 
@@ -315,11 +324,11 @@ sequenceDiagram
     X-->>C: completion(ok, LlmResponse) exactly once
 ```
 
-内容块累计规则：`text_delta` 同时追加到 response content 并发布 `TextDelta`；`input_json_delta` 只追加到当前 `tool_use` 缓冲；块结束时解析为 JSON object，失败则整次响应按协议错误收口。`thinking` 与 `signature` 块可保留在 transport state 以便工具续写，但不发布可见 delta。
+内容块累计规则：`text_delta` 同时追加到 response content、当前 text transport block 并发布 `TextDelta`；`input_json_delta` 只追加到当前 `tool_use` 缓冲；块结束时解析为 JSON object，失败则整次响应按协议错误收口。所有完成块按 index 原序写入 response transport state，以便工具续写；`thinking` 与 `signature` 不发布可见 delta。
 
 #### 3.2.4 数据变更
 
-N/A — 本模块不涉及持久化数据写入。请求累计器、工具 JSON 碎片和 transport blocks 均为单请求内存状态，在 completion 或 cancel 后释放。
+N/A — 本模块不涉及持久化数据写入。请求累计器和工具 JSON 碎片在 completion 或 cancel 后释放；transport blocks 最多存活到同一工具请求链结束，且禁止进入日志、历史或长期记忆。
 
 #### 3.2.5 实现锚点
 
@@ -328,6 +337,7 @@ N/A — 本模块不涉及持久化数据写入。请求累计器、工具 JSON 
 | `OpenAICompatibleClient::sendChatCompletionAsync` | `(LlmConfig, QList<ChatMessage>, QJsonArray, LlmCompletionHandler)` | 保留其完成回调语义，增加流式入口适配 |
 | `OpenAICompatibleClient::buildMessagesArray` | `ChatMessage -> role/content/name/tool_calls/tool_call_id` | Anthropic 转换单独实现，不复用 OpenAI payload |
 | `LlmResponse::toolCalls` | `QList<LlmToolCall>` | `tool_use` 块完成后填入，不提前暴露半成品 |
+| `ChatMessage::transportBlocks` / `LlmResponse::transportBlocks` | `QJsonArray`，provider-native content blocks | 响应按 block index 原序保存；续写优先原样回传，禁止与合成块重复 |
 | `LlmUsage` | prompt/completion/total/reasoning/cache 字段 | message_start/message_delta 的 usage 增量合并，未提供字段保持 0 |
 
 工具 schema 消歧：输入为 `{"type":"function","function":{"name","description","parameters"}}`，Anthropic 输出为 `{"name","description","input_schema"}`。`ChatMessage::toolCalls[].function.arguments` 为 JSON 字符串，转换时必须解析为 `tool_use.input` object。
@@ -347,6 +357,7 @@ N/A — 本模块不涉及持久化数据写入。请求累计器、工具 JSON 
 - `SseEventParser::finish`：当最后事件没有尾随空行但行结构完整时，finish 发布该事件并清空缓冲；存在未完成行时返回 framing 失败。
 - `AnthropicMessagesClient::sendChatCompletionStreamAsync`：正常文本请求会构建标准 headers/body，每个 `text_delta` 按原顺序发布，`message_stop` 后 completion 返回内容与 usage 完整的 `LlmResponse`。
 - `AnthropicMessagesClient::sendChatCompletionStreamAsync`：包含 tool_use 的响应在多个 `input_json_delta` 后生成一个参数完整的 `LlmToolCall`，thinking/signature 只进入 transport blocks，可见正文不包含其内容。
+- `AnthropicMessagesClient::sendChatCompletionStreamAsync`：将上一轮 response transport blocks 放入 assistant `ChatMessage` 后续写时，请求体按原顺序只包含一份对应 blocks，thinking 签名、text 与 `tool_use` 均不丢失或重复。
 - `LlmRequestHandle::cancel`：正在读取的 reply 被 abort，completion 只收到一次 cancel 错误，之后的 `readyRead/finished` 不再发布事件。
 
 ### 3.3 对话流式编排
@@ -430,7 +441,7 @@ signals:
 3. NeedLLM 通过 `completeStreamAsync` 进入选中 route。ModelRouter 记录当前 attempt 是否已发布非空 TextDelta。
 4. attempt 在首字前失败时可打开熔断并转下一 route；首字后失败时立即返回 `MODEL_STREAM_INTERRUPTED`，不重放上下文。
 5. AIBrain 对每个 TextDelta 先追加到 active visible content，再发布 UI delta。序列号/request generation 不匹配的回调丢弃。
-6. response 无工具或达到最大轮次时完成；有工具时将当轮 assistant 消息（包括 transport blocks）追加到 working messages，发布 PreparingTool/RunningTool，执行并追加 tool result。
+6. response 无工具或达到最大轮次时完成；有工具时将当轮 assistant 消息追加到 working messages，并把 `response.transportBlocks` 原样赋给该消息的 `transportBlocks`，再发布 PreparingTool/RunningTool、执行并追加 tool result。
 7. 工具结果就绪后发布 Finalizing，以同一 active response 进入下一轮 `thinkInternal`。所有轮次正文按到达顺序累计，不插入人工换行。
 8. Complete/Interrupted/Stopped/Failed 通过单一 `finishActiveResponse` 收口：追加最终 runtime event/记忆，发布 finished，清理 handle 和 busy 状态。旧 `assistantResponseReady` 仅在 Complete 后以整条可见正文发出，用于语音与兼容订阅者，UI 历史不再订阅它。
 
