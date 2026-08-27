@@ -1,6 +1,7 @@
 #ifndef DESKTOP_PET_LLM_STREAM_TYPES_H
 #define DESKTOP_PET_LLM_STREAM_TYPES_H
 
+#include <QMetaType>
 #include <QString>
 #include <functional>
 
