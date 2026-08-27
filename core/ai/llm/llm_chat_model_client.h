@@ -15,6 +15,14 @@ public:
                       LlmCompletionHandler callback,
                       const QString& petName) override;
 
+    std::shared_ptr<LlmRequestHandle> completeOnceStream(
+        const ModelRouteConfig& route,
+        const QList<ChatMessage>& messages,
+        const QJsonArray& tools,
+        LlmStreamObserver observer,
+        LlmCompletionHandler completion,
+        const QString& petName) override;
+
 private:
     LlmChatService* m_service = nullptr;
 };

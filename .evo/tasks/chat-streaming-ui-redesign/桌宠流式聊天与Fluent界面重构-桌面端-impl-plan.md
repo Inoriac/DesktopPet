@@ -57,7 +57,7 @@ OpenAICompatibleClient.sendChatCompletionStreamAsync:
 ## Task 2: 对话流式编排
 
 - **关联设计**: §3.3 对话流式编排
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 2
 - **依赖**: Task 1
 
@@ -66,6 +66,7 @@ OpenAICompatibleClient.sendChatCompletionStreamAsync:
 - 实现: `core/ai/model/model_router.cpp`
 - 实现: `core/ai/llm/llm_chat_model_client.h`
 - 实现: `core/ai/llm/llm_chat_model_client.cpp`
+- 实现: `core/ai/llm/llm_stream_types.h`（共享 `ChatMessageStatus` 归属修正）
 - 实现: `core/ai/ai_brain.h`
 - 实现: `core/ai/ai_brain.cpp`
 - 实现: `core/ai/ai_brain_loop.cpp`

@@ -870,6 +870,28 @@ add_desktop_pet_cpp_test(model_router_tests ModelRouterTests
         Qt::Test
 )
 
+# ---- Dialogue streaming orchestration tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(streaming_dialogue_tests StreamingDialogueTests
+    SOURCES
+        tests/test_streaming_dialogue.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
+)
+
 add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests
     SOURCES
         tests/test_statistic_manager.cpp

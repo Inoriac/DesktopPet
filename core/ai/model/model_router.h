@@ -22,6 +22,14 @@ public:
                               const QJsonArray& tools,
                               LlmCompletionHandler callback,
                               const QString& petName) = 0;
+
+    virtual std::shared_ptr<LlmRequestHandle> completeOnceStream(
+        const ModelRouteConfig& route,
+        const QList<ChatMessage>& messages,
+        const QJsonArray& tools,
+        LlmStreamObserver observer,
+        LlmCompletionHandler completion,
+        const QString& petName);
 };
 
 class ModelRouter {
@@ -32,6 +40,10 @@ public:
 
     void completeAsync(const ModelRequest& request,
                        ModelCompletionHandler callback);
+    std::shared_ptr<LlmRequestHandle> completeStreamAsync(
+        const ModelRequest& request,
+        LlmStreamObserver observer,
+        ModelCompletionHandler completion);
     Result<ModelRouteConfig, DomainError> resolve(
         ModelRole role, const ModelConstraints& constraints) const;
 
@@ -42,6 +54,8 @@ private:
                       int routeIndex,
                       QList<ChatMessage> messages,
                       bool repairAttempt);
+    void attemptStreamRoute(const std::shared_ptr<CompletionState>& state,
+                            int routeIndex);
     bool routeMeetsConstraints(const ModelRouteConfig& route,
                                const ModelLimits& limits,
                                const ModelConstraints& constraints) const;

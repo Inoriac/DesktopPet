@@ -21,7 +21,15 @@
 #include "tools/environment_tools.h"
 
 AIBrain::AIBrain(QObject* parent)
-    : QObject(parent) {
+    : AIBrain(nullptr, configuredModelRoles(), parent) {}
+
+AIBrain::AIBrain(ModelCompletionClient* modelClient,
+                 QList<ModelRoleConfig> modelRoles,
+                 QObject* parent)
+    : QObject(parent)
+    , m_modelRoleRegistry(std::move(modelRoles))
+    , m_modelRouter(&m_modelRoleRegistry,
+                    modelClient ? modelClient : &m_modelClient) {
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
@@ -54,6 +62,7 @@ Result<void, DomainError> AIBrain::initializeStorage(
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
+    stopCurrentResponse();
     ++m_requestGeneration;
     m_toolRuntime.cancelPendingConfirmations(QStringLiteral("runtime services changed"));
     m_pendingToolConfirmations.clear();
@@ -78,6 +87,7 @@ void AIBrain::setPetName(const QString& petName) {
 
 void AIBrain::setToolRegistry(ToolRegistry* registry) {
     if (m_toolRegistry != registry) {
+        stopCurrentResponse();
         ++m_requestGeneration;
         m_pendingToolConfirmations.clear();
         m_runtimeSessions.clear();
@@ -143,6 +153,7 @@ void AIBrain::stop() {
     if (m_daydreamRunning) {
         cancelDaydreamSession(QStringLiteral("AI brain stopped"));
     }
+    stopCurrentResponse();
     ++m_requestGeneration;
     m_running = false;
     m_idleTriggerTimer.stop();
@@ -156,7 +167,8 @@ void AIBrain::stop() {
 }
 
 void AIBrain::triggerThink(const QString& reason,
-                           const QString& triggerTag) {
+                           const QString& triggerTag,
+                           const QString& replyToId) {
     const bool userInitiated = triggerTag == QLatin1String("manual")
         || triggerTag == QLatin1String("user_request")
         || triggerTag == QLatin1String("touch_event");
@@ -187,6 +199,10 @@ void AIBrain::triggerThink(const QString& reason,
 
     processUserMemoryWrite(reason, triggerTag);
 
+    emit thinkingStarted(reason);
+    m_busy = true;
+    beginActiveResponse(replyToId, triggerTag, sessionId);
+
     if (shouldUseLocalRouter(triggerTag)
         && tryHandleRoutedIntent(reason, triggerTag, sessionId)) {
         return;
@@ -194,13 +210,96 @@ void AIBrain::triggerThink(const QString& reason,
 
     QList<ChatMessage> base = buildBaseMessages(reason, triggerTag, sessionId);
     if (base.isEmpty()) {
-        finishRuntimeSession(sessionId);
+        finishActiveResponse(ChatMessageStatus::Failed,
+                             QStringLiteral("Unable to build model context"));
         return;
     }
-
-    emit thinkingStarted(reason);
-    m_busy = true;
     thinkInternal(reason, triggerTag, sessionId, 0, base);
+}
+
+void AIBrain::beginActiveResponse(const QString& replyToId,
+                                  const QString& triggerTag,
+                                  const QString& sessionId) {
+    ActiveDialogueResponse response;
+    response.messageId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    response.replyToId = replyToId;
+    response.triggerTag = triggerTag;
+    response.sessionId = sessionId;
+    response.generation = m_requestGeneration;
+    m_activeDialogueResponse.emplace(std::move(response));
+    emit assistantResponseStarted(m_activeDialogueResponse->messageId,
+                                  m_activeDialogueResponse->replyToId,
+                                  m_activeDialogueResponse->triggerTag);
+    emit assistantResponseStageChanged(m_activeDialogueResponse->messageId,
+                                       ChatActivityStage::WaitingForModel);
+}
+
+void AIBrain::publishActiveStage(ChatActivityStage stage) {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal
+        || m_activeDialogueResponse->stage == stage) {
+        return;
+    }
+    m_activeDialogueResponse->stage = stage;
+    emit assistantResponseStageChanged(m_activeDialogueResponse->messageId, stage);
+}
+
+void AIBrain::appendActiveDelta(const QString& textDelta) {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal
+        || textDelta.isEmpty()) {
+        return;
+    }
+    m_activeDialogueResponse->visibleContent += textDelta;
+    m_activeDialogueResponse->status = ChatMessageStatus::Streaming;
+    publishActiveStage(ChatActivityStage::StreamingText);
+    emit assistantResponseDelta(m_activeDialogueResponse->messageId, textDelta);
+}
+
+void AIBrain::finishActiveResponse(ChatMessageStatus status,
+                                   const QString& errorMessage) {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    m_activeDialogueResponse->terminal = true;
+    m_activeDialogueResponse->status = status;
+    ActiveDialogueResponse finished = std::move(*m_activeDialogueResponse);
+    finished.requestHandle.reset();
+    m_activeDialogueResponse.reset();
+
+    if (status == ChatMessageStatus::Complete
+        && !finished.visibleContent.isEmpty()) {
+        appendRuntimeEvent(
+            QStringLiteral("AssistantResponseProduced"), finished.sessionId,
+            {{QStringLiteral("text"), finished.visibleContent},
+             {QStringLiteral("triggerTag"), finished.triggerTag},
+             {QStringLiteral("modelRole"), QStringLiteral("dialogue")}});
+        ChatMessage assistantMessage;
+        assistantMessage.role = QStringLiteral("assistant");
+        assistantMessage.content = finished.visibleContent;
+        appendToMemory(assistantMessage);
+    }
+
+    finishRuntimeSession(finished.sessionId);
+    m_busy = false;
+    if (status == ChatMessageStatus::Complete
+        && !finished.visibleContent.isEmpty()) {
+        emit assistantResponseReady(finished.visibleContent);
+        if (finished.triggerTag == QLatin1String("proactive_chat")) {
+            emit proactiveResponseReady(finished.visibleContent);
+        }
+    }
+    emit thinkingFinished(status == ChatMessageStatus::Complete, errorMessage);
+    emit assistantResponseFinished(finished.messageId, status, errorMessage);
+}
+
+void AIBrain::stopCurrentResponse() {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    ++m_requestGeneration;
+    if (m_activeDialogueResponse->requestHandle) {
+        m_activeDialogueResponse->requestHandle->cancel();
+    }
+    m_toolRuntime.cancelPendingConfirmations(
+        QStringLiteral("LLM_REQUEST_CANCELLED"));
+    m_pendingToolConfirmations.clear();
+    finishActiveResponse(ChatMessageStatus::Stopped,
+                         QStringLiteral("LLM_REQUEST_CANCELLED"));
 }
 
 QString AIBrain::beginRuntimeSession(const QString& reason,

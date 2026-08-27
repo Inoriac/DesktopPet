@@ -12,6 +12,15 @@ enum class ChatActivityStage {
     Finalizing
 };
 
+enum class ChatMessageStatus {
+    Pending,
+    Streaming,
+    Complete,
+    Interrupted,
+    Stopped,
+    Failed
+};
+
 enum class LlmStreamEventType {
     Started,
     StageChanged,
@@ -33,5 +42,7 @@ public:
 };
 
 using LlmStreamObserver = std::function<void(const LlmStreamEvent&)>;
+
+Q_DECLARE_METATYPE(ChatMessageStatus)
 
 #endif // DESKTOP_PET_LLM_STREAM_TYPES_H

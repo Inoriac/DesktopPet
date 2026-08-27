@@ -51,6 +51,9 @@ public:
     using EmotionSnapshotProvider = std::function<std::optional<EmotionSnapshot>()>;
 
     explicit AIBrain(QObject* parent = nullptr);
+    AIBrain(ModelCompletionClient* modelClient,
+            QList<ModelRoleConfig> modelRoles,
+            QObject* parent = nullptr);
 
     Result<void, DomainError> initializeStorage(const AIBrainStorageConfig& config);
     bool isStorageInitialized() const { return m_storageInitialized; }
@@ -83,7 +86,9 @@ public:
     void stop();
 
     void triggerThink(const QString& reason = "manual",
-                      const QString& triggerTag = "manual");
+                      const QString& triggerTag = "manual",
+                      const QString& replyToId = {});
+    void stopCurrentResponse();
     void onUserInteraction(const QString& eventName, const QString& detail = QString());
 
     void clearMemory();
@@ -103,6 +108,16 @@ signals:
     void thinkingFinished(bool success, const QString& errorMessage);
     void assistantResponseReady(const QString& content);
     void proactiveResponseReady(const QString& content);
+    void assistantResponseStarted(const QString& messageId,
+                                  const QString& replyToId,
+                                  const QString& triggerTag);
+    void assistantResponseStageChanged(const QString& messageId,
+                                       ChatActivityStage stage);
+    void assistantResponseDelta(const QString& messageId,
+                                const QString& textDelta);
+    void assistantResponseFinished(const QString& messageId,
+                                   ChatMessageStatus status,
+                                   const QString& errorMessage);
     void toolExecuted(const QString& toolName, bool success, const QString& payload);
     void toolConfirmationRequired(const QString& requestId,
                                   const QString& toolName,
@@ -149,6 +164,13 @@ private:
     void finishRuntimeSession(const QString& sessionId);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
+    void beginActiveResponse(const QString& replyToId,
+                             const QString& triggerTag,
+                             const QString& sessionId);
+    void publishActiveStage(ChatActivityStage stage);
+    void appendActiveDelta(const QString& textDelta);
+    void finishActiveResponse(ChatMessageStatus status,
+                              const QString& errorMessage = {});
     // Daydream: snapshot batches are decided asynchronously, then committed once.
     void checkDaydreamTrigger();
     void runDaydreamSession();
@@ -175,7 +197,7 @@ private:
     LlmChatService m_chatService;
     ModelRoleRegistry m_modelRoleRegistry{configuredModelRoles()};
     LlmChatModelClient m_modelClient{&m_chatService};
-    ModelRouter m_modelRouter{&m_modelRoleRegistry, &m_modelClient};
+    ModelRouter m_modelRouter;
     IntentRouter m_intentRouter;
     ToolRuntime m_toolRuntime;
     MemoryStore m_memoryStore;
@@ -213,6 +235,20 @@ private:
     bool m_busy = false;
     bool m_idleRetryScheduled = false;
     quint64 m_requestGeneration = 0;
+
+    struct ActiveDialogueResponse {
+        QString messageId;
+        QString replyToId;
+        QString triggerTag;
+        QString sessionId;
+        QString visibleContent;
+        ChatMessageStatus status = ChatMessageStatus::Pending;
+        ChatActivityStage stage = ChatActivityStage::WaitingForModel;
+        quint64 generation = 0;
+        std::shared_ptr<LlmRequestHandle> requestHandle;
+        bool terminal = false;
+    };
+    std::optional<ActiveDialogueResponse> m_activeDialogueResponse;
 
     int m_maxToolRounds = 3;
     int m_maxMemoryMessages = 20;

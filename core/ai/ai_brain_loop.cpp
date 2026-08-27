@@ -101,9 +101,11 @@ void AIBrain::thinkInternal(const QString& reason,
                             const QString& sessionId,
                             int toolRound,
                             const QList<ChatMessage>& workingMessages) {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     const QJsonArray tools = m_toolRegistry ? m_toolRegistry->allToolSchemas() : QJsonArray{};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
+    const QString activeMessageId = m_activeDialogueResponse->messageId;
     const qint64 requestedAtMs = QDateTime::currentMSecsSinceEpoch();
     const QPointer<AIBrain> guard(this);
 
@@ -119,21 +121,39 @@ void AIBrain::thinkInternal(const QString& reason,
         modelRequest.profileId = session->runtimeSnapshot()->profileId;
     }
 
-    m_callLogger.logRequest(requestId,
-                            m_petName,
-                            reason,
-                            triggerTag,
-                            toolRound,
-                            workingMessages,
-                            tools);
+    QList<ChatMessage> loggedMessages = workingMessages;
+    for (ChatMessage& message : loggedMessages) {
+        message.transportBlocks = {};
+        message.toolCalls = {};
+    }
+    m_callLogger.logRequest(requestId, m_petName, reason, triggerTag, toolRound,
+                            loggedMessages, tools);
 
-    m_modelRouter.completeAsync(modelRequest,
-        [this, guard, requestGeneration, requestId, requestedAtMs,
-         reason, triggerTag, sessionId, toolRound, workingMessages]
-        (Result<ModelCompletion, DomainError> modelResult) mutable {
-            if (!guard || requestGeneration != m_requestGeneration) {
-                return;
+    auto roundVisibleContent = std::make_shared<QString>();
+    const auto isCurrent = [this, guard, requestGeneration, activeMessageId]() {
+        return guard && requestGeneration == m_requestGeneration
+            && m_activeDialogueResponse
+            && !m_activeDialogueResponse->terminal
+            && m_activeDialogueResponse->messageId == activeMessageId;
+    };
+
+    auto requestHandle = m_modelRouter.completeStreamAsync(
+        modelRequest,
+        [this, isCurrent, roundVisibleContent](const LlmStreamEvent& event) {
+            if (!isCurrent()) return;
+            if (event.type == LlmStreamEventType::StageChanged) {
+                publishActiveStage(event.stage);
+            } else if (event.type == LlmStreamEventType::TextDelta
+                       && !event.textDelta.isEmpty()) {
+                *roundVisibleContent += event.textDelta;
+                appendActiveDelta(event.textDelta);
             }
+        },
+        [this, guard, isCurrent, requestGeneration, requestId, requestedAtMs,
+         reason, triggerTag, sessionId, toolRound, workingMessages,
+         roundVisibleContent, activeMessageId]
+        (Result<ModelCompletion, DomainError> modelResult) mutable {
+            if (!isCurrent()) return;
             const bool ok = modelResult.isOk();
             LlmResponse response;
             LlmCallDimensions dimensions;
@@ -153,11 +173,13 @@ void AIBrain::thinkInternal(const QString& reason,
                 dimensions.routeId = modelResult.error().details
                                          .value(QStringLiteral("routeId")).toString();
             }
-            m_callLogger.logResponse(requestId,
-                                     m_petName,
-                                     ok,
-                                     response,
-                                     error);
+            LlmResponse loggedResponse = response;
+            loggedResponse.reasoningContent.clear();
+            loggedResponse.transportBlocks = {};
+            for (LlmToolCall& call : loggedResponse.toolCalls) {
+                call.arguments = {};
+            }
+            m_callLogger.logResponse(requestId, m_petName, ok, loggedResponse, error);
 
             QJsonObject modelEvent{
                 {QStringLiteral("role"), QStringLiteral("dialogue")},
@@ -176,36 +198,37 @@ void AIBrain::thinkInternal(const QString& reason,
             appendRuntimeEvent(QStringLiteral("ModelCallCompleted"), sessionId, modelEvent);
 
             if (!ok) {
-                finishRuntimeSession(sessionId);
-                m_busy = false;
-                emit thinkingFinished(false, error);
+                const ChatMessageStatus status = m_activeDialogueResponse
+                        && !m_activeDialogueResponse->visibleContent.isEmpty()
+                    ? ChatMessageStatus::Interrupted
+                    : ChatMessageStatus::Failed;
+                finishActiveResponse(status, error);
                 if (m_running) {
                     scheduleTrigger(triggerTag);
                 }
                 return;
             }
 
+            if (roundVisibleContent->isEmpty() && !response.content.isEmpty()) {
+                appendActiveDelta(response.content);
+                *roundVisibleContent = response.content;
+            }
+
             ChatMessage assistantMessage;
-            assistantMessage.role = "assistant";
+            assistantMessage.role = QStringLiteral("assistant");
             assistantMessage.content = response.content;
+            assistantMessage.transportBlocks = response.transportBlocks;
 
             if (response.toolCalls.isEmpty() || !m_toolRegistry || toolRound >= m_maxToolRounds) {
-                appendToMemory(assistantMessage);
-                if (!response.content.isEmpty()) {
-                    appendRuntimeEvent(
-                        QStringLiteral("AssistantResponseProduced"), sessionId,
-                        {{QStringLiteral("text"), response.content},
-                         {QStringLiteral("triggerTag"), triggerTag},
-                         {QStringLiteral("modelRole"), QStringLiteral("dialogue")}});
-                    emit assistantResponseReady(response.content);
-                    if (triggerTag == "proactive_chat") {
-                        emit proactiveResponseReady(response.content);
-                    }
+                if (!response.toolCalls.isEmpty() && toolRound >= m_maxToolRounds
+                    && (!m_activeDialogueResponse
+                        || m_activeDialogueResponse->visibleContent.isEmpty())) {
+                    finishActiveResponse(ChatMessageStatus::Failed,
+                                         QStringLiteral("Maximum tool rounds reached"));
+                    return;
                 }
-
-                finishRuntimeSession(sessionId);
-                m_busy = false;
-                emit thinkingFinished(true, {});
+                publishActiveStage(ChatActivityStage::Finalizing);
+                finishActiveResponse(ChatMessageStatus::Complete);
                 if (m_running) {
                     scheduleTrigger(triggerTag);
                 }
@@ -216,6 +239,7 @@ void AIBrain::thinkInternal(const QString& reason,
             QList<ChatMessage> nextMessages = workingMessages;
             nextMessages.append(assistantMessage);
             const int assistantIndex = nextMessages.size() - 1;
+            publishActiveStage(ChatActivityStage::PreparingTool);
 
             for (const LlmToolCall& call : response.toolCalls) {
                 QJsonObject functionObj;
@@ -261,6 +285,7 @@ void AIBrain::thinkInternal(const QString& reason,
                 executionRequest.toolName = call.name;
                 executionRequest.arguments = call.arguments;
                 executionRequest.policyContext = buildToolPolicyContext(triggerTag, reason, true);
+                publishActiveStage(ChatActivityStage::RunningTool);
                 const ToolExecutionOutcome outcome = m_toolRuntime.execute(executionRequest);
                 if (outcome.policyDecision.needsConfirmation()) {
                     if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
@@ -270,8 +295,14 @@ void AIBrain::thinkInternal(const QString& reason,
                     m_pendingToolConfirmations.insert(
                         confirmationId,
                         [this, confirmationId, call, reason, triggerTag, sessionId,
-                         toolRound, nextMessages]
+                         toolRound, nextMessages, requestGeneration, activeMessageId]
                         (bool approved) mutable {
+                            if (requestGeneration != m_requestGeneration
+                                || !m_activeDialogueResponse
+                                || m_activeDialogueResponse->terminal
+                                || m_activeDialogueResponse->messageId != activeMessageId) {
+                                return;
+                            }
                             const ToolExecutionOutcome resolved =
                                 m_toolRuntime.resolveConfirmation(confirmationId, approved);
                             const QString resolvedPayload =
@@ -287,6 +318,7 @@ void AIBrain::thinkInternal(const QString& reason,
                             nextMessages.append(toolMessage);
                             appendToMemory(toolMessage);
                             emit toolExecuted(call.name, resolved.result.success, resolvedPayload);
+                            publishActiveStage(ChatActivityStage::Finalizing);
                             thinkInternal(reason, triggerTag, sessionId,
                                           toolRound + 1, nextMessages);
                         });
@@ -319,8 +351,14 @@ void AIBrain::thinkInternal(const QString& reason,
             if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
                 nextMessages[assistantIndex].toolCalls = assistantToolCalls;
             }
+            publishActiveStage(ChatActivityStage::Finalizing);
             thinkInternal(reason, triggerTag, sessionId, toolRound + 1, nextMessages);
         });
+    if (m_activeDialogueResponse && !m_activeDialogueResponse->terminal
+        && m_activeDialogueResponse->messageId == activeMessageId
+        && requestGeneration == m_requestGeneration) {
+        m_activeDialogueResponse->requestHandle = std::move(requestHandle);
+    }
 }
 
 void AIBrain::setupTriggerTimers() {

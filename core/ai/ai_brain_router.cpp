@@ -25,32 +25,20 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         return false;
     }
 
-    emit thinkingStarted(reason);
-    m_busy = true;
-
     if (route.type == IntentRouteType::DirectReply
         || route.type == IntentRouteType::NeedClarification
         || route.type == IntentRouteType::Rejected) {
-        if (!route.reply.isEmpty()) {
-            appendRuntimeEvent(
-                QStringLiteral("AssistantResponseProduced"), sessionId,
-                {{QStringLiteral("text"), route.reply},
-                 {QStringLiteral("triggerTag"), triggerTag}});
-            emit assistantResponseReady(route.reply);
-
-            ChatMessage assistantMessage;
-            assistantMessage.role = "assistant";
-            assistantMessage.content = route.reply;
-            appendToMemory(assistantMessage);
-        }
-
-        finishRuntimeSession(sessionId);
-        m_busy = false;
-        emit thinkingFinished(route.type != IntentRouteType::Rejected, route.type == IntentRouteType::Rejected ? route.reason : QString());
+        appendActiveDelta(route.reply);
+        const bool rejected = route.type == IntentRouteType::Rejected;
+        finishActiveResponse(rejected ? ChatMessageStatus::Failed
+                                      : ChatMessageStatus::Complete,
+                             rejected ? route.reason : QString());
         return true;
     }
 
     if (route.type == IntentRouteType::DirectToolCall) {
+        publishActiveStage(ChatActivityStage::PreparingTool);
+        publishActiveStage(ChatActivityStage::RunningTool);
         ToolExecutionRequest request;
         request.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         request.toolName = route.toolName;
@@ -79,20 +67,15 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                     const QString responseText = resolved.result.success
                         ? QStringLiteral("已完成。")
                         : QStringLiteral("操作未执行：%1").arg(resolved.result.errorMessage);
-                    ChatMessage assistantMessage;
-                    assistantMessage.role = "assistant";
-                    assistantMessage.content = responseText;
-                    appendToMemory(assistantMessage);
-                    appendRuntimeEvent(
-                        QStringLiteral("AssistantResponseProduced"), sessionId,
-                        {{QStringLiteral("text"), responseText},
-                         {QStringLiteral("triggerTag"), triggerTag}});
-                    emit assistantResponseReady(responseText);
-
-                    finishRuntimeSession(sessionId);
-                    m_busy = false;
-                    emit thinkingFinished(resolved.result.success,
-                                          resolved.result.success ? QString() : resolved.result.errorMessage);
+                    publishActiveStage(ChatActivityStage::Finalizing);
+                    appendActiveDelta(responseText);
+                    publishActiveStage(ChatActivityStage::Finalizing);
+                    finishActiveResponse(resolved.result.success
+                                             ? ChatMessageStatus::Complete
+                                             : ChatMessageStatus::Failed,
+                                         resolved.result.success
+                                             ? QString()
+                                             : resolved.result.errorMessage);
                 });
             emit toolConfirmationRequired(confirmationId,
                                           route.toolName,
@@ -178,32 +161,26 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
             responseText = QString("执行失败：%1").arg(outcome.result.errorMessage);
         }
 
-        appendRuntimeEvent(
-            QStringLiteral("AssistantResponseProduced"), sessionId,
-            {{QStringLiteral("text"), responseText},
-             {QStringLiteral("triggerTag"), triggerTag}});
-        emit assistantResponseReady(responseText);
-
         ChatMessage toolMessage;
         toolMessage.role = "tool";
         toolMessage.name = route.toolName;
         toolMessage.content = payload;
         appendToMemory(toolMessage);
 
-        ChatMessage assistantMessage;
-        assistantMessage.role = "assistant";
-        assistantMessage.content = responseText;
-        appendToMemory(assistantMessage);
-
-        finishRuntimeSession(sessionId);
-        m_busy = false;
-        emit thinkingFinished(outcome.result.success, outcome.result.success ? QString() : outcome.result.errorMessage);
+        publishActiveStage(ChatActivityStage::Finalizing);
+        appendActiveDelta(responseText);
+        publishActiveStage(ChatActivityStage::Finalizing);
+        finishActiveResponse(outcome.result.success
+                                 ? ChatMessageStatus::Complete
+                                 : ChatMessageStatus::Failed,
+                             outcome.result.success
+                                 ? QString()
+                                 : outcome.result.errorMessage);
         return true;
     }
 
-    finishRuntimeSession(sessionId);
-    m_busy = false;
-    emit thinkingFinished(false, "unsupported route type");
+    finishActiveResponse(ChatMessageStatus::Failed,
+                         QStringLiteral("unsupported route type"));
     return true;
 }
 
