@@ -96,7 +96,7 @@ AIBrain.stopCurrentResponse:
 ## Task 3: 身份化聊天存储
 
 - **关联设计**: §3.4 身份化聊天存储
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 3
 - **依赖**: Task 2
 

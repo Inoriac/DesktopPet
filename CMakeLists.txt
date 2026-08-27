@@ -77,6 +77,8 @@ set(UI_SOURCES
     ui/theme_manager.h
     ui/chat_history_window.cpp
     ui/chat_history_window.h
+    ui/chat_conversation_model.cpp
+    ui/chat_conversation_model.h
     ui/liquidglasschatbubble.cpp
     ui/liquidglasschatbubble.h
     ui/liquidglasschatbubble_utils.cpp
@@ -235,6 +237,11 @@ set(CORE_SOURCES
     core/ai/llm/openai_compatible_client.cpp
     core/ai/llm/llm_chat_service.h
     core/ai/llm/llm_chat_service.cpp
+
+    core/ai/chat/chat_types.h
+    core/ai/chat/chat_types.cpp
+    core/ai/chat/profile_chat_history_store.h
+    core/ai/chat/profile_chat_history_store.cpp
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
@@ -890,6 +897,40 @@ add_desktop_pet_cpp_test(streaming_dialogue_tests StreamingDialogueTests
         $<$<PLATFORM_ID:Windows>:psapi>
     APPLE_CORE_GRAPHICS
     PRIVATE_REFLECTION
+)
+
+# ---- Profile-scoped chat persistence tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(chat_history_tests ChatHistoryTests
+    SOURCES
+        tests/test_chat_history.cpp
+        core/ai/chat/chat_types.h
+        core/ai/chat/chat_types.cpp
+        core/ai/chat/profile_chat_history_store.h
+        core/ai/chat/profile_chat_history_store.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Test
+)
+
+# ---- Shared streaming conversation model tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
+    SOURCES
+        tests/test_chat_conversation_model.cpp
+        ui/chat_conversation_model.h
+        ui/chat_conversation_model.cpp
+        core/ai/chat/chat_types.h
+        core/ai/chat/chat_types.cpp
+        core/ai/chat/profile_chat_history_store.h
+        core/ai/chat/profile_chat_history_store.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Test
 )
 
 add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests

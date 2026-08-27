@@ -13,6 +13,7 @@
 - [code-impl Task 1 sanity check] §3.2 实现锚点 `OpenAICompatibleClient::sendChatCompletionAsync`、`buildMessagesArray`、`LlmResponse::toolCalls` 与 `LlmUsage` 字段已验证一致。
 - [code-impl Task 2 sanity check] §3.3 实现锚点 `ModelRouter::completeAsync`、`LlmChatModelClient::completeOnce`、`AIBrain::thinkInternal`、`m_requestGeneration` 与 `toolConfirmationRequired` 续写路径已验证一致；流式扩展保留既有非流式入口和 generation 门禁。
 - [code-impl Task 2 确认] 用户接受当前流式编排实现；provider attempt 级 `ModelCallCompleted` 遥测延期到上游契约补充后处理，不阻塞后续聊天功能。
+- [code-impl Task 3 sanity check] §3.4 实现锚点 `ProfileMigrationRequest` 的 `profileId/registeredProfileIds/appDataRoot`、`ProfileDataMigrator` 的 profile 数据根、旧 `PetWindow` JSONL 字段与 launcher/C++ QSettings 组织名已验证一致。
 
 ## 设计偏差
 
