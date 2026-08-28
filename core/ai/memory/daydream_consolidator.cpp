@@ -104,7 +104,26 @@ int relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch
     return score;
 }
 
-QJsonObject decisionToJson(const DaydreamDecision& decision) {
+QJsonObject memoryEntryToJson(const MemoryEntry& entry,
+                              bool legacySecondPrecision) {
+    QJsonObject object = entry.toJson();
+    if (!legacySecondPrecision) return object;
+
+    const auto setTimestamp = [&object](const QString& key,
+                                        const QDateTime& timestamp) {
+        object.insert(key, timestamp.isValid()
+                               ? timestamp.toString(Qt::ISODate)
+                               : QString());
+    };
+    setTimestamp(QStringLiteral("created_at"), entry.createdAt);
+    setTimestamp(QStringLiteral("updated_at"), entry.updatedAt);
+    setTimestamp(QStringLiteral("last_accessed_at"), entry.lastAccessedAt);
+    setTimestamp(QStringLiteral("expires_at"), entry.expiresAt);
+    return object;
+}
+
+QJsonObject decisionToJson(const DaydreamDecision& decision,
+                           bool legacySecondPrecision) {
     QJsonObject object;
     object.insert(QStringLiteral("sourceId"), decision.sourceId);
     object.insert(QStringLiteral("action"), static_cast<int>(decision.action));
@@ -114,19 +133,21 @@ QJsonObject decisionToJson(const DaydreamDecision& decision) {
     object.insert(QStringLiteral("qualityScore"), decision.qualityScore);
     object.insert(QStringLiteral("tags"), QJsonArray::fromStringList(decision.tags));
     if (!decision.expectedTarget.id.isEmpty()) {
-        object.insert(QStringLiteral("expectedTarget"), decision.expectedTarget.toJson());
+        object.insert(QStringLiteral("expectedTarget"), memoryEntryToJson(
+            decision.expectedTarget, legacySecondPrecision));
     }
     return object;
 }
 
-QJsonObject changeSetContent(const DaydreamChangeSet& changeSet) {
+QJsonObject changeSetContent(const DaydreamChangeSet& changeSet,
+                             bool legacySecondPrecision = false) {
     QJsonArray snapshot;
     for (const MemoryEntry& entry : changeSet.snapshot.items) {
-        snapshot.append(entry.toJson());
+        snapshot.append(memoryEntryToJson(entry, legacySecondPrecision));
     }
     QJsonArray decisions;
     for (const DaydreamDecision& decision : changeSet.decisions) {
-        decisions.append(decisionToJson(decision));
+        decisions.append(decisionToJson(decision, legacySecondPrecision));
     }
     return {
         {QStringLiteral("snapshot"), snapshot},
@@ -235,8 +256,11 @@ Result<DaydreamChangeSet, DomainError> DaydreamChangeSet::fromJson(
         }
         changeSet.decisions.append(std::move(decision));
     }
+    const QString currentHash = jsonHash(changeSetContent(changeSet));
+    const QString legacyHash = jsonHash(changeSetContent(changeSet, true));
     if (changeSet.changeSetId.isEmpty()
-        || changeSet.changeSetId != jsonHash(changeSetContent(changeSet))) {
+        || (changeSet.changeSetId != currentHash
+            && changeSet.changeSetId != legacyHash)) {
         return Result<DaydreamChangeSet, DomainError>::failure(
             domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
                         QStringLiteral("staged Daydream change set hash is invalid")));
@@ -601,8 +625,11 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
     Stats stats;
     stats.scanned = changeSet.snapshot.size();
     const QString expectedId = jsonHash(changeSetContent(changeSet));
+    const QString legacyExpectedId = jsonHash(changeSetContent(changeSet, true));
     const QString payloadHash = changeSet.payloadHash();
-    if (changeSet.changeSetId.isEmpty() || changeSet.changeSetId != expectedId
+    if (changeSet.changeSetId.isEmpty()
+        || (changeSet.changeSetId != expectedId
+            && changeSet.changeSetId != legacyExpectedId)
         || !structurallyValid(changeSet)) {
         stats.failed = changeSet.snapshot.size();
         return stats;
@@ -612,10 +639,10 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
         return stats;
     }
     const auto validation = buildChangeSet(changeSet.snapshot, changeSet.decisions);
-    if (!validation.isOk() || validation.value().changeSetId != changeSet.changeSetId) {
+    if (!validation.isOk()) {
         stats.failed = changeSet.snapshot.size();
-        stats.staleSnapshot = !validation.isOk()
-            && validation.error().code == QLatin1String("STATE_VERSION_CONFLICT");
+        stats.staleSnapshot = validation.error().code
+            == QLatin1String("STATE_VERSION_CONFLICT");
         return stats;
     }
     if (!m_store.hasSleepChange(changeSet.changeSetId, payloadHash)) {

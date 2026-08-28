@@ -136,10 +136,19 @@ public:
         encrypted.schemaVersion = aad.schemaVersion;
         encrypted.keyVersion = key.keyVersion;
         encrypted.nonce = QByteArrayLiteral("test-nonce");
+        const QByteArray stream = QCryptographicHash::hash(
+            key.key + aad.toBytes() + encrypted.nonce,
+            QCryptographicHash::Sha256);
+        QByteArray ciphertext = plaintext;
+        for (qsizetype i = 0; i < ciphertext.size(); ++i) {
+            ciphertext[i] = static_cast<char>(
+                static_cast<unsigned char>(ciphertext.at(i))
+                ^ static_cast<unsigned char>(stream.at(i % stream.size())));
+        }
         const QByteArray tag = QCryptographicHash::hash(
             key.key + aad.toBytes() + encrypted.nonce + plaintext,
             QCryptographicHash::Sha256);
-        encrypted.ciphertext = plaintext + tag;
+        encrypted.ciphertext = ciphertext + tag;
         return Result<EncryptedPrivatePayload, DomainError>::success(encrypted);
     }
 
@@ -152,9 +161,17 @@ public:
                 domainError(QStringLiteral("PRIVATE_AUTH_FAILED"),
                             QStringLiteral("ciphertext is truncated")));
         }
-        const QByteArray plaintext = encrypted.ciphertext.left(
+        QByteArray plaintext = encrypted.ciphertext.left(
             encrypted.ciphertext.size() - 32);
         const QByteArray actualTag = encrypted.ciphertext.right(32);
+        const QByteArray stream = QCryptographicHash::hash(
+            key.key + aad.toBytes() + encrypted.nonce,
+            QCryptographicHash::Sha256);
+        for (qsizetype i = 0; i < plaintext.size(); ++i) {
+            plaintext[i] = static_cast<char>(
+                static_cast<unsigned char>(plaintext.at(i))
+                ^ static_cast<unsigned char>(stream.at(i % stream.size())));
+        }
         const QByteArray expectedTag = QCryptographicHash::hash(
             key.key + aad.toBytes() + encrypted.nonce + plaintext,
             QCryptographicHash::Sha256);
@@ -167,8 +184,9 @@ public:
     }
 };
 
-MemoryEntry addInbox(MemoryStore& store,
-                     const QString& content = QStringLiteral("owner likes tea")) {
+MemoryEntry addInboxAt(MemoryStore& store,
+                       const QDateTime& timestamp,
+                       const QString& content) {
     MemoryEntry entry;
     entry.type = MemoryType::Episodic;
     entry.partition = QStringLiteral("hippocampus");
@@ -180,9 +198,15 @@ MemoryEntry addInbox(MemoryStore& store,
     entry.source = QStringLiteral("user");
     entry.importance = 0.9;
     entry.mentionCount = 2;
-    entry.createdAt = QDateTime::currentDateTimeUtc().addSecs(-60);
+    entry.createdAt = timestamp;
     entry.updatedAt = entry.createdAt;
     return store.addEntry(entry);
+}
+
+MemoryEntry addInbox(MemoryStore& store,
+                     const QString& content = QStringLiteral("owner likes tea")) {
+    return addInboxAt(
+        store, QDateTime::currentDateTimeUtc().addSecs(-60), content);
 }
 
 QString innerThoughtJson(bool includeReasoning = false) {
@@ -218,6 +242,50 @@ QString discardDecisionJson(const QString& sourceId) {
     }};
     return QString::fromUtf8(
         QJsonDocument(decisions).toJson(QJsonDocument::Compact));
+}
+
+void useLegacySecondPrecision(QJsonObject* entry) {
+    const QStringList timestampKeys{
+        QStringLiteral("created_at"), QStringLiteral("updated_at"),
+        QStringLiteral("last_accessed_at"), QStringLiteral("expires_at")};
+    for (const QString& key : timestampKeys) {
+        const QDateTime timestamp = QDateTime::fromString(
+            entry->value(key).toString(), Qt::ISODateWithMs);
+        if (timestamp.isValid()) {
+            entry->insert(key, timestamp.toString(Qt::ISODate));
+        }
+    }
+}
+
+QJsonObject legacySecondPrecisionChangeSet(const DaydreamChangeSet& changeSet) {
+    QJsonObject legacy = changeSet.toJson();
+    QJsonArray snapshot = legacy.value(QStringLiteral("snapshot")).toArray();
+    for (qsizetype i = 0; i < snapshot.size(); ++i) {
+        QJsonObject entry = snapshot.at(i).toObject();
+        useLegacySecondPrecision(&entry);
+        snapshot.replace(i, entry);
+    }
+    QJsonArray decisions = legacy.value(QStringLiteral("decisions")).toArray();
+    for (qsizetype i = 0; i < decisions.size(); ++i) {
+        QJsonObject decision = decisions.at(i).toObject();
+        if (decision.value(QStringLiteral("expectedTarget")).isObject()) {
+            QJsonObject target = decision.value(
+                QStringLiteral("expectedTarget")).toObject();
+            useLegacySecondPrecision(&target);
+            decision.insert(QStringLiteral("expectedTarget"), target);
+            decisions.replace(i, decision);
+        }
+    }
+    legacy.insert(QStringLiteral("snapshot"), snapshot);
+    legacy.insert(QStringLiteral("decisions"), decisions);
+    const QJsonObject content{
+        {QStringLiteral("snapshot"), snapshot},
+        {QStringLiteral("decisions"), decisions}};
+    legacy.insert(QStringLiteral("changeSetId"), QString::fromLatin1(
+        QCryptographicHash::hash(
+            QJsonDocument(content).toJson(QJsonDocument::Compact),
+            QCryptographicHash::Sha256).toHex()));
+    return legacy;
 }
 
 struct ReflectionFixture {
@@ -393,6 +461,7 @@ private slots:
 
     void buildChangeSet_whenDecisionsAreValid_shouldReturnDeterministicChangesWithoutMutatingStore();
     void applyChangeSet_whenCommitIsDurable_shouldMaterializeChangesOnce();
+    void finalizeSession_whenLegacySecondPrecisionChangeSetIsLoaded_shouldRecover();
     void applyDecisions_whenCalledByLegacyDaydream_shouldDelegateAndPreserveExistingBehavior();
 
     void composeAsync_whenBedtimeContextIsValid_shouldStageOneEncryptedDiaryForLocalDate();
@@ -648,6 +717,43 @@ void SleepCycleTests::applyChangeSet_whenCommitIsDurable_shouldMaterializeChange
     QVERIFY(first.committed);
     QVERIFY(second.committed);
     QCOMPARE(fixture.memory.all().size(), countAfterFirst);
+}
+
+void SleepCycleTests::finalizeSession_whenLegacySecondPrecisionChangeSetIsLoaded_shouldRecover() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    const QDateTime legacyTimestamp = QDateTime::fromString(
+        QDateTime::currentDateTimeUtc().addSecs(-60).toString(Qt::ISODate),
+        Qt::ISODate);
+    const MemoryEntry source = addInboxAt(
+        fixture.memory, legacyTimestamp, QStringLiteral("owner likes tea"));
+    DaydreamConsolidator consolidator(fixture.memory);
+    const auto snapshot = consolidator.createSnapshot(1);
+    const auto changeSet = consolidator.buildChangeSet(
+        snapshot, DaydreamConsolidator::hardcodedDecisions(snapshot.items));
+    QVERIFY(changeSet.isOk());
+
+    const QJsonObject legacy = legacySecondPrecisionChangeSet(changeSet.value());
+    const auto parsed = DaydreamChangeSet::fromJson(legacy);
+    QVERIFY(parsed.isOk());
+    QCOMPARE(parsed.value().changeSetId,
+             legacy.value(QStringLiteral("changeSetId")).toString());
+
+    const QString sessionId = QStringLiteral("legacy-second-precision");
+    StagedMemoryChange staged;
+    staged.sessionId = sessionId;
+    staged.changeId = parsed.value().changeSetId;
+    staged.targetType = QStringLiteral("daydream_change_set");
+    staged.operation = QStringLiteral("apply");
+    staged.payload = legacy;
+    QVERIFY(fixture.memory.stageSleepChange(staged));
+    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+
+    const auto finalized = adapter.finalizeSession(sessionId);
+
+    QVERIFY(finalized.isOk());
+    QVERIFY(!fixture.memory.findById(source.id));
+    QCOMPARE(adapter.preparedChangeCount(sessionId), 0);
 }
 
 void SleepCycleTests::applyDecisions_whenCalledByLegacyDaydream_shouldDelegateAndPreserveExistingBehavior() {

@@ -38,11 +38,14 @@ QStringList stringListFromJson(const QJsonArray& array) {
 }
 
 QString dateTimeToString(const QDateTime& value) {
-    return value.isValid() ? value.toString(Qt::ISODate) : QString();
+    return value.isValid() ? value.toString(Qt::ISODateWithMs) : QString();
 }
 
 QDateTime dateTimeFromString(const QString& value) {
-    const QDateTime parsed = QDateTime::fromString(value, Qt::ISODate);
+    QDateTime parsed = QDateTime::fromString(value, Qt::ISODateWithMs);
+    if (!parsed.isValid()) {
+        parsed = QDateTime::fromString(value, Qt::ISODate);
+    }
     return parsed.isValid() ? parsed : QDateTime{};
 }
 

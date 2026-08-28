@@ -28,7 +28,7 @@
 
 - Task 1-7 均按计划完成，各 Task 的针对性目标均编译成功。
 - Task 7 收尾验证：`ModelRouterTests` 与 `LlmTests` 全量通过，4 个新增 Daydream/SleepCycle 用例全部通过。
-- macOS 环境不运行 ONNX 相关用例。`SleepCycleTests` 全量存在 5 个可独立复现的旧 sleep/diary 基线失败，未与本次 Daydream 变更混合修复。
+- macOS 环境不运行 ONNX 相关用例。`SleepCycleTests` 与 `ProfileDataMigratorTests` 全量通过；MemoryEntry 毫秒精度、旧秒级 Daydream change set 恢复与日记密文测试均有回归覆盖。
 
 ## TDD 与留痕
 
