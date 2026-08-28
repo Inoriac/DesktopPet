@@ -73,7 +73,8 @@ enum class ModelRole {
     FastExtract,
     Consolidation,
     Diary,
-    Vision
+    Vision,
+    Daydream
 };
 
 enum class ContextPartition {
@@ -136,7 +137,7 @@ struct ScreenChatConfig {
     QString petGender = "female";
 };
 
-// 空闲记忆整理配置。模型留空时复用主 LLM 配置中的 model。
+// 空闲记忆整理配置。模型连接与调用参数由 ModelRole::Daydream 管理。
 struct DaydreamConfig {
     bool enabled = true;
     int idleThresholdSec = 5 * 60;
@@ -150,10 +151,6 @@ struct DaydreamConfig {
     int batchLimit = 8;
     int inboxLimit = 200;
     int relatedMemoryLimit = 8;
-
-    QString model;
-    int maxTokens = 1200;
-    double temperature = 0.2;
 };
 
 struct SleepPolicy {

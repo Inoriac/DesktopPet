@@ -92,7 +92,8 @@ QList<ModelRoleConfig> AIBrain::configuredModelRoles() {
         config.getModelRoleConfig(ModelRole::FastExtract),
         config.getModelRoleConfig(ModelRole::Consolidation),
         config.getModelRoleConfig(ModelRole::Diary),
-        config.getModelRoleConfig(ModelRole::Vision)
+        config.getModelRoleConfig(ModelRole::Vision),
+        config.getModelRoleConfig(ModelRole::Daydream)
     };
 }
 
@@ -492,18 +493,16 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
         modelBatch, m_daydreamConfig.relatedMemoryLimit);
     const QList<ChatMessage> messages = buildDaydreamMessages(modelBatch, related);
 
-    LlmConfig config = ConfigManager::instance().getLlmConfig();
-    if (!m_daydreamConfig.model.isEmpty()) {
-        config.model = m_daydreamConfig.model;
-    }
-    config.maxTokens = m_daydreamConfig.maxTokens;
-    config.temperature = m_daydreamConfig.temperature;
+    ModelRequest modelRequest;
+    modelRequest.role = ModelRole::Daydream;
+    modelRequest.messages = messages;
+    modelRequest.petName = m_petName;
 
     const QPointer<AIBrain> guard(this);
-    m_chatService.requestAsyncWithConfig(
-        config, messages, {},
+    m_modelRouter.completeAsync(
+        modelRequest,
         [this, guard, generation, batch, modelBatch, related, forcedDecisions]
-        (bool ok, LlmResponse response, QString error) {
+        (Result<ModelCompletion, DomainError> completion) {
             if (!guard || !m_daydreamRunning || generation != m_daydreamGeneration) return;
             if (!canContinueDaydream()) {
                 cancelDaydreamSession(QStringLiteral("idle conditions changed after LLM batch"));
@@ -511,15 +510,17 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
             }
 
             QList<DaydreamConsolidator::Decision> batchDecisions = forcedDecisions;
-            if (!ok) {
+            if (!completion.isOk()) {
                 ++m_daydreamFallbackBatches;
-                qWarning() << "[Daydream] LLM batch failed; using bounded hardcoded fallback:" << error;
+                qWarning() << "[Daydream] LLM batch failed; using bounded hardcoded fallback:"
+                           << completion.error().message;
                 batchDecisions.append(DaydreamConsolidator::hardcodedDecisions(modelBatch));
             } else {
                 QString parseError;
                 QList<DaydreamConsolidator::Decision> parsed;
-                if (!DaydreamConsolidator::parseDecisions(response.content, modelBatch, related,
-                                                           &parsed, &parseError)) {
+                if (!DaydreamConsolidator::parseDecisions(
+                        completion.value().response.content, modelBatch, related,
+                        &parsed, &parseError)) {
                     ++m_daydreamInvalidBatches;
                     qWarning() << "[Daydream] invalid LLM batch; preserving sources:" << parseError;
                     batchDecisions.append(preserveDecisions(modelBatch));
@@ -531,8 +532,7 @@ void AIBrain::runNextDaydreamBatch(quint64 generation) {
             m_daydreamDecisions.append(batchDecisions);
             m_daydreamBatchOffset += batch.size();
             runNextDaydreamBatch(generation);
-        },
-        m_petName);
+        });
 }
 
 void AIBrain::finishDaydreamSession(quint64 generation) {

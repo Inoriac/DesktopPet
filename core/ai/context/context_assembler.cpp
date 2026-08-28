@@ -18,6 +18,9 @@ QList<ContextPartition> allowedPartitions(ModelRole role) {
         return {ContextPartition::DiaryProjection};
     case ModelRole::Vision:
         return {ContextPartition::VisionInput};
+    case ModelRole::Daydream:
+        return {ContextPartition::EvidenceWindow,
+                ContextPartition::RelevantMemory};
     }
     return {};
 }

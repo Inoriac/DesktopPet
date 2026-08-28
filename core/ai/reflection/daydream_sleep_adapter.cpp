@@ -171,7 +171,7 @@ void DaydreamSleepAdapter::processNextBatch(
     }
 
     ModelRequest modelRequest;
-    modelRequest.role = ModelRole::Consolidation;
+    modelRequest.role = ModelRole::Daydream;
     modelRequest.profileId = m_profileId;
     modelRequest.sessionId = state->request.sessionId;
     modelRequest.petName = m_petName;

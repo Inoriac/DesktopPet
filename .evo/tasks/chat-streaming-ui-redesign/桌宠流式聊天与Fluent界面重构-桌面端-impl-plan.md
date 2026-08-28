@@ -312,7 +312,7 @@ Provider message conversion / PetWindow vision route:
 ## Task 7: Daydream 独立模型路由
 
 - **关联设计**: §3.8 Daydream 独立模型路由
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 7
 - **依赖**: Task 6
 

@@ -20,6 +20,9 @@
 - [2026-08-28 配置设计确认] 用户确认 `modelEndpoints` + `endpointRef`；`DEFAULT` 只保存通用连接信息，模型由各 role 独立配置。
 - [2026-08-28 配置设计确认] Daydream 新增独立 role，可使用轻量模型和独立供应商；AIBrain 与 sleep adapter 两条路径统一走该 role。
 - [2026-08-28 技术设计核查] 现有屏幕识别绕过 ModelRouter 并直读全局 LlmConfig；为兑现视觉独立供应商契约，§3.7 纳入 provider-neutral 图片块与 ModelRole::Vision 路由。
+- [code-impl Task 7 确认] 旧 `AIBrain` 不新增仅为填充 `ModelRequest.profileId/sessionId` 的共享状态；该路径继续以 `m_daydreamGeneration` 隔离迟到回调，只设置 Daydream role/messages/petName。已有真实事务边界的 `DaydreamSleepAdapter` 继续完整传递 profileId/sessionId。
+- [code-impl Task 7 sanity check] §3.8 实现锚点 `modelRoleConfigKey/allModelRoles`、`AIBrain::configuredModelRoles`、`AIBrain::runNextDaydreamBatch(quint64)`、`DaydreamSleepAdapter::processNextBatch(shared_ptr<ConsolidationState>)`、`ContextAssembler::allowedPartitions` 与 `parseDaydreamConfig` 已验证一致；旧 AIBrain 路径保持 generation 门禁，sleep adapter 保持事务 session 传递。
+- [code-impl Task 7 验证] `ModelRouterTests` 与 `LlmTests` 全量通过；4 个新增 Daydream/SleepCycle 用例单独通过；`SleepCycleTests` 全量仍有 5 个旧 sleep/diary 基线失败，在不运行新用例时可独立复现，本 Task 不扩大范围修复。
 
 ## 设计偏差
 

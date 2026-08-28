@@ -167,12 +167,16 @@ private slots:
     void assemble_whenDialogueRole_shouldExcludeDiaryInnerThoughtAndOwnerAccess();
     void assemble_whenDiaryRole_shouldExposeOnlyDiaryProjectionWithinBudget();
     void assemble_whenRequestedPartitionIsForbidden_shouldReturnScopeDenied();
+    void assemble_whenDaydreamRequestsEvidenceAndMemory_shouldReturnOnlyAllowedPartitions();
+    void assemble_whenDaydreamRequestsPersona_shouldRejectScope();
 
     void getModelRoleConfig_whenRoleConfigured_shouldReturnRoleSpecificModel();
     void getModelRoleConfig_whenOnlyLegacyConfigExists_shouldMapItToDialogue();
     void getModelRoleConfig_whenRoleReferencesAnthropicEndpoint_shouldMergeConnectionAndModel();
     void getModelRoleConfig_whenEndpointReferenceIsMissing_shouldRejectRouteWithoutDefaultKeyFallback();
     void getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams();
+    void getModelRoleConfig_whenDaydreamReferencesSpecialEndpoint_shouldUseOnlyItsKeyAndModel();
+    void getModelRoleConfig_whenLegacyDaydreamFieldsExist_shouldSynthesizeCompatibleRoute();
     void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
     void completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries();
 };
@@ -432,6 +436,41 @@ void ModelRouterTests::assemble_whenRequestedPartitionIsForbidden_shouldReturnSc
     QCOMPARE(result.error().code, QStringLiteral("CONTEXT_SCOPE_DENIED"));
 }
 
+void ModelRouterTests::assemble_whenDaydreamRequestsEvidenceAndMemory_shouldReturnOnlyAllowedPartitions() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {
+        ContextPartition::EvidenceWindow,
+        ContextPartition::RelevantMemory
+    };
+    request.projections = {
+        projection(ContextPartition::EvidenceWindow, QStringLiteral("batch evidence")),
+        projection(ContextPartition::RelevantMemory, QStringLiteral("related memory")),
+        projection(ContextPartition::Persona, QStringLiteral("must stay hidden"))
+    };
+
+    const auto result = assembler.assemble(ModelRole::Daydream, request);
+
+    QVERIFY(result.isOk());
+    QCOMPARE(result.value().size(), 2);
+    QCOMPARE(result.value().at(0).content, QStringLiteral("batch evidence"));
+    QCOMPARE(result.value().at(1).content, QStringLiteral("related memory"));
+}
+
+void ModelRouterTests::assemble_whenDaydreamRequestsPersona_shouldRejectScope() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {ContextPartition::Persona};
+    request.projections = {
+        projection(ContextPartition::Persona, QStringLiteral("must stay hidden"))
+    };
+
+    const auto result = assembler.assemble(ModelRole::Daydream, request);
+
+    QVERIFY(!result.isOk());
+    QCOMPARE(result.error().code, QStringLiteral("CONTEXT_SCOPE_DENIED"));
+}
+
 void ModelRouterTests::getModelRoleConfig_whenRoleConfigured_shouldReturnRoleSpecificModel() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -621,6 +660,122 @@ void ModelRouterTests::getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnor
     QVERIFY(!config.extraHeaders.contains(QStringLiteral("x-invalid")));
     QCOMPARE(config.extraParams.value(QStringLiteral("top_k")).toInt(), 7);
     QVERIFY(!config.extraParams.contains(QStringLiteral("x-invalid")));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenDaydreamReferencesSpecialEndpoint_shouldUseOnlyItsKeyAndModel() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject defaultEndpoint{
+        {QStringLiteral("provider"), QStringLiteral("anthropic-messages")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://dialogue.example")},
+        {QStringLiteral("apiKey"), QStringLiteral("dialogue-key")}
+    };
+    const QJsonObject daydreamEndpoint{
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://daydream.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("daydream-key")}
+    };
+    const QJsonObject daydreamRoute{
+        {QStringLiteral("routeId"), QStringLiteral("daydream-primary")},
+        {QStringLiteral("endpointRef"), QStringLiteral("DREAM")},
+        {QStringLiteral("model"), QStringLiteral("small-daydream-model")},
+        {QStringLiteral("maxTokens"), 777},
+        {QStringLiteral("temperature"), 0.15}
+    };
+    const QJsonObject profile{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("modelEndpoints"), QJsonObject{
+             {QStringLiteral("DEFAULT"), defaultEndpoint},
+             {QStringLiteral("DREAM"), daydreamEndpoint}}},
+        {QStringLiteral("modelRoles"), QJsonObject{
+             {QStringLiteral("daydream"), QJsonObject{
+                  {QStringLiteral("routes"), QJsonArray{daydreamRoute}}}}}}
+    };
+    const QJsonObject root{{QStringLiteral("aiSettings"), QJsonObject{
+        {QStringLiteral("activeProfile"), QStringLiteral("default")},
+        {QStringLiteral("profiles"), QJsonObject{
+             {QStringLiteral("default"), profile}}}}}};
+
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Daydream);
+
+    QCOMPARE(config.role, ModelRole::Daydream);
+    QCOMPARE(config.routes.size(), 1);
+    const LlmConfig& llm = config.routes.first().llm;
+    QCOMPARE(llm.provider, QStringLiteral("openai-compatible"));
+    QCOMPARE(llm.baseUrl, QStringLiteral("https://daydream.example/v1"));
+    QCOMPARE(llm.apiKey, QStringLiteral("daydream-key"));
+    QCOMPARE(llm.model, QStringLiteral("small-daydream-model"));
+    QCOMPARE(llm.maxTokens, 777);
+    QCOMPARE(llm.temperature, 0.15);
+    QVERIFY(llm.apiKey != QLatin1String("dialogue-key"));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenLegacyDaydreamFieldsExist_shouldSynthesizeCompatibleRoute() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject profile{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://legacy.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("legacy-dialogue-key")},
+        {QStringLiteral("model"), QStringLiteral("legacy-dialogue-model")},
+        {QStringLiteral("daydream"), QJsonObject{
+             {QStringLiteral("model"), QString()},
+             {QStringLiteral("maxTokens"), 900},
+             {QStringLiteral("temperature"), 0.35}}}
+    };
+    const QJsonObject root{{QStringLiteral("aiSettings"), QJsonObject{
+        {QStringLiteral("activeProfile"), QStringLiteral("default")},
+        {QStringLiteral("profiles"), QJsonObject{
+             {QStringLiteral("default"), profile}}}}}};
+
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Daydream);
+
+    QCOMPARE(config.role, ModelRole::Daydream);
+    QCOMPARE(config.routes.size(), 1);
+    const ModelRouteConfig& route = config.routes.first();
+    QCOMPARE(route.routeId, QStringLiteral("daydream-legacy"));
+    QCOMPARE(route.llm.provider, QStringLiteral("openai-compatible"));
+    QCOMPARE(route.llm.baseUrl, QStringLiteral("https://legacy.example/v1"));
+    QCOMPARE(route.llm.apiKey, QStringLiteral("legacy-dialogue-key"));
+    QCOMPARE(route.llm.model, QStringLiteral("legacy-dialogue-model"));
+    QCOMPARE(route.llm.maxTokens, 900);
+    QCOMPARE(route.llm.temperature, 0.35);
+
+    const QJsonObject daydreamOnlyModelProfile{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://legacy.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("legacy-dialogue-key")},
+        {QStringLiteral("model"), QString()},
+        {QStringLiteral("daydream"), QJsonObject{
+             {QStringLiteral("model"), QStringLiteral("legacy-daydream-model")},
+             {QStringLiteral("maxTokens"), 700},
+             {QStringLiteral("temperature"), 0.25}}}
+    };
+    const QJsonObject daydreamOnlyModelRoot{{QStringLiteral("aiSettings"), QJsonObject{
+        {QStringLiteral("activeProfile"), QStringLiteral("default")},
+        {QStringLiteral("profiles"), QJsonObject{
+             {QStringLiteral("default"), daydreamOnlyModelProfile}}}}}};
+    const QString secondPath = writeConfig(directory, daydreamOnlyModelRoot);
+    QVERIFY(!secondPath.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(secondPath));
+
+    const ModelRoleConfig daydreamOnlyModel =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Daydream);
+    QCOMPARE(daydreamOnlyModel.routes.size(), 1);
+    QCOMPARE(daydreamOnlyModel.routes.first().llm.model,
+             QStringLiteral("legacy-daydream-model"));
 }
 
 void ModelRouterTests::configFor_whenRoleExists_shouldReturnOnlyRequestedRole() {

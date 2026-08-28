@@ -100,13 +100,15 @@ static QString modelRoleConfigKey(ModelRole role) {
     case ModelRole::Consolidation: return QStringLiteral("consolidation");
     case ModelRole::Diary: return QStringLiteral("diary");
     case ModelRole::Vision: return QStringLiteral("vision");
+    case ModelRole::Daydream: return QStringLiteral("daydream");
     }
     return QString();
 }
 
 static QList<ModelRole> allModelRoles() {
     return {ModelRole::Dialogue, ModelRole::FastExtract,
-            ModelRole::Consolidation, ModelRole::Diary, ModelRole::Vision};
+            ModelRole::Consolidation, ModelRole::Diary, ModelRole::Vision,
+            ModelRole::Daydream};
 }
 
 static QJsonObject parseStringHeaders(const QJsonValue& value,
@@ -301,10 +303,6 @@ static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
     cfg.relatedMemoryLimit = clampInt(
         object.value("relatedMemoryLimit").toInt(cfg.relatedMemoryLimit), 0, 32);
 
-    cfg.model = object.value("model").toString().trimmed().left(256);
-    cfg.maxTokens = clampInt(object.value("maxTokens").toInt(cfg.maxTokens), 256, 8192);
-    cfg.temperature = std::clamp(
-        object.value("temperature").toDouble(cfg.temperature), 0.0, 2.0);
     return cfg;
 }
 
@@ -656,15 +654,62 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                   aiRaw.value(QStringLiteral("modelEndpoints")).toObject(),
                   llmConfig)
             : QHash<QString, LlmConfig>{};
+        QJsonObject roles;
         if (aiRaw.value(QStringLiteral("modelRoles")).isObject()) {
-            const QJsonObject roles =
-                aiRaw.value(QStringLiteral("modelRoles")).toObject();
+            roles = aiRaw.value(QStringLiteral("modelRoles")).toObject();
             for (ModelRole role : allModelRoles()) {
                 const QString key = modelRoleConfigKey(role);
                 if (!roles.value(key).isObject()) continue;
                 modelRoleConfigs.append(parseModelRoleConfig(
                     role, roles.value(key).toObject(), llmConfig,
                     modelEndpoints, hasEndpointRegistry));
+            }
+        }
+
+        if (!hasEndpointRegistry
+            && !roles.value(QStringLiteral("daydream")).isObject()) {
+            ModelRouteConfig compatibleRoute;
+            bool foundDialogueRoute = false;
+            for (const ModelRoleConfig& roleConfig : modelRoleConfigs) {
+                if (roleConfig.role == ModelRole::Dialogue
+                    && !roleConfig.routes.isEmpty()) {
+                    compatibleRoute = roleConfig.routes.first();
+                    foundDialogueRoute = true;
+                    break;
+                }
+            }
+            if (!foundDialogueRoute) {
+                compatibleRoute.routeId = QStringLiteral("dialogue-legacy");
+                compatibleRoute.enabled = llmConfig.enabled;
+                compatibleRoute.llm = llmConfig;
+            }
+
+            const QJsonObject legacyDaydream =
+                aiRaw.value(QStringLiteral("daydream")).toObject();
+            const QString legacyModel = legacyDaydream
+                                            .value(QStringLiteral("model"))
+                                            .toString().trimmed().left(256);
+            if (!legacyModel.isEmpty()) {
+                compatibleRoute.llm.model = legacyModel;
+            }
+            if (!compatibleRoute.llm.provider.trimmed().isEmpty()
+                && !compatibleRoute.llm.baseUrl.trimmed().isEmpty()
+                && !compatibleRoute.llm.apiKey.isEmpty()
+                && !compatibleRoute.llm.model.trimmed().isEmpty()) {
+                compatibleRoute.routeId = QStringLiteral("daydream-legacy");
+                compatibleRoute.supportsVision = false;
+                compatibleRoute.llm.maxTokens = clampInt(
+                    legacyDaydream.value(QStringLiteral("maxTokens")).toInt(1200),
+                    256, 8192);
+                compatibleRoute.llm.temperature = std::clamp(
+                    legacyDaydream.value(QStringLiteral("temperature")).toDouble(0.2),
+                    0.0, 2.0);
+                compatibleRoute.llm.retryCount = 0;
+
+                ModelRoleConfig compatibleRole;
+                compatibleRole.role = ModelRole::Daydream;
+                compatibleRole.routes.append(std::move(compatibleRoute));
+                modelRoleConfigs.append(std::move(compatibleRole));
             }
         }
 

@@ -63,7 +63,7 @@ public:
     };
 
     QList<Reply> replies;
-    QList<ModelRole> requestedRoles;
+    QList<QString> selectedRouteIds;
     QList<QList<ChatMessage>> requests;
     bool deferCallbacks = false;
 
@@ -78,9 +78,9 @@ public:
                       const QJsonArray& tools,
                       LlmCompletionHandler callback,
                       const QString& petName) override {
-        Q_UNUSED(selectedRoute)
         Q_UNUSED(tools)
         Q_UNUSED(petName)
+        selectedRouteIds.append(selectedRoute.routeId);
         requests.append(messages);
         if (replies.isEmpty()) {
             callback(false, {}, QStringLiteral("missing fake reply"));
@@ -209,6 +209,17 @@ QString diaryJson(const QString& body = QStringLiteral("今天和主人聊了喝
     return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
 }
 
+QString discardDecisionJson(const QString& sourceId) {
+    const QJsonArray decisions{QJsonObject{
+        {QStringLiteral("source_id"), sourceId},
+        {QStringLiteral("action"), QStringLiteral("discard")},
+        {QStringLiteral("quality_score"), 1},
+        {QStringLiteral("new_tags"), QJsonArray{}}
+    }};
+    return QString::fromUtf8(
+        QJsonDocument(decisions).toJson(QJsonDocument::Compact));
+}
+
 struct ReflectionFixture {
     QTemporaryDir directory;
     MemoryStore memory;
@@ -220,6 +231,7 @@ struct ReflectionFixture {
     ModelRoleRegistry registry{
         {roleConfig(ModelRole::FastExtract),
          roleConfig(ModelRole::Consolidation),
+         roleConfig(ModelRole::Daydream),
          roleConfig(ModelRole::Diary)}};
     ModelRouter router{&registry, &modelClient};
     ContextAssembler assembler;
@@ -340,6 +352,29 @@ QString writeConfig(QTemporaryDir& directory, const QJsonObject& root) {
 
 } // namespace
 
+class TestIdentityState {
+public:
+    static void runPreparedDaydreamBatch(AIBrain& brain) {
+        brain.m_daydreamConfig.idleThresholdSec = -1;
+        brain.m_daydreamConfig.dueSoonThresholdMs = 0;
+        brain.m_daydreamConfig.batchLimit = DaydreamConsolidator::BATCH_LIMIT;
+        brain.m_daydreamConfig.relatedMemoryLimit = 8;
+        brain.m_daydreamPolicy.configure(brain.m_daydreamConfig);
+        brain.m_running = true;
+        brain.m_busy = false;
+        brain.m_externalSleepCoordinatorEnabled = false;
+        brain.m_daydreamRunning = true;
+        ++brain.m_daydreamGeneration;
+        DaydreamConsolidator consolidator(brain.m_memoryStore);
+        brain.m_daydreamSnapshot = consolidator.createSnapshot();
+        brain.m_daydreamDecisions.clear();
+        brain.m_daydreamBatchOffset = 0;
+        brain.m_daydreamFallbackBatches = 0;
+        brain.m_daydreamInvalidBatches = 0;
+        brain.runNextDaydreamBatch(brain.m_daydreamGeneration);
+    }
+};
+
 class SleepCycleTests : public QObject {
     Q_OBJECT
 
@@ -350,7 +385,11 @@ private slots:
 
     void consolidateAsync_whenPendingItemsExist_shouldReuseExistingConsolidatorAndStageBoundedChanges();
     void consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUnchanged();
-    void consolidateAsync_whenCancelled_shouldFollowExistingGenerationAndRollbackRules();
+    void processNextBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndStageChangeSet();
+    void processNextBatch_whenCallbackArrivesAfterCancellation_shouldDiscardLateResult();
+
+    void runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision();
+    void runNextDaydreamBatch_whenDaydreamRoutesFail_shouldUseBoundedHardcodedFallback();
 
     void buildChangeSet_whenDecisionsAreValid_shouldReturnDeterministicChangesWithoutMutatingStore();
     void applyChangeSet_whenCommitIsDurable_shouldMaterializeChangesOnce();
@@ -472,7 +511,34 @@ void SleepCycleTests::consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUncha
     QCOMPARE(fixture.memory.preparedSleepChangeCount(staging.sessionId), 1);
 }
 
-void SleepCycleTests::consolidateAsync_whenCancelled_shouldFollowExistingGenerationAndRollbackRules() {
+void SleepCycleTests::processNextBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndStageChangeSet() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    const MemoryEntry source = addInbox(fixture.memory);
+    fixture.modelClient.replies.append(
+        {true, discardDecisionJson(source.id), {}, {}});
+    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    CancellationSource cancellation;
+    const CancellationToken token = cancellation.token();
+    StagingSession staging{QStringLiteral("sleep-daydream-route"),
+                           token.generation()};
+    bool completed = false;
+
+    adapter.consolidateAsync(
+        {kProfileId, staging.sessionId, 0, 1}, staging, token,
+        [&](Result<DaydreamChangeSet, DomainError> result) {
+            QVERIFY(result.isOk());
+            completed = true;
+        });
+
+    QVERIFY(completed);
+    QCOMPARE(fixture.modelClient.selectedRouteIds,
+             QList<QString>{QString::number(
+                 static_cast<int>(ModelRole::Daydream))});
+    QCOMPARE(adapter.preparedChangeCount(staging.sessionId), 1);
+}
+
+void SleepCycleTests::processNextBatch_whenCallbackArrivesAfterCancellation_shouldDiscardLateResult() {
     ReflectionFixture fixture;
     QVERIFY(fixture.open());
     addInbox(fixture.memory);
@@ -490,10 +556,66 @@ void SleepCycleTests::consolidateAsync_whenCancelled_shouldFollowExistingGenerat
         completed = true;
     });
     QVERIFY(!completed);
+    QCOMPARE(fixture.modelClient.selectedRouteIds,
+             QList<QString>{QString::number(
+                 static_cast<int>(ModelRole::Daydream))});
     cancellation.cancel();
     fixture.modelClient.finishNext();
     QVERIFY(completed);
     QCOMPARE(fixture.memory.preparedSleepChangeCount(staging.sessionId), 0);
+}
+
+void SleepCycleTests::runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeModelClient modelClient;
+    AIBrain brain(
+        &modelClient,
+        {roleConfig(ModelRole::Dialogue), roleConfig(ModelRole::Daydream)});
+    QVERIFY(brain.initializeStorage({
+        directory.filePath(QStringLiteral("brain-memory.db")),
+        directory.filePath(QStringLiteral("brain-memory.json"))}).isOk());
+    const MemoryEntry source = addInbox(*brain.memoryStore());
+    modelClient.replies.append(
+        {true, discardDecisionJson(source.id), {}, {}});
+    QSignalSpy finished(&brain, &AIBrain::daydreamFinished);
+
+    TestIdentityState::runPreparedDaydreamBatch(brain);
+
+    QCOMPARE(modelClient.selectedRouteIds,
+             QList<QString>{QString::number(
+                 static_cast<int>(ModelRole::Daydream))});
+    QCOMPARE(finished.count(), 1);
+    QVERIFY(!brain.memoryStore()->findById(source.id));
+}
+
+void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldUseBoundedHardcodedFallback() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    FakeModelClient modelClient;
+    AIBrain brain(
+        &modelClient,
+        {roleConfig(ModelRole::Dialogue), roleConfig(ModelRole::Daydream)});
+    QVERIFY(brain.initializeStorage({
+        directory.filePath(QStringLiteral("brain-fallback.db")),
+        directory.filePath(QStringLiteral("brain-fallback.json"))}).isOk());
+    const MemoryEntry source = addInbox(*brain.memoryStore());
+    modelClient.replies.append(
+        {false, {}, QStringLiteral("all Daydream routes failed"), {}});
+    QSignalSpy finished(&brain, &AIBrain::daydreamFinished);
+
+    TestIdentityState::runPreparedDaydreamBatch(brain);
+
+    QCOMPARE(modelClient.selectedRouteIds,
+             QList<QString>{QString::number(
+                 static_cast<int>(ModelRole::Daydream))});
+    QCOMPARE(finished.count(), 1);
+    const QJsonObject summary = finished.first().first().toJsonObject();
+    QCOMPARE(summary.value(QStringLiteral("fallbackBatches")).toInt(), 1);
+    QVERIFY(!brain.memoryStore()->findById(source.id));
+    QCOMPARE(brain.memoryStore()->all().size(), 1);
+    QVERIFY(brain.memoryStore()->all().first().partition
+            != QLatin1String("hippocampus"));
 }
 
 void SleepCycleTests::buildChangeSet_whenDecisionsAreValid_shouldReturnDeterministicChangesWithoutMutatingStore() {

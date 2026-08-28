@@ -222,9 +222,6 @@ void TestLlmChatService::testDaydreamConfigLoadsAndClamps() {
     QCOMPARE(config.batchLimit, 32);
     QCOMPARE(config.inboxLimit, 128);
     QCOMPARE(config.relatedMemoryLimit, 32);
-    QCOMPARE(config.model, QStringLiteral("compact-model"));
-    QCOMPARE(config.maxTokens, 256);
-    QCOMPARE(config.temperature, 2.0);
 }
 
 void TestLlmChatService::testEmotionConfigLoadsFromActiveProfile() {
