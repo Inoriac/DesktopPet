@@ -155,6 +155,51 @@ bool appendMessage(QJsonArray& output, const QString& role, const QJsonArray& bl
     return true;
 }
 
+bool convertCanonicalBlocks(const QJsonArray& canonical,
+                            QJsonArray& output,
+                            QString& error) {
+    for (const QJsonValue& value : canonical) {
+        if (!value.isObject()) {
+            error = QStringLiteral("message content block is not an object");
+            return false;
+        }
+        const QJsonObject block = value.toObject();
+        const QString type = block.value(QStringLiteral("type")).toString();
+        if (type == QStringLiteral("text")) {
+            if (!block.value(QStringLiteral("text")).isString()) {
+                error = QStringLiteral("text content block is incomplete");
+                return false;
+            }
+            output.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("text")},
+                {QStringLiteral("text"), block.value(QStringLiteral("text")).toString()}
+            });
+            continue;
+        }
+        if (type == QStringLiteral("image")) {
+            const QString mediaType =
+                block.value(QStringLiteral("mediaType")).toString().trimmed();
+            const QString data =
+                block.value(QStringLiteral("data")).toString().trimmed();
+            if (mediaType.isEmpty() || data.isEmpty()) {
+                error = QStringLiteral("image content block is incomplete");
+                return false;
+            }
+            output.append(QJsonObject{
+                {QStringLiteral("type"), QStringLiteral("image")},
+                {QStringLiteral("source"), QJsonObject{
+                     {QStringLiteral("type"), QStringLiteral("base64")},
+                     {QStringLiteral("media_type"), mediaType},
+                     {QStringLiteral("data"), data}}}
+            });
+            continue;
+        }
+        error = QStringLiteral("unsupported canonical content block");
+        return false;
+    }
+    return true;
+}
+
 bool convertMessages(const QList<ChatMessage>& messages,
                      QString& system,
                      QJsonArray& output,
@@ -189,7 +234,11 @@ bool convertMessages(const QList<ChatMessage>& messages,
                 {QStringLiteral("content"), message.content}
             });
         } else {
-            if (!message.content.isEmpty() || message.toolCalls.isEmpty()) {
+            if (!message.contentBlocks.isEmpty()) {
+                if (!convertCanonicalBlocks(message.contentBlocks, blocks, error)) {
+                    return false;
+                }
+            } else if (!message.content.isEmpty() || message.toolCalls.isEmpty()) {
                 blocks.append(QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
                                           {QStringLiteral("text"), message.content}});
             }

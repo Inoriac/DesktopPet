@@ -86,18 +86,20 @@
     "profiles": {
       "default": {
         "enabled": false,
-        "provider": "openai-compatible",
-        "baseUrl": "https://api.example.com/v1",
-        "apiKey": "YOUR_API_KEY_HERE",
-        "model": "YOUR_TEXT_MODEL_HERE",
-        "visual_model": "YOUR_VISUAL_MODEL_HERE",
+        "modelEndpoints": {
+          "DEFAULT": {
+            "provider": "anthropic-messages",
+            "baseUrl": "https://api.example.com",
+            "apiKey": "YOUR_TEXT_API_KEY_HERE",
+            "anthropicVersion": "2023-06-01"
+          }
+        },
         "modelRoles": {
           "dialogue": {
             "limits": {"maxLatencyMs": 30000, "maxEstimatedCostMicros": 0},
             "routes": [{
               "routeId": "dialogue-primary", "enabled": true,
-              "provider": "openai-compatible", "baseUrl": "https://api.example.com/v1",
-              "apiKey": "YOUR_API_KEY_HERE", "model": "YOUR_TEXT_MODEL_HERE",
+              "endpointRef": "DEFAULT", "model": "YOUR_TEXT_MODEL_HERE",
               "supportsVision": false, "timeoutMs": 30000, "maxTokens": 512,
               "temperature": 0.7, "estimatedCostMicros": 0
             }]
@@ -106,8 +108,7 @@
             "limits": {"maxLatencyMs": 15000, "maxEstimatedCostMicros": 0},
             "routes": [{
               "routeId": "fast-extract-primary", "enabled": true,
-              "provider": "openai-compatible", "baseUrl": "https://api.example.com/v1",
-              "apiKey": "YOUR_API_KEY_HERE", "model": "YOUR_TEXT_MODEL_HERE",
+              "endpointRef": "DEFAULT", "model": "YOUR_TEXT_MODEL_HERE",
               "supportsVision": false, "timeoutMs": 15000, "maxTokens": 512,
               "temperature": 0.2, "estimatedCostMicros": 0
             }]
@@ -116,8 +117,7 @@
             "limits": {"maxLatencyMs": 30000, "maxEstimatedCostMicros": 0},
             "routes": [{
               "routeId": "consolidation-primary", "enabled": true,
-              "provider": "openai-compatible", "baseUrl": "https://api.example.com/v1",
-              "apiKey": "YOUR_API_KEY_HERE", "model": "YOUR_TEXT_MODEL_HERE",
+              "endpointRef": "DEFAULT", "model": "YOUR_TEXT_MODEL_HERE",
               "supportsVision": false, "timeoutMs": 30000, "maxTokens": 1200,
               "temperature": 0.2, "estimatedCostMicros": 0
             }]
@@ -126,8 +126,7 @@
             "limits": {"maxLatencyMs": 30000, "maxEstimatedCostMicros": 0},
             "routes": [{
               "routeId": "diary-primary", "enabled": true,
-              "provider": "openai-compatible", "baseUrl": "https://api.example.com/v1",
-              "apiKey": "YOUR_API_KEY_HERE", "model": "YOUR_TEXT_MODEL_HERE",
+              "endpointRef": "DEFAULT", "model": "YOUR_TEXT_MODEL_HERE",
               "supportsVision": false, "timeoutMs": 30000, "maxTokens": 1200,
               "temperature": 0.7, "estimatedCostMicros": 0
             }]
@@ -136,9 +135,17 @@
             "limits": {"maxLatencyMs": 30000, "maxEstimatedCostMicros": 0},
             "routes": [{
               "routeId": "vision-primary", "enabled": true,
-              "provider": "openai-compatible", "baseUrl": "https://api.example.com/v1",
-              "apiKey": "YOUR_API_KEY_HERE", "model": "YOUR_VISUAL_MODEL_HERE",
+              "endpointRef": "DEFAULT", "model": "YOUR_VISUAL_MODEL_HERE",
               "supportsVision": true, "timeoutMs": 30000, "maxTokens": 512,
+              "temperature": 0.2, "estimatedCostMicros": 0
+            }]
+          },
+          "daydream": {
+            "limits": {"maxLatencyMs": 30000, "maxEstimatedCostMicros": 0},
+            "routes": [{
+              "routeId": "daydream-primary", "enabled": true,
+              "endpointRef": "DEFAULT", "model": "YOUR_DAYDREAM_MODEL_HERE",
+              "supportsVision": false, "timeoutMs": 30000, "maxTokens": 1200,
               "temperature": 0.2, "estimatedCostMicros": 0
             }]
           }
@@ -160,10 +167,7 @@
           "sessionLimit": 32,
           "batchLimit": 8,
           "inboxLimit": 200,
-          "relatedMemoryLimit": 8,
-          "model": "",
-          "maxTokens": 1200,
-          "temperature": 0.2
+          "relatedMemoryLimit": 8
         },
         "sleepPolicy": {
           "enabled": true,

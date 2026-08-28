@@ -5,6 +5,7 @@
 | 日期 | 版本 | 修订人 | 内容 |
 |---|---|---|---|
 | 2026-08-27 | 1.0 | Codex | 基于已确认的 `design.md` 起草完整桌面端技术方案 |
+| 2026-08-28 | 1.1 | Codex | 增加 DEFAULT 连接档案、角色引用、视觉统一路由与 Daydream 独立模型角色 |
 
 ## 涉及仓库
 
@@ -28,8 +29,10 @@
 - [2026-08-27] 长回复在桌面气泡中自动播放，悬停暂停，并允许手动翻页。
 - [2026-08-27] 实施必须先完成流式输出和工具解析，再改造界面。
 - [2026-08-27] 文本主接口使用 Anthropic Messages，保留 OpenAI-compatible 客户端。
-- [2026-08-27] 文本和视觉服务分别配置协议、Base URL、API Key 和模型；其他文字角色默认继承文本服务并可覆盖。
 - [2026-08-27] macOS 当前无法运行仓库内 ONNX Runtime，本地验收只要求不依赖 ONNX 的最小测试与 CMake 配置检查。
+- [2026-08-28] `DEFAULT` 只共享 provider、Base URL、API Key 和协议参数，模型名始终由每个 `modelRoles` route 独立配置。
+- [2026-08-28] 视觉和 Daydream 默认引用 `DEFAULT`，但可切换到具有独立供应商与凭据的连接档案；禁止特殊档案按字段回退默认 Key。
+- [2026-08-28] Daydream 两条执行路径统一使用 `ModelRole::Daydream`，不再覆盖全局模型或借用 Consolidation。
 
 ### 1.3 共享状态机
 
@@ -126,9 +129,10 @@ struct ChatHistoryEntry {
 
 ### 1.6 共享安全与隐私约束
 
-影响范围：§3.2、§3.3、§3.4、§3.7。
+影响范围：§3.2、§3.3、§3.4、§3.7、§3.8。
 
 - API Key 仅通过请求头发送，日志、InfoBar 和测试错误均不回显。
+- API Key 仅存在于 `modelEndpoints` 连接档案；role route 不复制 Key，解析失败时禁止从其他档案补齐。
 - `thinking_delta`、`signature_delta`、原始工具参数碎片和原始工具输出不发布到 UI。
 - Anthropic transport blocks 只在当前请求链内存在，结束后释放。
 - profile 聊天文件尽力设置为 owner read/write；权限设置失败记录警告，不删除数据。
@@ -159,8 +163,12 @@ flowchart LR
     Model --> Store[ProfileChatHistoryStore]
     Model --> Window[Fluent ChatHistoryWindow]
     Model --> Bubble[LiquidGlass desktop bubble]
-    Launcher[AI settings] --> Config[launch_config.json / modelRoles]
-    Config --> Router
+    Launcher[Endpoint profiles / role models] --> Config[launch_config.json]
+    Config --> Endpoints[modelEndpoints registry]
+    Endpoints --> Roles[modelRoles / endpointRef]
+    Roles --> Router
+    Vision[Screen vision] -->|ModelRole::Vision| Router
+    Daydream[Legacy + sleep Daydream] -->|ModelRole::Daydream| Router
 ```
 
 ### 2.2 核心时序
@@ -201,7 +209,7 @@ sequenceDiagram
 | 🆕 | `core/ai/llm/sse_event_parser.*` | 纯增量 SSE framing 解析 |
 | 🆕 | `core/ai/llm/anthropic_messages_client.*` | Anthropic 请求转换、流累计和工具块解析 |
 | 🔧 | `core/ai/llm/llm_client.h` / `llm_chat_service.*` / `openai_compatible_client.*` | 新增流式入口、provider 注册与非流式适配 |
-| 🔧 | `include/ai_types.h` | 新增 provider transport state、Anthropic 版本与额外请求头配置 |
+| 🔧 | `include/ai_types.h` | 新增 provider transport state、结构化视觉块、Daydream role、Anthropic 版本与额外请求头配置 |
 | 🔧 | `core/ai/model/model_router.*` / `llm_chat_model_client.*` | 流式路由、首字边界与取消传递 |
 | 🔧 | `core/ai/ai_brain.*` / `ai_brain_loop.cpp` / `ai_brain_router.cpp` | 单条回复状态、工具续写、停止和脱敏 UI 信号 |
 | 🆕 | `core/ai/chat/chat_types.*` / `profile_chat_history_store.*` | profile 历史、旧文件迁移与 JSONL 编解码 |
@@ -209,11 +217,15 @@ sequenceDiagram
 | 🔧 | `ui/chat_history_window.*` | Fluent 连续时间流、分割线、流式正文和自适应输入 |
 | 🆕 | `ui/streaming_text_paginator.*` / `bubble_playback_controller.*` | 自然分段和播放状态机 |
 | 🔧 | `ui/liquidglasschatbubble.*` / `petwindow_bubble.cpp` / `petwindow_screen_chat.cpp` / `petwindow.*` | 桌面输入条、回复控件和共享 model 接入 |
-| 🔧 | `launcher/app_state.py` / `config_loader.py` / `pages/ai_page.py` | 文本/视觉独立配置与文字角色覆盖 |
+| 🔧 | `launcher/app_state.py` / `config_loader.py` / `pages/ai_page.py` / `main.py` | 连接档案、角色模型、旧配置迁移与无损保存 |
 | 🆕 | `launcher/api_connection_tester.py` | provider-specific 最小连接测试和脱敏错误 |
-| 🔧 | `config/default_common_config*.json` | Anthropic provider 示例和独立 vision route 默认值 |
+| 🔧 | `core/configLoader/config_manager.*` | 解析连接档案、严格 endpointRef、Anthropic header 与 Daydream role |
+| 🔧 | `core/ai/llm/anthropic_messages_client.cpp` / `openai_compatible_client.cpp` | 将规范化视觉块转换为各 provider 请求格式 |
+| 🔧 | `ui/petwindow_screen_chat.cpp` | 屏幕识别通过 `ModelRole::Vision` 路由，不再直读全局 Key |
+| 🔧 | `core/ai/ai_brain_loop.cpp` / `core/ai/reflection/daydream_sleep_adapter.cpp` | 两条 Daydream 路径统一使用 `ModelRole::Daydream` |
+| 🔧 | `config/default_common_config*.json` | DEFAULT endpoint registry、角色引用和 Daydream route 示例 |
 | 🔧 | `CMakeLists.txt` | 注册新源文件与不依赖 ONNX 的最小测试目标 |
-| 🆕/🔧 | `tests/test_anthropic_messages_client.cpp` 等 | 协议、编排、存储、分页、UI model 和 launcher 配置测试 |
+| 🆕/🔧 | `tests/test_anthropic_messages_client.cpp` / `tests/test_model_router.cpp` 等 | 协议、编排、存储、分页、UI model、route 解析和 launcher 配置测试 |
 
 ## 3. 详细设计
 
@@ -226,7 +238,8 @@ sequenceDiagram
 | 3 | §3.4 身份化聊天存储 | 管理 profile 历史、稳定 ID、终态持久化与阅读位置 | §3.3 消息生命周期 |
 | 4 | §3.5 Fluent 完整聊天窗口 | 展示连续时间流并提供完整输入/停止交互 | §3.3、§3.4 |
 | 5 | §3.6 桌面快捷聊天与分段气泡 | 提供快捷输入、增量分段和可控自动播放 | §3.3、§3.4、§3.5 |
-| 6 | §3.7 Launcher 独立模型配置 | 编辑和验证文本/视觉的独立 route | §3.2 provider 契约 |
+| 6 | §3.7 连接档案、角色配置与视觉路由 | 解析/编辑 DEFAULT 与特殊连接，迁移旧配置，并让视觉消费者使用 role route | §3.2 provider 契约 |
+| 7 | §3.8 Daydream 独立模型路由 | 为两条 Daydream 执行路径提供同一轻量模型角色 | §3.7 endpointRef 解析 |
 
 ### 3.2 Anthropic Messages 流式客户端
 
@@ -839,13 +852,13 @@ N/A — 分页、播放位置、hover/userPause 和等待预设均是当前进�
 - `ThinkingStatusSelector::next`：WaitingForModel、RunningTool 和 Finalizing 分别只从对应预设池取值，同 requestId 连续两次不重复，切换 request 后重置记忆。
 - `LiquidGlassChatBubble::setDisplayedPage`：页数变化时正文区与固定控制区不互相覆盖，previous/next/pause/open 图标热区保持 32x32px。
 
-### 3.7 Launcher 独立模型配置
+### 3.7 连接档案、角色配置与视觉路由
 
-> 依赖：§3.2 定义的 provider 标识、Anthropic endpoint/header 契约和 OpenAI-compatible 兼容边界。
+> 依赖：§3.2 的 provider adapter、Anthropic endpoint/header 契约和 §3.3 的 ModelRouter fallback 语义。
 
 #### 3.7.1 模块定位
 
-本模块是用户可编辑的模型连接入口：将当前共用 provider/baseUrl/apiKey 的 launcher 状态拆分为文本和视觉两套完全独立的服务配置，并将它们写入现有 `modelRoles.<role>.routes[0]`。其他文字角色默认物化继承文本 route，但可在高级区域显式覆盖；不引入新的连接档案/引用 schema。
+本模块是模型连接凭据的唯一配置边界：Launcher 管理 `modelEndpoints`，角色 route 只引用连接并选择模型；ConfigManager 严格解析引用，视觉请求通过 `ModelRole::Vision` 使用解析后的完整 route。`DEFAULT` 是不可删除的保留档案，但不代表默认模型。
 
 #### 3.7.2 核心服务接口
 
@@ -855,105 +868,207 @@ class ModelEndpointState:
     provider: str = "openai-compatible"
     base_url: str = ""
     api_key: str = ""
-    model: str = ""
     anthropic_version: str = "2023-06-01"
+    extra_headers: dict[str, str] = field(default_factory=dict)
 
 @dataclass
-class ModelRoleOverrideState:
-    enabled: bool = False
-    endpoint: ModelEndpointState = field(default_factory=ModelEndpointState)
+class ModelRoleState:
+    endpoint_ref: str = "DEFAULT"
+    model: str = ""
 
 @dataclass
 class AppState:
-    text_service: ModelEndpointState = field(default_factory=ModelEndpointState)
-    vision_service: ModelEndpointState = field(default_factory=ModelEndpointState)
-    text_role_overrides: dict[str, ModelRoleOverrideState] = field(default_factory=dict)
+    model_endpoints: dict[str, ModelEndpointState] = field(default_factory=dict)
+    model_roles: dict[str, ModelRoleState] = field(default_factory=dict)
 
-def apply_model_service_settings(
+def apply_model_endpoint_settings(
     profile: dict,
-    text_service: ModelEndpointState,
-    vision_service: ModelEndpointState,
-    overrides: dict[str, ModelRoleOverrideState],
+    endpoints: dict[str, ModelEndpointState],
+    roles: dict[str, ModelRoleState],
 ) -> None: ...
 
 class ApiConnectionTester(QObject):
-    finished = Signal(str, bool, str, str)  # request_id, success, category, message
-
+    finished = Signal(str, bool, str, str)
     def test(self, request_id: str,
-             endpoint: ModelEndpointState) -> None: ...
+             endpoint: ModelEndpointState, model: str) -> None: ...
 ```
 
-`apply_model_service_settings` 入参：
+```cpp
+// 文件级内部函数，保持 ConfigManager 公开 API 不变。
+QHash<QString, LlmConfig> parseModelEndpoints(
+    const QJsonObject& object, const LlmConfig& legacyDefaults);
+std::optional<ModelRouteConfig> parseModelRouteConfig(
+    const QJsonObject& object,
+    const QHash<QString, LlmConfig>& endpoints,
+    const LlmConfig& legacyDefaults);
+```
+
+`apply_model_endpoint_settings` 入参：
 
 | 字段 | 值来源 | 约束 |
 |---|---|---|
-| `profile` | 调用方传入 | 当前 active profile 的深拷贝，非原模板引用 |
-| `text_service` | 调用方传入 | AI 页文本服务编辑器状态 |
-| `vision_service` | 调用方传入 | AI 页视觉服务编辑器状态，不从 text 填充 |
-| `overrides` | 调用方传入 | 只允许 `fastExtract/consolidation/diary` |
-| role routeId | 配置默认值（来源: 现有 route ID） | 无 route 时分别创建 `<role>-primary` |
+| `profile` | 调用方传入 | `load_saved_config() or load_template()` 中 active profile 的深拷贝 |
+| `endpoints` | 调用方传入 | 必含 `DEFAULT`；ID 匹配 `[A-Za-z][A-Za-z0-9_-]{0,63}` |
+| `roles` | 调用方传入 | 只管理 dialogue/vision/fastExtract/consolidation/diary/daydream 的 first route |
+| fallback routes | 系统推导（来源: `profile.modelRoles.*.routes[1:]`） | 迁移连接字段但保留顺序、routeId、limits 与未知字段 |
 
-`ApiConnectionTester::test` 入参：
+`ApiConnectionTester.test` 入参：
 
 | 字段 | 值来源 | 约束 |
 |---|---|---|
-| `request_id` | 系统推导（来源: 每次点击生成 UUID） | 用于忽略旧测试回调 |
-| `endpoint` | 调用方传入 | 当前分区编辑值，不要求先保存 |
+| `request_id` | 系统推导（来源: 每次点击生成 UUID） | 忽略迟到回调 |
+| `endpoint` | 调用方传入 | 当前连接档案编辑值，不要求先保存 |
+| `model` | 调用方传入 | 当前选中角色模型；连接档案本身不存模型 |
 | timeout | 配置默认值（来源: connection tester 常量） | 10 秒 |
+
+`PetWindow::requestVisionSummary` 构造 `ModelRequest{role=Vision, constraints.requiresVision=true}`；用户消息的 `ChatMessage::contentBlocks` 使用 provider-neutral 块：文本为 `{type:"text",text}`，图片为 `{type:"image",mediaType:"image/png",data:"<base64>"}`。
 
 #### 3.7.3 模块业务流程
 
-1. `AppState.from_config` 优先读取 `modelRoles.dialogue.routes[0]` 为 text service，优先读取 `modelRoles.vision.routes[0]` 为 vision service；缺失时分别回退 profile 旧字段，但不把 text URL/Key 强行填入已存在的 vision route。
-2. `fastExtract/consolidation/diary` 的第一 route 与 text service 的 provider/baseUrl/apiKey/model/anthropicVersion 全部等价时视为未覆盖；任一字段不同时在 UI 中显示为已开启覆盖。
-3. AI 页用两个同级 `Section`“文本服务”和“视觉服务”展示 provider ComboBox、Base URL、PasswordLineEdit、model 和测试图标/命令按钮。两区控件绑定不同 state object。
-4. provider 选择 `anthropic-messages` 时显示可折叠的 anthropic-version 高级字段；`openai-compatible` 时保留 state 但隐藏该控件。流式不是用户开关。
-5. 高级模型分工对每个辅助文字角色提供 override SwitchButton。关闭时显示“继承文本服务”的只读摘要；开启时显示独立 endpoint 编辑器。
-6. 保存时 text 写入 profile 旧字段和 dialogue first route，vision 只写入 vision first route/profile `visual_model`。未 override 辅助角色将 text 字段物化到各自 first route，override 角色写入自己 state；`routes[1:]`、limits 和未知字段原样保留。
-7. 连接测试先本地校验 provider/URL/Key/model，再使用 `QNetworkAccessManager` 发最小非流式文本请求：Anthropic 使用 max_tokens=1 的 Messages body，OpenAI-compatible 使用 max_tokens=1 的 chat completions body。测试期间只禁用当前分区的测试按钮。
-8. finished 仅在 request_id 与当前分区 active id 相等时显示 InfoBar。HTTP status/provider error 先分类，再移除 Key 原文和 Authorization/x-api-key 值，最后截断到 400 字符。
+1. `AppState.from_config` 读取 `modelEndpoints` 与六个角色 first route。若为旧配置，先按旧解析语义以 profile connection defaults 物化每条 route 的完整连接；dialogue first 的物化结果成为 `DEFAULT`。其他 route 仅在 provider/baseUrl/apiKey/anthropicVersion/extraHeaders 五字段与 `DEFAULT` 精确相同时复用 `DEFAULT`，否则按稳定 ID `MIGRATED_<ROLE>_<INDEX>` 独立迁移，不做模糊匹配或字段级跨档案合并。
+2. AI 页先展示“连接档案”：选择、新增、删除命名档案并编辑 provider/Base URL/API Key/协议参数；`DEFAULT` 可编辑不可删除。再展示“模型分工”：六个角色各自选择 endpointRef 和模型，视觉标记图像能力，Daydream 文案提示可选择轻量模型。
+3. 保存以 `load_saved_config() or load_template()` 为基底。所有 route 的连接字段转换为 endpointRef 后移除 inline provider/baseUrl/apiKey/anthropicVersion/extraHeaders；first route 更新引用与模型，fallback route 的行为字段、limits 和未知平台字段不变。profile 顶层旧连接字段不再写入。
+4. C++ 加载时，存在 `modelEndpoints` 就严格解析引用：endpointRef 存在时完全忽略 route inline 凭据；引用缺失或档案不完整则跳过该 route。没有 registry 的旧 JSON 仍使用原 inline/defaults 逻辑。
+5. `DEFAULT` 连接与 dialogue 模型合成为兼容 `getLlmConfig()`，供尚未角色化的只读上下文使用；真正模型调用必须走 ModelRouter。
+6. OpenAI 与 Anthropic adapter 分别把规范化视觉块转换为 `image_url` data URL 与 Anthropic base64 `image/source`，正文块保持顺序；视觉图片和 Key 不进入日志。
+7. 连接测试按 endpoint + 临时 model 构建最小非流式请求。finished 先验证 request_id，再分类、脱敏并截断错误；不同档案的 pending 状态互不影响。
 
 #### 3.7.4 数据变更
 
-不新增独立配置文件，继续由 launcher 原子导出 AppData `launch_config.json`。主要 JSON 映射：
+继续原子写入 AppData `launch_config.json`，不新增文件。新 schema 位于 active profile：
 
-| UI 状态 | JSON 路径 | 写入语义 |
-|---|---|---|
-| text service | `modelRoles.dialogue.routes[0]` | 覆盖 first route 的 endpoint/model，保留 routeId/limits/fallbacks |
-| vision service | `modelRoles.vision.routes[0]` | 仅使用 vision state，`supportsVision=true` |
-| inherited text role | `modelRoles.<role>.routes[0]` | 将 text service 物化为显式值 |
-| overridden text role | `modelRoles.<role>.routes[0]` | 使用该 role endpoint state |
-| compatibility fields | profile `provider/baseUrl/apiKey/model/visual_model` | 文本值同步旧文本字段，视觉只同步 `visual_model` |
+```json
+{
+  "modelEndpoints": {
+    "DEFAULT": {
+      "provider": "anthropic-messages",
+      "baseUrl": "https://api.example.com",
+      "apiKey": "...",
+      "anthropicVersion": "2023-06-01"
+    }
+  },
+  "modelRoles": {
+    "dialogue": {"routes": [{"routeId": "dialogue-primary", "endpointRef": "DEFAULT", "model": "dialogue-model"}]},
+    "vision": {"routes": [{"routeId": "vision-primary", "endpointRef": "DEFAULT", "model": "vision-model", "supportsVision": true}]},
+    "daydream": {"routes": [{"routeId": "daydream-primary", "endpointRef": "DEFAULT", "model": "light-model"}]}
+  }
+}
+```
 
-route 新增可选 `anthropicVersion` 和 `extraHeaders` object，C++ ConfigManager 结构化读取；`extraHeaders` 只接受 string value，非字符串值忽略并警告。
+| JSON 路径 | 写入语义 |
+|---|---|
+| `modelEndpoints.DEFAULT` | 默认连接；不可删除，不含 model |
+| `modelEndpoints.<id>` | 特殊供应商的完整连接边界；API Key 不复制到 role |
+| `modelRoles.<role>.routes[*].endpointRef` | 整体选择一个连接档案，禁止字段级继承 |
+| `modelRoles.<role>.routes[*].model` | 角色/route 独立模型名 |
+| `daydream` | 只保留调度、批量与行为参数；旧 model/maxTokens/temperature 迁移到 daydream route |
 
 #### 3.7.5 实现锚点
 
 | 现有锚点 | 实测行为 | 设计后要求 |
 |---|---|---|
-| `AiPage` provider ComboBox | 只有 `openai-compatible` | 增加 `anthropic-messages`，文本和 vision 各自一个 editor |
-| `AppState` | 单个 provider/base_url/api_key/model + visual_model | 迁移为 endpoint objects，from_config 兼容旧已保存 JSON |
-| `_sync_ui_managed_model_routes` | provider/base/key 同时写 dialogue 和 vision | 拆为 role-specific writer，禁止跨服务复制 Key/URL |
-| `_first_model_role_route` | 只创建/修改 routes[0] | 继续复用，确保 fallbacks 不丢失 |
-| `ConfigManager::routeFromJson` | 读 provider/baseUrl/apiKey/model/extraParams | 新增 anthropicVersion/extraHeaders，不把 headers 混入 body extraParams |
-| `export_config` | tempfile + `os.replace` 原子导出 | 保留原子写入和 AppData 路径 |
+| `AppState.from_config/to_settings_dict` | 未提交版本仍按 text/vision endpoint object 物化 | 改为 endpoint registry + 六个 role state，兼容旧 JSON |
+| `config_loader._first_model_role_route` | 保留 first route 与 fallback | 继续保留结构；新增全 route 连接迁移和 first route 引用写入 |
+| `LauncherWindow._export_current_configuration` | 总是以 template 为基底 | 改为 saved config 优先，避免丢失 fallback/limits/未知字段 |
+| `AiPage` | 仍引用已不存在的 `state.provider/base_url` 旧字段 | 重做连接档案与模型分工绑定，测试按钮按 endpoint ID 隔离 |
+| 文件级 `parseModelRouteConfig` | 读取 inline provider/baseUrl/apiKey/model/extraParams | 增加 endpoint map；引用存在时整体采用档案，route 只覆盖模型与调用参数 |
+| `PetWindow::requestVisionSummary` | 直读 `getLlmConfig()` 并硬编码 OpenAI HTTP | 改走 `aiBrain->modelRouter()->completeAsync(ModelRole::Vision)` |
+| 两个 provider adapter | ChatMessage 只输出字符串 content | 转换规范化 text/image blocks；普通文本路径行为不变 |
+| `export_config` | tempfile + fsync + `os.replace` | 保留原子写入与 AppData 路径 |
 
 #### 3.7.6 异常场景
 
 | 类型 | 场景 | 处理策略 | 与 §1.5 关系 |
 |---|---|---|---|
-| 业务异常 | text 完整但 vision URL/Key/model 缺失 | 抛：视觉测试本地失败；保存允许但不用 text 值补齐 | 保证两服务隔离，运行时 vision role 自行不可用 |
-| 业务异常 | provider 是未支持字符串 | 抛：页面标记配置无效，不发连接测试 | 对应 `MODEL_CONNECTION_INVALID` |
-| 系统异常 | 连接测试 HTTP 401/403/404/429/5xx | 降级：分类后显示脱敏 InfoBar，不更改 state | 对应 §1.5 launcher 错误策略 |
-| 系统异常 | 保存过程临时文件写入失败 | 抛：保留旧 `launch_config.json`，显示保存失败 | 沿用 launcher 原子导出策略，不部分替换 |
+| 业务异常 | endpointRef 不存在、档案缺 URL/Key/provider 或角色 model 为空 | 抛：该 route 不进入 registry；保存允许离线编辑，但本地测试标错 | 映射 `MODEL_CONNECTION_INVALID`/`MODEL_ROLE_UNAVAILABLE`，禁止用 DEFAULT 补字段 |
+| 业务异常 | endpoint ID 非法、重复或试图删除 DEFAULT | 抛：Launcher 保持原 state 并提示，不写盘 | 配置编辑边界，不进入网络重试 |
+| 系统异常 | 连接测试 401/403/404/429/5xx 或响应含 Key | 降级：显示分类后的脱敏短消息，不修改档案 | 对应 §1.5 launcher 错误策略 |
+| 系统异常 | 视觉 provider 请求失败或格式不支持 | 降级：保留现有桌宠提示语并删除临时截图 | ModelRouter 可按 route fallback；不改用其他 endpoint 的 Key |
+| 系统异常 | 原子保存临时文件失败 | 抛：保留旧 `launch_config.json` 并显示失败 | 不产生半写配置 |
 
 #### 3.7.7 关键行为场景
 
-- `AppState.from_config`：当 dialogue 为 Anthropic URL/Key/model，vision 为另一 OpenAI-compatible URL/Key/model 时，恢复后两个 endpoint object 精确保留自己字段，不发生交叉覆盖。
-- `apply_model_service_settings`：独立 text/vision 输入保存后，dialogue/vision first route 分别更新，现有第二 fallback route、limits 和未知字段与输入模板相同。
-- `apply_model_service_settings`：fastExtract override 关闭而 diary override 开启时，fastExtract first route 等于 text service，diary first route 等于自己 endpoint，consolidation 不受 diary 影响。
-- `ApiConnectionTester::test`：合法 Anthropic endpoint 生成 `/v1/messages`、`x-api-key`、`anthropic-version` 和 max_tokens=1 body，服务返回 2xx 后发出 success 分类。
-- `ApiConnectionTester::test`：返回体同时包含用户 API Key 和超长 provider 错误时，finished message 中 Key 被替换，总长不超过 400 字符。
-- `AiPage` 连接测试：同时启动 text 和 vision 测试时两个按钮独立 pending，旧 request_id 的迟到回调不覆盖新测试结果。
+- `AppState.from_config`：新 schema 中 dialogue 引用 DEFAULT、vision 引用独立档案时，恢复后两个角色只持有引用与模型，各档案 Key 原样归属自己的 ID。
+- `AppState.from_config`：旧 dialogue/vision inline Key 不同时，迁移得到 DEFAULT 和独立 vision 档案，不把任一 Key 写进另一档案。
+- `AppState.from_config`：旧非 dialogue first route 的完整连接与 DEFAULT 五字段精确相同时直接引用 DEFAULT，不创建冗余迁移档案；partial inline override 先继承旧 profile defaults 物化，差异连接仍生成字段完整的稳定 MIGRATED 档案。
+- `load_template`：开箱配置只含一个 DEFAULT 连接档案，六个角色默认均引用 DEFAULT；视觉与其他角色的模型名仍彼此独立，专用供应商由用户主动新增档案后选择。
+- `apply_model_endpoint_settings`：编辑 DEFAULT 并保存后，所有引用 DEFAULT 的 route 自动生效但各自 model 不变；fallback route、limits 和未知字段完整保留。
+- `apply_model_endpoint_settings`：特殊档案被 daydream 引用时，只写 endpointRef，route 与 profile 顶层均不出现该 API Key 副本。
+- `apply_model_endpoint_settings`：保留的 fallback route 引用已删除或未知档案时，写盘前返回失败，不留下悬空 endpointRef。
+- `ConfigManager::loadConfig/getModelRoleConfig`：Anthropic endpoint 的版本和全字符串 headers 与 route model 合成完整 LlmConfig；header 不进入 extraParams。
+- `ConfigManager::loadConfig/getModelRoleConfig`：特殊 endpointRef 拼写错误时 route 被拒绝，即使 DEFAULT 完整也不补齐 provider/URL/Key。
+- `ApiConnectionTester.test`：同一档案和所选模型生成 provider-specific 最小请求，错误体含 Key 时结果脱敏且不超过 400 字符。
+- provider message conversion：OpenAI-compatible 与 Anthropic 对非对象、未知类型、缺失字段或字段类型错误的 canonical content block 均在发起网络请求前失败，不静默丢块或发送空 content。
+- `PetWindow::requestVisionSummary`：Vision route 使用独立 Anthropic 档案时发送 Anthropic 图片块；使用 OpenAI-compatible 档案时发送 image_url，成功响应仍生成同一桌宠气泡。
+
+### 3.8 Daydream 独立模型路由
+
+> 依赖：§3.7 的 endpointRef 解析、`ModelRole::Daydream` 配置和 §3.3 ModelRouter fallback。
+
+#### 3.8.1 模块定位
+
+本模块把空闲记忆整理的模型选择从行为参数中剥离，为旧 `AIBrain` 定时路径和新 `DaydreamSleepAdapter` 睡眠路径提供同一个、可独立供应商和低成本模型的角色路由。
+
+#### 3.8.2 核心服务接口
+
+```cpp
+enum class ModelRole {
+    Dialogue, FastExtract, Consolidation, Diary, Vision, Daydream
+};
+
+// 公开签名不变，内部改为 ModelRequest + ModelRouter。
+void AIBrain::runNextDaydreamBatch(quint64 generation);
+void DaydreamSleepAdapter::processNextBatch(
+    const std::shared_ptr<ConsolidationState>& state);
+```
+
+| 入参字段 | 值来源 | 约束 |
+|---|---|---|
+| `generation` | 系统推导（来源: AIBrain 当前 Daydream session generation） | 迟到回调必须丢弃 |
+| `state` | 调用方传入 | 持有 snapshot、offset、取消 token 与 sessionId |
+| `ModelRequest.role` | 配置默认值（来源: `ModelRole::Daydream`） | 两条路径固定一致 |
+| `profileId/sessionId/petName` | 系统推导（来源: 当前 AIBrain 或 sleep request） | 用于隔离、日志和路由维度 |
+| messages | 系统推导（来源: 当前 batch + related memories） | 不扩大既有记忆读取范围 |
+
+#### 3.8.3 模块业务流程
+
+1. ConfigManager 将 `daydream` 加入角色键和 `allModelRoles()`；AIBrain 的 registry 初始化也注册该角色。
+2. 新配置直接解析 `modelRoles.daydream`。旧配置缺少该角色时，以旧 Daydream model/maxTokens/temperature 和 dialogue 完整 route 合成一条仅内存兼容 route；旧 model 为空时沿用 dialogue model。
+3. `AIBrain::runNextDaydreamBatch` 保留现有 batch、强制决策、取消和 fallback 逻辑，但改为构造 `ModelRequest{role=Daydream}` 并调用 `m_modelRouter.completeAsync`。
+4. `DaydreamSleepAdapter::processNextBatch` 将现有 `ModelRole::Consolidation` 改为 `Daydream`。两条路径均由同一 registry 选择 endpoint/model/fallback。
+5. provider 失败仍执行现有有界 hardcoded decisions；结构解析失败仍 preserve source，不改变记忆事务与 staging 语义。
+
+#### 3.8.4 数据变更
+
+不新增文件或数据库。`modelRoles.daydream.routes[*]` 保存模型调用参数；`daydream` 对象仅保存 enabled、空闲阈值、频控、batch/session/inbox/relatedMemory 等行为参数。Launcher 保存时迁移旧 `daydream.model/maxTokens/temperature` 后移除这三个旧字段；C++ 读取器继续兼容未迁移 JSON。
+
+#### 3.8.5 实现锚点
+
+| 现有锚点 | 实测行为 | 设计后要求 |
+|---|---|---|
+| `modelRoleConfigKey/allModelRoles` | 枚举到 Vision 为止 | 增加 `daydream` 且所有 switch 显式处理 |
+| `AIBrain::configuredModelRoles` | 注册五个 role | 注册 Daydream，使 m_modelRouter 可解析 |
+| `AIBrain::runNextDaydreamBatch` | 复制 `getLlmConfig()`、覆盖 daydream.model 后绕过 router | 构造 Daydream ModelRequest 并使用 router completion dimensions |
+| `DaydreamSleepAdapter::processNextBatch` | 使用 `ModelRole::Consolidation` | 仅替换为 Daydream，保留 staging/cancel/fallback |
+| `ContextAssembler::allowedPartitions` | Consolidation 可读 EvidenceWindow/RelevantMemory | Daydream 获得同样的最小分区集合 |
+| `parseDaydreamConfig` | 同时解析行为和模型字段 | 行为结构去掉模型字段；legacy route 合成在 ConfigManager 加载阶段完成 |
+
+#### 3.8.6 异常场景
+
+| 类型 | 场景 | 处理策略 | 与 §1.5 关系 |
+|---|---|---|---|
+| 业务异常 | Daydream role 无有效 route | 降级：本 batch 使用 bounded hardcoded decisions，继续按既有策略收口 | `MODEL_ROLE_UNAVAILABLE` 不回退到其他角色或默认 Key |
+| 业务异常 | 模型返回无法验证的 decisions | 兜底值：preserve 当前需模型判断的 sources | 沿用现有数据安全边界 |
+| 系统异常 | provider 断线、超时或限流 | 降级：ModelRouter 先尝试 Daydream 自身 fallback，最终失败才使用 hardcoded decisions | 遵循 §1.5 route fallback，不切换角色 |
+| 系统异常 | session generation/token 已变化后回调到达 | 降级：丢弃迟到结果或返回 `SLEEP_CANCELLED` | 沿用共享生命周期 exactly-once 约束 |
+
+#### 3.8.7 关键行为场景
+
+- `ConfigManager::loadConfig/getModelRoleConfig`：Daydream route 引用独立 OpenAI-compatible 档案与轻量模型时，返回的完整 LlmConfig 只含该档案 Key 和该 route model。
+- `ConfigManager::loadConfig/getModelRoleConfig`：旧配置只有 `daydream.model/maxTokens/temperature` 时，内存兼容 route 继承 dialogue 连接并保留旧调用参数。
+- `AIBrain::runNextDaydreamBatch`：存在模型判断项时通过 Daydream role 完成并应用合法 decisions；provider 最终失败时仍推进 offset 并使用 hardcoded fallback。
+- `DaydreamSleepAdapter::processNextBatch`：睡眠 session 使用与 AIBrain 相同的 Daydream endpoint/model，成功结果继续写入既有 staging marker。
+- `ContextAssembler::assemble`：Daydream 请求 EvidenceWindow 与 RelevantMemory 时成功，尝试 Persona 或 OwnerAccess 时仍返回 scope denied。
 
 ## 4. 外部协议契约
 
@@ -972,7 +1087,7 @@ Anthropic `system` 消息收集为顶层 system 文本；`assistant.toolCalls` �
 
 ### 4.2 Launcher 连接测试契约
 
-连接测试由用户显式点击触发，向目标 provider 发送最小文本请求，只验证 URL、认证、模型和基础协议。视觉服务测试不上传桌面截图。响应只对 UI 返回 `success/category/message`，`message` 经脱敏后不得包含 API Key 或完整请求头。
+连接测试由用户显式点击触发，使用“当前连接档案 + 用户选定的一个角色模型”发送最小文本请求，只验证 URL、认证、模型和基础协议，不上传桌面截图。响应只对 UI 返回 `success/category/message`，`message` 经脱敏后不得包含 API Key 或完整请求头。测试不修改档案，也不把被测模型写入连接档案。
 
 ## 5. 数据存储
 
@@ -1008,6 +1123,10 @@ QSettings 使用以 `profileId` 隔离的键：
 
 本方案不新增关系型表，因此无 SQL 变更和回滚 SQL。
 
+### 5.3 模型连接 JSON
+
+`modelEndpoints` 与 `modelRoles` 位于 active profile；endpoint ID 在同一 profile 内唯一，`DEFAULT` 为保留 ID。API Key 只出现在 `modelEndpoints.<id>.apiKey`。新保存配置不得在 role route 或 profile 顶层生成 Key 副本；旧 inline route 由 Launcher 迁移，C++ 仅为直接加载旧文件保留只读兼容。
+
 ## 6. 非功能性设计
 
 ### 6.1 性能与容量
@@ -1023,6 +1142,8 @@ QSettings 使用以 `profileId` 隔离的键：
 - 非流式 provider 通过默认适配器发送单次 `TextDelta` 后完成，不伪造 token 级流式。
 - 动态背景捕获失败时，液态玻璃使用主题安全底色，输入与翻页仍可用。
 - launcher 连接测试失败不禁止保存，以允许离线编辑；启动时仍由 C++ ConfigManager 完成配置校验。
+- endpointRef 是整体引用而非继承链；缺失引用不会跨档案补齐，避免将凭据发送到错误平台。
+- Daydream provider 失败只在自身 routes 内 fallback，最终使用既有本地有界决策，不借用 Dialogue/Consolidation 凭据。
 
 ## 7. 测试与交付
 
@@ -1035,14 +1156,18 @@ QSettings 使用以 `profileId` 隔离的键：
 | `chat_history_tests` | profile 隔离、JSONL 编解码、半行跳过、唯一身份迁移、阅读标记 |
 | `chat_ui_model_tests` | 流式追加、同 ID 工具续写、终态持久化一次、分割线位置 |
 | `streaming_text_paginator_tests` | 中文标点、换行、硬上限、Unicode 边界、自动/悬停/手动播放 |
-| `tests/test_launcher_config.py` / `test_api_connection_tester.py` | 文本与 vision 互不覆盖、角色继承/覆盖、provider 请求构建、Key 脱敏 |
+| `tests/test_launcher_config.py` / `test_model_role_config.py` | endpoint registry 保存恢复、旧配置迁移、六角色引用、fallback/limits/未知字段保留、Key 不复制 |
+| `tests/test_api_connection_tester.py` | endpoint + 临时 model 的 provider 请求构建、并发 request ID 与 Key 脱敏 |
+| `tests/test_model_router.cpp` | endpointRef 严格解析、Anthropic header、缺失引用拒绝、Daydream legacy/new route |
+| `tests/test_anthropic_messages_client.cpp` / `test_llm_chat_service.cpp` | provider-neutral 视觉块转换为 Anthropic/OpenAI 请求格式 |
+| `tests/test_sleep_cycle.cpp` / Daydream 最小测试 | 两条执行路径均使用 ModelRole::Daydream 且保留取消/本地 fallback |
 
 ### 7.2 本地验证命令方向
 
-- Python：`python3 -m unittest tests.test_launcher_config tests.test_api_connection_tester`。
+- Python：`python3 -m unittest tests.test_launcher_config tests.test_model_role_config tests.test_api_connection_tester`；Qt 页面测试使用仓库内可控桩，不安装 PySide6。
 - CMake：优先使用已有 build tree 配置和不链接 ONNX 的独立 Qt Test 目标。
 - C++：分别构建并运行上表最小目标；不以 `Desktop_Pet` 完整可执行文件在 macOS 上运行为门禁。
 
 ### 7.3 人工联调验收
 
-在用户填入真实 Anthropic Messages 和视觉平台配置后验收：首字延迟、工具调用前后文本连续性、停止生成、长回复自动播放、悬停暂停、阅读分割线、两个 Base URL 互不干扰以及明暗主题。真实 Key 不写入仓库、测试夹具或 Git 历史。
+在用户填入真实 Anthropic Messages、视觉平台和可选 Daydream 平台配置后验收：首字延迟、工具调用前后文本连续性、停止生成、长回复自动播放、悬停暂停、阅读分割线、三个角色供应商互不干扰以及明暗主题。真实 Key 不写入仓库、测试夹具或 Git 历史。

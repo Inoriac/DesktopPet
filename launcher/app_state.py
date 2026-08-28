@@ -10,6 +10,33 @@ from dataclasses import dataclass, field, asdict
 from typing import Any, Dict
 
 
+MODEL_ROLES = (
+    "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream")
+
+
+@dataclass
+class ModelEndpointState:
+    provider: str = "openai-compatible"
+    base_url: str = ""
+    api_key: str = ""
+    anthropic_version: str = "2023-06-01"
+    extra_headers: Dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ModelRoleState:
+    endpoint_ref: str = "DEFAULT"
+    model: str = ""
+
+
+def _default_model_endpoints() -> Dict[str, ModelEndpointState]:
+    return {"DEFAULT": ModelEndpointState()}
+
+
+def _default_model_roles() -> Dict[str, ModelRoleState]:
+    return {role: ModelRoleState() for role in MODEL_ROLES}
+
+
 @dataclass
 class AppState:
     # 宠物设置
@@ -25,11 +52,10 @@ class AppState:
     auto_screen_chat: bool = False
     chat_interval_min_ms: int = 480000
     chat_interval_max_ms: int = 720000
-    provider: str = "openai-compatible"
-    base_url: str = "https://api.example.com/v1"
-    api_key: str = ""
-    model: str = ""
-    visual_model: str = ""
+    model_endpoints: Dict[str, ModelEndpointState] = field(
+        default_factory=_default_model_endpoints)
+    model_roles: Dict[str, ModelRoleState] = field(
+        default_factory=_default_model_roles)
 
     # 语音设置（音效开关暂不实现，见计划 §十一）
     voice_enabled: bool = False
@@ -57,6 +83,13 @@ class AppState:
     # 主题（light/dark，经 QSettings 与 C++ 共享）
     theme: str = "dark"
 
+    def __post_init__(self) -> None:
+        self.model_endpoints = dict(self.model_endpoints)
+        self.model_endpoints.setdefault("DEFAULT", ModelEndpointState())
+        self.model_roles = dict(self.model_roles)
+        for role in MODEL_ROLES:
+            self.model_roles.setdefault(role, ModelRoleState())
+
     @classmethod
     def from_config(cls, config: Dict[str, Any] | None) -> "AppState":
         """Restore launcher-managed fields from a previously exported config."""
@@ -83,6 +116,59 @@ class AppState:
             if isinstance(value, str):
                 setattr(state, name, value)
 
+        def role_routes(profile: Dict[str, Any], role: str) -> list[Dict[str, Any]]:
+            model_roles = object_at(profile, "modelRoles")
+            role_config = object_at(model_roles, role)
+            routes = role_config.get("routes")
+            if not isinstance(routes, list):
+                return []
+            return [route for route in routes if isinstance(route, dict)]
+
+        def endpoint_from_route(
+            route: Dict[str, Any], defaults: ModelEndpointState | None = None
+        ) -> ModelEndpointState:
+            endpoint = ModelEndpointState() if defaults is None else ModelEndpointState(
+                provider=defaults.provider,
+                base_url=defaults.base_url,
+                api_key=defaults.api_key,
+                anthropic_version=defaults.anthropic_version,
+                extra_headers=dict(defaults.extra_headers),
+            )
+            values = {
+                "provider": "provider",
+                "base_url": "baseUrl",
+                "api_key": "apiKey",
+                "anthropic_version": "anthropicVersion",
+            }
+            for field_name, route_name in values.items():
+                value = route.get(route_name)
+                if isinstance(value, str):
+                    setattr(endpoint, field_name, value)
+            if "extraHeaders" in route:
+                headers = route.get("extraHeaders")
+                endpoint.extra_headers = {}
+            else:
+                headers = None
+            if isinstance(headers, dict):
+                endpoint.extra_headers = {
+                    str(key): value for key, value in headers.items()
+                    if isinstance(key, str) and isinstance(value, str)
+                }
+            return endpoint
+
+        def endpoint_from_legacy(profile: Dict[str, Any]) -> ModelEndpointState:
+            return endpoint_from_route(profile)
+
+        def fallback_model(profile: Dict[str, Any], role: str) -> str:
+            if role == "vision":
+                value = profile.get("visual_model", "")
+            elif role == "daydream":
+                value = object_at(profile, "daydream").get(
+                    "model", profile.get("model", ""))
+            else:
+                value = profile.get("model", "")
+            return value if isinstance(value, str) else ""
+
         pet = object_at(config, "petSettings")
         set_int("scale_percent", pet, "scalePercent")
         set_bool("always_on_top", pet, "alwaysOnTop")
@@ -93,12 +179,56 @@ class AppState:
         active_profile = ai.get("activeProfile", "default")
         profile = object_at(
             profiles, active_profile if isinstance(active_profile, str) else "default")
+        if not profile and not profiles:
+            profile = ai
         set_bool("ai_enabled", profile, "enabled")
-        set_text("provider", profile, "provider")
-        set_text("base_url", profile, "baseUrl")
-        set_text("api_key", profile, "apiKey")
-        set_text("model", profile, "model")
-        set_text("visual_model", profile, "visual_model")
+        registry = profile.get("modelEndpoints")
+        state.model_endpoints = {}
+        state.model_roles = {}
+        if isinstance(registry, dict) and registry:
+            for endpoint_id, raw_endpoint in registry.items():
+                if isinstance(endpoint_id, str) and isinstance(raw_endpoint, dict):
+                    state.model_endpoints[endpoint_id] = endpoint_from_route(
+                        raw_endpoint)
+            state.model_endpoints.setdefault(
+                "DEFAULT", endpoint_from_legacy(profile))
+            for role in MODEL_ROLES:
+                routes = role_routes(profile, role)
+                first = routes[0] if routes else {}
+                endpoint_ref = first.get("endpointRef", "DEFAULT")
+                model = first.get("model", fallback_model(profile, role))
+                state.model_roles[role] = ModelRoleState(
+                    endpoint_ref=(endpoint_ref if isinstance(endpoint_ref, str)
+                                  else "DEFAULT"),
+                    model=model if isinstance(model, str) else "",
+                )
+        else:
+            dialogue_routes = role_routes(profile, "dialogue")
+            profile_endpoint = endpoint_from_legacy(profile)
+            state.model_endpoints["DEFAULT"] = endpoint_from_route(
+                dialogue_routes[0], profile_endpoint
+            ) if dialogue_routes else profile_endpoint
+            for role in MODEL_ROLES:
+                routes = role_routes(profile, role)
+                endpoint_ref = "DEFAULT"
+                for index, route in enumerate(routes):
+                    effective_endpoint = endpoint_from_route(
+                        route, profile_endpoint)
+                    if role == "dialogue" and index == 0:
+                        migrated_id = "DEFAULT"
+                    elif effective_endpoint == state.model_endpoints["DEFAULT"]:
+                        migrated_id = "DEFAULT"
+                    else:
+                        migrated_id = f"MIGRATED_{role.upper()}_{index}"
+                        state.model_endpoints[migrated_id] = effective_endpoint
+                    if index == 0:
+                        endpoint_ref = migrated_id
+                first = routes[0] if routes else {}
+                model = first.get("model", fallback_model(profile, role))
+                state.model_roles[role] = ModelRoleState(
+                    endpoint_ref=endpoint_ref,
+                    model=model if isinstance(model, str) else "",
+                )
 
         emotion = object_at(profile, "emotion")
         set_bool("emotion_enabled", emotion, "enabled")
@@ -148,11 +278,8 @@ class AppState:
             "autoScreenChat": d["auto_screen_chat"],
             "chatIntervalMinMs": d["chat_interval_min_ms"],
             "chatIntervalMaxMs": d["chat_interval_max_ms"],
-            "provider": d["provider"],
-            "baseUrl": d["base_url"],
-            "apiKey": d["api_key"],
-            "model": d["model"],
-            "visualModel": d["visual_model"],
+            "modelEndpoints": d["model_endpoints"],
+            "modelRoles": d["model_roles"],
             "voiceEnabled": d["voice_enabled"],
             "speaker": d["speaker"],
             "volumePercent": d["volume_percent"],

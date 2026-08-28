@@ -56,6 +56,7 @@ public:
 
     QList<Reply> replies;
     QList<QString> routeIds;
+    QList<ModelRouteConfig> selectedRoutes;
     QList<QList<ChatMessage>> messageBatches;
 
     void completeOnce(const ModelRouteConfig& selectedRoute,
@@ -66,6 +67,7 @@ public:
         Q_UNUSED(tools)
         Q_UNUSED(petName)
         routeIds.append(selectedRoute.routeId);
+        selectedRoutes.append(selectedRoute);
         messageBatches.append(messages);
         if (replies.isEmpty()) {
             callback(false, {}, QStringLiteral("missing fake reply"));
@@ -129,6 +131,23 @@ QString writeConfig(QTemporaryDir& directory, const QJsonObject& config) {
     return path;
 }
 
+QJsonObject configWithDialogueRoute(const QJsonObject& route) {
+    const QJsonObject dialogueRole{
+        {QStringLiteral("routes"), QJsonArray{route}}
+    };
+    const QJsonObject profile{
+        {QStringLiteral("enabled"), true},
+        {QStringLiteral("modelRoles"), QJsonObject{
+             {QStringLiteral("dialogue"), dialogueRole}}}
+    };
+    return {
+        {QStringLiteral("aiSettings"), QJsonObject{
+             {QStringLiteral("activeProfile"), QStringLiteral("default")},
+             {QStringLiteral("profiles"), QJsonObject{
+                  {QStringLiteral("default"), profile}}}}}
+    };
+}
+
 } // namespace
 
 class ModelRouterTests : public QObject {
@@ -142,6 +161,7 @@ private slots:
     void completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions();
     void completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse();
     void completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope();
+    void requestVisionSummary_whenVisionRoleUsesIndependentEndpoint_shouldRouteWithoutGlobalCredentials();
 
     void assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary();
     void assemble_whenDialogueRole_shouldExcludeDiaryInnerThoughtAndOwnerAccess();
@@ -150,6 +170,9 @@ private slots:
 
     void getModelRoleConfig_whenRoleConfigured_shouldReturnRoleSpecificModel();
     void getModelRoleConfig_whenOnlyLegacyConfigExists_shouldMapItToDialogue();
+    void getModelRoleConfig_whenRoleReferencesAnthropicEndpoint_shouldMergeConnectionAndModel();
+    void getModelRoleConfig_whenEndpointReferenceIsMissing_shouldRejectRouteWithoutDefaultKeyFallback();
+    void getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams();
     void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
     void completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries();
 };
@@ -294,6 +317,46 @@ void ModelRouterTests::completeAsync_whenProviderTimesOut_shouldTryFallbackWitho
     QCOMPARE(client.messageBatches.at(1).size(), request.messages.size());
 }
 
+void ModelRouterTests::requestVisionSummary_whenVisionRoleUsesIndependentEndpoint_shouldRouteWithoutGlobalCredentials() {
+    ModelRouteConfig visionRoute = route(
+        QStringLiteral("vision-special"), QStringLiteral("vision-model"), true);
+    visionRoute.llm.provider = QStringLiteral("anthropic-messages");
+    visionRoute.llm.baseUrl = QStringLiteral("https://vision.example");
+    visionRoute.llm.apiKey = QStringLiteral("vision-only-key");
+    ModelRoleRegistry registry({roleConfig(ModelRole::Vision, {visionRoute})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent(
+        QStringLiteral("{\"main_content\":\"screen\",\"pet_reply\":\"hello\"}")), {}}};
+    ModelRouter router(&registry, &client);
+    ChatMessage visionMessage;
+    visionMessage.role = QStringLiteral("user");
+    visionMessage.contentBlocks = QJsonArray{
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                    {QStringLiteral("text"), QStringLiteral("inspect")}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                    {QStringLiteral("mediaType"), QStringLiteral("image/png")},
+                    {QStringLiteral("data"), QStringLiteral("YWJj")}}
+    };
+    ModelRequest request;
+    request.role = ModelRole::Vision;
+    request.constraints.requiresVision = true;
+    request.messages = {visionMessage};
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> value) {
+        result.emplace(std::move(value));
+    });
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QCOMPARE(client.selectedRoutes.size(), 1);
+    QCOMPARE(client.selectedRoutes.first().llm.apiKey,
+             QStringLiteral("vision-only-key"));
+    QCOMPARE(client.selectedRoutes.first().llm.provider,
+             QStringLiteral("anthropic-messages"));
+    QCOMPARE(client.messageBatches.first().first().contentBlocks.size(), 2);
+}
+
 void ModelRouterTests::assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary() {
     ContextAssembler assembler;
     ContextRequest request;
@@ -432,6 +495,132 @@ void ModelRouterTests::getModelRoleConfig_whenOnlyLegacyConfigExists_shouldMapIt
     QCOMPARE(config.routes.size(), 1);
     QCOMPARE(config.routes.first().llm.model, QStringLiteral("legacy-model"));
     QCOMPARE(config.routes.first().llm.apiKey, QStringLiteral("legacy-key"));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenRoleReferencesAnthropicEndpoint_shouldMergeConnectionAndModel() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject endpoint{
+        {QStringLiteral("provider"), QStringLiteral("anthropic-messages")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://text.example")},
+        {QStringLiteral("apiKey"), QStringLiteral("endpoint-key")},
+        {QStringLiteral("anthropicVersion"), QStringLiteral("2024-01-01")},
+        {QStringLiteral("extraHeaders"), QJsonObject{
+             {QStringLiteral("x-gateway-tenant"), QStringLiteral("desktop-pet")},
+             {QStringLiteral("x-feature"), QStringLiteral("streaming")}}}
+    };
+    const QJsonObject route{
+        {QStringLiteral("routeId"), QStringLiteral("dialogue-primary")},
+        {QStringLiteral("endpointRef"), QStringLiteral("DEFAULT")},
+        {QStringLiteral("model"), QStringLiteral("role-model")},
+        {QStringLiteral("apiKey"), QStringLiteral("must-be-ignored")}
+    };
+    QJsonObject root = configWithDialogueRoute(route);
+    QJsonObject aiSettings = root.value(QStringLiteral("aiSettings")).toObject();
+    QJsonObject profiles = aiSettings.value(QStringLiteral("profiles")).toObject();
+    QJsonObject profile = profiles.value(QStringLiteral("default")).toObject();
+    profile.insert(QStringLiteral("modelEndpoints"), QJsonObject{
+        {QStringLiteral("DEFAULT"), endpoint}});
+    profiles.insert(QStringLiteral("default"), profile);
+    aiSettings.insert(QStringLiteral("profiles"), profiles);
+    root.insert(QStringLiteral("aiSettings"), aiSettings);
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Dialogue);
+
+    QCOMPARE(config.routes.size(), 1);
+    QCOMPARE(config.routes.first().llm.provider,
+             QStringLiteral("anthropic-messages"));
+    QCOMPARE(config.routes.first().llm.apiKey, QStringLiteral("endpoint-key"));
+    QCOMPARE(config.routes.first().llm.model, QStringLiteral("role-model"));
+    QCOMPARE(config.routes.first().llm.anthropicVersion, QStringLiteral("2024-01-01"));
+    QCOMPARE(config.routes.first().llm.extraHeaders.value(
+                 QStringLiteral("x-gateway-tenant")).toString(),
+             QStringLiteral("desktop-pet"));
+    QCOMPARE(config.routes.first().llm.extraHeaders.value(
+                 QStringLiteral("x-feature")).toString(),
+             QStringLiteral("streaming"));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenEndpointReferenceIsMissing_shouldRejectRouteWithoutDefaultKeyFallback() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject endpoint{
+        {QStringLiteral("provider"), QStringLiteral("anthropic-messages")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://default.example")},
+        {QStringLiteral("apiKey"), QStringLiteral("default-key")}
+    };
+    const QJsonObject route{
+        {QStringLiteral("routeId"), QStringLiteral("dialogue-primary")},
+        {QStringLiteral("endpointRef"), QStringLiteral("MISSPELLED")},
+        {QStringLiteral("model"), QStringLiteral("role-model")},
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://inline.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("inline-key")}
+    };
+    QJsonObject root = configWithDialogueRoute(route);
+    QJsonObject aiSettings = root.value(QStringLiteral("aiSettings")).toObject();
+    QJsonObject profiles = aiSettings.value(QStringLiteral("profiles")).toObject();
+    QJsonObject profile = profiles.value(QStringLiteral("default")).toObject();
+    profile.insert(QStringLiteral("modelEndpoints"), QJsonObject{
+        {QStringLiteral("DEFAULT"), endpoint}});
+    profiles.insert(QStringLiteral("default"), profile);
+    aiSettings.insert(QStringLiteral("profiles"), profiles);
+    root.insert(QStringLiteral("aiSettings"), aiSettings);
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const ModelRoleConfig config =
+        ConfigManager::instance().getModelRoleConfig(ModelRole::Dialogue);
+
+    QVERIFY(config.routes.isEmpty());
+}
+
+void ModelRouterTests::getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject endpoint{
+        {QStringLiteral("provider"), QStringLiteral("anthropic-messages")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://text.example")},
+        {QStringLiteral("apiKey"), QStringLiteral("text-key")},
+        {QStringLiteral("extraHeaders"), QJsonObject{
+             {QStringLiteral("x-valid"), QStringLiteral("kept")},
+             {QStringLiteral("x-invalid"), 42}}}
+    };
+    const QJsonObject route{
+        {QStringLiteral("routeId"), QStringLiteral("dialogue-primary")},
+        {QStringLiteral("endpointRef"), QStringLiteral("DEFAULT")},
+        {QStringLiteral("model"), QStringLiteral("claude-text")},
+        {QStringLiteral("extraParams"), QJsonObject{
+             {QStringLiteral("top_k"), 7}}}
+    };
+    QJsonObject root = configWithDialogueRoute(route);
+    QJsonObject aiSettings = root.value(QStringLiteral("aiSettings")).toObject();
+    QJsonObject profiles = aiSettings.value(QStringLiteral("profiles")).toObject();
+    QJsonObject profile = profiles.value(QStringLiteral("default")).toObject();
+    profile.insert(QStringLiteral("modelEndpoints"), QJsonObject{
+        {QStringLiteral("DEFAULT"), endpoint}});
+    profiles.insert(QStringLiteral("default"), profile);
+    aiSettings.insert(QStringLiteral("profiles"), profiles);
+    root.insert(QStringLiteral("aiSettings"), aiSettings);
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const LlmConfig config = ConfigManager::instance()
+                                 .getModelRoleConfig(ModelRole::Dialogue)
+                                 .routes.first().llm;
+
+    QCOMPARE(config.extraHeaders.size(), 1);
+    QCOMPARE(config.extraHeaders.value(QStringLiteral("x-valid")).toString(),
+             QStringLiteral("kept"));
+    QVERIFY(!config.extraHeaders.contains(QStringLiteral("x-invalid")));
+    QCOMPARE(config.extraParams.value(QStringLiteral("top_k")).toInt(), 7);
+    QVERIFY(!config.extraParams.contains(QStringLiteral("x-invalid")));
 }
 
 void ModelRouterTests::configFor_whenRoleExists_shouldReturnOnlyRequestedRole() {

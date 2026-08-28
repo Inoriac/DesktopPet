@@ -79,6 +79,41 @@ QString redactSecret(QString message, const QString& secret) {
     return message;
 }
 
+bool validateCanonicalContentBlocks(const QList<ChatMessage>& messages,
+                                    QString& error) {
+    for (const ChatMessage& message : messages) {
+        for (const QJsonValue& value : message.contentBlocks) {
+            if (!value.isObject()) {
+                error = QStringLiteral("message content block is not an object");
+                return false;
+            }
+            const QJsonObject block = value.toObject();
+            const QString type = block.value(QStringLiteral("type")).toString();
+            if (type == QStringLiteral("text")) {
+                if (!block.value(QStringLiteral("text")).isString()) {
+                    error = QStringLiteral("text content block is incomplete");
+                    return false;
+                }
+                continue;
+            }
+            if (type == QStringLiteral("image")) {
+                const QString mediaType = block.value(
+                    QStringLiteral("mediaType")).toString().trimmed();
+                const QString data = block.value(
+                    QStringLiteral("data")).toString().trimmed();
+                if (mediaType.isEmpty() || data.isEmpty()) {
+                    error = QStringLiteral("image content block is incomplete");
+                    return false;
+                }
+                continue;
+            }
+            error = QStringLiteral("unsupported message content block type");
+            return false;
+        }
+    }
+    return true;
+}
+
 } // namespace
 
 OpenAICompatibleClient::OpenAICompatibleClient() = default;
@@ -157,6 +192,13 @@ QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
         return nullptr;
     }
 
+    QString contentError;
+    if (!validateCanonicalContentBlocks(messages, contentError)) {
+        fail(QStringLiteral("LLM message conversion failed: %1").arg(
+            contentError));
+        return nullptr;
+    }
+
     QNetworkRequest request(buildCompletionsUrl(config.baseUrl));
     request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
     request.setRawHeader("Authorization", QString("Bearer %1").arg(config.apiKey).toUtf8());
@@ -222,7 +264,35 @@ QJsonArray OpenAICompatibleClient::buildMessagesArray(const QList<ChatMessage>& 
     for (const ChatMessage& msg : messages) {
         QJsonObject item;
         item["role"] = msg.role;
-        item["content"] = msg.content;
+        if (msg.contentBlocks.isEmpty()) {
+            item["content"] = msg.content;
+        } else {
+            QJsonArray content;
+            for (const QJsonValue& value : msg.contentBlocks) {
+                const QJsonObject block = value.toObject();
+                const QString type = block.value(QStringLiteral("type")).toString();
+                if (type == QStringLiteral("text")) {
+                    content.append(QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("text")},
+                        {QStringLiteral("text"),
+                         block.value(QStringLiteral("text")).toString()}
+                    });
+                } else if (type == QStringLiteral("image")) {
+                    const QString mediaType =
+                        block.value(QStringLiteral("mediaType")).toString();
+                    const QString data =
+                        block.value(QStringLiteral("data")).toString();
+                    content.append(QJsonObject{
+                        {QStringLiteral("type"), QStringLiteral("image_url")},
+                        {QStringLiteral("image_url"), QJsonObject{
+                             {QStringLiteral("url"),
+                              QStringLiteral("data:%1;base64,%2")
+                                  .arg(mediaType, data)}}}
+                    });
+                }
+            }
+            item["content"] = content;
+        }
 
         if (!msg.name.isEmpty()) {
             item["name"] = msg.name;

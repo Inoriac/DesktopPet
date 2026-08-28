@@ -12,6 +12,7 @@
 #include <QFile>
 #include <QDebug>
 #include <algorithm>
+#include <optional>
 #include <utility>
 
 namespace {
@@ -108,8 +109,25 @@ static QList<ModelRole> allModelRoles() {
             ModelRole::Consolidation, ModelRole::Diary, ModelRole::Vision};
 }
 
-static ModelRouteConfig parseModelRouteConfig(const QJsonObject& object,
-                                              const LlmConfig& defaults) {
+static QJsonObject parseStringHeaders(const QJsonValue& value,
+                                      const QString& context) {
+    QJsonObject headers;
+    if (!value.isObject()) {
+        return headers;
+    }
+    const QJsonObject raw = value.toObject();
+    for (auto it = raw.begin(); it != raw.end(); ++it) {
+        if (!it.value().isString()) {
+            qWarning() << context << "ignored non-string header" << it.key();
+            continue;
+        }
+        headers.insert(it.key(), it.value().toString());
+    }
+    return headers;
+}
+
+static ModelRouteConfig parseLegacyModelRouteConfig(
+    const QJsonObject& object, const LlmConfig& defaults) {
     ModelRouteConfig route;
     route.routeId = object.value(QStringLiteral("routeId")).toString().trimmed();
     route.enabled = object.value(QStringLiteral("enabled")).toBool(true);
@@ -134,6 +152,12 @@ static ModelRouteConfig parseModelRouteConfig(const QJsonObject& object,
         0.0, 2.0);
     route.llm.retryCount = 0;
     route.llm.thinkIntervalMs = defaults.thinkIntervalMs;
+    route.llm.anthropicVersion = object.value(
+        QStringLiteral("anthropicVersion"))
+        .toString(defaults.anthropicVersion).trimmed();
+    route.llm.extraHeaders = parseStringHeaders(
+        object.value(QStringLiteral("extraHeaders")),
+        QStringLiteral("model route"));
     if (object.value(QStringLiteral("extraParams")).isObject()) {
         route.llm.extraParams = object.value(QStringLiteral("extraParams")).toObject();
     }
@@ -145,9 +169,89 @@ static ModelRouteConfig parseModelRouteConfig(const QJsonObject& object,
     return route;
 }
 
+static QHash<QString, LlmConfig> parseModelEndpoints(
+    const QJsonObject& object, const LlmConfig& legacyDefaults) {
+    QHash<QString, LlmConfig> endpoints;
+    for (auto it = object.begin(); it != object.end(); ++it) {
+        if (!it.value().isObject()) {
+            qWarning() << "ignored non-object model endpoint" << it.key();
+            continue;
+        }
+        const QJsonObject raw = it.value().toObject();
+        LlmConfig endpoint = legacyDefaults;
+        endpoint.provider = raw.value(QStringLiteral("provider"))
+                                .toString().trimmed();
+        endpoint.baseUrl = raw.value(QStringLiteral("baseUrl"))
+                               .toString().trimmed();
+        endpoint.apiKey = raw.value(QStringLiteral("apiKey")).toString();
+        endpoint.model.clear();
+        endpoint.visualModel.clear();
+        endpoint.anthropicVersion = raw.value(
+            QStringLiteral("anthropicVersion"))
+            .toString(QStringLiteral("2023-06-01")).trimmed();
+        endpoint.extraHeaders = parseStringHeaders(
+            raw.value(QStringLiteral("extraHeaders")),
+            QStringLiteral("model endpoint %1").arg(it.key()));
+        endpoint.extraParams = {};
+        if (endpoint.provider.isEmpty() || endpoint.baseUrl.isEmpty() ||
+            endpoint.apiKey.isEmpty()) {
+            qWarning() << "ignored incomplete model endpoint" << it.key();
+            continue;
+        }
+        endpoints.insert(it.key(), std::move(endpoint));
+    }
+    return endpoints;
+}
+
+static std::optional<ModelRouteConfig> parseModelRouteConfig(
+    const QJsonObject& object,
+    const QHash<QString, LlmConfig>& endpoints,
+    const LlmConfig& legacyDefaults) {
+    const QString endpointRef = object.value(QStringLiteral("endpointRef"))
+                                    .toString().trimmed();
+    const auto endpoint = endpoints.constFind(endpointRef);
+    if (endpointRef.isEmpty() || endpoint == endpoints.constEnd()) {
+        qWarning() << "ignored model route with missing endpointRef" << endpointRef;
+        return std::nullopt;
+    }
+    ModelRouteConfig route;
+    route.routeId = object.value(QStringLiteral("routeId")).toString().trimmed();
+    route.enabled = object.value(QStringLiteral("enabled")).toBool(true);
+    route.llm = endpoint.value();
+    route.llm.enabled = legacyDefaults.enabled && route.enabled;
+    route.llm.model = object.value(QStringLiteral("model")).toString().trimmed();
+    if (route.routeId.isEmpty() || route.llm.model.isEmpty()) {
+        qWarning() << "ignored incomplete model role route" << route.routeId;
+        return std::nullopt;
+    }
+    route.llm.timeoutMs = clampInt(
+        object.value(QStringLiteral("timeoutMs")).toInt(route.llm.timeoutMs),
+        1000, 10 * 60 * 1000);
+    route.llm.maxTokens = clampInt(
+        object.value(QStringLiteral("maxTokens")).toInt(route.llm.maxTokens),
+        1, 128 * 1024);
+    route.llm.temperature = std::clamp(
+        object.value(QStringLiteral("temperature")).toDouble(
+            route.llm.temperature),
+        0.0, 2.0);
+    route.llm.retryCount = 0;
+    if (object.value(QStringLiteral("extraParams")).isObject()) {
+        route.llm.extraParams = object.value(
+            QStringLiteral("extraParams")).toObject();
+    }
+    route.supportsVision = object.value(
+        QStringLiteral("supportsVision")).toBool(false);
+    route.estimatedCostMicros = qMax<qint64>(
+        0, static_cast<qint64>(object.value(
+            QStringLiteral("estimatedCostMicros")).toDouble(0)));
+    return route;
+}
+
 static ModelRoleConfig parseModelRoleConfig(ModelRole role,
                                             const QJsonObject& object,
-                                            const LlmConfig& defaults) {
+                                            const LlmConfig& defaults,
+                                            const QHash<QString, LlmConfig>& endpoints,
+                                            bool strictEndpointRefs) {
     ModelRoleConfig config;
     config.role = role;
     const QJsonObject limits = object.value(QStringLiteral("limits")).toObject();
@@ -159,7 +263,15 @@ static ModelRoleConfig parseModelRoleConfig(ModelRole role,
     const QJsonArray routes = object.value(QStringLiteral("routes")).toArray();
     for (const QJsonValue& value : routes) {
         if (!value.isObject()) continue;
-        ModelRouteConfig route = parseModelRouteConfig(value.toObject(), defaults);
+        std::optional<ModelRouteConfig> parsed;
+        if (strictEndpointRefs) {
+            parsed = parseModelRouteConfig(
+                value.toObject(), endpoints, defaults);
+        } else {
+            parsed = parseLegacyModelRouteConfig(value.toObject(), defaults);
+        }
+        if (!parsed.has_value()) continue;
+        ModelRouteConfig route = std::move(parsed.value());
         if (route.routeId.isEmpty()) continue;
         config.routes.append(std::move(route));
     }
@@ -537,6 +649,13 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             llmConfig.extraParams = aiRaw.value("extraParams").toObject();
         }
 
+        const bool hasEndpointRegistry =
+            aiRaw.value(QStringLiteral("modelEndpoints")).isObject();
+        const QHash<QString, LlmConfig> modelEndpoints = hasEndpointRegistry
+            ? parseModelEndpoints(
+                  aiRaw.value(QStringLiteral("modelEndpoints")).toObject(),
+                  llmConfig)
+            : QHash<QString, LlmConfig>{};
         if (aiRaw.value(QStringLiteral("modelRoles")).isObject()) {
             const QJsonObject roles =
                 aiRaw.value(QStringLiteral("modelRoles")).toObject();
@@ -544,8 +663,25 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                 const QString key = modelRoleConfigKey(role);
                 if (!roles.value(key).isObject()) continue;
                 modelRoleConfigs.append(parseModelRoleConfig(
-                    role, roles.value(key).toObject(), llmConfig));
+                    role, roles.value(key).toObject(), llmConfig,
+                    modelEndpoints, hasEndpointRegistry));
             }
+        }
+
+        if (hasEndpointRegistry && modelEndpoints.contains(
+                QStringLiteral("DEFAULT"))) {
+            LlmConfig compatible = modelEndpoints.value(
+                QStringLiteral("DEFAULT"));
+            compatible.enabled = llmConfig.enabled;
+            for (const ModelRoleConfig& roleConfig : modelRoleConfigs) {
+                if (roleConfig.routes.isEmpty()) continue;
+                if (roleConfig.role == ModelRole::Dialogue) {
+                    compatible.model = roleConfig.routes.first().llm.model;
+                } else if (roleConfig.role == ModelRole::Vision) {
+                    compatible.visualModel = roleConfig.routes.first().llm.model;
+                }
+            }
+            llmConfig = std::move(compatible);
         }
 
         // 提示词模版属于活动模型配置；身份基线独立位于 aiSettings 根节点。

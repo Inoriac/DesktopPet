@@ -191,6 +191,10 @@ private slots:
     void finish_whenFinalEventHasNoBlankLine_shouldPublishCompleteEvent();
     void finish_whenFinalLineIsIncomplete_shouldReturnFramingError();
     void sendChatCompletionStreamAsync_whenTextStreamCompletes_shouldPublishOrderedDeltasAndUsage();
+    void buildMessages_whenCanonicalImageBlockUsesAnthropic_shouldBuildBase64ImageSource();
+    void buildMessages_whenCanonicalImageBlockUsesOpenAiCompatible_shouldBuildImageUrlDataUri();
+    void sendChatCompletionStreamAsync_whenAnthropicTextBlockIsInvalid_shouldFailBeforeNetwork();
+    void sendChatCompletionStreamAsync_whenOpenAiCanonicalBlockIsInvalid_shouldFailBeforeNetwork();
     void sendChatCompletionStreamAsync_whenBaseUrlHasRootV1OrMessages_shouldNormalizeOneEndpoint();
     void sendChatCompletionStreamAsync_whenToolInputArrivesInFragments_shouldCompleteOneValidatedToolCall();
     void sendChatCompletionStreamAsync_whenThinkingAndSignatureArrive_shouldKeepThemOutOfVisibleEvents();
@@ -328,6 +332,168 @@ void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenTextStreamCo
     const QJsonObject anthropicTool = payload.value("tools").toArray().first().toObject();
     QCOMPARE(anthropicTool.value("name").toString(), QStringLiteral("get_weather"));
     QVERIFY(anthropicTool.value("input_schema").isObject());
+}
+
+void TestAnthropicMessagesClient::buildMessages_whenCanonicalImageBlockUsesAnthropic_shouldBuildBase64ImageSource() {
+    LocalHttpServer server;
+    server.enqueue({200, "text/event-stream", textResponse(), false});
+    AnthropicMessagesClient client;
+    ChatMessage message;
+    message.role = QStringLiteral("user");
+    message.contentBlocks = QJsonArray{
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                    {QStringLiteral("text"), QStringLiteral("inspect")}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                    {QStringLiteral("mediaType"), QStringLiteral("image/png")},
+                    {QStringLiteral("data"), QStringLiteral("YWJj")}}
+    };
+    int completions = 0;
+
+    client.sendChatCompletionStreamAsync(
+        anthropicConfig(server), {message}, {}, {},
+        [&](bool ok, LlmResponse, QString error) {
+            QVERIFY2(ok, qPrintable(error));
+            ++completions;
+        });
+
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
+    const QJsonArray content = QJsonDocument::fromJson(server.requestBodies.first())
+                                   .object().value(QStringLiteral("messages"))
+                                   .toArray().first().toObject()
+                                   .value(QStringLiteral("content")).toArray();
+    QCOMPARE(content.size(), 2);
+    QCOMPARE(content.at(0).toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("inspect"));
+    const QJsonObject image = content.at(1).toObject();
+    QCOMPARE(image.value(QStringLiteral("type")).toString(),
+             QStringLiteral("image"));
+    const QJsonObject source = image.value(QStringLiteral("source")).toObject();
+    QCOMPARE(source.value(QStringLiteral("type")).toString(),
+             QStringLiteral("base64"));
+    QCOMPARE(source.value(QStringLiteral("media_type")).toString(),
+             QStringLiteral("image/png"));
+    QCOMPARE(source.value(QStringLiteral("data")).toString(),
+             QStringLiteral("YWJj"));
+}
+
+void TestAnthropicMessagesClient::buildMessages_whenCanonicalImageBlockUsesOpenAiCompatible_shouldBuildImageUrlDataUri() {
+    LocalHttpServer server;
+    const QJsonObject response{
+        {QStringLiteral("id"), QStringLiteral("chatcmpl_image")},
+        {QStringLiteral("model"), QStringLiteral("vision-model")},
+        {QStringLiteral("choices"), QJsonArray{QJsonObject{
+             {QStringLiteral("message"), QJsonObject{
+                  {QStringLiteral("content"), QStringLiteral("ok")}}},
+             {QStringLiteral("finish_reason"), QStringLiteral("stop")}}}}
+    };
+    server.enqueue({200, "application/json",
+                    QJsonDocument(response).toJson(QJsonDocument::Compact), false});
+    OpenAICompatibleClient client;
+    LlmConfig config = anthropicConfig(server);
+    config.provider = QStringLiteral("openai-compatible");
+    ChatMessage message;
+    message.role = QStringLiteral("user");
+    message.contentBlocks = QJsonArray{
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                    {QStringLiteral("text"), QStringLiteral("inspect")}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                    {QStringLiteral("mediaType"), QStringLiteral("image/png")},
+                    {QStringLiteral("data"), QStringLiteral("YWJj")}}
+    };
+    int completions = 0;
+
+    client.sendChatCompletionStreamAsync(
+        config, {message}, {}, {},
+        [&](bool ok, LlmResponse, QString error) {
+            QVERIFY2(ok, qPrintable(error));
+            ++completions;
+        });
+
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
+    const QJsonArray content = QJsonDocument::fromJson(server.requestBodies.first())
+                                   .object().value(QStringLiteral("messages"))
+                                   .toArray().first().toObject()
+                                   .value(QStringLiteral("content")).toArray();
+    QCOMPARE(content.size(), 2);
+    QCOMPARE(content.at(0).toObject().value(QStringLiteral("text")).toString(),
+             QStringLiteral("inspect"));
+    QCOMPARE(content.at(1).toObject().value(QStringLiteral("type")).toString(),
+             QStringLiteral("image_url"));
+    QCOMPARE(content.at(1).toObject().value(QStringLiteral("image_url"))
+                 .toObject().value(QStringLiteral("url")).toString(),
+             QStringLiteral("data:image/png;base64,YWJj"));
+}
+
+void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenAnthropicTextBlockIsInvalid_shouldFailBeforeNetwork() {
+    const QList<QJsonArray> invalidContents{
+        QJsonArray{QJsonObject{{QStringLiteral("type"),
+                                QStringLiteral("text")}}},
+        QJsonArray{QJsonObject{{QStringLiteral("type"),
+                                QStringLiteral("text")},
+                               {QStringLiteral("text"), 42}}}
+    };
+
+    for (const QJsonArray& contentBlocks : invalidContents) {
+        LocalHttpServer server;
+        AnthropicMessagesClient client;
+        ChatMessage message;
+        message.role = QStringLiteral("user");
+        message.contentBlocks = contentBlocks;
+        int completions = 0;
+        bool success = true;
+        QString error;
+
+        client.sendChatCompletionStreamAsync(
+            anthropicConfig(server), {message}, {}, {},
+            [&](bool ok, LlmResponse, QString detail) {
+                success = ok;
+                error = std::move(detail);
+                ++completions;
+            });
+
+        QCOMPARE(completions, 1);
+        QVERIFY(!success);
+        QVERIFY(error.contains(QStringLiteral("text content block")));
+        QCOMPARE(server.requestTargets.size(), 0);
+    }
+}
+
+void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenOpenAiCanonicalBlockIsInvalid_shouldFailBeforeNetwork() {
+    const QList<QJsonArray> invalidContents{
+        QJsonArray{QStringLiteral("not-an-object")},
+        QJsonArray{QJsonObject{{QStringLiteral("type"),
+                                QStringLiteral("unknown")}}},
+        QJsonArray{QJsonObject{{QStringLiteral("type"),
+                                QStringLiteral("image")},
+                               {QStringLiteral("mediaType"),
+                                QStringLiteral("image/png")}}}
+    };
+
+    for (const QJsonArray& contentBlocks : invalidContents) {
+        LocalHttpServer server;
+        OpenAICompatibleClient client;
+        LlmConfig config = anthropicConfig(server);
+        config.provider = QStringLiteral("openai-compatible");
+        ChatMessage message;
+        message.role = QStringLiteral("user");
+        message.contentBlocks = contentBlocks;
+        int completions = 0;
+        bool success = true;
+        QString error;
+
+        client.sendChatCompletionStreamAsync(
+            config, {message}, {}, {},
+            [&](bool ok, LlmResponse, QString detail) {
+                success = ok;
+                error = std::move(detail);
+                ++completions;
+            });
+
+        QCOMPARE(completions, 1);
+        QVERIFY(!success);
+        QVERIFY(error.contains(QStringLiteral("content block")));
+        QCOMPARE(server.requestTargets.size(), 0);
+    }
 }
 
 void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenBaseUrlHasRootV1OrMessages_shouldNormalizeOneEndpoint() {

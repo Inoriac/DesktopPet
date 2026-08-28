@@ -11,10 +11,35 @@ REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, "launcher"))
 
 import config_loader  # noqa: E402
-from app_state import AppState  # noqa: E402
+from app_state import AppState, ModelEndpointState, ModelRoleState  # noqa: E402
 
 
 class LauncherConfigTests(unittest.TestCase):
+    def test_template_defaults_all_model_roles_to_single_default_endpoint(self):
+        config = config_loader.load_template()
+        ai = config["aiSettings"]
+        profile = ai["profiles"][ai["activeProfile"]]
+
+        self.assertEqual(set(profile["modelEndpoints"]), {"DEFAULT"})
+        for role in config_loader.MODEL_ROLES:
+            route = profile["modelRoles"][role]["routes"][0]
+            self.assertEqual(route["endpointRef"], "DEFAULT")
+
+    def test_explicit_partial_model_state_still_exposes_required_defaults(self):
+        state = AppState(
+            model_endpoints={},
+            model_roles={
+                "dialogue": ModelRoleState("DEFAULT", "dialogue-model")
+            },
+        )
+
+        self.assertIn("DEFAULT", state.model_endpoints)
+        self.assertEqual(set(state.model_roles), {
+            "dialogue", "vision", "fastExtract", "consolidation", "diary",
+            "daydream",
+        })
+        self.assertEqual(state.model_roles["dialogue"].model, "dialogue-model")
+
     def test_app_state_exports_emotion_setting(self):
         state = AppState(emotion_enabled=False)
         settings = state.to_settings_dict()
@@ -58,11 +83,13 @@ class LauncherConfigTests(unittest.TestCase):
         state = AppState(
             ai_enabled=True,
             auto_screen_chat=True,
-            provider="openai-compatible",
-            base_url="https://provider.example/v1",
-            api_key="saved-secret",
-            model="text-model",
-            visual_model="vision-model",
+            model_endpoints={"DEFAULT": ModelEndpointState(
+                provider="anthropic-messages", base_url="https://text.example",
+                api_key="saved-text-secret")},
+            model_roles={
+                "dialogue": ModelRoleState("DEFAULT", "text-model"),
+                "vision": ModelRoleState("DEFAULT", "vision-model"),
+            },
             scale_percent=135,
             snap_enabled=False,
         )
@@ -81,12 +108,235 @@ class LauncherConfigTests(unittest.TestCase):
 
         self.assertTrue(restored.ai_enabled)
         self.assertTrue(restored.auto_screen_chat)
-        self.assertEqual(restored.base_url, "https://provider.example/v1")
-        self.assertEqual(restored.api_key, "saved-secret")
-        self.assertEqual(restored.model, "text-model")
-        self.assertEqual(restored.visual_model, "vision-model")
+        self.assertEqual(
+            restored.model_endpoints["DEFAULT"].base_url,
+            "https://text.example",
+        )
+        self.assertEqual(
+            restored.model_endpoints["DEFAULT"].api_key,
+            "saved-text-secret",
+        )
+        self.assertEqual(restored.model_roles["dialogue"].model, "text-model")
+        self.assertEqual(restored.model_roles["vision"].model, "vision-model")
         self.assertEqual(restored.scale_percent, 135)
         self.assertFalse(restored.snap_enabled)
+
+    def test_from_config_whenRolesReferenceEndpointRegistry_shouldRestoreReferencesModelsAndKeysByEndpoint(self):
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {
+                    "default": {
+                        "modelEndpoints": {
+                            "DEFAULT": {
+                                "provider": "anthropic-messages",
+                                "baseUrl": "https://text.example",
+                                "apiKey": "text-key",
+                                "anthropicVersion": "2024-01-01",
+                            },
+                            "VISION_VENDOR": {
+                                "provider": "openai-compatible",
+                                "baseUrl": "https://vision.example/v1",
+                                "apiKey": "vision-key",
+                            },
+                        },
+                        "modelRoles": {
+                            "dialogue": {"routes": [{
+                                "routeId": "dialogue-primary",
+                                "endpointRef": "DEFAULT",
+                                "model": "claude-text",
+                            }]},
+                            "vision": {"routes": [{
+                                "routeId": "vision-primary",
+                                "endpointRef": "VISION_VENDOR",
+                                "model": "vision-model",
+                            }]},
+                        },
+                    }
+                },
+            }
+        }
+
+        restored = AppState.from_config(config)
+
+        self.assertEqual(restored.model_roles["dialogue"].endpoint_ref, "DEFAULT")
+        self.assertEqual(restored.model_roles["dialogue"].model, "claude-text")
+        self.assertEqual(restored.model_roles["vision"].endpoint_ref, "VISION_VENDOR")
+        self.assertEqual(restored.model_roles["vision"].model, "vision-model")
+        self.assertEqual(restored.model_endpoints["DEFAULT"].api_key, "text-key")
+        self.assertEqual(
+            restored.model_endpoints["VISION_VENDOR"].api_key,
+            "vision-key",
+        )
+        self.assertFalse(hasattr(restored.model_endpoints["DEFAULT"], "model"))
+
+    def test_from_config_whenLegacyRoutesUseDifferentKeys_shouldCreateDefaultAndIndependentMigratedEndpoints(self):
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {"default": {
+                    "provider": "openai-compatible",
+                    "baseUrl": "https://profile.example/v1",
+                    "apiKey": "profile-key",
+                    "model": "profile-text",
+                    "visual_model": "legacy-vision",
+                    "modelRoles": {
+                        "dialogue": {"routes": [{
+                            "routeId": "dialogue-primary",
+                            "provider": "anthropic-messages",
+                            "baseUrl": "https://dialogue.example",
+                            "apiKey": "dialogue-key",
+                            "model": "dialogue-model",
+                        }]},
+                        "vision": {"routes": [{
+                            "routeId": "vision-primary",
+                            "provider": "openai-compatible",
+                            "baseUrl": "https://vision.example/v1",
+                            "apiKey": "vision-key",
+                            "model": "vision-model",
+                        }]},
+                    },
+                }},
+            }
+        }
+
+        restored = AppState.from_config(config)
+
+        self.assertEqual(restored.model_endpoints["DEFAULT"].api_key, "dialogue-key")
+        self.assertEqual(
+            restored.model_endpoints["MIGRATED_VISION_0"].api_key,
+            "vision-key",
+        )
+        self.assertEqual(restored.model_roles["dialogue"].endpoint_ref, "DEFAULT")
+        self.assertEqual(
+            restored.model_roles["vision"].endpoint_ref,
+            "MIGRATED_VISION_0",
+        )
+        self.assertNotEqual(
+            restored.model_endpoints["DEFAULT"].api_key,
+            restored.model_endpoints["MIGRATED_VISION_0"].api_key,
+        )
+
+    def test_from_config_whenLegacyRoleConnectionExactlyMatchesDefault_shouldReuseDefaultEndpoint(self):
+        shared_connection = {
+            "provider": "anthropic-messages",
+            "baseUrl": "https://gateway.example",
+            "apiKey": "shared-key",
+            "anthropicVersion": "2024-01-01",
+            "extraHeaders": {"x-gateway-tenant": "desktop-pet"},
+        }
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {"default": {
+                    "modelRoles": {
+                        "dialogue": {"routes": [{
+                            **shared_connection,
+                            "routeId": "dialogue-primary",
+                            "model": "dialogue-model",
+                        }]},
+                        "vision": {"routes": [{
+                            **shared_connection,
+                            "routeId": "vision-primary",
+                            "model": "vision-model",
+                            "supportsVision": True,
+                        }]},
+                    },
+                }},
+            }
+        }
+
+        restored = AppState.from_config(config)
+
+        self.assertEqual(restored.model_roles["vision"].endpoint_ref, "DEFAULT")
+        self.assertNotIn("MIGRATED_VISION_0", restored.model_endpoints)
+        self.assertEqual(restored.model_endpoints["DEFAULT"].extra_headers,
+                         {"x-gateway-tenant": "desktop-pet"})
+
+    def test_from_config_whenLegacyRoutesPartiallyOverrideConnection_shouldMaterializeCompleteMigratedEndpoints(self):
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {"default": {
+                    "provider": "anthropic-messages",
+                    "baseUrl": "https://default.example",
+                    "apiKey": "default-key",
+                    "anthropicVersion": "2024-01-01",
+                    "extraHeaders": {"x-gateway-tenant": "desktop-pet"},
+                    "model": "default-model",
+                    "modelRoles": {
+                        "dialogue": {"routes": [
+                            {
+                                "routeId": "dialogue-primary",
+                                "model": "dialogue-model",
+                            },
+                            {
+                                "routeId": "dialogue-fallback",
+                                "baseUrl": "https://fallback.example",
+                                "apiKey": "fallback-key",
+                                "model": "fallback-model",
+                            },
+                        ]},
+                        "vision": {"routes": [{
+                            "routeId": "vision-primary",
+                            "baseUrl": "https://vision.example",
+                            "apiKey": "vision-key",
+                            "model": "vision-model",
+                        }]},
+                    },
+                }},
+            }
+        }
+
+        restored = AppState.from_config(config)
+
+        self.assertEqual(restored.model_roles["vision"].endpoint_ref,
+                         "MIGRATED_VISION_0")
+        for endpoint_id, expected_url, expected_key in (
+            ("MIGRATED_DIALOGUE_1", "https://fallback.example", "fallback-key"),
+            ("MIGRATED_VISION_0", "https://vision.example", "vision-key"),
+        ):
+            migrated = restored.model_endpoints[endpoint_id]
+            self.assertEqual(migrated.provider, "anthropic-messages")
+            self.assertEqual(migrated.base_url, expected_url)
+            self.assertEqual(migrated.api_key, expected_key)
+            self.assertEqual(migrated.anthropic_version, "2024-01-01")
+            self.assertEqual(
+                migrated.extra_headers,
+                {"x-gateway-tenant": "desktop-pet"},
+            )
+
+        exported = config_loader.apply_settings(
+            copy.deepcopy(config), restored.to_settings_dict())
+        profile = exported["aiSettings"]["profiles"]["default"]
+        fallback = profile["modelRoles"]["dialogue"]["routes"][1]
+        self.assertEqual(fallback["endpointRef"], "MIGRATED_DIALOGUE_1")
+        for field in config_loader.INLINE_CONNECTION_FIELDS:
+            self.assertNotIn(field, fallback)
+
+    def test_from_config_whenLegacyProfileHasProtocolFields_shouldPreserveThemOnDefaultEndpoint(self):
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {"default": {
+                    "provider": "anthropic-messages",
+                    "baseUrl": "https://gateway.example",
+                    "apiKey": "legacy-key",
+                    "anthropicVersion": "2024-01-01",
+                    "extraHeaders": {"x-gateway-tenant": "desktop-pet"},
+                    "model": "legacy-model",
+                }},
+            }
+        }
+
+        restored = AppState.from_config(config)
+
+        endpoint = restored.model_endpoints["DEFAULT"]
+        self.assertEqual(endpoint.anthropic_version, "2024-01-01")
+        self.assertEqual(
+            endpoint.extra_headers,
+            {"x-gateway-tenant": "desktop-pet"},
+        )
 
     def test_export_then_load_saved_config_round_trips_json(self):
         config = {"aiSettings": {"activeProfile": "default"}}

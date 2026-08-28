@@ -246,6 +246,7 @@ struct ChatMessage {
     QString toolCallId; // tool 角色消息使用
     QJsonArray toolCalls; // assistant 角色在 function calling 场景下使用
     QJsonArray transportBlocks; // provider 原生块，仅在当前请求链内续传
+    QJsonArray contentBlocks; // provider-neutral text/image blocks
 };
 
 // LLM 返回的单个 tool_call

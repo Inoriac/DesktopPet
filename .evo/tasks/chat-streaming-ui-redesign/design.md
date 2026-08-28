@@ -11,7 +11,7 @@
 - 长回复在完整窗口中保持为一条连续消息，在桌宠气泡中按自然语义分段、自动播放并允许用户控制。
 - 使用与 launcher 一致的 Fluent 设计语言重做一个可移动的小型聊天窗口，不引入 Python 运行时依赖。
 - 每个 `profileId` 独立维护一条永久连续对话、阅读位置和窗口状态，不提供会话列表。
-- 文本服务和视觉服务允许使用不同协议、Base URL、API Key 与模型。
+- 提供一个可编辑的 `DEFAULT` 默认连接，并允许文本、视觉、Daydream 等角色按需引用其他独立供应商连接；连接凭据与角色模型分离配置。
 
 本次不引入 macOS Keychain 等新的凭据存储方案；API Key 延续现有行为，保存在本机 launcher 配置 JSON 中。语音合成延续“完整回复完成后播放”的现有语义，不在本次实现流式 TTS。
 
@@ -95,16 +95,17 @@ C++ 窗口复刻 launcher 的设计语言而不依赖 `qfluentwidgets`：共享�
 
 旧的全局 `log/chat_history.jsonl` 不能直接分配给多个身份。仅当注册表中只有一个有效桌宠身份时允许一次性导入；存在多个身份时保留旧文件但不自动混入任何新历史。
 
-### 8. Launcher 配置入口
+### 8. Launcher 配置入口与连接档案
 
-配置继续使用 JSON，不引入 XML。launcher 的 AI 页面提供两个完全独立的主要分区：
+配置继续使用 JSON，不引入 XML。新增 `modelEndpoints` 连接档案表，其中 `DEFAULT` 是始终存在且可编辑的默认连接，只保存 `provider`、Base URL、API Key、Anthropic 版本和额外请求头等连接信息，不保存模型名。`modelRoles.<role>.routes[*]` 通过 `endpointRef` 选择连接档案，并在 route 内独立保存模型名、能力和限制。这样用户通常只需配置一次 `DEFAULT`；视觉或 Daydream 使用其他平台时，再创建独立档案并替换对应 route 的 `endpointRef`。
 
-- **文本服务**：协议、Base URL、API Key、对话模型和独立连接测试。
-- **视觉服务**：协议、Base URL、API Key、视觉模型和独立连接测试。
+launcher 的 AI 页面分成“连接档案”和“模型分工”：连接档案支持编辑、测试 `DEFAULT` 及其他命名连接；模型分工至少包含对话、视觉、快速提取、记忆巩固、日记和 Daydream，每项选择连接档案与模型。Daydream 默认引用 `DEFAULT`，但模型名独立，允许选择成本更低的模型，也允许改用具有独立 provider、Base URL 和 API Key 的档案。Anthropic 流式传输仍是客户端能力，不提供流式开关。
 
-文本服务允许选择 `Anthropic Messages` 或 `OpenAI Compatible`；视觉服务可以选择另一协议和平台。`fastExtract`、`consolidation`、`diary` 默认继承文本服务，并在“高级模型分工”中允许覆盖各自的连接和模型。launcher 直接编辑现有 `modelRoles.<role>.routes[0]` 结构，不新增全局共享 Base URL 假设，也不覆盖用户已配置的后备 route。
+运行时先按 `endpointRef` 完整解析连接，再与 route 模型合成为 `LlmConfig`。任何被引用的档案缺少必填字段或引用不存在时，都直接判定该 route 无效；非 `DEFAULT` 档案尤其禁止逐字段回退到 `DEFAULT`，避免把默认 API Key 发给特殊供应商。日志、错误和连接测试只在当前档案边界内脱敏，不在角色间复制或回填 Key。
 
-Anthropic 对话的流式传输是客户端能力，不提供容易误关的 UI 开关。`anthropic-version` 使用兼容默认值，代理有特殊要求时可在高级连接参数中覆盖。保存前校验协议、地址和模型；连接测试分别报告认证、地址、模型或协议解析错误，不在界面或日志中回显完整 API Key。
+旧配置保持可读：没有 `modelEndpoints` 时，从 dialogue route、再从 profile 旧字段生成 `DEFAULT`；与默认连接相同的角色改为引用 `DEFAULT`，连接不同的角色保留为独立档案。旧 `daydream.model/maxTokens/temperature` 迁移到 `modelRoles.daydream.routes[0]`，原 `daydream` 对象继续只管理触发间隔、批量大小等行为参数。保存采用新 schema，同时保留未由 UI 管理的 fallback routes、limits 和未知平台字段。
+
+Daydream 新增正式的 `ModelRole::Daydream`。`AIBrain::runNextDaydreamBatch` 与 `DaydreamSleepAdapter` 必须统一通过该角色解析配置，不再分别复制全局 `LlmConfig`、覆盖 `daydream.model` 或借用 `Consolidation`，从而保证两条执行路径使用同一供应商、凭据和模型。
 
 ### 9. 执行顺序
 
@@ -115,7 +116,7 @@ Anthropic 对话的流式传输是客户端能力，不提供容易误关的 UI 
 3. 建立按 `profileId` 隔离的聊天历史、稳定消息 ID 和阅读位置。
 4. 重构可移动的 Fluent 完整聊天窗口，使其消费同一流式状态。
 5. 重构桌面输入条与输出浮层，接入自然分段、自动播放、悬停暂停和手动控制。
-6. 扩展 launcher 的文本/视觉独立配置和连接测试，完成明暗主题与异常状态验收。
+6. 扩展 launcher 的连接档案、各角色模型分工和连接测试，接入 Daydream 独立路由，完成迁移、明暗主题与异常状态验收。
 
 ### 10. 验证策略
 
@@ -126,7 +127,8 @@ Anthropic 对话的流式传输是客户端能力，不提供容易误关的 UI 
 - 首字前 fallback、首字后中断、停止生成和工具续写状态机测试。
 - 中文自然分段、硬上限、自动播放、悬停暂停和手动回看测试。
 - `profileId` 历史隔离、单身份旧历史导入和上次阅读分割线测试。
-- launcher 文本/视觉配置互不覆盖、保存恢复和 API Key 脱敏测试。
+- launcher `DEFAULT` 与特殊连接档案的保存恢复、旧配置迁移、缺失引用拒绝、跨角色 API Key 隔离和脱敏测试。
+- Daydream 两条执行路径均解析 `ModelRole::Daydream`，并使用同一 endpoint/model 的最小路由测试。
 - 运行 CMake 配置检查及不依赖 ONNX 的最小测试目标；完整桌宠、真实 Anthropic API 和视觉平台联调由填入实际地址、API Key 与模型后完成。
 
 ## 澄清结论
@@ -137,5 +139,6 @@ Anthropic 对话的流式传输是客户端能力，不提供容易误关的 UI 
 - [2026-08-27] 长回复采用自动播放、悬停暂停并支持手动翻页的桌面气泡体验。
 - [2026-08-27] 先实现流式输出与工具调用解析，再重构聊天界面。
 - [2026-08-27] 文本主接口使用 Anthropic Messages；保留既有 OpenAI-compatible 客户端。
-- [2026-08-27] 文本服务与视觉服务分别配置协议、Base URL、API Key 和模型；其他文字角色默认继承文本服务并允许高级覆盖。
 - [2026-08-27] macOS 本地仅要求最小测试与 CMake 检查，不要求运行依赖现有 ONNX Runtime 的完整桌宠。
+- [2026-08-28] 使用 `modelEndpoints` 连接档案与 `endpointRef`；`DEFAULT` 只共享 provider、Base URL、API Key 和协议参数，所有模型名始终由各 `modelRoles` 独立配置。
+- [2026-08-28] Daydream 是独立模型角色，默认引用 `DEFAULT`，可选择轻量模型或切换到具有独立凭据的其他连接档案；两条 Daydream 执行路径必须使用同一角色路由。

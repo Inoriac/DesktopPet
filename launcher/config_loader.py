@@ -11,10 +11,9 @@ from __future__ import annotations
 import copy
 import json
 import os
+import re
 import tempfile
 from typing import Any, Dict
-
-from pet_registry import _app_data_dir  # 复用同一 AppData 根以放 launch_config.json
 
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -22,6 +21,16 @@ TEMPLATE_PATH = os.path.join(
     "default_common_config.example.json",
 )
 SAVED_CONFIG_NAME = "launch_config.json"
+MODEL_ROLES = (
+    "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream")
+ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
+INLINE_CONNECTION_FIELDS = (
+    "provider", "baseUrl", "apiKey", "anthropicVersion", "extraHeaders")
+
+
+def _app_data_dir() -> str:
+    from pet_registry import _app_data_dir as app_data_dir
+    return app_data_dir()
 
 
 def load_template() -> Dict[str, Any]:
@@ -80,28 +89,135 @@ def _first_model_role_route(
     return first
 
 
-def _sync_ui_managed_model_routes(
-    profile: Dict[str, Any], settings: Dict[str, Any]
-) -> None:
-    dialogue = _first_model_role_route(
-        profile, "dialogue", "dialogue-primary", False)
-    vision = _first_model_role_route(
-        profile, "vision", "vision-primary", True)
+def _state_value(state: Any, name: str, default: Any = "") -> Any:
+    if isinstance(state, dict):
+        return state.get(name, default)
+    return getattr(state, name, default)
 
-    shared_fields = {
-        "aiEnabled": "enabled",
+
+def _endpoint_json(endpoint: Any) -> Dict[str, Any]:
+    fields = {
         "provider": "provider",
-        "baseUrl": "baseUrl",
-        "apiKey": "apiKey",
+        "base_url": "baseUrl",
+        "api_key": "apiKey",
+        "anthropic_version": "anthropicVersion",
     }
-    for setting_name, route_name in shared_fields.items():
-        if setting_name in settings:
-            dialogue[route_name] = settings[setting_name]
-            vision[route_name] = settings[setting_name]
-    if "model" in settings:
-        dialogue["model"] = settings["model"]
-    if "visualModel" in settings:
-        vision["model"] = settings["visualModel"]
+    output = {}
+    for state_name, route_name in fields.items():
+        output[route_name] = str(_state_value(endpoint, state_name, ""))
+    headers = _state_value(endpoint, "extra_headers", {})
+    if isinstance(headers, dict):
+        output["extraHeaders"] = {
+            str(key): value for key, value in headers.items()
+            if isinstance(key, str) and isinstance(value, str)
+        }
+    return output
+
+
+def _migrated_endpoint_id(role: str, index: int) -> str:
+    if role == "dialogue" and index == 0:
+        return "DEFAULT"
+    return f"MIGRATED_{role.upper()}_{index}"
+
+
+def _inline_connection_matches_default(
+    route: Dict[str, Any], default_endpoint: Dict[str, Any]
+) -> bool:
+    effective = copy.deepcopy(default_endpoint)
+    for field in INLINE_CONNECTION_FIELDS:
+        if field not in route:
+            continue
+        value = route[field]
+        if field == "extraHeaders":
+            effective[field] = {
+                str(key): item for key, item in value.items()
+                if isinstance(key, str) and isinstance(item, str)
+            } if isinstance(value, dict) else {}
+        elif isinstance(value, str):
+            effective[field] = value
+    return effective == default_endpoint
+
+
+def apply_model_endpoint_settings(
+    profile: Dict[str, Any],
+    endpoints: Dict[str, Any],
+    roles: Dict[str, Any],
+) -> None:
+    """Write endpoint registry and role references without duplicating secrets."""
+    if not isinstance(endpoints, dict) or "DEFAULT" not in endpoints:
+        raise ValueError("modelEndpoints must contain DEFAULT")
+    serialized_endpoints = {}
+    for endpoint_id, endpoint in endpoints.items():
+        if not isinstance(endpoint_id, str) or not ENDPOINT_ID_PATTERN.fullmatch(
+                endpoint_id):
+            raise ValueError(f"invalid model endpoint ID: {endpoint_id!r}")
+        serialized_endpoints[endpoint_id] = _endpoint_json(endpoint)
+
+    model_roles = profile.setdefault("modelRoles", {})
+    for role, role_config in list(model_roles.items()):
+        if not isinstance(role_config, dict):
+            continue
+        routes = role_config.get("routes")
+        if not isinstance(routes, list):
+            continue
+        for index, route in enumerate(routes):
+            if not isinstance(route, dict):
+                continue
+            if index == 0 and role in roles:
+                for field in INLINE_CONNECTION_FIELDS:
+                    route.pop(field, None)
+                continue
+            endpoint_ref = route.get("endpointRef")
+            if isinstance(endpoint_ref, str) and endpoint_ref:
+                if endpoint_ref not in serialized_endpoints:
+                    raise ValueError(
+                        f"model route {role}[{index}] references unknown "
+                        f"endpoint {endpoint_ref}")
+            else:
+                migrated_id = _migrated_endpoint_id(role, index)
+                if migrated_id in serialized_endpoints:
+                    route["endpointRef"] = migrated_id
+                elif _inline_connection_matches_default(
+                        route, serialized_endpoints["DEFAULT"]):
+                    route["endpointRef"] = "DEFAULT"
+                else:
+                    raise ValueError(
+                        f"missing migrated endpoint {migrated_id} for {role}[{index}]")
+            for field in INLINE_CONNECTION_FIELDS:
+                route.pop(field, None)
+
+    daydream = profile.get("daydream")
+    legacy_daydream = daydream if isinstance(daydream, dict) else {}
+    for role, state in roles.items():
+        if role not in MODEL_ROLES:
+            continue
+        endpoint_ref = str(_state_value(state, "endpoint_ref", "DEFAULT"))
+        if endpoint_ref not in serialized_endpoints:
+            raise ValueError(
+                f"model role {role} references unknown endpoint {endpoint_ref}")
+        model = str(_state_value(state, "model", ""))
+        first = _first_model_role_route(
+            profile, role, f"{role}-primary", role == "vision")
+        first["endpointRef"] = endpoint_ref
+        first["model"] = model
+        first["supportsVision"] = role == "vision"
+        for field in INLINE_CONNECTION_FIELDS:
+            first.pop(field, None)
+        if role == "daydream":
+            if "maxTokens" in legacy_daydream:
+                first.setdefault("maxTokens", legacy_daydream["maxTokens"])
+            if "temperature" in legacy_daydream:
+                first.setdefault("temperature", legacy_daydream["temperature"])
+
+    if isinstance(daydream, dict):
+        for legacy_field in ("model", "maxTokens", "temperature"):
+            daydream.pop(legacy_field, None)
+
+    profile["modelEndpoints"] = serialized_endpoints
+    for legacy_field in (
+            "provider", "baseUrl", "apiKey", "model", "visual_model",
+            "anthropicVersion", "extraHeaders"):
+        profile.pop(legacy_field, None)
 
 
 def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[str, Any]:
@@ -127,17 +243,12 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
         profile["enabled"] = bool(settings["aiEnabled"])
     if "emotionEnabled" in settings:
         profile.setdefault("emotion", {})["enabled"] = bool(settings["emotionEnabled"])
-    if "provider" in settings:
-        profile["provider"] = settings["provider"]
-    if "baseUrl" in settings:
-        profile["baseUrl"] = settings["baseUrl"]
-    if "apiKey" in settings:
-        profile["apiKey"] = settings["apiKey"]
-    if "model" in settings:
-        profile["model"] = settings["model"]
-    if "visualModel" in settings:
-        profile["visual_model"] = settings["visualModel"]  # 真实字段名下划线
-    _sync_ui_managed_model_routes(profile, settings)
+    if "modelEndpoints" in settings or "modelRoles" in settings:
+        apply_model_endpoint_settings(
+            profile,
+            settings.get("modelEndpoints", {}),
+            settings.get("modelRoles", {}),
+        )
     sc = _screen_chat(profile)
     if "autoScreenChat" in settings:
         sc["enabled"] = bool(settings["autoScreenChat"])

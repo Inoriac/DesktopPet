@@ -305,7 +305,7 @@ class LauncherWindow(MSFluentWindow):
         return count
 
     def _export_current_configuration(self) -> str:
-        template = config_loader.load_template()
+        template = config_loader.load_saved_config() or config_loader.load_template()
         cfg = config_loader.apply_settings(
             template, self.state.to_settings_dict())
         overrides = self.state.to_advanced_overrides()

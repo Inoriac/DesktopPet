@@ -33,17 +33,6 @@
 #include <algorithm>
 
 namespace {
-QUrl buildCompletionsUrlFromBase(const QString& baseUrl) {
-    QString normalized = baseUrl.trimmed();
-    if (normalized.endsWith('/')) {
-        normalized.chop(1);
-    }
-    if (normalized.endsWith("/chat/completions")) {
-        return QUrl(normalized);
-    }
-    return QUrl(normalized + "/chat/completions");
-}
-
 QString extractJsonPayload(const QString& text) {
     const QString trimmed = text.trimmed();
     if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
@@ -316,8 +305,7 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
                                      bool debugSaveScreenshotOnly) {
     Q_UNUSED(debugSaveScreenshotOnly);
 
-    const LlmConfig& llmCfg = ConfigManager::instance().getLlmConfig();
-    if (!llmCfg.enabled) {
+    if (!aiBrain || !aiBrain->isEnabled()) {
         qWarning() << "[ScreenChat] skipped, LLM disabled";
         QFile::remove(screenshotPath);
         if (screenChatConfig.enabled) {
@@ -338,59 +326,60 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
 
     const QByteArray imageBytes = imageFile.readAll();
     imageFile.close();
-    const QString imageDataUrl = QString("data:image/png;base64,%1").arg(QString::fromLatin1(imageBytes.toBase64()));
 
-    const QString selectedModel = llmCfg.visualModel.trimmed().isEmpty() ? llmCfg.model : llmCfg.visualModel;
     const QString styleHint = QString("请根据宠物性别(%1)生成偏日常、自然口吻的一句话，不要过度夸张。")
         .arg(screenChatConfig.petGender);
 
-    QJsonArray contentArr;
-    contentArr.append(QJsonObject{{"type", "text"}, {"text",
-        QString("你是桌宠视觉助手。请识别图片主要内容，并输出JSON，格式严格为"
-                " {\"main_content\":\"...\",\"pet_reply\":\"...\"}。"
-                "要求：main_content不超过20字；pet_reply不超过24字；仅输出JSON，无其它文字。%1")
-            .arg(styleHint)}});
-    contentArr.append(QJsonObject{{"type", "image_url"}, {"image_url", QJsonObject{{"url", imageDataUrl}}}});
-
-    QJsonArray messages;
-    messages.append(QJsonObject{{"role", "user"}, {"content", contentArr}});
-
-    QNetworkRequest request(buildCompletionsUrlFromBase(llmCfg.baseUrl));
-    request.setHeader(QNetworkRequest::ContentTypeHeader, "application/json");
-    request.setRawHeader("Authorization", QString("Bearer %1").arg(llmCfg.apiKey).toUtf8());
-    request.setTransferTimeout(llmCfg.timeoutMs);
-
-    QJsonObject payload;
-    payload["model"] = selectedModel;
-    payload["messages"] = messages;
-    payload["max_tokens"] = 300;
-    payload["temperature"] = 0.6;
-    payload["stream"] = false;
+    const QString prompt = QString(
+        "你是桌宠视觉助手。请识别图片主要内容，并输出JSON，格式严格为"
+        " {\"main_content\":\"...\",\"pet_reply\":\"...\"}。"
+        "要求：main_content不超过20字；pet_reply不超过24字；仅输出JSON，无其它文字。%1")
+        .arg(styleHint);
+    ChatMessage message;
+    message.role = QStringLiteral("user");
+    message.content = prompt;
+    message.contentBlocks = QJsonArray{
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("text")},
+                    {QStringLiteral("text"), prompt}},
+        QJsonObject{{QStringLiteral("type"), QStringLiteral("image")},
+                    {QStringLiteral("mediaType"), QStringLiteral("image/png")},
+                    {QStringLiteral("data"),
+                     QString::fromLatin1(imageBytes.toBase64())}}
+    };
+    ModelRequest request;
+    request.role = ModelRole::Vision;
+    request.constraints.requiresVision = true;
+    request.messages = {message};
+    request.petName = modelName;
 
     screenChatBusy = true;
-    QNetworkReply* reply = visionNetwork.post(request, QJsonDocument(payload).toJson(QJsonDocument::Compact));
-    connect(reply, &QNetworkReply::finished, this, [this, reply, screenshotPath, reason]() {
-        const QByteArray responseBytes = reply->readAll();
-        const QNetworkReply::NetworkError error = reply->error();
+    QPointer<PetWindow> guard(this);
+    aiBrain->modelRouter()->completeAsync(
+        request,
+        [guard, screenshotPath, reason](
+            Result<ModelCompletion, DomainError> result) {
+        if (!guard) {
+            QFile::remove(screenshotPath);
+            return;
+        }
         QString bubbleText;
-
-        if (error != QNetworkReply::NoError) {
-            qWarning() << "[ScreenChat] network error" << error << reply->errorString();
+        if (!result.isOk()) {
+            qWarning() << "[ScreenChat] vision route failed"
+                       << result.error().code << result.error().message;
             bubbleText = "刚刚看了一眼屏幕，网络有点忙呢";
         } else {
-            const QJsonDocument responseDoc = QJsonDocument::fromJson(responseBytes);
-            const QJsonObject root = responseDoc.object();
-            const QJsonArray choices = root.value("choices").toArray();
-            if (!choices.isEmpty()) {
-                const QString content = choices.first().toObject().value("message").toObject().value("content").toString();
-                const QString jsonPayload = extractJsonPayload(content);
-                const QJsonDocument resultDoc = QJsonDocument::fromJson(jsonPayload.toUtf8());
-                if (resultDoc.isObject()) {
-                    const QJsonObject resultObj = resultDoc.object();
-                    bubbleText = resultObj.value("pet_reply").toString().trimmed();
-                    const QString mainContent = resultObj.value("main_content").toString().trimmed();
-                    qDebug() << "[ScreenChat] reason=" << reason << "main_content=" << mainContent << "pet_reply=" << bubbleText;
-                }
+            const QString jsonPayload = extractJsonPayload(
+                result.value().response.content);
+            const QJsonDocument resultDoc = QJsonDocument::fromJson(
+                jsonPayload.toUtf8());
+            if (resultDoc.isObject()) {
+                const QJsonObject resultObj = resultDoc.object();
+                bubbleText = resultObj.value("pet_reply").toString().trimmed();
+                const QString mainContent =
+                    resultObj.value("main_content").toString().trimmed();
+                qDebug() << "[ScreenChat] reason=" << reason
+                         << "main_content=" << mainContent
+                         << "pet_reply=" << bubbleText;
             }
         }
 
@@ -398,14 +387,12 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
             bubbleText = "我看到你在忙，要记得休息呀";
         }
 
-        showBubbleMessage(bubbleText);
-        speakPetReply(bubbleText, QStringLiteral("screenChat"));
+        guard->showBubbleMessage(bubbleText);
+        guard->speakPetReply(bubbleText, QStringLiteral("screenChat"));
         QFile::remove(screenshotPath);
-        screenChatBusy = false;
-        if (screenChatConfig.enabled) {
-            scheduleNextScreenChat();
+        guard->screenChatBusy = false;
+        if (guard->screenChatConfig.enabled) {
+            guard->scheduleNextScreenChat();
         }
-
-        reply->deleteLater();
     });
 }

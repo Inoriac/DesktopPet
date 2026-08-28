@@ -239,10 +239,10 @@ LiquidGlassChatBubble.setDisplayedPage:
 
 ---
 
-## Task 6: Launcher 独立模型配置
+## Task 6: 连接档案、角色配置与视觉路由
 
-- **关联设计**: §3.7 Launcher 独立模型配置
-- **状态**: [ ]
+- **关联设计**: §3.7 连接档案、角色配置与视觉路由
+- **状态**: [x]
 - **Wave**: 6
 - **依赖**: Task 1、Task 5（按设计执行顺序）
 
@@ -250,38 +250,99 @@ LiquidGlassChatBubble.setDisplayedPage:
 - 实现: `launcher/app_state.py`
 - 实现: `launcher/config_loader.py`
 - 实现: `launcher/pages/ai_page.py`
+- 实现: `launcher/main.py`
 - 实现: `launcher/api_connection_tester.py`
 - 实现: `core/configLoader/config_manager.h`
 - 实现: `core/configLoader/config_manager.cpp`
 - 实现: `include/ai_types.h`
+- 实现: `core/ai/llm/anthropic_messages_client.cpp`
+- 实现: `core/ai/llm/openai_compatible_client.cpp`
+- 实现: `ui/petwindow_screen_chat.cpp`
 - 配置: `config/default_common_config.example.json`
+- 配置: `config/default_common_config.json`
 - 构建: `CMakeLists.txt`
 - 测试: `tests/test_launcher_config.py`
 - 测试: `tests/test_api_connection_tester.py`
 - 测试: `tests/test_model_role_config.py`
+- 测试: `tests/test_model_router.cpp`
+- 测试: `tests/test_anthropic_messages_client.cpp`
 
 **测试用例**（按被测方法分组，每方法 ≥ 1 条 happy path）:
 
 AppState.from_config:
-- `from_config_whenTextAndVisionUseDifferentEndpoints_shouldRestoreEachWithoutCrossCopy`（happy path）
-- `from_config_whenOnlyLegacyFieldsExist_shouldRestoreCompatibleEndpointStates`
+- `from_config_whenRolesReferenceEndpointRegistry_shouldRestoreReferencesModelsAndKeysByEndpoint`（happy path）
+- `from_config_whenLegacyRoutesUseDifferentKeys_shouldCreateDefaultAndIndependentMigratedEndpoints`
+- `from_config_whenLegacyRoleConnectionExactlyMatchesDefault_shouldReuseDefaultEndpoint`
+- `from_config_whenLegacyRoutesPartiallyOverrideConnection_shouldMaterializeCompleteMigratedEndpoints`
 
-apply_model_service_settings:
-- `apply_model_service_settings_whenServicesDiffer_shouldWriteIndependentFirstRoutesAndKeepFallbacks`（happy path）
-- `apply_model_service_settings_whenRoleInheritsText_shouldMaterializeTextEndpoint`
-- `apply_model_service_settings_whenOneRoleOverrides_shouldPreserveOtherRoleInheritance`
-- `apply_model_service_settings_whenUnknownRouteFieldsExist_shouldPreserveThem`
+load_template:
+- `template_defaults_all_model_roles_to_single_default_endpoint`（happy path）
+
+apply_model_endpoint_settings:
+- `apply_model_endpoint_settings_whenDefaultChanges_shouldKeepRoleModelsAndReferences`（happy path）
+- `apply_model_endpoint_settings_whenSpecialEndpointIsUsed_shouldKeepApiKeyOnlyInRegistry`
+- `apply_model_endpoint_settings_whenFallbacksAndUnknownFieldsExist_shouldMigrateConnectionsAndPreserveBehavior`
+- `apply_model_endpoint_settings_whenFallbackReferenceIsUnknown_shouldRejectBeforeWrite`
+- `apply_model_endpoint_settings_whenLegacyDaydreamModelSettingsExist_shouldMoveThemToDaydreamRoute`
 
 ApiConnectionTester.test:
-- `test_whenAnthropicEndpointIsValid_shouldBuildMessagesProbeAndReportSuccess`（happy path）
+- `test_whenAnthropicEndpointAndRoleModelAreValid_shouldBuildMessagesProbeAndReportSuccess`（happy path）
 - `test_whenOpenAiCompatibleEndpointIsValid_shouldBuildChatCompletionsProbe`
 - `test_whenProviderIsUnsupported_shouldFailBeforeNetwork`
 - `test_whenProviderErrorContainsApiKey_shouldRedactAndTruncateMessage`
 
 AiPage connection test:
-- `connectionTest_whenTextAndVisionRunTogether_shouldMaintainIndependentPendingState`（happy path）
+- `connectionTest_whenTwoEndpointsRunTogether_shouldMaintainIndependentPendingState`（happy path）
 - `connectionTest_whenOldRequestFinishesLate_shouldIgnoreStaleResult`
 
-ConfigManager.routeFromJson:
-- `routeFromJson_whenAnthropicFieldsAreValid_shouldLoadVersionAndStringHeaders`（happy path）
-- `routeFromJson_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams`
+ConfigManager.loadConfig/getModelRoleConfig:
+- `getModelRoleConfig_whenRoleReferencesAnthropicEndpoint_shouldMergeConnectionAndModel`（happy path）
+- `getModelRoleConfig_whenEndpointReferenceIsMissing_shouldRejectRouteWithoutDefaultKeyFallback`
+- `getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams`
+
+Provider message conversion / PetWindow vision route:
+- `buildMessages_whenCanonicalImageBlockUsesAnthropic_shouldBuildBase64ImageSource`（happy path）
+- `buildMessages_whenCanonicalImageBlockUsesOpenAiCompatible_shouldBuildImageUrlDataUri`
+- `sendChatCompletionStreamAsync_whenAnthropicTextBlockIsInvalid_shouldFailBeforeNetwork`
+- `sendChatCompletionStreamAsync_whenOpenAiCanonicalBlockIsInvalid_shouldFailBeforeNetwork`
+- `requestVisionSummary_whenVisionRoleUsesIndependentEndpoint_shouldRouteWithoutGlobalCredentials`
+
+---
+
+## Task 7: Daydream 独立模型路由
+
+- **关联设计**: §3.8 Daydream 独立模型路由
+- **状态**: [ ]
+- **Wave**: 7
+- **依赖**: Task 6
+
+**文件**:
+- 实现: `include/ai_types.h`
+- 实现: `core/configLoader/config_manager.cpp`
+- 实现: `core/ai/context/context_assembler.cpp`
+- 实现: `core/ai/ai_brain_loop.cpp`
+- 实现: `core/ai/reflection/daydream_sleep_adapter.cpp`
+- 配置: `config/default_common_config.example.json`
+- 配置: `config/default_common_config.json`
+- 测试: `tests/test_model_router.cpp`
+- 测试: `tests/test_llm_chat_service.cpp`
+- 测试: `tests/test_memory_strategy.cpp`
+- 测试: `tests/test_sleep_cycle.cpp`
+
+**测试用例**（按被测方法分组，每方法 ≥ 1 条 happy path）:
+
+ConfigManager.loadConfig/getModelRoleConfig:
+- `getModelRoleConfig_whenDaydreamReferencesSpecialEndpoint_shouldUseOnlyItsKeyAndModel`（happy path）
+- `getModelRoleConfig_whenLegacyDaydreamFieldsExist_shouldSynthesizeCompatibleRoute`
+
+ContextAssembler.assemble:
+- `assemble_whenDaydreamRequestsEvidenceAndMemory_shouldReturnOnlyAllowedPartitions`（happy path）
+- `assemble_whenDaydreamRequestsPersona_shouldRejectScope`
+
+AIBrain.runNextDaydreamBatch:
+- `runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision`（happy path）
+- `runNextDaydreamBatch_whenDaydreamRoutesFail_shouldUseBoundedHardcodedFallback`
+
+DaydreamSleepAdapter.processNextBatch:
+- `processNextBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndStageChangeSet`（happy path）
+- `processNextBatch_whenCallbackArrivesAfterCancellation_shouldDiscardLateResult`
