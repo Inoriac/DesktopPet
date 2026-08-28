@@ -3,6 +3,7 @@
 //
 
 #include "petwindow.h"
+#include "chat_conversation_model.h"
 #include "chat_history_window.h"
 #include "liquidglasschatbubble.h"
 #include "render_viewport.h"
@@ -25,8 +26,6 @@
 #include <QNetworkRequest>
 #include <QBuffer>
 #include <QDir>
-#include <QFile>
-#include <QFileInfo>
 #include <QRegularExpression>
 #include <QUrl>
 #include <QUuid>
@@ -92,7 +91,30 @@ PetWindow::PetWindow(PetProfile profile,
     setupWindowSnapping();
     setupDropAnimation();
     setupScreenChat();
-    loadChatHistory();
+
+    conversationModel = std::make_unique<ChatConversationModel>();
+    connect(conversationModel.get(),
+            &ChatConversationModel::historyPersistenceWarning,
+            this,
+            [](const QString& safeMessage) {
+                qWarning() << "[Chat] history persistence warning:"
+                           << safeMessage;
+            });
+    ProfileChatStoreOptions chatStoreOptions;
+    chatStoreOptions.appDataRoot = this->profileMigration.appDataRoot;
+    chatStoreOptions.profileId = this->profileMigration.profileId;
+    chatStoreOptions.registeredProfileIds =
+        this->profileMigration.registeredProfileIds;
+    chatStoreOptions.legacyHistoryPath = QDir::current().filePath(
+        QStringLiteral("log/chat_history.jsonl"));
+    QString chatHistoryError;
+    if (!conversationModel->initialize(chatStoreOptions, &chatHistoryError)) {
+        qWarning() << "[Chat] unable to initialize conversation model:"
+                   << chatHistoryError;
+    } else if (!chatHistoryError.isEmpty()) {
+        qWarning() << "[Chat] conversation is using degraded persistence:"
+                   << chatHistoryError;
+    }
 
     aiBrain = std::make_unique<AIBrain>(this);
     aiBrain->setEmotionSnapshotProvider([this]() -> std::optional<EmotionSnapshot> {
@@ -121,7 +143,6 @@ PetWindow::PetWindow(PetProfile profile,
     });
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
         qDebug() << "[AIBrain] assistant response:" << content;
-        appendChatHistoryMessage(QStringLiteral("assistant"), content);
         thinkingHadAssistantResponse = true;
         if (thinkingBubbleActive) {
             stopThinkingBubble(true);
@@ -132,13 +153,37 @@ PetWindow::PetWindow(PetProfile profile,
     connect(aiBrain.get(), &AIBrain::proactiveResponseReady, this, [this](const QString& content) {
         qDebug() << "[AIBrain] proactive response:" << content;
         if (!thinkingHadAssistantResponse) {
-            appendChatHistoryMessage(QStringLiteral("assistant"), content);
             if (!thinkingBubbleActive) {
                 showBubbleMessageAnimated(content);
                 speakPetReply(content, QStringLiteral("proactive"));
             }
         }
     });
+    connect(aiBrain.get(), &AIBrain::assistantResponseStarted,
+            conversationModel.get(),
+            [this](const QString& messageId,
+                   const QString& replyToId,
+                   const QString&) {
+                conversationModel->beginAssistantMessage(messageId, replyToId);
+            });
+    connect(aiBrain.get(), &AIBrain::assistantResponseStageChanged,
+            conversationModel.get(),
+            [this](const QString& messageId, ChatActivityStage stage) {
+                conversationModel->setAssistantStage(messageId, stage);
+            });
+    connect(aiBrain.get(), &AIBrain::assistantResponseDelta,
+            conversationModel.get(),
+            [this](const QString& messageId, const QString& textDelta) {
+                conversationModel->appendAssistantDelta(messageId, textDelta);
+            });
+    connect(aiBrain.get(), &AIBrain::assistantResponseFinished,
+            conversationModel.get(),
+            [this](const QString& messageId,
+                   ChatMessageStatus status,
+                   const QString& errorMessage) {
+                conversationModel->finishAssistantMessage(
+                    messageId, status, errorMessage);
+            });
     connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
         qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
         Q_UNUSED(payload);
@@ -186,7 +231,7 @@ PetWindow::PetWindow(PetProfile profile,
 }
 
 PetWindow::~PetWindow() {
-    teardownAiRuntime();
+    if (aiBrain) aiBrain->stopCurrentResponse();
     voiceSynthesis.stop();
     if (snapFollowTimer) {
         snapFollowTimer->stop();
@@ -202,9 +247,6 @@ PetWindow::~PetWindow() {
     }
     if (emotionBehaviorTimer) {
         emotionBehaviorTimer->stop();
-    }
-    if (renderViewport) {
-        delete renderViewport;
     }
     if (screenChatTimer) {
         screenChatTimer->stop();
@@ -232,6 +274,10 @@ PetWindow::~PetWindow() {
         chatHistoryWindow->close();
         chatHistoryWindow->deleteLater();
         chatHistoryWindow = nullptr;
+    }
+    teardownAiRuntime();
+    if (renderViewport) {
+        delete renderViewport;
     }
     if (contextMenu) {
         delete contextMenu;
@@ -307,106 +353,88 @@ void PetWindow::openChatHistoryWindow() {
     if (!chatHistoryWindow) {
         chatHistoryWindow = new ChatHistoryWindow();
         connect(chatHistoryWindow, &ChatHistoryWindow::messageSubmitted, this, [this](const QString& text) {
-            appendChatHistoryMessage(QStringLiteral("user"), text);
+            if (!conversationModel) return;
+            const QString userMessageId =
+                conversationModel->appendUserMessage(text);
+            if (userMessageId.isEmpty()) return;
             if (petController) {
                 petController->recordExplicitFeedbackText(text);
             }
             if (!aiBrain || !aiBrain->isEnabled()) {
-                appendChatHistoryMessage(QStringLiteral("system"), QStringLiteral("AI 当前没有启用，暂时不能回复。"));
+                const QString assistantId =
+                    QUuid::createUuid().toString(QUuid::WithoutBraces);
+                conversationModel->beginAssistantMessage(
+                    assistantId, userMessageId);
+                conversationModel->appendAssistantDelta(
+                    assistantId,
+                    QStringLiteral("AI 当前没有启用，暂时不能回复。"));
+                conversationModel->finishAssistantMessage(
+                    assistantId, ChatMessageStatus::Complete);
                 return;
             }
-            aiBrain->triggerThink(text, "user_request");
+            aiBrain->triggerThink(text, "user_request", userMessageId);
         });
+        connect(chatHistoryWindow, &ChatHistoryWindow::stopRequested,
+                this, [this]() {
+                    if (aiBrain) aiBrain->stopCurrentResponse();
+                });
+        connect(chatHistoryWindow, &ChatHistoryWindow::retryRequested,
+                this, [this](const QString& assistantMessageId) {
+                    if (!conversationModel || !aiBrain || !aiBrain->isEnabled()
+                        || aiBrain->isBusy()) {
+                        return;
+                    }
+                    const QList<ChatHistoryEntry> messages =
+                        conversationModel->messages();
+                    const auto assistant = std::find_if(
+                        messages.cbegin(), messages.cend(),
+                        [&assistantMessageId](const ChatHistoryEntry& entry) {
+                            return entry.id == assistantMessageId
+                                && entry.role == QLatin1String("assistant");
+                        });
+                    if (assistant == messages.cend()
+                        || assistant->replyToId.isEmpty()) {
+                        return;
+                    }
+                    const auto source = std::find_if(
+                        messages.cbegin(), messages.cend(),
+                        [&assistant](const ChatHistoryEntry& entry) {
+                            return entry.id == assistant->replyToId
+                                && entry.role == QLatin1String("user");
+                        });
+                    if (source == messages.cend()) return;
+                    const QString newUserId =
+                        conversationModel->appendUserMessage(source->content);
+                    if (newUserId.isEmpty()) return;
+                    if (petController) {
+                        petController->recordExplicitFeedbackText(source->content);
+                    }
+                    aiBrain->triggerThink(
+                        source->content, "user_request", newUserId);
+                });
+        chatHistoryWindow->bindConversation(
+            conversationModel.get(), profileMigration.profileId, modelName);
     }
-
-    chatHistoryWindow->clearMessages();
-    for (const ChatHistoryEntry& entry : chatHistoryEntries) {
-        chatHistoryWindow->addMessage(entry.role, entry.content, entry.timestamp);
-    }
-    chatHistoryWindow->show();
-    chatHistoryWindow->raise();
-    chatHistoryWindow->activateWindow();
+    chatHistoryWindow->revealConversation();
 }
 
 void PetWindow::appendChatHistoryMessage(const QString& role,
                                          const QString& content,
                                          const QDateTime& timestamp,
                                          bool persist) {
+    Q_UNUSED(persist)
     const QString trimmedContent = content.trimmed();
-    if (trimmedContent.isEmpty()) {
+    if (!conversationModel || trimmedContent.isEmpty()) return;
+    if (role == QLatin1String("user")) {
+        conversationModel->appendUserMessage(trimmedContent, timestamp);
         return;
     }
-
-    const ChatHistoryEntry entry{role.trimmed().isEmpty() ? QStringLiteral("system") : role.trimmed(),
-                                 trimmedContent,
-                                 timestamp.isValid() ? timestamp : QDateTime::currentDateTime()};
-    chatHistoryEntries.append(entry);
-    if (persist) {
-        saveChatHistoryMessage(entry.role, entry.content, entry.timestamp);
-    }
-    if (chatHistoryWindow) {
-        chatHistoryWindow->addMessage(entry.role, entry.content, entry.timestamp);
-    }
-}
-
-void PetWindow::loadChatHistory() {
-    chatHistoryEntries.clear();
-
-    QFile file(chatHistoryFilePath());
-    if (!file.exists()) {
-        return;
-    }
-    if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
-        qWarning() << "Failed to open chat history:" << file.errorString();
-        return;
-    }
-
-    while (!file.atEnd()) {
-        const QByteArray line = file.readLine().trimmed();
-        if (line.isEmpty()) {
-            continue;
-        }
-        const QJsonDocument doc = QJsonDocument::fromJson(line);
-        if (!doc.isObject()) {
-            continue;
-        }
-        const QJsonObject object = doc.object();
-        const QString role = object.value(QStringLiteral("role")).toString(QStringLiteral("system"));
-        const QString content = object.value(QStringLiteral("content")).toString().trimmed();
-        QDateTime timestamp = QDateTime::fromString(object.value(QStringLiteral("timestamp")).toString(), Qt::ISODate);
-        if (!timestamp.isValid()) {
-            timestamp = QDateTime::currentDateTime();
-        }
-        appendChatHistoryMessage(role, content, timestamp, false);
-    }
-}
-
-void PetWindow::saveChatHistoryMessage(const QString& role,
-                                       const QString& content,
-                                       const QDateTime& timestamp) const {
-    const QFileInfo info(chatHistoryFilePath());
-    QDir dir = info.dir();
-    if (!dir.exists() && !dir.mkpath(".")) {
-        qWarning() << "Failed to create chat history directory:" << dir.path();
-        return;
-    }
-
-    QFile file(chatHistoryFilePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        qWarning() << "Failed to save chat history:" << file.errorString();
-        return;
-    }
-
-    QJsonObject object;
-    object[QStringLiteral("role")] = role;
-    object[QStringLiteral("content")] = content;
-    object[QStringLiteral("timestamp")] = timestamp.toString(Qt::ISODate);
-    file.write(QJsonDocument(object).toJson(QJsonDocument::Compact));
-    file.write("\n");
-}
-
-QString PetWindow::chatHistoryFilePath() const {
-    return QStringLiteral("log/chat_history.jsonl");
+    const QString assistantId =
+        QUuid::createUuid().toString(QUuid::WithoutBraces);
+    conversationModel->beginAssistantMessage(assistantId, {}, timestamp);
+    conversationModel->appendAssistantDelta(assistantId, trimmedContent);
+    conversationModel->finishAssistantMessage(
+        assistantId, ChatMessageStatus::Complete);
 }
 
 void PetWindow::speakPetReply(const QString& text, const QString& source) {
@@ -415,7 +443,11 @@ void PetWindow::speakPetReply(const QString& text, const QString& source) {
 
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
+    if (aiBrain) aiBrain->stopCurrentResponse();
     hideBubbleMessage();
+    if (chatHistoryWindow) chatHistoryWindow->close();
+    if (outputBubble) outputBubble->close();
+    if (inputBubble) inputBubble->close();
     teardownAiRuntime();
     voiceSynthesis.stop();
     unloadModel();

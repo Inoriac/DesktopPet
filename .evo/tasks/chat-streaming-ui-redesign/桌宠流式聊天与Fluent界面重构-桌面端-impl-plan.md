@@ -142,7 +142,7 @@ ChatConversationModel.markReadThrough:
 ## Task 4: Fluent 完整聊天窗口
 
 - **关联设计**: §3.5 Fluent 完整聊天窗口
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 4
 - **依赖**: Task 2、Task 3
 

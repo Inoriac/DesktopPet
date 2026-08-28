@@ -933,6 +933,30 @@ add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
         Qt::Test
 )
 
+# ---- Fluent chat history window tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(chat_history_window_tests ChatHistoryWindowTests
+    SOURCES
+        tests/test_chat_history_window.cpp
+        ui/chat_history_window.h
+        ui/chat_history_window.cpp
+        ui/chat_conversation_model.h
+        ui/chat_conversation_model.cpp
+        ui/theme_manager.h
+        ui/theme_manager.cpp
+        core/ai/chat/chat_types.h
+        core/ai/chat/chat_types.cpp
+        core/ai/chat/profile_chat_history_store.h
+        core/ai/chat/profile_chat_history_store.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Widgets
+        Qt::Test
+)
+
 add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests
     SOURCES
         tests/test_statistic_manager.cpp

@@ -22,6 +22,7 @@
 #include "voice/voice_synthesis_service.h"
 
 class ChatHistoryWindow;
+class ChatConversationModel;
 class LiquidGlassChatBubble;
 
 class RenderViewport;
@@ -122,11 +123,6 @@ private:
                                   const QString& content,
                                   const QDateTime& timestamp = QDateTime::currentDateTime(),
                                   bool persist = true);
-    void loadChatHistory();
-    void saveChatHistoryMessage(const QString& role,
-                                const QString& content,
-                                const QDateTime& timestamp) const;
-    QString chatHistoryFilePath() const;
     void speakPetReply(const QString& text, const QString& source);
     void updateBubblePositions();
     void updateOutputBubblePosition();
@@ -194,6 +190,7 @@ private:
 
     VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
+    std::unique_ptr<ChatConversationModel> conversationModel;
     std::unique_ptr<CallbackRuntimeUiBridge> runtimeUiBridge;
     std::unique_ptr<EmotionEngineStateProvider> emotionStateProvider;
     std::unique_ptr<AgentRuntimeServices> runtimeServices;
@@ -225,13 +222,6 @@ private:
     int typewriterFinalDurationMs = -1;
     QStringList bubblePages;
     int bubblePageIndex = 0;
-
-    struct ChatHistoryEntry {
-        QString role;
-        QString content;
-        QDateTime timestamp;
-    };
-    QList<ChatHistoryEntry> chatHistoryEntries;
 
     struct NativeWindowEntry {
         void* hwnd = nullptr;
