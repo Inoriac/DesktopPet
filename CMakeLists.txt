@@ -79,6 +79,12 @@ set(UI_SOURCES
     ui/chat_history_window.h
     ui/chat_conversation_model.cpp
     ui/chat_conversation_model.h
+    ui/streaming_text_paginator.cpp
+    ui/streaming_text_paginator.h
+    ui/bubble_playback_controller.cpp
+    ui/bubble_playback_controller.h
+    ui/thinking_status_selector.cpp
+    ui/thinking_status_selector.h
     ui/liquidglasschatbubble.cpp
     ui/liquidglasschatbubble.h
     ui/liquidglasschatbubble_utils.cpp
@@ -955,6 +961,45 @@ add_desktop_pet_cpp_test(chat_history_window_tests ChatHistoryWindowTests
         Qt::Gui
         Qt::Widgets
         Qt::Test
+)
+
+# ---- Streaming desktop bubble pagination tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(streaming_text_paginator_tests StreamingTextPaginatorTests
+    SOURCES
+        tests/test_streaming_text_paginator.cpp
+        ui/streaming_text_paginator.h
+        ui/streaming_text_paginator.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBRARIES
+        Qt::Core
+        Qt::Test
+)
+
+# ---- Streaming desktop bubble playback and widget tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(bubble_playback_controller_tests BubblePlaybackControllerTests
+    SOURCES
+        tests/test_bubble_playback_controller.cpp
+        ui/bubble_playback_controller.h
+        ui/bubble_playback_controller.cpp
+        ui/thinking_status_selector.h
+        ui/thinking_status_selector.cpp
+        ui/liquidglasschatbubble.h
+        ui/liquidglasschatbubble.cpp
+        ui/liquidglasschatbubble_utils.cpp
+        ui/liquidglassmaterial.h
+        ui/liquidglassmaterial.cpp
+        include/ai_types.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Widgets
+        Qt::Test
+    APPLE_CORE_GRAPHICS
 )
 
 add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests

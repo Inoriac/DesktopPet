@@ -19,6 +19,9 @@
 #include "ai/runtime/runtime_types.h"
 #include "ai/scheduler/agent_scheduler.h"
 #include "ai/tool_registry.h"
+#include "bubble_playback_controller.h"
+#include "streaming_text_paginator.h"
+#include "thinking_status_selector.h"
 #include "voice/voice_synthesis_service.h"
 
 class ChatHistoryWindow;
@@ -112,6 +115,15 @@ private:
     void startThinkingBubble(const QString& reason);
     void stopThinkingBubble(bool keepCurrentBubble = false);
     void updateThinkingBubble();
+    void beginStreamingBubble(const QString& messageId);
+    void updateStreamingBubbleStage(const QString& messageId,
+                                    ChatActivityStage stage);
+    void appendStreamingBubbleDelta(const QString& messageId,
+                                    const QString& delta);
+    void finishStreamingBubble(const QString& messageId,
+                               ChatMessageStatus status);
+    void applyBubblePaginationUpdate(const PaginationUpdate& update);
+    void scheduleFinishedBubbleHide();
     void stopTypewriterBubble();
     void updateTypewriterBubble();
     QStringList splitBubbleTextIntoPages(const QString& message) const;
@@ -191,6 +203,9 @@ private:
     VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ChatConversationModel> conversationModel;
+    std::unique_ptr<StreamingTextPaginator> streamingTextPaginator;
+    std::unique_ptr<BubblePlaybackController> bubblePlaybackController;
+    std::unique_ptr<ThinkingStatusSelector> thinkingStatusSelector;
     std::unique_ptr<CallbackRuntimeUiBridge> runtimeUiBridge;
     std::unique_ptr<EmotionEngineStateProvider> emotionStateProvider;
     std::unique_ptr<AgentRuntimeServices> runtimeServices;
@@ -214,6 +229,17 @@ private:
     bool screenChatBusy = false;
     bool thinkingBubbleActive = false;
     bool thinkingHadAssistantResponse = false;
+    bool streamingBubbleHasText = false;
+    bool streamingBubbleFinished = false;
+    QString streamingBubbleMessageId;
+    ChatActivityStage streamingBubbleStage = ChatActivityStage::WaitingForModel;
+    int streamingBubbleHideDurationMs = -1;
+    bool bubblePageFlushPending = false;
+    QString pendingBubblePageMessageId;
+    QString pendingBubblePageText;
+    int pendingBubblePageIndex = 0;
+    int pendingBubblePageTotal = 0;
+    bool pendingBubblePageDraft = false;
     int thinkingDotCount = 1;
     QString thinkingBubbleTextBase;
     bool typewriterBubbleActive = false;

@@ -11,7 +11,9 @@
 #include <QPainterPath>
 #include <QMoveEvent>
 #include <QShowEvent>
+#include <QStyle>
 #include <QTimer>
+#include <QToolButton>
 #include <QVariantAnimation>
 #include <algorithm>
 
@@ -22,6 +24,9 @@ constexpr int kMaxBubbleWidth = 380;
 constexpr int kMaxBubbleHeight = 400;
 constexpr int kMinBubbleHeight = 48;
 constexpr int kRefreshThrottleMs = 96;
+constexpr int kControlsHeight = 40;
+constexpr int kControlButtonSize = 32;
+constexpr int kControlGap = 4;
 } // namespace
 
 LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
@@ -46,25 +51,71 @@ LiquidGlassChatBubble::LiquidGlassChatBubble(QWidget* parent)
     m_input = new QLineEdit(this);
     m_input->hide();
     m_input->setFrame(false);
+    m_input->installEventFilter(this);
+    connect(m_input, &QLineEdit::textChanged, this, [this]() {
+        if (!m_inputAutoFadeEnabled) return;
+        setInputRevealed(inputShouldStayRevealed());
+    });
     connect(m_input, &QLineEdit::returnPressed, this, [this]() {
         const QString value = m_input ? m_input->text().trimmed() : QString();
-        if (!value.isEmpty()) {
+        if (m_inputSubmissionEnabled && !value.isEmpty()) {
             emit messageSubmitted(value);
             m_input->clear();
             m_input->clearFocus();
-            if (m_inputAutoFadeEnabled && !underMouse()) {
+            if (m_inputAutoFadeEnabled && !inputShouldStayRevealed()) {
                 setInputRevealed(false);
             }
         }
+    });
+
+    const auto createControl = [this](const QString& objectName,
+                                      QStyle::StandardPixmap icon,
+                                      const QString& tooltip) {
+        auto* button = new QToolButton(this);
+        button->setObjectName(objectName);
+        button->setFixedSize(kControlButtonSize, kControlButtonSize);
+        button->setIcon(style()->standardIcon(icon));
+        button->setIconSize(QSize(17, 17));
+        button->setAutoRaise(true);
+        button->setToolTip(tooltip);
+        button->setAccessibleName(tooltip);
+        button->setFocusPolicy(Qt::NoFocus);
+        button->hide();
+        return button;
+    };
+    m_previousButton = createControl(
+        QStringLiteral("previousPageButton"), QStyle::SP_ArrowLeft,
+        QStringLiteral("上一页"));
+    m_nextButton = createControl(
+        QStringLiteral("nextPageButton"), QStyle::SP_ArrowRight,
+        QStringLiteral("下一页"));
+    m_playbackButton = createControl(
+        QStringLiteral("playbackToggleButton"), QStyle::SP_MediaPause,
+        QStringLiteral("暂停自动播放"));
+    m_openButton = createControl(
+        QStringLiteral("openConversationButton"), QStyle::SP_DirOpenIcon,
+        QStringLiteral("打开完整对话"));
+    connect(m_previousButton, &QToolButton::clicked,
+            this, &LiquidGlassChatBubble::previousPageRequested);
+    connect(m_nextButton, &QToolButton::clicked,
+            this, &LiquidGlassChatBubble::nextPageRequested);
+    connect(m_playbackButton, &QToolButton::clicked,
+            this, &LiquidGlassChatBubble::playbackToggleRequested);
+    connect(m_openButton, &QToolButton::clicked, this, [this]() {
+        emit openConversationRequested(m_messageId);
     });
 }
 
 void LiquidGlassChatBubble::setMessage(const QString& message) {
     m_text = message.trimmed().isEmpty() ? QStringLiteral("...") : message.trimmed();
     m_inputMode = false;
+    m_streamingMode = false;
+    m_messageId.clear();
+    m_activityText.clear();
     if (m_input) {
         m_input->hide();
     }
+    updateOutputControlsState();
     resize(sizeHint());
     scheduleDynamicRefresh(true);
     update();
@@ -98,6 +149,10 @@ void LiquidGlassChatBubble::setInputAutoFadeEnabled(bool enabled) {
     }
 }
 
+void LiquidGlassChatBubble::setInputSubmissionEnabled(bool enabled) {
+    m_inputSubmissionEnabled = enabled;
+}
+
 void LiquidGlassChatBubble::showMessage(const QString& message) {
     setMessage(message);
     show();
@@ -109,6 +164,8 @@ void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInpu
     m_text.clear();
     m_layoutReserveText.clear();
     m_inputMode = true;
+    m_streamingMode = false;
+    m_messageId.clear();
     m_hasMorePages = false;
     resize(QSize(kMaxBubbleWidth, kMinBubbleHeight));
     updateInputGeometry();
@@ -120,12 +177,64 @@ void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInpu
         }
     }
     if (m_inputAutoFadeEnabled) {
-        setInputRevealed(focusInput || underMouse());
+        setInputRevealed(focusInput || inputShouldStayRevealed());
     }
+    updateOutputControlsState();
     show();
     raise();
     scheduleDynamicRefresh(true);
     update();
+}
+
+void LiquidGlassChatBubble::showStreamingMessage(const QString& messageId) {
+    m_messageId = messageId;
+    m_text.clear();
+    m_layoutReserveText.clear();
+    m_activityText.clear();
+    m_inputMode = false;
+    m_streamingMode = true;
+    m_hasMorePages = false;
+    m_displayedPageIndex = 0;
+    m_displayedPageTotal = 0;
+    m_displayedPageDraft = false;
+    m_playbackPaused = false;
+    if (m_input) m_input->hide();
+    updateOutputControlsState();
+    resize(sizeHint());
+    show();
+    raise();
+    scheduleDynamicRefresh(true);
+    update();
+}
+
+void LiquidGlassChatBubble::setDisplayedPage(const QString& text,
+                                             int index,
+                                             int total,
+                                             bool draft) {
+    m_text = text;
+    m_displayedPageTotal = std::max(0, total);
+    m_displayedPageIndex = m_displayedPageTotal > 0
+        ? std::clamp(index, 0, m_displayedPageTotal - 1)
+        : 0;
+    m_displayedPageDraft = draft;
+    updateOutputControlsState();
+    resize(sizeHint());
+    scheduleDynamicRefresh(false);
+    update();
+}
+
+void LiquidGlassChatBubble::setActivityText(const QString& text) {
+    if (m_activityText == text) return;
+    m_activityText = text;
+    resize(sizeHint());
+    updateOutputControlsGeometry();
+    update();
+}
+
+void LiquidGlassChatBubble::setPlaybackPaused(bool paused) {
+    if (m_playbackPaused == paused) return;
+    m_playbackPaused = paused;
+    updateOutputControlsState();
 }
 
 void LiquidGlassChatBubble::hideBubble() {
@@ -182,13 +291,17 @@ QSize LiquidGlassChatBubble::sizeHint() const {
     f.setPointSize(m_fontSize);
     f.setWeight(QFont::DemiBold);
     const QFontMetrics fm(f);
-    const QString layoutText = m_layoutReserveText.isEmpty() ? m_text : m_layoutReserveText;
+    QString layoutText = m_layoutReserveText.isEmpty() ? m_text : m_layoutReserveText;
+    if (layoutText.isEmpty()) layoutText = m_activityText;
     const QRect textRect = fm.boundingRect(QRect(0, 0, contentWidth(), 1000),
                                            Qt::TextWordWrap | Qt::AlignCenter,
                                            layoutText.isEmpty() ? QStringLiteral("...") : layoutText);
     const int indicatorPadding = m_hasMorePages ? 16 : 0;
+    const int controlsPadding = m_streamingMode ? kControlsHeight : 0;
     return QSize(kMaxBubbleWidth,
-                 std::clamp(textRect.height() + m_paddingV * 2 + indicatorPadding, kMinBubbleHeight, kMaxBubbleHeight));
+                 std::clamp(textRect.height() + m_paddingV * 2
+                                + indicatorPadding + controlsPadding,
+                            kMinBubbleHeight, kMaxBubbleHeight));
 }
 
 void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
@@ -224,20 +337,21 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
     p.drawRoundedRect(localRect, m_radius, m_radius);
 
     if (!m_inputMode) {
-        QFont f = font();
-        f.setPointSize(m_fontSize);
-        f.setWeight(QFont::DemiBold);
-        p.setFont(f);
-
-        QRect textRect = localRect.adjusted(m_paddingH, m_paddingV, -m_paddingH, -m_paddingV);
+        QRect textRect = displayedTextRect();
         if (m_hasMorePages) {
             textRect.adjust(0, 0, 0, -16);
         }
+        const QString displayedText = m_text.isEmpty()
+            ? m_activityText : m_text;
+        p.setFont(fittedOutputFont(textRect, displayedText));
+        constexpr int textFlags = Qt::TextWordWrap | Qt::TextWrapAnywhere
+            | Qt::AlignCenter;
         const QColor shadow = m_textColor.lightness() > 127 ? QColor(0, 0, 0, 130) : QColor(255, 255, 255, 120);
         p.setPen(shadow);
-        p.drawText(textRect.translated(0, m_shadowOffset), Qt::TextWordWrap | Qt::AlignCenter, m_text);
+        p.drawText(textRect.translated(0, m_shadowOffset), textFlags,
+                   displayedText);
         p.setPen(m_textColor);
-        p.drawText(textRect, Qt::TextWordWrap | Qt::AlignCenter, m_text);
+        p.drawText(textRect, textFlags, displayedText);
 
         if (m_hasMorePages) {
             const QRect indicator = moreIndicatorRect();
@@ -252,6 +366,33 @@ void LiquidGlassChatBubble::paintEvent(QPaintEvent* event) {
             p.setPen(Qt::NoPen);
             p.drawPath(triangle);
         }
+
+        if (m_streamingMode) {
+            QFont captionFont = font();
+            captionFont.setPointSize(std::max(9, m_fontSize - 3));
+            captionFont.setWeight(QFont::Normal);
+            p.setFont(captionFont);
+            p.setPen(QColor(m_textColor.red(), m_textColor.green(),
+                            m_textColor.blue(), 175));
+            const QRect controls = playbackControlsRect();
+            const int buttonsWidth = kControlButtonSize * 4
+                + kControlGap * 3;
+            const QRect captionRect(
+                controls.left(), controls.top(),
+                std::max(0, controls.width() - buttonsWidth - 8),
+                controls.height());
+            QString caption = m_text.isEmpty() ? QString() : m_activityText;
+            if (m_displayedPageTotal > 0) {
+                const QString counter = QStringLiteral("%1/%2")
+                    .arg(m_displayedPageIndex + 1)
+                    .arg(m_displayedPageTotal);
+                caption = caption.isEmpty()
+                    ? counter : QStringLiteral("%1  %2").arg(caption, counter);
+            }
+            p.drawText(captionRect, Qt::AlignVCenter | Qt::AlignLeft,
+                       QFontMetrics(captionFont).elidedText(
+                           caption, Qt::ElideRight, captionRect.width()));
+        }
     }
 }
 
@@ -263,6 +404,7 @@ void LiquidGlassChatBubble::showEvent(QShowEvent* event) {
 void LiquidGlassChatBubble::resizeEvent(QResizeEvent* event) {
     QWidget::resizeEvent(event);
     updateInputGeometry();
+    updateOutputControlsGeometry();
     scheduleDynamicRefresh(true);
 }
 
@@ -272,6 +414,10 @@ void LiquidGlassChatBubble::moveEvent(QMoveEvent* event) {
 }
 
 void LiquidGlassChatBubble::mousePressEvent(QMouseEvent* event) {
+    if (m_inputMode && m_input) {
+        setInputRevealed(true);
+        m_input->setFocus(Qt::MouseFocusReason);
+    }
     if (!m_inputMode && m_hasMorePages && moreIndicatorRect().adjusted(-8, -8, 8, 8).contains(event->pos())) {
         emit morePagesRequested();
         event->accept();
@@ -284,14 +430,29 @@ void LiquidGlassChatBubble::enterEvent(QEnterEvent* event) {
     if (m_inputMode && m_inputAutoFadeEnabled) {
         setInputRevealed(true);
     }
+    if (m_streamingMode) emit hoveredChanged(true);
     QWidget::enterEvent(event);
 }
 
 void LiquidGlassChatBubble::leaveEvent(QEvent* event) {
     if (m_inputMode && m_inputAutoFadeEnabled) {
-        setInputRevealed(false);
+        setInputRevealed(inputShouldStayRevealed());
     }
+    if (m_streamingMode) emit hoveredChanged(false);
     QWidget::leaveEvent(event);
+}
+
+bool LiquidGlassChatBubble::eventFilter(QObject* watched, QEvent* event) {
+    if (watched == m_input && m_inputAutoFadeEnabled) {
+        if (event->type() == QEvent::FocusIn) {
+            setInputRevealed(true);
+        } else if (event->type() == QEvent::FocusOut) {
+            QTimer::singleShot(0, this, [this]() {
+                setInputRevealed(inputShouldStayRevealed());
+            });
+        }
+    }
+    return QWidget::eventFilter(watched, event);
 }
 
 void LiquidGlassChatBubble::keyPressEvent(QKeyEvent* event) {
@@ -359,4 +520,3 @@ void LiquidGlassChatBubble::animateMaterialTo(const QColor& materialColor, const
     m_materialAnimation->setEndValue(1.0);
     m_materialAnimation->start();
 }
-

@@ -6,7 +6,12 @@
 
 #include "configLoader/config_manager.h"
 #include "controller/pet_controller.h"
+#include "bubble_playback_controller.h"
+#include "chat_conversation_model.h"
+#include "chat_history_window.h"
 #include "liquidglasschatbubble.h"
+#include "streaming_text_paginator.h"
+#include "thinking_status_selector.h"
 
 #include <QDir>
 #include <QFile>
@@ -19,6 +24,7 @@
 #include <QPixmap>
 #include <QRandomGenerator>
 #include <QRegularExpression>
+#include <QScrollArea>
 #include <QScreen>
 #include <QTimer>
 #include <QUrl>
@@ -75,6 +81,82 @@ void PetWindow::setupScreenChat() {
     outputBubble->hide();
     connect(outputBubble, &LiquidGlassChatBubble::morePagesRequested, this, &PetWindow::showNextBubblePage);
 
+    streamingTextPaginator = std::make_unique<StreamingTextPaginator>();
+    bubblePlaybackController = std::make_unique<BubblePlaybackController>(this);
+    thinkingStatusSelector = std::make_unique<ThinkingStatusSelector>();
+    connect(outputBubble, &LiquidGlassChatBubble::previousPageRequested,
+            bubblePlaybackController.get(),
+            &BubblePlaybackController::previous);
+    connect(outputBubble, &LiquidGlassChatBubble::nextPageRequested,
+            bubblePlaybackController.get(), &BubblePlaybackController::next);
+    connect(outputBubble, &LiquidGlassChatBubble::playbackToggleRequested,
+            bubblePlaybackController.get(),
+            &BubblePlaybackController::toggleUserPause);
+    connect(outputBubble, &LiquidGlassChatBubble::hoveredChanged,
+            bubblePlaybackController.get(),
+            &BubblePlaybackController::setHovered);
+    connect(outputBubble, &LiquidGlassChatBubble::hoveredChanged,
+            this, [this](bool hovered) {
+                if (hovered) {
+                    if (bubbleHideTimer) bubbleHideTimer->stop();
+                } else {
+                    scheduleFinishedBubbleHide();
+                }
+            });
+    connect(outputBubble, &LiquidGlassChatBubble::openConversationRequested,
+            this, [this](const QString& messageId) {
+                openChatHistoryWindow();
+                if (messageId.isEmpty() || !chatHistoryWindow) return;
+                QTimer::singleShot(0, this, [this, messageId]() {
+                    if (!chatHistoryWindow) return;
+                    const QList<QWidget*> rows =
+                        chatHistoryWindow->findChildren<QWidget*>(
+                            QStringLiteral("chatMessageRow"));
+                    const auto found = std::find_if(
+                        rows.cbegin(), rows.cend(),
+                        [&messageId](QWidget* row) {
+                            return row->property("messageId").toString()
+                                == messageId;
+                        });
+                    QScrollArea* scrollArea =
+                        chatHistoryWindow->findChild<QScrollArea*>();
+                    if (found != rows.cend() && scrollArea) {
+                        scrollArea->ensureWidgetVisible(*found, 0, 40);
+                    }
+                });
+            });
+    connect(bubblePlaybackController.get(),
+            &BubblePlaybackController::pageChanged,
+            this,
+            [this](const QString& text, int index, int total, bool draft) {
+                pendingBubblePageMessageId = bubblePlaybackController
+                    ? bubblePlaybackController->messageId() : QString();
+                pendingBubblePageText = text;
+                pendingBubblePageIndex = index;
+                pendingBubblePageTotal = total;
+                pendingBubblePageDraft = draft;
+                if (bubblePageFlushPending) return;
+                bubblePageFlushPending = true;
+                QTimer::singleShot(0, this, [this]() {
+                    bubblePageFlushPending = false;
+                    if (!outputBubble || !bubblePlaybackController
+                        || pendingBubblePageMessageId
+                            != bubblePlaybackController->messageId()) {
+                        return;
+                    }
+                    outputBubble->setDisplayedPage(
+                        pendingBubblePageText, pendingBubblePageIndex,
+                        pendingBubblePageTotal, pendingBubblePageDraft);
+                    updateOutputBubblePosition();
+                    if (streamingBubbleFinished) {
+                        scheduleFinishedBubbleHide();
+                    }
+                });
+            });
+    connect(bubblePlaybackController.get(),
+            &BubblePlaybackController::playbackStateChanged,
+            outputBubble, &LiquidGlassChatBubble::setPlaybackPaused);
+
     inputBubble = new LiquidGlassChatBubble(nullptr);
     inputBubble->applyScreenChatConfig(screenChatConfig);
     inputBubble->setInputAutoFadeEnabled(true);
@@ -82,16 +164,52 @@ void PetWindow::setupScreenChat() {
     updateInputBubblePosition();
     inputBubble->refreshGlass();
     connect(inputBubble, &LiquidGlassChatBubble::messageSubmitted, this, [this](const QString& text) {
-        appendChatHistoryMessage(QStringLiteral("user"), text);
+        if (!conversationModel) return;
+        const QString userMessageId = conversationModel->appendUserMessage(text);
+        if (userMessageId.isEmpty()) return;
         if (petController) {
             petController->recordExplicitFeedbackText(text);
         }
         if (!aiBrain || !aiBrain->isEnabled()) {
             qWarning() << "[AIBrain] user input ignored, AI disabled";
-            appendChatHistoryMessage(QStringLiteral("system"), QStringLiteral("AI 当前没有启用，暂时不能回复。"));
+            const QString assistantId =
+                QUuid::createUuid().toString(QUuid::WithoutBraces);
+            conversationModel->beginAssistantMessage(
+                assistantId, userMessageId);
+            conversationModel->appendAssistantDelta(
+                assistantId,
+                QStringLiteral("AI 当前没有启用，暂时不能回复。"));
+            conversationModel->finishAssistantMessage(
+                assistantId, ChatMessageStatus::Complete);
+            showBubbleMessage(
+                QStringLiteral("AI 当前没有启用，暂时不能回复。"));
             return;
         }
-        aiBrain->triggerThink(text, "user_request");
+        aiBrain->triggerThink(text, "user_request", userMessageId);
+    });
+
+    // setupScreenChat runs before the model and AIBrain are constructed.
+    // Bind their UI lifecycle once the constructor returns to the event loop.
+    QTimer::singleShot(0, this, [this]() {
+        if (!aiBrain || !conversationModel) return;
+        connect(aiBrain.get(), &AIBrain::assistantResponseStarted,
+                this,
+                [this](const QString& messageId,
+                       const QString&,
+                       const QString&) {
+                    beginStreamingBubble(messageId);
+                });
+        connect(aiBrain.get(), &AIBrain::assistantResponseStageChanged,
+                this, &PetWindow::updateStreamingBubbleStage);
+        connect(aiBrain.get(), &AIBrain::assistantResponseDelta,
+                this, &PetWindow::appendStreamingBubbleDelta);
+        connect(aiBrain.get(), &AIBrain::assistantResponseFinished,
+                this,
+                [this](const QString& messageId,
+                       ChatMessageStatus status,
+                       const QString&) {
+                    finishStreamingBubble(messageId, status);
+                });
     });
 
 #ifdef Q_OS_WIN

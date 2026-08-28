@@ -4,116 +4,74 @@
 
 #include "petwindow.h"
 
+#include "bubble_playback_controller.h"
 #include "liquidglasschatbubble.h"
+#include "streaming_text_paginator.h"
+#include "thinking_status_selector.h"
 
 #include <QGuiApplication>
-#include <QRandomGenerator>
 #include <QScreen>
 #include <QStringList>
 #include <QTimer>
 
 #include <algorithm>
 
-namespace {
-constexpr int kBubblePageMaxChars = 200;
-
-int readableBreakIndex(const QString& text, int maxChars) {
-    const QString head = text.left(std::max(0, maxChars));
-    const QString breakChars = QStringLiteral("。！？!?；;，,\n");
-    const int headSize = static_cast<int>(head.size());
-    for (int i = headSize - 1; i >= std::max(0, headSize - 45); --i) {
-        if (breakChars.contains(head.at(i))) {
-            return i + 1;
-        }
-    }
-    return std::min(maxChars, headSize);
-}
-}
-
 void PetWindow::showBubbleMessage(const QString& message, int durationMs) {
+    if (!outputBubble || !streamingTextPaginator
+        || !bubblePlaybackController) {
+        return;
+    }
+    if (!streamingBubbleMessageId.isEmpty() && !streamingBubbleFinished) {
+        return;
+    }
     stopTypewriterBubble();
-    bubblePages = splitBubbleTextIntoPages(message);
-    bubblePageIndex = 0;
-    showCurrentBubblePageAnimated(durationMs);
+    if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
+    if (bubbleHideTimer) bubbleHideTimer->stop();
+    streamingBubbleMessageId.clear();
+    streamingBubbleHasText = !message.isEmpty();
+    streamingBubbleFinished = false;
+    streamingBubbleHideDurationMs = durationMs;
+    streamingTextPaginator->reset();
+    bubblePlaybackController->reset({});
+    outputBubble->applyScreenChatConfig(screenChatConfig);
+    outputBubble->showStreamingMessage({});
+    outputBubble->setActivityText({});
+    applyBubblePaginationUpdate(streamingTextPaginator->feed(message));
+    applyBubblePaginationUpdate(streamingTextPaginator->finish());
+    streamingBubbleFinished = true;
+    if (bubblePlaybackController->pageCount() == 0) {
+        outputBubble->setActivityText(QStringLiteral("暂时没有内容"));
+    }
+    updateOutputBubblePosition();
+    scheduleFinishedBubbleHide();
 }
 
 void PetWindow::showBubbleMessageNow(const QString& message, int durationMs, bool forceRefreshGlass) {
-    if (!outputBubble) {
-        return;
-    }
-
-    outputBubble->applyScreenChatConfig(screenChatConfig);
-    if (!typewriterBubbleActive) {
-        outputBubble->setLayoutReserveText(QString());
-    }
-    const bool wasVisible = outputBubble->isVisible();
-    outputBubble->setHasMorePages(hasMoreBubblePages() && !typewriterBubbleActive);
-    outputBubble->setMessage(message);
-    updateOutputBubblePosition();
-    if (forceRefreshGlass || !wasVisible) {
-        outputBubble->refreshGlass();
-    }
-    outputBubble->show();
-    outputBubble->raise();
-
-    if (bubbleHideTimer) {
-        const int resolvedDuration = durationMs > 0 ? durationMs : screenChatConfig.bubbleDurationMs;
-        bubbleHideTimer->start(std::max(1000, resolvedDuration));
-    }
+    Q_UNUSED(forceRefreshGlass)
+    showBubbleMessage(message, durationMs);
 }
 
 void PetWindow::showBubbleMessageAnimated(const QString& message, int durationMs) {
-    if (!outputBubble) {
+    if (!streamingBubbleMessageId.isEmpty() && !streamingBubbleFinished) {
         return;
     }
-
-    stopTypewriterBubble();
-    bubblePages = splitBubbleTextIntoPages(message);
-    bubblePageIndex = 0;
-    showCurrentBubblePageAnimated(durationMs);
+    showBubbleMessage(message, durationMs);
 }
 
 void PetWindow::showCurrentBubblePageAnimated(int durationMs) {
-    if (!outputBubble) {
-        return;
-    }
-
-    stopTypewriterBubble();
-    if (bubblePages.isEmpty()) {
-        bubblePages = QStringList{QStringLiteral("...")};
-        bubblePageIndex = 0;
-    }
-    bubblePageIndex = std::clamp(bubblePageIndex, 0, static_cast<int>(bubblePages.size()) - 1);
-    typewriterTargetText = bubblePages.at(bubblePageIndex);
-    typewriterVisibleChars = 0;
-    typewriterFinalDurationMs = durationMs;
-    typewriterBubbleActive = true;
-    outputBubble->setHasMorePages(false);
-    outputBubble->setLayoutReserveText(typewriterTargetText);
-
-    if (!typewriterBubbleTimer) {
-        typewriterBubbleTimer = new QTimer(this);
-        connect(typewriterBubbleTimer, &QTimer::timeout, this, &PetWindow::updateTypewriterBubble);
-    }
-    if (bubbleHideTimer) {
-        bubbleHideTimer->stop();
-    }
-
-    updateTypewriterBubble();
-    typewriterBubbleTimer->start(32);
+    if (bubblePages.isEmpty()) return;
+    bubblePageIndex = std::clamp(
+        bubblePageIndex, 0, static_cast<int>(bubblePages.size()) - 1);
+    showBubbleMessage(bubblePages.at(bubblePageIndex), durationMs);
 }
 
 bool PetWindow::hasMoreBubblePages() const {
-    return bubblePageIndex >= 0 && bubblePageIndex + 1 < bubblePages.size();
+    return bubblePlaybackController
+        && bubblePlaybackController->hasUnreadPages();
 }
 
 void PetWindow::showNextBubblePage() {
-    if (!hasMoreBubblePages()) {
-        return;
-    }
-
-    ++bubblePageIndex;
-    showCurrentBubblePageAnimated(typewriterFinalDurationMs);
+    if (bubblePlaybackController) bubblePlaybackController->next();
 }
 
 void PetWindow::showBubbleInput() {
@@ -129,6 +87,11 @@ void PetWindow::showBubbleInput() {
 
 void PetWindow::hideBubbleMessage() {
     stopTypewriterBubble();
+    if (!streamingBubbleFinished
+        || (bubblePlaybackController
+            && bubblePlaybackController->hasUnreadPages())) {
+        return;
+    }
     if (outputBubble) {
         outputBubble->setHasMorePages(false);
         outputBubble->hideBubble();
@@ -136,45 +99,13 @@ void PetWindow::hideBubbleMessage() {
 }
 
 void PetWindow::startThinkingBubble(const QString& reason) {
-    thinkingHadAssistantResponse = false;
-    stopTypewriterBubble();
-    bubblePages.clear();
-    bubblePageIndex = 0;
-    if (outputBubble) {
-        outputBubble->setHasMorePages(false);
-    }
-
-    const QString normalizedReason = reason.trimmed();
-    if (normalizedReason == QStringLiteral("idle_tick")
-        || normalizedReason == QStringLiteral("proactive_chat_tick")
-        || normalizedReason == QStringLiteral("busy_retry")) {
-        return;
-    }
-
-    if (!outputBubble) {
-        return;
-    }
-
-    static const QStringList phrases = {
-        QStringLiteral("让我想想"),
-        QStringLiteral("脑袋转转"),
-        QStringLiteral("正在想办法")
-    };
-
+    Q_UNUSED(reason)
+    // assistantResponseStarted immediately follows this legacy signal and owns
+    // the visible waiting state. Suppress the legacy fallback bubble.
+    thinkingHadAssistantResponse = true;
     thinkingBubbleActive = true;
-    thinkingDotCount = 1;
-    thinkingBubbleTextBase = phrases.at(QRandomGenerator::global()->bounded(phrases.size()));
-
-    if (!thinkingBubbleTimer) {
-        thinkingBubbleTimer = new QTimer(this);
-        connect(thinkingBubbleTimer, &QTimer::timeout, this, &PetWindow::updateThinkingBubble);
-    }
-    if (bubbleHideTimer) {
-        bubbleHideTimer->stop();
-    }
-
-    updateThinkingBubble();
-    thinkingBubbleTimer->start(380);
+    stopTypewriterBubble();
+    if (bubbleHideTimer) bubbleHideTimer->stop();
 }
 
 void PetWindow::stopThinkingBubble(bool keepCurrentBubble) {
@@ -182,30 +113,144 @@ void PetWindow::stopThinkingBubble(bool keepCurrentBubble) {
         thinkingBubbleTimer->stop();
     }
 
-    if (!thinkingBubbleActive) {
-        return;
-    }
-
     thinkingBubbleActive = false;
     thinkingDotCount = 1;
     thinkingBubbleTextBase.clear();
 
     if (!keepCurrentBubble) {
-        if (bubbleHideTimer) {
-            bubbleHideTimer->stop();
-        }
-        hideBubbleMessage();
+        if (bubbleHideTimer) bubbleHideTimer->stop();
+        if (outputBubble) outputBubble->hideBubble();
     }
 }
 
 void PetWindow::updateThinkingBubble() {
-    if (!thinkingBubbleActive || thinkingBubbleTextBase.isEmpty()) {
+    if (streamingBubbleMessageId.isEmpty() || !thinkingStatusSelector
+        || !outputBubble) {
         return;
     }
+    outputBubble->setActivityText(thinkingStatusSelector->next(
+        streamingBubbleStage, streamingBubbleMessageId));
+    updateOutputBubblePosition();
+}
 
-    const QString dots(thinkingDotCount, QLatin1Char('.'));
-    showBubbleMessageNow(QStringLiteral("%1%2").arg(thinkingBubbleTextBase, dots), 1600, false);
-    thinkingDotCount = thinkingDotCount >= 6 ? 1 : thinkingDotCount + 1;
+void PetWindow::beginStreamingBubble(const QString& messageId) {
+    if (messageId.isEmpty() || !outputBubble || !streamingTextPaginator
+        || !bubblePlaybackController || !thinkingStatusSelector) {
+        return;
+    }
+    if (bubbleHideTimer) bubbleHideTimer->stop();
+    stopTypewriterBubble();
+    streamingBubbleMessageId = messageId;
+    streamingBubbleHasText = false;
+    streamingBubbleFinished = false;
+    streamingBubbleHideDurationMs = -1;
+    streamingBubbleStage = ChatActivityStage::WaitingForModel;
+    thinkingBubbleActive = true;
+    thinkingHadAssistantResponse = true;
+    streamingTextPaginator->reset();
+    bubblePlaybackController->reset(messageId);
+    thinkingStatusSelector->reset(messageId);
+    outputBubble->applyScreenChatConfig(screenChatConfig);
+    outputBubble->showStreamingMessage(messageId);
+    if (inputBubble) inputBubble->setInputSubmissionEnabled(false);
+    if (!thinkingBubbleTimer) {
+        thinkingBubbleTimer = new QTimer(this);
+        connect(thinkingBubbleTimer, &QTimer::timeout,
+                this, &PetWindow::updateThinkingBubble);
+    }
+    updateThinkingBubble();
+    thinkingBubbleTimer->start(2000);
+    updateOutputBubblePosition();
+}
+
+void PetWindow::updateStreamingBubbleStage(const QString& messageId,
+                                           ChatActivityStage stage) {
+    if (messageId != streamingBubbleMessageId || streamingBubbleFinished) return;
+    streamingBubbleStage = stage;
+    if (streamingBubbleHasText && stage == ChatActivityStage::StreamingText) {
+        if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
+        if (outputBubble) outputBubble->setActivityText({});
+        return;
+    }
+    updateThinkingBubble();
+    if (thinkingBubbleTimer) thinkingBubbleTimer->start(2000);
+}
+
+void PetWindow::appendStreamingBubbleDelta(const QString& messageId,
+                                           const QString& delta) {
+    if (messageId != streamingBubbleMessageId || streamingBubbleFinished
+        || delta.isEmpty() || !streamingTextPaginator) {
+        return;
+    }
+    streamingBubbleHasText = true;
+    thinkingHadAssistantResponse = true;
+    if (streamingBubbleStage == ChatActivityStage::StreamingText) {
+        if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
+        if (outputBubble) outputBubble->setActivityText({});
+    }
+    applyBubblePaginationUpdate(streamingTextPaginator->feed(delta));
+}
+
+void PetWindow::finishStreamingBubble(const QString& messageId,
+                                      ChatMessageStatus status) {
+    if (messageId != streamingBubbleMessageId || streamingBubbleFinished
+        || !streamingTextPaginator || !bubblePlaybackController) {
+        return;
+    }
+    if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
+    applyBubblePaginationUpdate(streamingTextPaginator->finish());
+    streamingBubbleFinished = true;
+    thinkingBubbleActive = false;
+    if (inputBubble) inputBubble->setInputSubmissionEnabled(true);
+
+    if (outputBubble) {
+        if (bubblePlaybackController->pageCount() == 0) {
+            switch (status) {
+            case ChatMessageStatus::Stopped:
+                outputBubble->setActivityText(QStringLiteral("已停止回复"));
+                break;
+            case ChatMessageStatus::Interrupted:
+                outputBubble->setActivityText(QStringLiteral("回复中断"));
+                break;
+            case ChatMessageStatus::Failed:
+                outputBubble->setActivityText(QStringLiteral("这次没有顺利完成"));
+                break;
+            default:
+                outputBubble->setActivityText(QStringLiteral("暂时没有可展示的回复"));
+                break;
+            }
+        } else if (status == ChatMessageStatus::Complete) {
+            outputBubble->setActivityText({});
+        } else if (status == ChatMessageStatus::Stopped) {
+            outputBubble->setActivityText(QStringLiteral("已停止"));
+        } else {
+            outputBubble->setActivityText(QStringLiteral("回复中断"));
+        }
+        updateOutputBubblePosition();
+    }
+    scheduleFinishedBubbleHide();
+}
+
+void PetWindow::applyBubblePaginationUpdate(const PaginationUpdate& update) {
+    if (!bubblePlaybackController) return;
+    if (!update.newlySealedPages.isEmpty()) {
+        bubblePlaybackController->appendSealedPages(update.newlySealedPages);
+    }
+    bubblePlaybackController->updateDraftPage(update.draftPage);
+}
+
+void PetWindow::scheduleFinishedBubbleHide() {
+    if (!streamingBubbleFinished || !bubbleHideTimer
+        || !bubblePlaybackController
+        || bubblePlaybackController->isHovered()
+        || bubblePlaybackController->hasUnreadPages()) {
+        if (bubbleHideTimer) bubbleHideTimer->stop();
+        return;
+    }
+    const int duration = streamingBubbleHideDurationMs > 0
+        ? streamingBubbleHideDurationMs
+        : screenChatConfig.bubbleDurationMs;
+    bubbleHideTimer->start(std::max(1000, duration));
 }
 
 void PetWindow::stopTypewriterBubble() {
@@ -222,63 +267,14 @@ void PetWindow::stopTypewriterBubble() {
 }
 
 void PetWindow::updateTypewriterBubble() {
-    if (!typewriterBubbleActive) {
-        return;
-    }
-
-    if (typewriterTargetText.isEmpty()) {
-        stopTypewriterBubble();
-        showBubbleMessageNow(QStringLiteral("嗯……我刚刚没组织好语言。"), 3200);
-        return;
-    }
-
-    const int remaining = typewriterTargetText.size() - typewriterVisibleChars;
-    const int step = 1;
-    typewriterVisibleChars += std::min(step, std::max(0, remaining));
-
-    const QString visibleText = typewriterTargetText.left(typewriterVisibleChars);
-    const bool finished = typewriterVisibleChars >= typewriterTargetText.size();
-    const bool needsGlassRefresh = !outputBubble || !outputBubble->isVisible() || typewriterVisibleChars <= step;
-    showBubbleMessageNow(visibleText, finished ? typewriterFinalDurationMs : 1600, needsGlassRefresh);
-
-    if (finished) {
-        stopTypewriterBubble();
-        if (outputBubble) {
-            const bool hasMore = hasMoreBubblePages();
-            outputBubble->setHasMorePages(hasMore);
-            updateOutputBubblePosition();
-            outputBubble->update();
-            if (hasMore && bubbleHideTimer) {
-                bubbleHideTimer->stop();
-            }
-        }
-    }
+    stopTypewriterBubble();
 }
 
 QStringList PetWindow::splitBubbleTextIntoPages(const QString& message) const {
-    const QString normalized = message.trimmed();
-    if (normalized.isEmpty()) {
-        return {QStringLiteral("...")};
-    }
-
-    QStringList pages;
-    QString remaining = normalized;
-    while (!remaining.isEmpty()) {
-        if (remaining.size() <= kBubblePageMaxChars) {
-            pages.append(remaining.trimmed());
-            break;
-        }
-
-        int splitAt = readableBreakIndex(remaining, kBubblePageMaxChars);
-        if (splitAt <= 0) {
-            splitAt = std::min(kBubblePageMaxChars, static_cast<int>(remaining.size()));
-        }
-
-        pages.append(remaining.left(splitAt).trimmed());
-        remaining = remaining.mid(splitAt).trimmed();
-    }
-
-    return pages.isEmpty() ? QStringList{QStringLiteral("...")} : pages;
+    StreamingTextPaginator paginator;
+    const PaginationUpdate streamed = paginator.feed(message);
+    const PaginationUpdate finished = paginator.finish();
+    return streamed.newlySealedPages + finished.newlySealedPages;
 }
 
 void PetWindow::updateBubblePositions() {
@@ -320,6 +316,17 @@ void PetWindow::updateInputBubblePosition() {
     const QSize bubbleSize = inputBubble->sizeHint();
     int targetX = rect.left() + (rect.width() - bubbleSize.width()) / 2 + screenChatConfig.bubbleOffsetX;
     int targetY = rect.bottom() + 8;
+    QScreen* screen = QGuiApplication::screenAt(rect.center());
+    if (!screen) screen = QGuiApplication::primaryScreen();
+    if (screen) {
+        const QRect available = screen->availableGeometry().adjusted(8, 8, -8, -8);
+        const int maxX = std::max(
+            available.left(), available.right() - bubbleSize.width() + 1);
+        const int maxY = std::max(
+            available.top(), available.bottom() - bubbleSize.height() + 1);
+        targetX = std::clamp(targetX, available.left(), maxX);
+        targetY = std::clamp(targetY, available.top(), maxY);
+    }
     inputBubble->resize(bubbleSize);
     inputBubble->move(targetX, targetY);
     inputBubble->scheduleDynamicRefresh(false);

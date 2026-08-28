@@ -15,6 +15,7 @@
 - [code-impl Task 2 确认] 用户接受当前流式编排实现；provider attempt 级 `ModelCallCompleted` 遥测延期到上游契约补充后处理，不阻塞后续聊天功能。
 - [code-impl Task 3 sanity check] §3.4 实现锚点 `ProfileMigrationRequest` 的 `profileId/registeredProfileIds/appDataRoot`、`ProfileDataMigrator` 的 profile 数据根、旧 `PetWindow` JSONL 字段与 launcher/C++ QSettings 组织名已验证一致。
 - [code-impl Task 4 sanity check] §3.5 实现锚点 `ChatHistoryWindow`、`ThemeManager::themeChanged(Theme)`、launcher `_ui.py` 的 Fluent 层级语言与 `PetWindow::openChatHistoryWindow()` 的 `clear + replay` 现状已验证一致。
+- [code-impl Task 5 sanity check] §3.6 实现锚点 `LiquidGlassChatBubble` 双实例与动态材质、`PetWindow::showBubbleMessageAnimated` 旧分页打字机、`bubbleHideTimer`、`setInputAutoFadeEnabled` 和双气泡屏幕定位行为已验证一致；实现已改为真实 delta 分页播放，并补齐 input/output 的 `availableGeometry` 限位。
 
 ## 设计偏差
 

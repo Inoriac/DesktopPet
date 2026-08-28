@@ -188,7 +188,7 @@ ChatHistoryWindow.lastFullyVisibleMessageId:
 ## Task 5: 桌面快捷聊天与分段气泡
 
 - **关联设计**: §3.6 桌面快捷聊天与分段气泡
-- **状态**: [ ]
+- **状态**: [x]
 - **Wave**: 5
 - **依赖**: Task 2、Task 3、Task 4
 
