@@ -24,8 +24,8 @@
 #include "thinking_status_selector.h"
 #include "voice/voice_synthesis_service.h"
 
-class ChatHistoryWindow;
 class ChatConversationModel;
+class LauncherChatServer;
 class LiquidGlassChatBubble;
 
 class RenderViewport;
@@ -44,6 +44,7 @@ public:
     explicit PetWindow(PetProfile profile,
                        ProfileMigrationRequest profileMigration,
                        QString ownerDiaryBootstrapPath = {},
+                       QString launcherChatBootstrapPath = {},
                        QWidget *parent = nullptr);
     ~PetWindow();
 
@@ -97,6 +98,8 @@ private:
     void resetEmotionSystem();
     void updateWindowFlags(bool alwaysOnTop, bool clickThrough);
     void setupAiBrain();
+    void setupAiAnimationTools();
+    void setupLauncherChatBridge();
     void teardownAiRuntime();
     void setupScreenChat();
     void updateScreenChatSchedule();
@@ -190,6 +193,7 @@ private:
     PetProfile profile;
     ProfileMigrationRequest profileMigration;
     QString ownerDiaryBootstrapPath;
+    QString launcherChatBootstrapPath;
     QString modelName;
 
     // 设置
@@ -203,6 +207,7 @@ private:
     VoiceSynthesisService voiceSynthesis;
     std::unique_ptr<AIBrain> aiBrain;
     std::unique_ptr<ChatConversationModel> conversationModel;
+    std::unique_ptr<LauncherChatServer> launcherChatServer;
     std::unique_ptr<StreamingTextPaginator> streamingTextPaginator;
     std::unique_ptr<BubblePlaybackController> bubblePlaybackController;
     std::unique_ptr<ThinkingStatusSelector> thinkingStatusSelector;
@@ -225,7 +230,6 @@ private:
     QTimer* typewriterBubbleTimer = nullptr;
     QPointer<LiquidGlassChatBubble> outputBubble;
     QPointer<LiquidGlassChatBubble> inputBubble;
-    QPointer<ChatHistoryWindow> chatHistoryWindow;
     bool screenChatBusy = false;
     bool thinkingBubbleActive = false;
     bool thinkingHadAssistantResponse = false;

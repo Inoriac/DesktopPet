@@ -33,6 +33,7 @@ class LauncherModelRoleConfigTests(unittest.TestCase):
             "modelRoles": {
                 "dialogue": {"routes": [{
                     "routeId": "dialogue-primary",
+                    "enabled": False,
                     "endpointRef": "DEFAULT",
                     "model": "dialogue-model",
                 }]},
@@ -62,6 +63,8 @@ class LauncherModelRoleConfigTests(unittest.TestCase):
             profile["modelRoles"]["dialogue"]["routes"][0]["model"],
             "dialogue-model",
         )
+        self.assertTrue(
+            profile["modelRoles"]["dialogue"]["routes"][0]["enabled"])
         self.assertEqual(
             profile["modelRoles"]["vision"]["routes"][0]["model"],
             "vision-model",

@@ -177,7 +177,9 @@ void StatisticManager::recordTouchInteraction(const QString& petName, const QStr
     emitStatisticEvent(event);
 }
 
-void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& usage) {
+void StatisticManager::recordLlmCall(const QString& petName,
+                                     bool success,
+                                     const LlmUsage& usage) {
     const QString effectivePetName = petName.isEmpty() ? "AI_GLOBAL" : petName;
 
     PetStatistics snapshot;
@@ -187,6 +189,11 @@ void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& us
         PetStatistics& stats = petStatisticsMap[effectivePetName];
 
         stats.llmCallCount += 1;
+        if (success) {
+            stats.llmSuccessCount += 1;
+        } else {
+            stats.llmFailureCount += 1;
+        }
         stats.lastActiveTime = QDateTime::currentDateTime();
         stats.llmPromptTokens += usage.promptTokens;
         stats.llmCompletionTokens += usage.completionTokens;
@@ -198,7 +205,20 @@ void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& us
         snapshot = stats;
     }
 
+    qInfo().nospace()
+        << "[Statistics] LLM call pet=" << effectivePetName
+        << " success=" << success
+        << " calls=" << snapshot.llmCallCount
+        << " successes=" << snapshot.llmSuccessCount
+        << " failures=" << snapshot.llmFailureCount
+        << " prompt_tokens=" << usage.promptTokens
+        << " completion_tokens=" << usage.completionTokens
+        << " total_tokens=" << usage.totalTokens;
     emit statisticsUpdated(effectivePetName, snapshot);
+}
+
+void StatisticManager::recordLlmUsage(const QString& petName, const LlmUsage& usage) {
+    recordLlmCall(petName, true, usage);
 }
 
 std::optional<PetStatistics> StatisticManager::getPetStatistics(const QString& petName)
@@ -342,6 +362,8 @@ QJsonObject StatisticManager::statisticsToJson() {
         petObj["totalRuntimeMs"] = stats.totalRuntimeMs;
         petObj["sessionRuntimeMs"] = stats.sessionRuntimeMs;
         petObj["llmCallCount"] = static_cast<qint64>(stats.llmCallCount);
+        petObj["llmSuccessCount"] = static_cast<qint64>(stats.llmSuccessCount);
+        petObj["llmFailureCount"] = static_cast<qint64>(stats.llmFailureCount);
         petObj["llmPromptTokens"] = static_cast<qint64>(stats.llmPromptTokens);
         petObj["llmCompletionTokens"] = static_cast<qint64>(stats.llmCompletionTokens);
         petObj["llmTotalTokens"] = static_cast<qint64>(stats.llmTotalTokens);
@@ -380,6 +402,15 @@ void StatisticManager::jsonToStatistics(const QJsonObject &json) {
         stats.totalRuntimeMs = petObj["totalRuntimeMs"].toVariant().toLongLong();
         stats.sessionRuntimeMs = petObj["sessionRuntimeMs"].toVariant().toLongLong();
         stats.llmCallCount = petObj["llmCallCount"].toVariant().toLongLong();
+        if (petObj.contains("llmSuccessCount") || petObj.contains("llmFailureCount")) {
+            stats.llmSuccessCount =
+                petObj["llmSuccessCount"].toVariant().toLongLong();
+            stats.llmFailureCount =
+                petObj["llmFailureCount"].toVariant().toLongLong();
+        } else {
+            stats.llmSuccessCount = stats.llmCallCount;
+            stats.llmFailureCount = 0;
+        }
         stats.llmPromptTokens = petObj["llmPromptTokens"].toVariant().toLongLong();
         stats.llmCompletionTokens = petObj["llmCompletionTokens"].toVariant().toLongLong();
         stats.llmTotalTokens = petObj["llmTotalTokens"].toVariant().toLongLong();

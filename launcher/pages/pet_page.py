@@ -8,12 +8,13 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout
 from qfluentwidgets import (
-    BodyLabel, ComboBox, PrimaryPushButton, Slider, SpinBox, SwitchButton,
+    BodyLabel, ComboBox, CompactSpinBox, PrimaryPushButton, Slider,
+    SwitchButton,
 )
 from qfluentwidgets import FluentIcon as FIF
 
 from app_state import AppState
-from pet_registry import load_pets
+from pet_registry import PetRegistryError, load_pets
 from ._ui import ScrollPage, Section
 
 
@@ -22,6 +23,7 @@ class PetPage(ScrollPage):
         super().__init__("PetPage", parent)
         self.state = state
         self._on_start = on_start
+        self.registry_error: str | None = None
 
         # —— 角色与外观 ——
         char_card = Section("角色与外观", self)
@@ -44,9 +46,10 @@ class PetPage(ScrollPage):
         self.size_slider.setValue(state.scale_percent)
         self.size_slider.setFixedWidth(180)
         self.size_slider.valueChanged.connect(self._on_size_changed)
-        self.size_spin = SpinBox()
+        self.size_spin = CompactSpinBox()
         self.size_spin.setRange(50, 200)
         self.size_spin.setValue(state.scale_percent)
+        self.size_spin.setFixedWidth(132)
         self.size_spin.valueChanged.connect(self._on_size_changed)
         sl.addWidget(self.size_slider)
         sl.addWidget(self.size_spin)
@@ -77,8 +80,9 @@ class PetPage(ScrollPage):
         self.start_btn = PrimaryPushButton(FIF.PLAY, "启动桌宠", start_row)
         self.start_btn.setFixedHeight(44)
         self.start_btn.setMinimumWidth(180)
+        self.start_btn.setEnabled(bool(self._profiles_by_name))
         if self._on_start is not None:
-            self.start_btn.clicked.connect(self._on_start)
+            self.start_btn.clicked.connect(self._request_start)
         rl.addStretch(1)
         rl.addWidget(self.alive_count_label, 0, Qt.AlignRight | Qt.AlignVCenter)
         rl.addWidget(self.start_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
@@ -87,11 +91,19 @@ class PetPage(ScrollPage):
         self.addStretch()
 
     def _refresh_pets(self):
-        profiles = load_pets()
+        try:
+            profiles = load_pets()
+        except (PetRegistryError, OSError) as error:
+            self.registry_error = str(error)
+            profiles = []
         self._profiles_by_name = {profile.name: profile for profile in profiles}
         names = list(self._profiles_by_name)
         self.pet_combo.clear()
         self.pet_combo.addItems(names)
+        if not names:
+            self.state.pet_name = ""
+            self.state.pet_profile_id = ""
+            return
         if self.state.pet_name in names:
             self.pet_combo.setCurrentText(self.state.pet_name)
         else:
@@ -101,6 +113,21 @@ class PetPage(ScrollPage):
 
     def set_alive_count(self, count: int) -> None:
         self.alive_count_label.setText(f"运行中：{max(0, int(count))}")
+
+    def set_starting(self, starting: bool) -> None:
+        self.start_btn.setText("启动中" if starting else "启动桌宠")
+        self.start_btn.setEnabled(
+            bool(self._profiles_by_name) and not starting)
+
+    def _request_start(self) -> None:
+        self.set_starting(True)
+        try:
+            started = bool(self._on_start and self._on_start())
+        except Exception:
+            self.set_starting(False)
+            raise
+        if not started:
+            self.set_starting(False)
 
     def _on_pet_changed(self, name: str):
         self.state.pet_name = name

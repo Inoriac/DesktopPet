@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <utility>
 
 #include "configLoader/config_manager.h"
@@ -138,10 +139,16 @@ void AIBrain::setExternalSleepCoordinatorEnabled(bool enabled) {
 
 void AIBrain::start() {
     if (!m_enabled || !m_storageInitialized || m_running) {
+        std::cerr << "[AIBrain] start skipped: enabled="
+                  << (m_enabled ? "true" : "false")
+                  << " storage=" << (m_storageInitialized ? "ready" : "unavailable")
+                  << " running=" << (m_running ? "true" : "false")
+                  << std::endl;
         return;
     }
 
     m_running = true;
+    std::cerr << "[AIBrain] runtime loop started" << std::endl;
     scheduleTrigger("idle_action");
     scheduleTrigger("proactive_chat");
     if (m_daydreamConfig.enabled && !m_externalSleepCoordinatorEnabled) {
@@ -183,25 +190,53 @@ void AIBrain::triggerThink(const QString& reason,
             return;
         }
     }
-    if (!m_storageInitialized || !m_enabled || m_busy) {
+
+    auto rejectUserRequest = [this, userInitiated, &replyToId, &triggerTag](
+                                 const QString& errorMessage) {
+        qWarning() << "[AIBrain] request rejected:"
+                   << errorMessage << "trigger:" << triggerTag;
+        std::cerr << "[AIBrain] request rejected: "
+                  << errorMessage.toStdString()
+                  << " trigger=" << triggerTag.toStdString() << std::endl;
+        if (userInitiated) {
+            emit thinkRequestRejected(replyToId, errorMessage);
+        }
+    };
+    if (!m_storageInitialized) {
+        rejectUserRequest(QStringLiteral("AI 运行时尚未完成初始化，请稍后重试。"));
+        return;
+    }
+    if (!m_enabled) {
+        rejectUserRequest(QStringLiteral("AI 当前没有启用，暂时不能回复。"));
+        return;
+    }
+    if (m_busy) {
+        rejectUserRequest(QStringLiteral("上一条消息仍在处理中，请稍后再试。"));
         return;
     }
 
-    const QString sessionId = beginRuntimeSession(reason, triggerTag);
-    if (m_runtimeServices && sessionId.isEmpty()) return;
-    if (m_runtimeServices && !appendRuntimeEvent(
+    m_busy = true;
+    qInfo() << "[AIBrain] accepted request, trigger:" << triggerTag;
+    std::cerr << "[AIBrain] accepted request: trigger="
+              << triggerTag.toStdString() << std::endl;
+    emit thinkingStarted(reason);
+    beginActiveResponse(replyToId, triggerTag, {});
+
+    QString sessionId = beginRuntimeSession(reason, triggerTag);
+    if (m_runtimeServices && sessionId.isEmpty()) {
+        qWarning() << "[AIBrain] runtime session unavailable; continuing basic chat";
+    }
+    if (m_activeDialogueResponse) {
+        m_activeDialogueResponse->sessionId = sessionId;
+    }
+    if (m_runtimeServices && !sessionId.isEmpty() && !appendRuntimeEvent(
             QStringLiteral("UserMessageReceived"), sessionId,
             {{QStringLiteral("text"), reason},
              {QStringLiteral("triggerTag"), triggerTag}})) {
-        finishRuntimeSession(sessionId);
-        return;
+        qWarning() << "[AIBrain] unable to record user message event; continuing basic chat";
     }
 
     processUserMemoryWrite(reason, triggerTag);
-
-    emit thinkingStarted(reason);
-    m_busy = true;
-    beginActiveResponse(replyToId, triggerTag, sessionId);
 
     if (shouldUseLocalRouter(triggerTag)
         && tryHandleRoutedIntent(reason, triggerTag, sessionId)) {

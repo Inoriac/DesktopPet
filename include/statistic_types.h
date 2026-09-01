@@ -48,6 +48,8 @@ struct PetStatistics {
 
     // LLM 统计
     qint64 llmCallCount = 0;
+    qint64 llmSuccessCount = 0;
+    qint64 llmFailureCount = 0;
     qint64 llmPromptTokens = 0;
     qint64 llmCompletionTokens = 0;
     qint64 llmTotalTokens = 0;

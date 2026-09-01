@@ -208,6 +208,7 @@ private slots:
     void triggerThink_whenStreamingReplyCompletes_shouldEmitOneLifecycleAndJoinedCompatibilityResponse();
     void triggerThink_whenUserMessageIdProvided_shouldPreserveReplyToIdAcrossToolRounds();
     void thinkInternal_whenToolUseCompletes_shouldAppendContinuationToSameAssistantMessage();
+    void triggerThink_afterToolRound_shouldNotLeakToolProtocolIntoNextRequest();
     void tryHandleRoutedIntent_whenDirectReplySelected_shouldEmitNormalizedLifecycleWithoutNetwork();
     void tryHandleRoutedIntent_whenDirectToolCallSelected_shouldEmitNormalizedLifecycleWithoutNetwork();
     void stopCurrentResponse_whenStreamIsActive_shouldKeepPartialTextAndFinishStoppedOnce();
@@ -440,6 +441,39 @@ void StreamingDialogueTests::thinkInternal_whenToolUseCompletes_shouldAppendCont
         ChatActivityStage::StreamingText,
         ChatActivityStage::Finalizing
     }));
+}
+
+void StreamingDialogueTests::triggerThink_afterToolRound_shouldNotLeakToolProtocolIntoNextRequest() {
+    FakeStreamingClient client;
+    LlmResponse toolResponse;
+    toolResponse.toolCalls.append({QStringLiteral("tool-1"), QStringLiteral("function"),
+                                   QStringLiteral("echo_value"), {}});
+    client.attempts = {
+        {{}, true, toolResponse, {}, false},
+        {{delta(QStringLiteral("第一次完成"))}, true,
+         textResponse(QStringLiteral("第一次完成")), {}, false},
+        {{delta(QStringLiteral("第二次完成"))}, true,
+         textResponse(QStringLiteral("第二次完成")), {}, false}
+    };
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    brain.setToolRegistry(&tools);
+
+    brain.triggerThink(QStringLiteral("第一次请求"),
+                       QStringLiteral("user_request"), QStringLiteral("user-1"));
+    brain.triggerThink(QStringLiteral("第二次请求"),
+                       QStringLiteral("user_request"), QStringLiteral("user-2"));
+
+    QCOMPARE(client.messageBatches.size(), 3);
+    const QList<ChatMessage>& secondRequest = client.messageBatches.at(2);
+    QVERIFY(std::none_of(
+        secondRequest.cbegin(), secondRequest.cend(), [](const ChatMessage& message) {
+            return message.role == QLatin1String("tool")
+                || !message.toolCallId.isEmpty() || !message.toolCalls.isEmpty();
+        }));
 }
 
 void StreamingDialogueTests::tryHandleRoutedIntent_whenDirectReplySelected_shouldEmitNormalizedLifecycleWithoutNetwork() {

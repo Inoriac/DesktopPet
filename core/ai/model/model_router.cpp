@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonValue>
+#include <QRegularExpression>
 
 #include <memory>
 #include <optional>
@@ -16,6 +17,22 @@ QString circuitKey(ModelRole role, const QString& routeId) {
 
 bool isTransientProviderError(const QString& error) {
     const QString normalized = error.toLower();
+    if (normalized.contains(QStringLiteral("cancelled"))
+        || normalized.contains(QStringLiteral("canceled"))) {
+        return false;
+    }
+
+    static const QRegularExpression httpStatusPattern(
+        QStringLiteral("\\bhttp\\s+(\\d{3})\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    const QRegularExpressionMatch statusMatch =
+        httpStatusPattern.match(error);
+    if (statusMatch.hasMatch()) {
+        const int status = statusMatch.captured(1).toInt();
+        return status == 408 || status == 425 || status == 429
+            || (status >= 500 && status <= 599);
+    }
+
     return normalized.contains(QStringLiteral("timeout"))
         || normalized.contains(QStringLiteral("timed out"))
         || normalized.contains(QStringLiteral("429"))
@@ -158,6 +175,7 @@ struct ModelRouter::CompletionState {
     QList<LlmStreamEvent> bufferedEvents;
     bool visibleTextPublished = false;
     bool terminal = false;
+    QString lastProviderError;
 };
 
 bool ModelRouter::routeMeetsConstraints(
@@ -298,9 +316,15 @@ void ModelRouter::attemptStreamRoute(
             details.insert(QStringLiteral("provider"), state->lastRoute->llm.provider);
             details.insert(QStringLiteral("model"), state->lastRoute->llm.model);
         }
+        const bool providerFailed = !state->lastProviderError.trimmed().isEmpty();
         state->callback(Result<ModelCompletion, DomainError>::failure(
-            domainError(QStringLiteral("MODEL_ROLE_UNAVAILABLE"),
-                        QStringLiteral("All routes for the model role failed"), details)));
+            domainError(providerFailed
+                            ? QStringLiteral("MODEL_PROVIDER_ERROR")
+                            : QStringLiteral("MODEL_ROLE_UNAVAILABLE"),
+                        providerFailed
+                            ? state->lastProviderError
+                            : QStringLiteral("No configured model route is currently available"),
+                        details)));
         return;
     }
 
@@ -342,6 +366,9 @@ void ModelRouter::attemptStreamRoute(
                 return;
             }
             if (!ok) {
+                state->lastProviderError = error.trimmed().isEmpty()
+                    ? QStringLiteral("Model provider request failed")
+                    : error.trimmed();
                 if (state->visibleTextPublished) {
                     state->terminal = true;
                     const QJsonObject details{
@@ -358,7 +385,8 @@ void ModelRouter::attemptStreamRoute(
                     return;
                 }
                 state->bufferedEvents.clear();
-                if (isTransientProviderError(error)) {
+                if (isTransientProviderError(error)
+                    && selectedIndex + 1 < state->config.routes.size()) {
                     openCircuit(state->request.role, selectedRoute.routeId);
                 }
                 attemptStreamRoute(state, selectedIndex + 1);
@@ -403,16 +431,22 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
     if (selectedIndex >= state->config.routes.size()) {
         const QString code = state->sawInvalidOutput
             ? QStringLiteral("MODEL_OUTPUT_INVALID")
-            : QStringLiteral("MODEL_ROLE_UNAVAILABLE");
+            : (!state->lastProviderError.trimmed().isEmpty()
+                   ? QStringLiteral("MODEL_PROVIDER_ERROR")
+                   : QStringLiteral("MODEL_ROLE_UNAVAILABLE"));
         QJsonObject details;
         if (state->lastRoute.has_value()) {
             details.insert(QStringLiteral("routeId"), state->lastRoute->routeId);
             details.insert(QStringLiteral("provider"), state->lastRoute->llm.provider);
             details.insert(QStringLiteral("model"), state->lastRoute->llm.model);
         }
+        const QString message = state->sawInvalidOutput
+            ? QStringLiteral("All routes returned output that did not match the required schema")
+            : (!state->lastProviderError.trimmed().isEmpty()
+                   ? state->lastProviderError
+                   : QStringLiteral("No configured model route is currently available"));
         state->callback(Result<ModelCompletion, DomainError>::failure(
-            domainError(code, QStringLiteral("All routes for the model role failed"),
-                        details)));
+            domainError(code, message, details)));
         return;
     }
 
@@ -426,7 +460,11 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
         (bool success, LlmResponse response, QString error) mutable {
             if (!*alive) return;
             if (!success) {
-                if (isTransientProviderError(error)) {
+                state->lastProviderError = error.trimmed().isEmpty()
+                    ? QStringLiteral("Model provider request failed")
+                    : error.trimmed();
+                if (isTransientProviderError(error)
+                    && selectedIndex + 1 < state->config.routes.size()) {
                     openCircuit(state->request.role, selectedRoute.routeId);
                 }
                 attemptRoute(state, selectedIndex + 1,

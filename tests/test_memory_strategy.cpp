@@ -77,6 +77,7 @@ private slots:
     void testPartitionMappingForAllTypes();
     void testAdaptiveDecayRetentionAndForgetDays();
     void testPartitionPersistedAndBackfilled();
+    void testLegacySchemaWithoutPartitionMigratesBeforeIndexCreation();
     void testForgettingSweepExpiresStaleAndSparesImportant();
     void testSqliteEmbeddingIndexSearch();
     void testModelDownloaderLocalMirror();
@@ -1331,6 +1332,45 @@ void TestMemoryStrategy::testPartitionPersistedAndBackfilled() {
     QVERIFY(foundSemantic);
     QVERIFY(foundWorking);
     QVERIFY(foundProcedural);
+}
+
+void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCreation() {
+    QTemporaryDir dir;
+    QVERIFY(dir.isValid());
+    const QString databasePath = dir.filePath(QStringLiteral("memory.db"));
+
+    {
+        SQLiteMemoryRepository repository;
+        QVERIFY(repository.open(databasePath));
+        MemoryEntry entry;
+        entry.id = QStringLiteral("legacy-semantic");
+        entry.type = MemoryType::Semantic;
+        entry.summary = QStringLiteral("legacy row");
+        QVERIFY(repository.insert(entry));
+    }
+
+    const QString connectionName = QStringLiteral("legacy_partition_migration");
+    {
+        QSqlDatabase database = QSqlDatabase::addDatabase(
+            QStringLiteral("QSQLITE"), connectionName);
+        database.setDatabaseName(databasePath);
+        QVERIFY(database.open());
+        QSqlQuery query(database);
+        QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_items_partition")));
+        QVERIFY(query.exec(QStringLiteral(
+            "ALTER TABLE memory_items DROP COLUMN partition")));
+        QVERIFY(query.exec(QStringLiteral("PRAGMA user_version=0")));
+        database.close();
+    }
+    QSqlDatabase::removeDatabase(connectionName);
+
+    MemoryStore migrated;
+    migrated.setDatabasePath(databasePath);
+    migrated.setStoragePath(dir.filePath(QStringLiteral("memory.json")));
+    QString error;
+    QVERIFY2(migrated.load(&error), qPrintable(error));
+    QCOMPARE(migrated.all().size(), 1);
+    QCOMPARE(migrated.all().first().partition, QStringLiteral("semantic"));
 }
 
 // 自适应遗忘扫描：高空闲低重要 Episodic 被 Expired；Core 类型(高 importance)靠自适应保留；

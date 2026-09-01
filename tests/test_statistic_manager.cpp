@@ -44,6 +44,7 @@ private slots:
 
     // 配置测试
     void testAutoSaveConfiguration();
+    void testLlmCallOutcomePersistence();
 
     // 边界条件测试
     void testConcurrentAccess();
@@ -267,6 +268,34 @@ void TestStatisticManager::testAutoSaveConfiguration()
     // 重新启用自动保存
     manager->setAutoSaveEnabled(true);
     QVERIFY(manager->isAutoSaveEnabled());
+}
+
+void TestStatisticManager::testLlmCallOutcomePersistence()
+{
+    const QString petName = QStringLiteral("StatisticsPet");
+    LlmUsage successUsage;
+    successUsage.promptTokens = 10;
+    successUsage.completionTokens = 5;
+    successUsage.totalTokens = 15;
+    LlmUsage failureUsage;
+    failureUsage.promptTokens = 3;
+    failureUsage.totalTokens = 3;
+
+    manager->recordLlmCall(petName, true, successUsage);
+    manager->recordLlmCall(petName, false, failureUsage);
+    manager->saveStatistics();
+    manager->recordLlmCall(petName, false, failureUsage);
+    manager->loadStatistics();
+
+    const std::optional<PetStatistics> stats =
+        manager->getPetStatistics(petName);
+    QVERIFY(stats.has_value());
+    QCOMPARE(stats->llmCallCount, static_cast<qint64>(2));
+    QCOMPARE(stats->llmSuccessCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmFailureCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmPromptTokens, static_cast<qint64>(13));
+    QCOMPARE(stats->llmCompletionTokens, static_cast<qint64>(5));
+    QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(18));
 }
 
 void TestStatisticManager::testConcurrentAccess()

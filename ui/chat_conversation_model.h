@@ -5,13 +5,16 @@
 
 #include <QHash>
 #include <QObject>
+#include <QThreadPool>
 
 class ChatConversationModel : public QObject {
     Q_OBJECT
 
 public:
     explicit ChatConversationModel(QObject* parent = nullptr);
+    ~ChatConversationModel() override;
 
+    void setDeferredPersistence(bool enabled);
     bool initialize(const ProfileChatStoreOptions& options,
                     QString* errorMessage);
     QString appendUserMessage(
@@ -49,6 +52,8 @@ private:
     QString m_lastReadMessageId;
     bool m_initialized = false;
     bool m_persistenceAvailable = false;
+    bool m_deferredPersistence = false;
+    QThreadPool m_persistencePool;
 };
 
 #endif // DESKTOP_PET_CHAT_CONVERSATION_MODEL_H

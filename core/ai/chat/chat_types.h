@@ -15,6 +15,7 @@ struct ChatHistoryEntry {
     QString content;
     QDateTime timestamp;
     ChatMessageStatus status = ChatMessageStatus::Complete;
+    QString errorMessage;
 };
 
 bool isTerminalChatMessageStatus(ChatMessageStatus status);

@@ -79,6 +79,7 @@ private slots:
     void cleanup();
     void bindConversation_whenModelHasMixedRoles_shouldRenderOrderedSelectableRowsWithoutConversationList();
     void bindConversation_whenModelChangesOneMessage_shouldUpdateOnlyThatRow();
+    void bindConversation_whenHistoryIsLarge_shouldHydrateRowsInBatches();
     void revealConversation_whenUnreadMessagesExist_shouldInsertOneVirtualLastReadDivider();
     void revealConversation_whenSavedGeometryIsOffscreen_shouldClampToAvailableScreen();
     void revealConversation_whenWindowIsAlreadyVisible_shouldKeepCurrentGeometry();
@@ -181,6 +182,28 @@ void TestChatHistoryWindow::bindConversation_whenModelChangesOneMessage_shouldUp
     QCOMPARE(messageRow(window, QStringLiteral("assistant-id")), assistantRow);
     QCOMPARE(assistantRow->findChild<QLabel*>(QStringLiteral("messageBody"))->text(),
              QStringLiteral("first second"));
+}
+
+void TestChatHistoryWindow::bindConversation_whenHistoryIsLarge_shouldHydrateRowsInBatches() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    ChatConversationModel model;
+    initializeModel(model, directory);
+    constexpr int messageCount = 30;
+    for (int index = 0; index < messageCount; ++index) {
+        model.appendUserMessage(QStringLiteral("message %1").arg(index));
+    }
+    ChatHistoryWindow window;
+
+    window.bindConversation(&model, kProfileId, QStringLiteral("Mochi"));
+
+    const int initialRows = window.findChildren<QWidget*>(
+        QStringLiteral("chatMessageRow")).size();
+    QVERIFY(initialRows > 0);
+    QVERIFY(initialRows < messageCount);
+    QTRY_COMPARE_WITH_TIMEOUT(
+        window.findChildren<QWidget*>(QStringLiteral("chatMessageRow")).size(),
+        messageCount, 1000);
 }
 
 void TestChatHistoryWindow::revealConversation_whenUnreadMessagesExist_shouldInsertOneVirtualLastReadDivider() {

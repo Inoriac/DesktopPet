@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 MODEL_ROLES = (
     "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream")
+DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 
 @dataclass
@@ -19,7 +20,7 @@ class ModelEndpointState:
     provider: str = "openai-compatible"
     base_url: str = ""
     api_key: str = ""
-    anthropic_version: str = "2023-06-01"
+    anthropic_version: str = DEFAULT_ANTHROPIC_VERSION
     extra_headers: Dict[str, str] = field(default_factory=dict)
 
 
@@ -143,6 +144,9 @@ class AppState:
             for field_name, route_name in values.items():
                 value = route.get(route_name)
                 if isinstance(value, str):
+                    if (field_name == "anthropic_version" and
+                            not value.strip()):
+                        continue
                     setattr(endpoint, field_name, value)
             if "extraHeaders" in route:
                 headers = route.get("extraHeaders")

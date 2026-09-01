@@ -4,7 +4,6 @@
 
 #include "petwindow.h"
 #include "chat_conversation_model.h"
-#include "chat_history_window.h"
 #include "liquidglasschatbubble.h"
 #include "render_viewport.h"
 
@@ -31,6 +30,7 @@
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
+#include <iostream>
 #include <utility>
 
 #ifdef Q_OS_WIN
@@ -56,11 +56,54 @@
 #include "ai/integration/emotion_state_provider.h"
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
+#include "ai/chat/launcher_chat_server.h"
+#include "ai/owner/owner_diary_protocol.h"
+#include "statistic_manager.h"
+
+namespace {
+
+QString launcherChatStatusName(ChatMessageStatus status) {
+    switch (status) {
+    case ChatMessageStatus::Pending:
+        return QStringLiteral("pending");
+    case ChatMessageStatus::Streaming:
+        return QStringLiteral("streaming");
+    case ChatMessageStatus::Complete:
+        return QStringLiteral("complete");
+    case ChatMessageStatus::Interrupted:
+        return QStringLiteral("interrupted");
+    case ChatMessageStatus::Stopped:
+        return QStringLiteral("stopped");
+    case ChatMessageStatus::Failed:
+        return QStringLiteral("failed");
+    }
+    return QStringLiteral("failed");
+}
+
+QJsonObject launcherChatStatistics(const QString& petName) {
+    const auto statistics =
+        StatisticManager::getInstance().getPetStatistics(petName);
+    if (!statistics.has_value()) return {};
+    const PetStatistics& stats = *statistics;
+    return {
+        {QStringLiteral("callCount"), stats.llmCallCount},
+        {QStringLiteral("successCount"), stats.llmSuccessCount},
+        {QStringLiteral("failureCount"), stats.llmFailureCount},
+        {QStringLiteral("promptTokens"), stats.llmPromptTokens},
+        {QStringLiteral("completionTokens"), stats.llmCompletionTokens},
+        {QStringLiteral("totalTokens"), stats.llmTotalTokens},
+        {QStringLiteral("reasoningTokens"), stats.llmReasoningTokens},
+        {QStringLiteral("cachedTokens"), stats.llmCachedTokens}
+    };
+}
+
+} // namespace
 
 
 PetWindow::PetWindow(PetProfile profile,
                      ProfileMigrationRequest profileMigration,
                      QString ownerDiaryBootstrapPath,
+                     QString launcherChatBootstrapPath,
                      QWidget *parent)
     : QWidget(parent)
     , isDragging(false)
@@ -68,6 +111,7 @@ PetWindow::PetWindow(PetProfile profile,
     , profile(std::move(profile))
     , profileMigration(std::move(profileMigration))
     , ownerDiaryBootstrapPath(std::move(ownerDiaryBootstrapPath))
+    , launcherChatBootstrapPath(std::move(launcherChatBootstrapPath))
     , modelName(this->profile.name)
     , sizePercent(100)
     , alwaysOnTop(true)
@@ -93,6 +137,7 @@ PetWindow::PetWindow(PetProfile profile,
     setupScreenChat();
 
     conversationModel = std::make_unique<ChatConversationModel>();
+    conversationModel->setDeferredPersistence(true);
     connect(conversationModel.get(),
             &ChatConversationModel::historyPersistenceWarning,
             this,
@@ -141,6 +186,18 @@ PetWindow::PetWindow(PetProfile profile,
         }
         stopThinkingBubble(true);
     });
+    connect(aiBrain.get(), &AIBrain::thinkRequestRejected, this,
+            [this](const QString& replyToId, const QString& errorMessage) {
+                qWarning() << "[AIBrain] chat request could not start:" << errorMessage;
+                if (!conversationModel || replyToId.isEmpty()) return;
+                const QString assistantId =
+                    QUuid::createUuid().toString(QUuid::WithoutBraces);
+                conversationModel->beginAssistantMessage(assistantId, replyToId);
+                conversationModel->appendAssistantDelta(assistantId, errorMessage);
+                conversationModel->finishAssistantMessage(
+                    assistantId, ChatMessageStatus::Complete);
+                showBubbleMessage(errorMessage, 4000);
+            });
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
         qDebug() << "[AIBrain] assistant response:" << content;
         thinkingHadAssistantResponse = true;
@@ -228,6 +285,11 @@ PetWindow::PetWindow(PetProfile profile,
             aiBrain->resolveToolConfirmation(requestId, approved);
         }
     });
+
+    // Basic dialogue must be ready before the synchronous model/animation
+    // import starts. Animation-specific tools are attached after model load.
+    setupAiBrain();
+    setupLauncherChatBridge();
 }
 
 PetWindow::~PetWindow() {
@@ -270,11 +332,7 @@ PetWindow::~PetWindow() {
         inputBubble->deleteLater();
         inputBubble = nullptr;
     }
-    if (chatHistoryWindow) {
-        chatHistoryWindow->close();
-        chatHistoryWindow->deleteLater();
-        chatHistoryWindow = nullptr;
-    }
+    launcherChatServer.reset();
     teardownAiRuntime();
     if (renderViewport) {
         delete renderViewport;
@@ -349,73 +407,181 @@ void PetWindow::previewBubble(const QString& message) {
     }
 }
 
-void PetWindow::openChatHistoryWindow() {
-    if (!chatHistoryWindow) {
-        chatHistoryWindow = new ChatHistoryWindow();
-        connect(chatHistoryWindow, &ChatHistoryWindow::messageSubmitted, this, [this](const QString& text) {
-            if (!conversationModel) return;
-            const QString userMessageId =
-                conversationModel->appendUserMessage(text);
-            if (userMessageId.isEmpty()) return;
-            if (petController) {
-                petController->recordExplicitFeedbackText(text);
-            }
-            if (!aiBrain || !aiBrain->isEnabled()) {
-                const QString assistantId =
-                    QUuid::createUuid().toString(QUuid::WithoutBraces);
-                conversationModel->beginAssistantMessage(
-                    assistantId, userMessageId);
-                conversationModel->appendAssistantDelta(
-                    assistantId,
-                    QStringLiteral("AI 当前没有启用，暂时不能回复。"));
-                conversationModel->finishAssistantMessage(
-                    assistantId, ChatMessageStatus::Complete);
-                return;
-            }
-            aiBrain->triggerThink(text, "user_request", userMessageId);
-        });
-        connect(chatHistoryWindow, &ChatHistoryWindow::stopRequested,
-                this, [this]() {
-                    if (aiBrain) aiBrain->stopCurrentResponse();
-                });
-        connect(chatHistoryWindow, &ChatHistoryWindow::retryRequested,
-                this, [this](const QString& assistantMessageId) {
-                    if (!conversationModel || !aiBrain || !aiBrain->isEnabled()
-                        || aiBrain->isBusy()) {
-                        return;
-                    }
-                    const QList<ChatHistoryEntry> messages =
-                        conversationModel->messages();
-                    const auto assistant = std::find_if(
-                        messages.cbegin(), messages.cend(),
-                        [&assistantMessageId](const ChatHistoryEntry& entry) {
-                            return entry.id == assistantMessageId
-                                && entry.role == QLatin1String("assistant");
-                        });
-                    if (assistant == messages.cend()
-                        || assistant->replyToId.isEmpty()) {
-                        return;
-                    }
-                    const auto source = std::find_if(
-                        messages.cbegin(), messages.cend(),
-                        [&assistant](const ChatHistoryEntry& entry) {
-                            return entry.id == assistant->replyToId
-                                && entry.role == QLatin1String("user");
-                        });
-                    if (source == messages.cend()) return;
-                    const QString newUserId =
-                        conversationModel->appendUserMessage(source->content);
-                    if (newUserId.isEmpty()) return;
-                    if (petController) {
-                        petController->recordExplicitFeedbackText(source->content);
-                    }
-                    aiBrain->triggerThink(
-                        source->content, "user_request", newUserId);
-                });
-        chatHistoryWindow->bindConversation(
-            conversationModel.get(), profileMigration.profileId, modelName);
+void PetWindow::setupLauncherChatBridge() {
+    if (launcherChatBootstrapPath.trimmed().isEmpty()) return;
+
+    std::cerr << "[LauncherChat] bootstrap option received for profile="
+              << profileMigration.profileId.toStdString() << std::endl;
+
+    auto bootstrap = consumeOwnerDiaryBootstrap(
+        launcherChatBootstrapPath, profileMigration.profileId);
+    launcherChatBootstrapPath.clear();
+    if (!bootstrap.isOk()) {
+        qWarning() << "[LauncherChat] bootstrap rejected:"
+                   << bootstrap.error().message;
+        return;
     }
-    chatHistoryWindow->revealConversation();
+    std::cerr << "[LauncherChat] bootstrap accepted" << std::endl;
+
+    LauncherChatCallbacks callbacks;
+    callbacks.snapshot = [this]() {
+        QJsonArray messageArray;
+        const QList<ChatHistoryEntry> messages = conversationModel
+            ? conversationModel->messages() : QList<ChatHistoryEntry>{};
+        constexpr int kMaximumVisibleMessages = 120;
+        const int first = std::max(
+            0, static_cast<int>(messages.size()) - kMaximumVisibleMessages);
+        for (int index = first; index < messages.size(); ++index) {
+            const ChatHistoryEntry& entry = messages.at(index);
+            messageArray.append(QJsonObject{
+                {QStringLiteral("id"), entry.id},
+                {QStringLiteral("role"), entry.role},
+                {QStringLiteral("replyToId"), entry.replyToId},
+                {QStringLiteral("content"), entry.content},
+                {QStringLiteral("timestamp"),
+                 entry.timestamp.toString(Qt::ISODateWithMs)},
+                {QStringLiteral("status"),
+                 launcherChatStatusName(entry.status)},
+                {QStringLiteral("errorMessage"), entry.errorMessage}
+            });
+        }
+        return QJsonObject{
+            {QStringLiteral("petName"), modelName},
+            {QStringLiteral("profileId"), profileMigration.profileId},
+            {QStringLiteral("aiEnabled"), aiBrain && aiBrain->isEnabled()},
+            {QStringLiteral("busy"), aiBrain && aiBrain->isBusy()},
+            {QStringLiteral("messages"), messageArray},
+            {QStringLiteral("statistics"), launcherChatStatistics(modelName)}
+        };
+    };
+    callbacks.sendMessage = [this](const QString& rawText)
+        -> Result<QJsonObject, DomainError> {
+        const QString text = rawText.trimmed();
+        if (text.isEmpty() || text.size() > 8000) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_MESSAGE_INVALID"),
+                QStringLiteral("消息为空或超过 8000 个字符。")));
+        }
+        if (!conversationModel || !aiBrain || !aiBrain->isStorageInitialized()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_UNAVAILABLE"),
+                QStringLiteral("聊天运行时尚未准备好。")));
+        }
+        if (!aiBrain->isEnabled()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("AI_DISABLED"),
+                QStringLiteral("AI 当前没有启用。")));
+        }
+        if (aiBrain->isBusy()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_BUSY"),
+                QStringLiteral("上一条消息仍在处理中。")));
+        }
+        const QString userMessageId = conversationModel->appendUserMessage(text);
+        if (userMessageId.isEmpty()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_MESSAGE_INVALID"),
+                QStringLiteral("消息无法加入聊天记录。")));
+        }
+        if (petController) petController->recordExplicitFeedbackText(text);
+        aiBrain->triggerThink(text, QStringLiteral("user_request"), userMessageId);
+        return Result<QJsonObject, DomainError>::success({
+            {QStringLiteral("messageId"), userMessageId}
+        });
+    };
+    callbacks.retryMessage = [this](const QString& assistantMessageId)
+        -> Result<QJsonObject, DomainError> {
+        if (!conversationModel || !aiBrain || !aiBrain->isEnabled()
+            || aiBrain->isBusy()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_BUSY"),
+                QStringLiteral("当前无法重新生成回复。")));
+        }
+        const QList<ChatHistoryEntry> messages = conversationModel->messages();
+        const auto assistant = std::find_if(
+            messages.cbegin(), messages.cend(),
+            [&assistantMessageId](const ChatHistoryEntry& entry) {
+                return entry.id == assistantMessageId
+                    && entry.role == QLatin1String("assistant")
+                    && (entry.status == ChatMessageStatus::Failed
+                        || entry.status == ChatMessageStatus::Interrupted);
+            });
+        if (assistant == messages.cend() || assistant->replyToId.isEmpty()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_MESSAGE_NOT_FOUND"),
+                QStringLiteral("找不到可重试的回复。")));
+        }
+        const auto source = std::find_if(
+            messages.cbegin(), messages.cend(),
+            [&assistant](const ChatHistoryEntry& entry) {
+                return entry.id == assistant->replyToId
+                    && entry.role == QLatin1String("user");
+            });
+        if (source == messages.cend()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_MESSAGE_NOT_FOUND"),
+                QStringLiteral("找不到原始用户消息。")));
+        }
+        const QString text = source->content;
+        const QString newUserId = conversationModel->appendUserMessage(text);
+        if (newUserId.isEmpty()) {
+            return Result<QJsonObject, DomainError>::failure(domainError(
+                QStringLiteral("CHAT_MESSAGE_INVALID"),
+                QStringLiteral("消息无法加入聊天记录。")));
+        }
+        if (petController) petController->recordExplicitFeedbackText(text);
+        aiBrain->triggerThink(text, QStringLiteral("user_request"), newUserId);
+        return Result<QJsonObject, DomainError>::success({
+            {QStringLiteral("messageId"), newUserId}
+        });
+    };
+    callbacks.stopResponse = [this]() -> Result<void, DomainError> {
+        if (aiBrain && aiBrain->isBusy()) aiBrain->stopCurrentResponse();
+        return Result<void, DomainError>::success();
+    };
+
+    OwnerDiaryBootstrap settings = bootstrap.takeValue();
+    launcherChatServer = std::make_unique<LauncherChatServer>(
+        profileMigration.profileId, std::move(callbacks));
+    const auto listening = launcherChatServer->listen(
+        settings.socketName, settings.capabilityToken,
+        settings.maxFrameBytes, settings.sessionTtlSeconds);
+    settings.capabilityToken.fill('\0');
+    settings.capabilityToken.clear();
+    if (!listening.isOk()) {
+        qWarning() << "[LauncherChat] listener unavailable:"
+                   << listening.error().message;
+        launcherChatServer.reset();
+        return;
+    }
+
+    auto notifyChanged = [this]() {
+        if (launcherChatServer) launcherChatServer->notifyStateChanged();
+    };
+    connect(conversationModel.get(), &ChatConversationModel::messageInserted,
+            this, [notifyChanged](int, const QString&) { notifyChanged(); });
+    connect(conversationModel.get(), &ChatConversationModel::messageChanged,
+            this, [notifyChanged](int, const QString&) { notifyChanged(); });
+    connect(aiBrain.get(), &AIBrain::thinkingStarted,
+            this, [notifyChanged](const QString&) { notifyChanged(); });
+    connect(aiBrain.get(), &AIBrain::thinkingFinished,
+            this, [notifyChanged](bool, const QString&) { notifyChanged(); });
+    connect(&StatisticManager::getInstance(), &StatisticManager::statisticsUpdated,
+            this, [this, notifyChanged](const QString& petName, const PetStatistics&) {
+                if (petName == modelName) notifyChanged();
+            });
+    qInfo() << "[LauncherChat] bridge listening for profile"
+            << profileMigration.profileId;
+    std::cerr << "[LauncherChat] bridge ready for profile="
+              << profileMigration.profileId.toStdString() << std::endl;
+}
+
+void PetWindow::openChatHistoryWindow() {
+    if (launcherChatServer && launcherChatServer->isListening()) {
+        launcherChatServer->requestOpenInLauncher();
+        return;
+    }
+    showBubbleMessage(QStringLiteral("请在 Launcher 中打开聊天。"), 3000);
 }
 
 void PetWindow::appendChatHistoryMessage(const QString& role,
@@ -445,7 +611,7 @@ void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
     if (aiBrain) aiBrain->stopCurrentResponse();
     hideBubbleMessage();
-    if (chatHistoryWindow) chatHistoryWindow->close();
+    launcherChatServer.reset();
     if (outputBubble) outputBubble->close();
     if (inputBubble) inputBubble->close();
     teardownAiRuntime();
@@ -493,7 +659,7 @@ void PetWindow::setupRenderViewport() {
             qWarning() << "Failed to load model:" << profile.modelPath;
         }
 
-        setupAiBrain();
+        setupAiAnimationTools();
     });
 }
 

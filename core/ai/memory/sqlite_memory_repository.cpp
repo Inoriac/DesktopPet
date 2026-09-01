@@ -185,7 +185,6 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_status ON memory_items(status)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items(key)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_partition ON memory_items(partition)"),
 
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS memory_tags ("
@@ -314,6 +313,13 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         // 撤销 Core 分区：旧版本曾把 Core 类型写入 partition='core'，统一并入 semantic。
         if (!query.exec(QStringLiteral(
             "UPDATE memory_items SET partition = 'semantic' WHERE partition = 'core'"
+        ))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        if (!query.exec(QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_memory_items_partition "
+            "ON memory_items(partition)"
         ))) {
             if (errorMessage) *errorMessage = query.lastError().text();
             return false;

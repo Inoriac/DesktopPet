@@ -15,6 +15,16 @@ from app_state import AppState, ModelEndpointState, ModelRoleState  # noqa: E402
 
 
 class LauncherConfigTests(unittest.TestCase):
+    def test_effective_config_restores_missing_schema_sections(self):
+        template = config_loader.load_template()
+        partial = {"legacy": True, "renderSettings": {"antialiasing": False}}
+
+        merged = config_loader.merge_with_template(template, partial)
+
+        self.assertFalse(merged["renderSettings"]["antialiasing"])
+        self.assertIn("interactionSettings", merged)
+        self.assertTrue(merged["legacy"])
+
     def test_template_defaults_all_model_roles_to_single_default_endpoint(self):
         config = config_loader.load_template()
         ai = config["aiSettings"]
@@ -336,6 +346,30 @@ class LauncherConfigTests(unittest.TestCase):
         self.assertEqual(
             endpoint.extra_headers,
             {"x-gateway-tenant": "desktop-pet"},
+        )
+
+    def test_from_config_whenAnthropicVersionIsBlank_shouldRestoreDefault(self):
+        config = {
+            "aiSettings": {
+                "activeProfile": "default",
+                "profiles": {"default": {
+                    "modelEndpoints": {
+                        "DEFAULT": {
+                            "provider": "anthropic-messages",
+                            "baseUrl": "https://gateway.example",
+                            "apiKey": "key",
+                            "anthropicVersion": "",
+                        },
+                    },
+                }},
+            },
+        }
+
+        restored = AppState.from_config(config)
+
+        self.assertEqual(
+            restored.model_endpoints["DEFAULT"].anthropic_version,
+            "2023-06-01",
         )
 
     def test_export_then_load_saved_config_round_trips_json(self):

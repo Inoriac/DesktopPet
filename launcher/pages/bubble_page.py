@@ -8,7 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QHBoxLayout
-from qfluentwidgets import Slider, SpinBox, BodyLabel
+from qfluentwidgets import BodyLabel, CompactSpinBox, Slider
 
 from app_state import AppState
 from ._ui import ScrollPage, Section
@@ -62,12 +62,12 @@ class BubblePage(ScrollPage):
         return wrap
 
     @staticmethod
-    def _spin(lo, hi, value, on_change) -> SpinBox:
-        spin = SpinBox()
+    def _spin(lo, hi, value, on_change) -> CompactSpinBox:
+        spin = CompactSpinBox()
         spin.setRange(lo, hi)
         spin.setValue(value)
         spin.setFixedWidth(132)
-        # 字号略小 + 拉宽，避免上下调整按钮挤占数字显示空间（负数/大数完整可见）
+        # 保证负数和四位数在右侧紧凑调整区旁完整显示。
         f = QFont(spin.font().family())
         f.setPointSize(11)
         spin.setFont(f)

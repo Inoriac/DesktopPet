@@ -102,7 +102,7 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
         showBubbleInput();
     });
 
-    openChatHistoryAction = contextMenu->addAction("打开聊天窗口");
+    openChatHistoryAction = contextMenu->addAction("在 Launcher 中打开聊天");
     connect(openChatHistoryAction, &QAction::triggered, this, [this]() {
         openChatHistoryWindow();
     });

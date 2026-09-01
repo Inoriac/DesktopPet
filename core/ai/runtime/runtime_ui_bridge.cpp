@@ -19,3 +19,10 @@ void CallbackRuntimeUiBridge::notifyUser(const QString& title,
                                          int durationMs) {
     if (m_callbacks.notifyUser) m_callbacks.notifyUser(title, message, durationMs);
 }
+
+void CallbackRuntimeUiBridge::setAnimationSystem(
+    AnimationPlayer* animationPlayer,
+    AnimationManager* animationManager) {
+    m_animationPlayer = animationPlayer;
+    m_animationManager = animationManager;
+}

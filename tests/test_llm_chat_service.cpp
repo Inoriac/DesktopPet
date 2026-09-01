@@ -58,6 +58,7 @@ class TestLlmChatService : public QObject {
 private slots:
     void testRequestAsyncDoesNotBlock();
     void testRetryThenSuccess();
+    void testTerminalFailureUpdatesStatistics();
     void testRequestReleasesCapturedState();
     void testDaydreamConfigLoadsAndClamps();
     void testEmotionConfigLoadsFromActiveProfile();
@@ -140,10 +141,43 @@ void TestLlmChatService::testRetryThenSuccess() {
     const std::optional<PetStatistics> stats = StatisticManager::getInstance().getPetStatistics("AI_GLOBAL");
     QVERIFY(stats.has_value());
     QCOMPARE(stats->llmCallCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmSuccessCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmFailureCount, static_cast<qint64>(0));
     QCOMPARE(stats->llmPromptTokens, static_cast<qint64>(11));
     QCOMPARE(stats->llmCompletionTokens, static_cast<qint64>(22));
     QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(33));
     QCOMPARE(stats->llmReasoningTokens, static_cast<qint64>(9));
+}
+
+void TestLlmChatService::testTerminalFailureUpdatesStatistics() {
+    auto fakeClient = std::make_shared<FakeAsyncLlmClient>();
+    fakeClient->planned.append({false, "terminal failure", {}});
+    StatisticManager::getInstance().clearStatistics("FailurePet");
+
+    LlmChatService service(fakeClient);
+    LlmConfig cfg;
+    cfg.enabled = true;
+    cfg.retryCount = 0;
+
+    bool callbackCalled = false;
+    QEventLoop loop;
+    service.requestAsyncWithConfig(cfg, {}, {},
+        [&](bool ok, LlmResponse, QString error) {
+            QVERIFY(!ok);
+            QCOMPARE(error, QStringLiteral("terminal failure"));
+            callbackCalled = true;
+            loop.quit();
+        }, QStringLiteral("FailurePet"));
+    QTimer::singleShot(300, &loop, &QEventLoop::quit);
+    loop.exec();
+
+    QVERIFY(callbackCalled);
+    const auto stats = StatisticManager::getInstance()
+        .getPetStatistics(QStringLiteral("FailurePet"));
+    QVERIFY(stats.has_value());
+    QCOMPARE(stats->llmCallCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmSuccessCount, static_cast<qint64>(0));
+    QCOMPARE(stats->llmFailureCount, static_cast<qint64>(1));
 }
 
 void TestLlmChatService::testRequestReleasesCapturedState() {

@@ -202,6 +202,7 @@ private slots:
     void sendChatCompletionStreamAsync_whenMessageStopIsMissing_shouldFailExactlyOnce();
     void sendChatCompletionStreamAsync_whenMessageStopArrivesBeforeMessageStart_shouldFailExactlyOnce();
     void sendChatCompletionStreamAsync_whenContentArrivesAfterMessageStop_shouldFailExactlyOnce();
+    void sendChatCompletionStreamAsync_whenProviderReturnsHttpError_shouldPreserveSafeDetail();
     void sendChatCompletionStreamAsync_whenBaseUrlIsNotAbsoluteHttp_shouldRejectWithoutRequest();
     void cancel_whenReplyIsActive_shouldAbortAndCompleteExactlyOnce();
     void cancel_whenReplyAlreadyFinished_shouldBeIdempotent();
@@ -693,6 +694,41 @@ void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenContentArriv
     QCOMPARE(completions, 1);
 }
 
+void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenProviderReturnsHttpError_shouldPreserveSafeDetail() {
+    LocalHttpServer server;
+    server.enqueue({
+        400,
+        "application/json",
+        QJsonDocument(QJsonObject{
+            {"type", "error"},
+            {"error", QJsonObject{
+                {"type", "invalid_request_error"},
+                {"message", "invalid tool schema for test-secret"}
+            }}
+        }).toJson(QJsonDocument::Compact),
+        false
+    });
+    AnthropicMessagesClient client;
+    int completions = 0;
+    bool success = true;
+    QString error;
+
+    client.sendChatCompletionStreamAsync(
+        anthropicConfig(server), {{"user", "hello", {}, {}, {}}}, {}, {},
+        [&](bool ok, LlmResponse, QString message) {
+            ++completions;
+            success = ok;
+            error = std::move(message);
+        });
+
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
+    QVERIFY(!success);
+    QVERIFY(error.contains(QStringLiteral("HTTP 400")));
+    QVERIFY(error.contains(QStringLiteral("invalid tool schema")));
+    QVERIFY(error.contains(QStringLiteral("[REDACTED]")));
+    QVERIFY(!error.contains(QStringLiteral("test-secret")));
+}
+
 void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenBaseUrlIsNotAbsoluteHttp_shouldRejectWithoutRequest() {
     LocalHttpServer server;
     AnthropicMessagesClient client;
@@ -836,6 +872,7 @@ void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenOpenAiErrorC
         });
     QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
     QVERIFY(!success);
+    QVERIFY(error.contains(QStringLiteral("HTTP 401")));
     QVERIFY(!error.contains(QStringLiteral("test-secret")));
 }
 

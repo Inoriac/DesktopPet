@@ -4,6 +4,8 @@ import sys
 import types
 import unittest
 
+os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
+
 
 REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, "launcher"))
@@ -63,6 +65,10 @@ class QNetworkRequest:
     def setRawHeader(self, name, value):
         self.raw_headers[bytes(name)] = bytes(value)
 
+    def rawHeader(self, name):
+        key = name.encode("latin-1") if isinstance(name, str) else bytes(name)
+        return self.raw_headers.get(key, b"")
+
     def setTransferTimeout(self, timeout):
         self.timeout = timeout
 
@@ -82,7 +88,7 @@ class FakeReply:
         self.deleted = False
 
     def attribute(self, name):
-        return self._status if name == QNetworkRequest.HttpStatusCodeAttribute else None
+        return self._status if name == ActiveQNetworkRequest.HttpStatusCodeAttribute else None
 
     def readAll(self):
         return self._body
@@ -130,8 +136,11 @@ def _install_qt_stubs():
 
 
 def _install_ui_stubs():
-    if "qfluentwidgets" in sys.modules:
+    try:
+        import qfluentwidgets  # noqa: F401
         return
+    except ModuleNotFoundError:
+        pass
 
     class Dummy:
         DemiBold = 1
@@ -147,8 +156,9 @@ def _install_ui_stubs():
         setattr(qtwidgets, name, Dummy)
     fluent = types.ModuleType("qfluentwidgets")
     for name in (
-        "SwitchButton", "SpinBox", "ComboBox", "LineEdit",
+        "SwitchButton", "CompactSpinBox", "ComboBox", "LineEdit",
         "PasswordLineEdit", "PrimaryPushButton", "PushButton", "InfoBar",
+        "ToolButton",
         "SingleDirectionScrollArea", "HeaderCardWidget", "StrongBodyLabel",
         "CaptionLabel",
     ):
@@ -165,6 +175,7 @@ _install_qt_stubs()
 
 from api_connection_tester import ApiConnectionTester  # noqa: E402
 from app_state import ModelEndpointState  # noqa: E402
+from PySide6.QtNetwork import QNetworkRequest as ActiveQNetworkRequest  # noqa: E402
 
 
 class ApiConnectionTesterTests(unittest.TestCase):
@@ -190,13 +201,31 @@ class ApiConnectionTesterTests(unittest.TestCase):
 
         request, raw_body = manager.posts[0]
         self.assertEqual(request.url().toString(), "https://text.example/v1/messages")
-        self.assertEqual(request.raw_headers[b"x-api-key"], b"secret")
-        self.assertEqual(request.raw_headers[b"anthropic-version"], b"2024-01-01")
+        self.assertEqual(bytes(request.rawHeader("x-api-key")), b"secret")
+        self.assertEqual(
+            bytes(request.rawHeader("anthropic-version")), b"2024-01-01")
         body = json.loads(raw_body)
         self.assertEqual(body["max_tokens"], 1)
         self.assertFalse(body["stream"])
         manager.next_reply.finished.emit()
         self.assertEqual(results, [("anthropic-request", True, "success", "连接成功")])
+
+    def test_whenAnthropicVersionIsBlank_shouldUseInternalDefault(self):
+        tester, manager, results = self._tester(FakeReply(status=200))
+        endpoint = ModelEndpointState(
+            provider="anthropic-messages",
+            base_url="https://text.example/v1",
+            api_key="secret",
+            anthropic_version="   ",
+        )
+
+        tester.test("default-version-request", endpoint, "claude-text")
+
+        request, _raw_body = manager.posts[0]
+        self.assertEqual(
+            bytes(request.rawHeader("anthropic-version")), b"2023-06-01")
+        manager.next_reply.finished.emit()
+        self.assertTrue(results[0][1])
 
     def test_whenOpenAiCompatibleEndpointIsValid_shouldBuildChatCompletionsProbe(self):
         tester, manager, results = self._tester(FakeReply(status=204))
@@ -213,7 +242,8 @@ class ApiConnectionTesterTests(unittest.TestCase):
             request.url().toString(),
             "https://vision.example/v1/chat/completions",
         )
-        self.assertEqual(request.raw_headers[b"Authorization"], b"Bearer vision-secret")
+        self.assertEqual(
+            bytes(request.rawHeader("Authorization")), b"Bearer vision-secret")
         body = json.loads(raw_body)
         self.assertEqual(body["messages"], [{"role": "user", "content": "ping"}])
         manager.next_reply.finished.emit()
@@ -299,9 +329,12 @@ class AiPageConnectionTests(unittest.TestCase):
     @staticmethod
     def _page():
         _install_ui_stubs()
+        from PySide6.QtWidgets import QApplication
         from pages.ai_page import AiPage
 
-        page = object.__new__(AiPage)
+        AiPageConnectionTests._app = (
+            QApplication.instance() or QApplication(["api-connection-tests"]))
+        page = AiPage.__new__(AiPage)
         page.connection_tester = FakeTester()
         page._connection_test_buttons = {
             "DEFAULT": FakeButton(),

@@ -32,6 +32,10 @@ namespace {
 
 constexpr int kBottomFollowDistance = 24;
 constexpr int kStreamFlushIntervalMs = 32;
+constexpr int kSynchronousHistoryLimit = 20;
+constexpr int kInitialHistoryRows = 6;
+constexpr int kHistoryBatchRows = 4;
+constexpr int kHistoryBatchIntervalMs = 8;
 
 QString displayNameForRole(const QString& role, const QString& petName) {
     if (role == QLatin1String("user")) return QStringLiteral("你");
@@ -156,9 +160,14 @@ public:
         m_timeLabel->setText(entry.timestamp.isValid()
                                  ? entry.timestamp.toString(QStringLiteral("HH:mm"))
                                  : QString());
-        m_bodyLabel->setText(entry.content);
+        const QString bodyText = entry.content.isEmpty()
+            ? entry.errorMessage
+            : entry.content;
+        m_bodyLabel->setText(bodyText);
+        m_bodyLabel->setVisible(!bodyText.isEmpty());
         const QString caption = statusCaption(entry.status);
         m_statusLabel->setText(caption);
+        m_statusLabel->setToolTip(entry.errorMessage);
         m_statusLabel->setVisible(!caption.isEmpty());
         m_retryButton->setProperty("assistantMessageId", entry.id);
         m_retryButton->setVisible(allowRetry);
@@ -346,6 +355,11 @@ ChatHistoryWindow::ChatHistoryWindow(QWidget* parent)
     m_streamFlushTimer->setInterval(kStreamFlushIntervalMs);
     connect(m_streamFlushTimer, &QTimer::timeout, this,
             &ChatHistoryWindow::flushPendingMessageUpdates);
+    m_historyHydrationTimer = new QTimer(this);
+    m_historyHydrationTimer->setSingleShot(true);
+    m_historyHydrationTimer->setInterval(kHistoryBatchIntervalMs);
+    connect(m_historyHydrationTimer, &QTimer::timeout, this,
+            &ChatHistoryWindow::hydrateNextHistoryBatch);
     connect(m_mainActionButton, &QPushButton::clicked, this, [this]() {
         if (m_responseActive) {
             emit stopRequested();
@@ -357,6 +371,9 @@ ChatHistoryWindow::ChatHistoryWindow(QWidget* parent)
             this, [this]() {
                 if (!m_internalScrollChange && !viewportIsNearBottom()) {
                     m_followPendingUpdate = false;
+                    if (m_historyHydrationTimer->isActive()) {
+                        m_followHistoryHydration = false;
+                    }
                     m_preservedScrollValue =
                         m_scrollArea->verticalScrollBar()->value();
                 }
@@ -396,8 +413,20 @@ void ChatHistoryWindow::bindConversation(ChatConversationModel* model,
     }
 
     const QList<ChatHistoryEntry> messages = m_model->messages();
-    for (int index = 0; index < messages.size(); ++index) {
-        insertMessageRow(index, messages.at(index).id);
+    if (messages.size() <= kSynchronousHistoryLimit) {
+        for (int index = 0; index < messages.size(); ++index) {
+            insertMessageRow(index, messages.at(index).id);
+        }
+    } else {
+        const int messageCount = static_cast<int>(messages.size());
+        const int firstVisibleIndex = std::max(
+            0, messageCount - kInitialHistoryRows);
+        for (int index = firstVisibleIndex; index < messages.size(); ++index) {
+            insertMessageRow(index, messages.at(index).id);
+        }
+        m_nextHistoryIndex = firstVisibleIndex - 1;
+        m_followHistoryHydration = true;
+        m_historyHydrationTimer->start();
     }
 
     connect(m_model, &ChatConversationModel::messageInserted,
@@ -508,9 +537,14 @@ void ChatHistoryWindow::closeEvent(QCloseEvent* event) {
 
 void ChatHistoryWindow::clearRows() {
     m_streamFlushTimer->stop();
+    m_historyHydrationTimer->stop();
     m_pendingMessageUpdates.clear();
     m_rows.clear();
+    m_modelIndexes.clear();
     m_messageOrder.clear();
+    m_nextHistoryIndex = -1;
+    m_followHistoryHydration = true;
+    m_insertingHistoryBatch = false;
     m_lastReadDivider = nullptr;
     while (QLayoutItem* item = m_messageLayout->takeAt(0)) {
         delete item->widget();
@@ -525,8 +559,12 @@ void ChatHistoryWindow::insertMessageRow(int modelIndex,
     const ChatHistoryEntry* entry = findEntry(messages, messageId);
     if (!entry) return;
 
-    const int boundedIndex = std::clamp(
-        modelIndex, 0, static_cast<int>(m_messageOrder.size()));
+    int rowPosition = 0;
+    while (rowPosition < m_messageOrder.size()
+           && m_modelIndexes.value(m_messageOrder.at(rowPosition), -1)
+               < modelIndex) {
+        ++rowPosition;
+    }
     auto* row = new ChatMessageRow(m_messageContainer);
     row->setEntry(*entry, m_petDisplayName,
                   isRetryable(entry->status) && hasSourceUser(messages, *entry));
@@ -535,11 +573,44 @@ void ChatHistoryWindow::insertMessageRow(int modelIndex,
             [this, messageId]() {
                 if (!m_responseActive) emit retryRequested(messageId);
             });
-    m_messageLayout->insertWidget(layoutIndexForModelIndex(boundedIndex), row);
-    m_messageOrder.insert(boundedIndex, messageId);
+    m_messageLayout->insertWidget(layoutIndexForModelIndex(rowPosition), row);
+    m_messageOrder.insert(rowPosition, messageId);
     m_rows.insert(messageId, row);
+    m_modelIndexes.insert(messageId, modelIndex);
 
-    if (m_hasBeenRevealed) ensureLastReadDivider();
+    if (m_hasBeenRevealed && !m_insertingHistoryBatch) {
+        ensureLastReadDivider();
+    }
+}
+
+void ChatHistoryWindow::hydrateNextHistoryBatch() {
+    if (!m_model || m_nextHistoryIndex < 0) {
+        m_historyHydrationTimer->stop();
+        if (m_hasBeenRevealed) ensureLastReadDivider();
+        return;
+    }
+
+    const QList<ChatHistoryEntry> messages = m_model->messages();
+    const int batchEnd = std::min(
+        m_nextHistoryIndex, static_cast<int>(messages.size()) - 1);
+    const int batchStart = std::max(0, batchEnd - kHistoryBatchRows + 1);
+    m_insertingHistoryBatch = true;
+    m_messageContainer->setUpdatesEnabled(false);
+    for (int index = batchStart; index <= batchEnd; ++index) {
+        insertMessageRow(index, messages.at(index).id);
+    }
+    m_messageContainer->setUpdatesEnabled(true);
+    m_insertingHistoryBatch = false;
+    m_nextHistoryIndex = batchStart - 1;
+
+    if (m_hasBeenRevealed && m_followHistoryHydration) {
+        scrollToBottom();
+    }
+    if (m_nextHistoryIndex >= 0) {
+        m_historyHydrationTimer->start();
+    } else if (m_hasBeenRevealed) {
+        ensureLastReadDivider();
+    }
 }
 
 void ChatHistoryWindow::scheduleMessageUpdate(const QString& messageId) {

@@ -14,7 +14,7 @@ from PySide6.QtNetwork import (
     QNetworkRequest,
 )
 
-from app_state import ModelEndpointState
+from app_state import DEFAULT_ANTHROPIC_VERSION, ModelEndpointState
 
 
 SUPPORTED_PROVIDERS = ("openai-compatible", "anthropic-messages")
@@ -47,8 +47,6 @@ def _validation_error(endpoint: ModelEndpointState, model: str) -> str | None:
         return "API Key 不能为空"
     if not model:
         return "模型 ID 不能为空"
-    if endpoint.provider == "anthropic-messages" and not endpoint.anthropic_version:
-        return "Anthropic Version 不能为空"
     return None
 
 
@@ -125,10 +123,13 @@ class ApiConnectionTester(QObject):
             "messages": [{"role": "user", "content": "ping"}],
         }
         if endpoint.provider == "anthropic-messages":
+            anthropic_version = (
+                endpoint.anthropic_version.strip() or
+                DEFAULT_ANTHROPIC_VERSION)
             request.setRawHeader(b"x-api-key", endpoint.api_key.encode("utf-8"))
             request.setRawHeader(
                 b"anthropic-version",
-                endpoint.anthropic_version.encode("utf-8"),
+                anthropic_version.encode("utf-8"),
             )
         else:
             request.setRawHeader(

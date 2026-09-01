@@ -75,7 +75,8 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
             (bool ok, LlmResponse response, QString error) mutable {
                 if (ok) {
                     const QString statsPetName = petName.isEmpty() ? QString("AI_GLOBAL") : petName;
-                    StatisticManager::getInstance().recordLlmUsage(statsPetName, response.usage);
+                    StatisticManager::getInstance().recordLlmCall(
+                        statsPetName, true, response.usage);
                     callback(true, std::move(response), {});
                     return;
                 }
@@ -89,6 +90,10 @@ void LlmChatService::requestAsyncWithConfig(const LlmConfig& cfg,
                     return;
                 }
 
+                const QString statsPetName = petName.isEmpty()
+                    ? QStringLiteral("AI_GLOBAL") : petName;
+                StatisticManager::getInstance().recordLlmCall(
+                    statsPetName, false, response.usage);
                 callback(false, {}, error);
             });
     };
@@ -128,10 +133,10 @@ std::shared_ptr<LlmRequestHandle> LlmChatService::requestStreamAsyncWithConfig(
         cfg, messages, tools, std::move(observer),
         [completion = std::move(completion), petName]
         (bool ok, LlmResponse response, QString error) mutable {
-            if (ok) {
-                const QString statsPetName = petName.isEmpty() ? QStringLiteral("AI_GLOBAL") : petName;
-                StatisticManager::getInstance().recordLlmUsage(statsPetName, response.usage);
-            }
+            const QString statsPetName = petName.isEmpty()
+                ? QStringLiteral("AI_GLOBAL") : petName;
+            StatisticManager::getInstance().recordLlmCall(
+                statsPetName, ok, response.usage);
             if (completion) {
                 completion(ok, std::move(response), std::move(error));
             }

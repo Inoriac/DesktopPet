@@ -585,6 +585,52 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
     return false;
 }
 
+bool MemoryStore::reinforceEntries(const QStringList& ids) {
+    if (ids.isEmpty()) return true;
+
+    const bool persistent = m_repository && m_repository->isOpen();
+    if (persistent && !m_repository->beginTransaction()) return false;
+
+    QList<QPair<int, MemoryEntry>> originals;
+    QSet<QString> seen;
+    const QDateTime accessedAt = QDateTime::currentDateTimeUtc();
+    bool success = true;
+    for (const QString& id : ids) {
+        if (id.isEmpty() || seen.contains(id)) continue;
+        seen.insert(id);
+
+        int index = -1;
+        for (int candidate = 0; candidate < m_entries.size(); ++candidate) {
+            if (m_entries.at(candidate).id == id) {
+                index = candidate;
+                break;
+            }
+        }
+        if (index < 0) continue;
+
+        originals.append({index, m_entries.at(index)});
+        MemoryEntry updated = m_entries.at(index);
+        updated.strength = qMin(1.0, updated.strength + 0.1);
+        updated.accessCount += 1;
+        updated.lastAccessedAt = accessedAt;
+        updated.updatedAt = accessedAt;
+        if (persistent && !m_repository->update(updated)) {
+            success = false;
+            break;
+        }
+        m_entries[index] = std::move(updated);
+    }
+
+    if (persistent && success) success = m_repository->commitTransaction();
+    if (!success) {
+        if (persistent) m_repository->rollbackTransaction();
+        for (const auto& original : originals) {
+            m_entries[original.first] = original.second;
+        }
+    }
+    return success;
+}
+
 bool MemoryStore::updateStatusById(const QString& id,
                                    MemoryStatus status,
                                    const QJsonObject& payloadPatch) {

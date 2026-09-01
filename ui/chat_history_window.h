@@ -64,6 +64,7 @@ protected:
 private:
     void clearRows();
     void insertMessageRow(int modelIndex, const QString& messageId);
+    void hydrateNextHistoryBatch();
     void scheduleMessageUpdate(const QString& messageId);
     void flushPendingMessageUpdates();
     void submitCurrentMessage();
@@ -84,12 +85,16 @@ private:
     QString m_petDisplayName;
     QStringList m_messageOrder;
     QHash<QString, ChatMessageRow*> m_rows;
+    QHash<QString, int> m_modelIndexes;
     QSet<QString> m_pendingMessageUpdates;
     bool m_responseActive = false;
     bool m_hasBeenRevealed = false;
     bool m_followPendingUpdate = true;
     bool m_internalScrollChange = false;
     int m_preservedScrollValue = 0;
+    int m_nextHistoryIndex = -1;
+    bool m_followHistoryHydration = true;
+    bool m_insertingHistoryBatch = false;
 
     QLabel* m_titleLabel = nullptr;
     QLabel* m_subtitleLabel = nullptr;
@@ -102,6 +107,7 @@ private:
     GrowingPlainTextEdit* m_inputEdit = nullptr;
     QPushButton* m_mainActionButton = nullptr;
     QTimer* m_streamFlushTimer = nullptr;
+    QTimer* m_historyHydrationTimer = nullptr;
 };
 
 #endif // DESKTOP_PET_CHAT_HISTORY_WINDOW_H

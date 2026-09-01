@@ -2,6 +2,7 @@
 #include <QCommandLineParser>
 #include <QDir>
 #include <QStandardPaths>
+#include <QStringList>
 #include <QSurfaceFormat>
 
 #include "ai_types.h"
@@ -11,6 +12,29 @@
 #include "core/configLoader/config_manager.h"
 #include "statistic_manager.h"
 #include "ai/runtime/profile_resolver.h"
+
+namespace {
+
+QString resolveResourceRoot()
+{
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        QDir::currentPath(),
+        appDir,
+        QDir(appDir).absoluteFilePath(QStringLiteral("..")),
+        QDir(appDir).absoluteFilePath(QStringLiteral("../..")),
+    };
+    for (const QString& candidate : candidates) {
+        const QDir directory(candidate);
+        if (directory.exists(QStringLiteral("assets"))
+            && directory.exists(QStringLiteral("config"))) {
+            return directory.absolutePath();
+        }
+    }
+    return QDir(appDir).absoluteFilePath(QStringLiteral(".."));
+}
+
+} // namespace
 
 int main(int argc, char *argv[])
 {
@@ -31,13 +55,14 @@ int main(int argc, char *argv[])
     app.setApplicationVersion("1.0.0");
     ThemeManager::instance().applyTo(&app);
 
-    QDir::setCurrent(QCoreApplication::applicationDirPath() + "/..");
+    QDir::setCurrent(resolveResourceRoot());
 
     // 命令行参数（供 Python launcher 调用）：
     //   --config <file>  指定启动配置文件（建议绝对路径）
     //   --pet <name>          指定启动角色
     //   --profile-id <uuid>   指定不可变的角色身份
     //   --owner-diary-bootstrap <file>  launcher 私有日记一次性凭据
+    //   --launcher-chat-bootstrap <file> launcher 聊天一次性凭据
     // 主题不走命令行，由 ThemeManager 经同名 QSettings(键 ui/theme)读取，见前端修改计划 §3.1。
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop Pet Application");
@@ -52,10 +77,13 @@ int main(int argc, char *argv[])
         "Immutable profile UUID (resolved from pets.json when omitted)", "profile-id");
     QCommandLineOption ownerDiaryBootstrapOption("owner-diary-bootstrap",
         "Path to the one-time owner diary bootstrap file", "bootstrap-file");
+    QCommandLineOption launcherChatBootstrapOption("launcher-chat-bootstrap",
+        "Path to the one-time launcher chat bootstrap file", "bootstrap-file");
     parser.addOption(configOption);
     parser.addOption(petOption);
     parser.addOption(profileIdOption);
     parser.addOption(ownerDiaryBootstrapOption);
+    parser.addOption(launcherChatBootstrapOption);
     parser.process(app);
 
     const QString configPath = parser.value(configOption);
@@ -115,7 +143,9 @@ int main(int argc, char *argv[])
     cfg.setVoiceConfig(voice);
 
     PetWindow *pet = new PetWindow(
-        profile, profileMigration, parser.value(ownerDiaryBootstrapOption), nullptr);
+        profile, profileMigration,
+        parser.value(ownerDiaryBootstrapOption),
+        parser.value(launcherChatBootstrapOption), nullptr);
     QObject::connect(pet, &PetWindow::aboutToClose,
                      &app, &QCoreApplication::quit);
     StatisticManager::getInstance().recordPetStart(petName);

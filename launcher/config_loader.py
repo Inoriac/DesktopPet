@@ -15,6 +15,8 @@ import re
 import tempfile
 from typing import Any, Dict
 
+from app_state import DEFAULT_ANTHROPIC_VERSION
+
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
     "config",
@@ -51,6 +53,32 @@ def load_saved_config() -> Dict[str, Any] | None:
     except (FileNotFoundError, OSError, json.JSONDecodeError):
         return None
     return config if isinstance(config, dict) else None
+
+
+def merge_with_template(
+    template: Dict[str, Any], saved: Dict[str, Any] | None
+) -> Dict[str, Any]:
+    """Merge a possibly partial saved config over a complete schema template."""
+    merged = copy.deepcopy(template)
+    if not isinstance(saved, dict):
+        return merged
+
+    def merge_object(target: Dict[str, Any], source: Dict[str, Any]) -> None:
+        for key, value in source.items():
+            current = target.get(key)
+            if isinstance(current, dict):
+                if isinstance(value, dict):
+                    merge_object(current, value)
+                continue
+            target[key] = copy.deepcopy(value)
+
+    merge_object(merged, saved)
+    return merged
+
+
+def load_effective_config() -> Dict[str, Any]:
+    """Load saved values while restoring any schema fields that are missing."""
+    return merge_with_template(load_template(), load_saved_config())
 
 
 def _profile(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,7 +132,10 @@ def _endpoint_json(endpoint: Any) -> Dict[str, Any]:
     }
     output = {}
     for state_name, route_name in fields.items():
-        output[route_name] = str(_state_value(endpoint, state_name, ""))
+        value = str(_state_value(endpoint, state_name, ""))
+        if state_name == "anthropic_version":
+            value = value.strip() or DEFAULT_ANTHROPIC_VERSION
+        output[route_name] = value
     headers = _state_value(endpoint, "extra_headers", {})
     if isinstance(headers, dict):
         output["extraHeaders"] = {
@@ -198,6 +229,9 @@ def apply_model_endpoint_settings(
         model = str(_state_value(state, "model", ""))
         first = _first_model_role_route(
             profile, role, f"{role}-primary", role == "vision")
+        # Launcher exposes no per-route enable toggle. A role managed here must
+        # therefore be usable even when an older saved route was disabled.
+        first["enabled"] = True
         first["endpointRef"] = endpoint_ref
         first["model"] = model
         first["supportsVision"] = role == "vision"

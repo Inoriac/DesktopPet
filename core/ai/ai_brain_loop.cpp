@@ -188,7 +188,16 @@ void AIBrain::thinkInternal(const QString& reason,
                 {QStringLiteral("durationMs"), static_cast<double>(
                     qMax<qint64>(0, QDateTime::currentMSecsSinceEpoch() - requestedAtMs))},
                 {QStringLiteral("provider"), dimensions.provider},
-                {QStringLiteral("model"), dimensions.model}
+                {QStringLiteral("model"), dimensions.model},
+                {QStringLiteral("promptTokens"), response.usage.promptTokens},
+                {QStringLiteral("completionTokens"), response.usage.completionTokens},
+                {QStringLiteral("totalTokens"), response.usage.totalTokens},
+                {QStringLiteral("reasoningTokens"), response.usage.reasoningTokens},
+                {QStringLiteral("cachedTokens"), response.usage.cachedTokens},
+                {QStringLiteral("promptCacheHitTokens"),
+                 response.usage.promptCacheHitTokens},
+                {QStringLiteral("promptCacheMissTokens"),
+                 response.usage.promptCacheMissTokens}
             };
             if (!ok) {
                 modelEvent.insert(QStringLiteral("errorCode"),
@@ -265,7 +274,6 @@ void AIBrain::thinkInternal(const QString& reason,
                     deniedToolMessage.toolCallId = call.id;
                     deniedToolMessage.content = QString::fromUtf8(QJsonDocument(deniedObj).toJson(QJsonDocument::Compact));
                     nextMessages.append(deniedToolMessage);
-                    appendToMemory(deniedToolMessage);
                     appendRuntimeEvent(
                         QStringLiteral("ToolExecutionCompleted"), sessionId,
                         {{QStringLiteral("toolName"), call.name},
@@ -317,7 +325,6 @@ void AIBrain::thinkInternal(const QString& reason,
                             toolMessage.content = resolvedPayload;
                             toolMessage.toolCallId = call.id;
                             nextMessages.append(toolMessage);
-                            appendToMemory(toolMessage);
                             emit toolExecuted(call.name, resolved.result.success, resolvedPayload);
                             publishActiveStage(ChatActivityStage::Finalizing);
                             thinkInternal(reason, triggerTag, sessionId,
@@ -344,7 +351,6 @@ void AIBrain::thinkInternal(const QString& reason,
                 toolMessage.toolCallId = call.id;
 
                 nextMessages.append(toolMessage);
-                appendToMemory(toolMessage);
 
                 emit toolExecuted(call.name, result.success, payload);
             }

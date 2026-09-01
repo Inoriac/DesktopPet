@@ -8,7 +8,6 @@
 #include "controller/pet_controller.h"
 #include "bubble_playback_controller.h"
 #include "chat_conversation_model.h"
-#include "chat_history_window.h"
 #include "liquidglasschatbubble.h"
 #include "streaming_text_paginator.h"
 #include "thinking_status_selector.h"
@@ -24,7 +23,6 @@
 #include <QPixmap>
 #include <QRandomGenerator>
 #include <QRegularExpression>
-#include <QScrollArea>
 #include <QScreen>
 #include <QTimer>
 #include <QUrl>
@@ -94,25 +92,8 @@ void PetWindow::setupScreenChat() {
             });
     connect(outputBubble, &LiquidGlassChatBubble::openConversationRequested,
             this, [this](const QString& messageId) {
+                Q_UNUSED(messageId)
                 openChatHistoryWindow();
-                if (messageId.isEmpty() || !chatHistoryWindow) return;
-                QTimer::singleShot(0, this, [this, messageId]() {
-                    if (!chatHistoryWindow) return;
-                    const QList<QWidget*> rows =
-                        chatHistoryWindow->findChildren<QWidget*>(
-                            QStringLiteral("chatMessageRow"));
-                    const auto found = std::find_if(
-                        rows.cbegin(), rows.cend(),
-                        [&messageId](QWidget* row) {
-                            return row->property("messageId").toString()
-                                == messageId;
-                        });
-                    QScrollArea* scrollArea =
-                        chatHistoryWindow->findChild<QScrollArea*>();
-                    if (found != rows.cend() && scrollArea) {
-                        scrollArea->ensureWidgetVisible(*found, 0, 40);
-                    }
-                });
             });
     connect(bubblePlaybackController.get(),
             &BubblePlaybackController::pageChanged,

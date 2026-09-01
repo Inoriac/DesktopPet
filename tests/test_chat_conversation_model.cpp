@@ -57,6 +57,7 @@ private slots:
     void assistantLifecycle_whenToolContinuationUsesSameId_shouldKeepReplyToIdAndOneEntry();
     void beginAssistantMessage_whenReplyToIdIsInvalid_shouldRejectWithoutInsertion();
     void finishAssistantMessage_whenCalledTwice_shouldPersistOnlyOnce();
+    void finishAssistantMessage_whenFailed_shouldPersistSanitizedErrorSeparately();
     void markReadThrough_whenMessageExists_shouldRestoreProfileScopedMarker();
     void markReadThrough_whenMessageIsUnknown_shouldLeaveMarkerUnchanged();
     void initialize_whenLastReadMarkerIsStale_shouldReturnEmptyMarker();
@@ -222,6 +223,32 @@ void TestChatConversationModel::finishAssistantMessage_whenCalledTwice_shouldPer
     QCOMPARE(changed.count(), changesAfterFirstFinish);
     QCOMPARE(model.messages().first().status, ChatMessageStatus::Complete);
     QCOMPARE(nonEmptyLineCount(historyPath(options)), 1);
+}
+
+void TestChatConversationModel::finishAssistantMessage_whenFailed_shouldPersistSanitizedErrorSeparately() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const ProfileChatStoreOptions options = optionsFor(directory);
+    ChatConversationModel model;
+    QString error;
+    QVERIFY2(model.initialize(options, &error), qPrintable(error));
+
+    model.beginAssistantMessage(QStringLiteral("assistant-id"));
+    model.finishAssistantMessage(
+        QStringLiteral("assistant-id"), ChatMessageStatus::Failed,
+        QStringLiteral("LLM HTTP error (HTTP 400): api-key=super-secret"));
+
+    const ChatHistoryEntry failed = model.messages().first();
+    QCOMPARE(failed.status, ChatMessageStatus::Failed);
+    QVERIFY(failed.content.isEmpty());
+    QVERIFY(failed.errorMessage.contains(QStringLiteral("HTTP 400")));
+    QVERIFY(failed.errorMessage.contains(QStringLiteral("[REDACTED]")));
+    QVERIFY(!failed.errorMessage.contains(QStringLiteral("super-secret")));
+
+    ProfileChatHistoryStore reloaded;
+    QVERIFY2(reloaded.open(options, &error), qPrintable(error));
+    const ChatHistoryEntry persisted = reloaded.load(&error).first();
+    QCOMPARE(persisted.errorMessage, failed.errorMessage);
 }
 
 void TestChatConversationModel::markReadThrough_whenMessageExists_shouldRestoreProfileScopedMarker() {

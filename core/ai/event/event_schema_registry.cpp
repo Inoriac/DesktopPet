@@ -134,7 +134,14 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     model.optionalFields = {
         {QStringLiteral("provider"), EventFieldType::String},
         {QStringLiteral("model"), EventFieldType::String},
-        {QStringLiteral("errorCode"), EventFieldType::String}
+        {QStringLiteral("errorCode"), EventFieldType::String},
+        {QStringLiteral("promptTokens"), EventFieldType::Number},
+        {QStringLiteral("completionTokens"), EventFieldType::Number},
+        {QStringLiteral("totalTokens"), EventFieldType::Number},
+        {QStringLiteral("reasoningTokens"), EventFieldType::Number},
+        {QStringLiteral("cachedTokens"), EventFieldType::Number},
+        {QStringLiteral("promptCacheHitTokens"), EventFieldType::Number},
+        {QStringLiteral("promptCacheMissTokens"), EventFieldType::Number}
     };
     definitions.append(model);
 

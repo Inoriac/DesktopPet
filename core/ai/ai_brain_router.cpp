@@ -62,7 +62,6 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
                     toolMessage.role = "tool";
                     toolMessage.name = toolName;
                     toolMessage.content = resolvedPayload;
-                    appendToMemory(toolMessage);
 
                     const QString responseText = resolved.result.success
                         ? QStringLiteral("已完成。")
@@ -165,7 +164,6 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
         toolMessage.role = "tool";
         toolMessage.name = route.toolName;
         toolMessage.content = payload;
-        appendToMemory(toolMessage);
 
         publishActiveStage(ChatActivityStage::Finalizing);
         appendActiveDelta(responseText);
@@ -280,7 +278,12 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
     messages.append(systemMessage);
 
     for (const ChatMessage& memoryMsg : m_memory) {
-        messages.append(memoryMsg);
+        const bool conversationalRole = memoryMsg.role == QLatin1String("user")
+            || memoryMsg.role == QLatin1String("assistant");
+        if (conversationalRole && memoryMsg.toolCallId.isEmpty()
+            && memoryMsg.toolCalls.isEmpty()) {
+            messages.append(memoryMsg);
+        }
     }
 
     ChatMessage contextMessage;
@@ -355,6 +358,13 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {
+    // Tool protocol messages are only valid inside the request that contains
+    // their matching assistant tool_calls entry. Cross-request memory keeps
+    // natural conversation only, otherwise Gemini rejects orphan results.
+    if (message.role == QLatin1String("tool")
+        || !message.toolCallId.isEmpty() || !message.toolCalls.isEmpty()) {
+        return;
+    }
     m_memory.append(message);
 
     while (m_memory.size() > m_maxMemoryMessages) {

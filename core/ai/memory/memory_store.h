@@ -3,6 +3,7 @@
 
 #include <QList>
 #include <QString>
+#include <QStringList>
 #include <memory>
 
 #include "ai/domain/domain_result.h"
@@ -34,6 +35,7 @@ public:
                     const QStringList& tags = {});
     MemoryEntry addEntry(const MemoryEntry& entry);
     bool updateEntryById(const MemoryEntry& entry);
+    bool reinforceEntries(const QStringList& ids);
     bool updateStatusById(const QString& id,
                           MemoryStatus status,
                           const QJsonObject& payloadPatch = {});

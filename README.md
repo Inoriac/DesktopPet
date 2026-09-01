@@ -72,14 +72,17 @@
 
 **当前主要目标环境**：Windows 10 / 11、C++20 编译器（MSVC 2019+ 或 MinGW 11+）、Qt 6.x、CMake 3.20+、Python 3（launcher 与语音）。macOS 当前未支持，也未纳入运行验证。
 
-```bash
-git clone <repo> && cd Desktop-Pet
-mkdir build && cd build
-cmake .. -DCMAKE_PREFIX_PATH="path/to/your/Qt/6.x"
-cmake --build .
+```powershell
+git clone <repo>
+cd Desktop-Pet
+cmake -S . -B build -DCMAKE_PREFIX_PATH="path/to/your/Qt/6.x"
+cmake --build build --config Release
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
+.\.venv\Scripts\python.exe launcher\main.py
 ```
 
-启动请通过 Python launcher 拉起桌宠（负责角色注册、配置与进程编排）。模型文件与第三方运行时按需置于 `models/` 与 `third_party/`，相关拉取步骤见构建脚本。
+启动请通过 Python launcher 拉起桌宠（负责角色注册、配置与进程编排）。launcher 会识别 `build` 下的单配置和 MSVC 多配置产物；也可用 `DESKTOP_PET_EXECUTABLE` 指定主体路径。模型文件与第三方运行时按需置于 `assets/models/` 与 `third_party/`。
 
 > 配置示例见 `config/default_common_config.example.json`；API 密钥等敏感信息请放在本地配置，勿提交仓库。
 

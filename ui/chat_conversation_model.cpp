@@ -1,5 +1,8 @@
 #include "chat_conversation_model.h"
 
+#include <QMetaObject>
+#include <QPointer>
+#include <QRegularExpression>
 #include <QSettings>
 #include <QUuid>
 
@@ -20,10 +23,46 @@ bool canFinish(ChatMessageStatus current, ChatMessageStatus terminal) {
     return false;
 }
 
+QString sanitizedChatError(QString message) {
+    message = message.simplified();
+    if (message.isEmpty()) return {};
+
+    static const QRegularExpression bearerPattern(
+        QStringLiteral("\\b(Bearer\\s+)[^\\s,;]+"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression namedSecretPattern(
+        QStringLiteral("\\b((?:x-)?api[-_ ]?key|authorization|access[-_ ]?token|token"
+                       "\\s*[:=]\\s*)[^\\s,;&]+"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression querySecretPattern(
+        QStringLiteral("([?&](?:api[-_]?key|access[-_]?token|token)=)[^&\\s]+"),
+        QRegularExpression::CaseInsensitiveOption);
+    message.replace(bearerPattern, QStringLiteral("\\1[REDACTED]"));
+    message.replace(namedSecretPattern, QStringLiteral("\\1[REDACTED]"));
+    message.replace(querySecretPattern, QStringLiteral("\\1[REDACTED]"));
+
+    constexpr qsizetype kMaximumErrorCharacters = 360;
+    if (message.size() > kMaximumErrorCharacters) {
+        message = message.left(kMaximumErrorCharacters) + QStringLiteral("...");
+    }
+    return message;
+}
+
 } // namespace
 
 ChatConversationModel::ChatConversationModel(QObject* parent)
-    : QObject(parent) {}
+    : QObject(parent) {
+    m_persistencePool.setMaxThreadCount(1);
+    m_persistencePool.setExpiryTimeout(-1);
+}
+
+ChatConversationModel::~ChatConversationModel() {
+    m_persistencePool.waitForDone();
+}
+
+void ChatConversationModel::setDeferredPersistence(bool enabled) {
+    m_deferredPersistence = enabled;
+}
 
 bool ChatConversationModel::initialize(const ProfileChatStoreOptions& options,
                                        QString* errorMessage) {
@@ -156,7 +195,6 @@ void ChatConversationModel::setAssistantStage(const QString& messageId,
 void ChatConversationModel::finishAssistantMessage(const QString& messageId,
                                                    ChatMessageStatus status,
                                                    const QString& errorMessage) {
-    Q_UNUSED(errorMessage)
     const int index = indexOf(messageId);
     if (index < 0) {
         warnUnknownMessage();
@@ -169,6 +207,9 @@ void ChatConversationModel::finishAssistantMessage(const QString& messageId,
         return;
     }
     entry.status = status;
+    entry.errorMessage = status == ChatMessageStatus::Complete
+        ? QString()
+        : sanitizedChatError(errorMessage);
     emit messageChanged(index, entry.id);
     appendToStore(entry);
 }
@@ -196,6 +237,28 @@ int ChatConversationModel::indexOf(const QString& messageId) const {
 
 bool ChatConversationModel::appendToStore(const ChatHistoryEntry& entry) {
     if (!m_persistenceAvailable) return false;
+    if (m_deferredPersistence) {
+        ProfileChatHistoryStore store = m_store;
+        QPointer<ChatConversationModel> guarded(this);
+        m_persistencePool.start(
+            [store = std::move(store), entry, guarded]() mutable {
+                QString error;
+                if (store.appendFinal(entry, &error)) return;
+                const QString warning = error.isEmpty()
+                    ? QStringLiteral("Unable to save chat history.")
+                    : error;
+                if (!guarded) return;
+                QMetaObject::invokeMethod(
+                    guarded.data(),
+                    [guarded, warning]() {
+                        if (guarded) {
+                            emit guarded->historyPersistenceWarning(warning);
+                        }
+                    },
+                    Qt::QueuedConnection);
+            });
+        return true;
+    }
     QString error;
     if (m_store.appendFinal(entry, &error)) return true;
     emit historyPersistenceWarning(

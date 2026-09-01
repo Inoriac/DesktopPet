@@ -203,6 +203,7 @@ private slots:
     void initializeStorage_whenCalledTwice_shouldKeepFirstPathsAndRejectSecondCall();
     void initializeStorage_whenFirstAttemptFails_shouldRejectRetryWithoutSwitchingPaths();
     void triggerThink_whenStorageIsNotInitialized_shouldRemainInert();
+    void triggerThink_whenUserRequestStorageIsNotInitialized_shouldRejectVisibly();
 
     void captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions();
     void captureSnapshot_whenStateChangesLater_shouldKeepExistingSessionProjectionStable();
@@ -563,6 +564,20 @@ void TestAgentRuntimeServices::triggerThink_whenStorageIsNotInitialized_shouldRe
 
     QCOMPARE(brain.memoryStore()->all().size(), memoryCount);
     QCOMPARE(thinkingStarted.count(), 0);
+}
+
+void TestAgentRuntimeServices::triggerThink_whenUserRequestStorageIsNotInitialized_shouldRejectVisibly() {
+    AIBrain brain;
+    QSignalSpy rejected(&brain, &AIBrain::thinkRequestRejected);
+
+    brain.triggerThink(QStringLiteral("hello"),
+                       QStringLiteral("user_request"),
+                       QStringLiteral("user-message-id"));
+
+    QCOMPARE(rejected.count(), 1);
+    QCOMPARE(rejected.first().at(0).toString(), QStringLiteral("user-message-id"));
+    QVERIFY(!rejected.first().at(1).toString().isEmpty());
+    QVERIFY(!brain.isBusy());
 }
 
 void TestAgentRuntimeServices::captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions() {

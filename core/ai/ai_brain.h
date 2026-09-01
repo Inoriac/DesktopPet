@@ -106,6 +106,8 @@ public:
 signals:
     void thinkingStarted(const QString& reason);
     void thinkingFinished(bool success, const QString& errorMessage);
+    void thinkRequestRejected(const QString& replyToId,
+                              const QString& errorMessage);
     void assistantResponseReady(const QString& content);
     void proactiveResponseReady(const QString& content);
     void assistantResponseStarted(const QString& messageId,

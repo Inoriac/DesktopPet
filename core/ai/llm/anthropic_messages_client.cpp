@@ -20,6 +20,7 @@ namespace {
 
 constexpr auto kProtocolError = "LLM_STREAM_PROTOCOL_ERROR";
 constexpr auto kCancelledError = "LLM_REQUEST_CANCELLED";
+constexpr qsizetype kMaximumProviderErrorBytes = 4096;
 
 struct AnthropicBlockState {
     QString type;
@@ -50,11 +51,22 @@ struct AnthropicRequestState : public std::enable_shared_from_this<AnthropicRequ
     LlmResponse response;
     QMap<int, AnthropicBlockState> blocks;
     std::unique_ptr<SseEventParser> parser;
+    QByteArray providerErrorBody;
+    QString apiKey;
     std::atomic_bool cancelled{false};
     std::atomic_bool terminal{false};
     bool sawMessageStop = false;
     bool sawMessageStart = false;
     bool streamingStagePublished = false;
+
+    void appendProviderErrorBody(const QByteArray& bytes) {
+        if (bytes.isEmpty()
+            || providerErrorBody.size() >= kMaximumProviderErrorBytes) {
+            return;
+        }
+        providerErrorBody.append(
+            bytes.left(kMaximumProviderErrorBytes - providerErrorBody.size()));
+    }
 
     void publish(LlmStreamEventType type,
                  ChatActivityStage stage = ChatActivityStage::WaitingForModel,
@@ -121,8 +133,8 @@ QUrl messagesUrl(const QString& baseUrl) {
         path += QStringLiteral("/v1/messages");
     }
     url.setPath(path);
-    url.setQuery({});
-    url.setFragment({});
+    url.setQuery(QString());
+    url.setFragment(QString());
     return url;
 }
 
@@ -132,6 +144,65 @@ bool isAbsoluteHttpUrl(const QString& baseUrl) {
     return url.isValid() && !url.isRelative() &&
            (scheme == QStringLiteral("http") || scheme == QStringLiteral("https")) &&
            !url.host().isEmpty();
+}
+
+QString redactSecret(QString message, const QString& secret) {
+    if (!secret.isEmpty()) {
+        message.replace(secret, QStringLiteral("[REDACTED]"), Qt::CaseSensitive);
+    }
+    return message;
+}
+
+QString providerErrorDetail(const QByteArray& body) {
+    if (body.trimmed().isEmpty()) return {};
+
+    QJsonParseError parseError;
+    const QJsonDocument document = QJsonDocument::fromJson(body, &parseError);
+    if (parseError.error == QJsonParseError::NoError && document.isObject()) {
+        const QJsonObject root = document.object();
+        const QJsonObject errorObject = root.value(QStringLiteral("error")).toObject();
+        const QString message = errorObject.value(QStringLiteral("message"))
+                                    .toString(root.value(QStringLiteral("message")).toString())
+                                    .simplified();
+        const QString type = errorObject.value(QStringLiteral("type"))
+                                 .toString(root.value(QStringLiteral("type")).toString())
+                                 .simplified();
+        if (!message.isEmpty()) {
+            return type.isEmpty() || type == QLatin1String("error")
+                ? message
+                : QStringLiteral("%1: %2").arg(type, message);
+        }
+    }
+
+    QString detail = QString::fromUtf8(body).simplified();
+    constexpr qsizetype kMaximumDisplayCharacters = 320;
+    if (detail.size() > kMaximumDisplayCharacters) {
+        detail = detail.left(kMaximumDisplayCharacters)
+            + QStringLiteral("...");
+    }
+    return detail;
+}
+
+QString networkErrorMessage(int httpStatus,
+                            QNetworkReply::NetworkError networkError,
+                            const QString& networkDetail,
+                            const QByteArray& providerBody,
+                            const QString& apiKey) {
+    QString message;
+    if (httpStatus >= 100) {
+        message = QStringLiteral("LLM HTTP error (HTTP %1, code %2)")
+                      .arg(httpStatus)
+                      .arg(static_cast<int>(networkError));
+        const QString detail = providerErrorDetail(providerBody);
+        if (!detail.isEmpty()) message += QStringLiteral(": %1").arg(detail);
+    } else {
+        message = QStringLiteral("LLM network error (code %1)")
+                      .arg(static_cast<int>(networkError));
+        if (!networkDetail.trimmed().isEmpty()) {
+            message += QStringLiteral(": %1").arg(networkDetail.trimmed());
+        }
+    }
+    return redactSecret(std::move(message), apiKey);
 }
 
 bool appendMessage(QJsonArray& output, const QString& role, const QJsonArray& blocks) {
@@ -542,6 +613,7 @@ std::shared_ptr<LlmRequestHandle> AnthropicMessagesClient::sendChatCompletionStr
     auto state = std::make_shared<AnthropicRequestState>();
     state->observer = std::move(observer);
     state->completion = std::move(completion);
+    state->apiKey = config.apiKey;
     auto handle = std::make_shared<AnthropicRequestHandle>(state);
 
     auto failConfig = [&](const QString& detail) {
@@ -627,32 +699,40 @@ std::shared_ptr<LlmRequestHandle> AnthropicMessagesClient::sendChatCompletionStr
             }
             return;
         }
+        const QByteArray bytes = state->reply->readAll();
+        const int httpStatus = state->reply
+                                   ->attribute(QNetworkRequest::HttpStatusCodeAttribute)
+                                   .toInt();
+        if (httpStatus >= 100 && (httpStatus < 200 || httpStatus >= 300)) {
+            state->appendProviderErrorBody(bytes);
+            return;
+        }
         QString error;
-        if (!state->parser->feed(state->reply->readAll(), &error)) {
+        if (!state->parser->feed(bytes, &error)) {
             state->failProtocol(error);
         }
     });
     QObject::connect(reply, &QNetworkReply::finished, reply, [state, reply]() {
         const QByteArray finalBytes = reply->isOpen() ? reply->readAll() : QByteArray{};
-        if (!state->terminal.load() && !finalBytes.isEmpty()) {
-            QString error;
-            if (!state->parser->feed(finalBytes, &error)) {
-                state->failProtocol(error);
-            }
-        }
-
         if (!state->terminal.load()) {
             if (state->cancelled.load()) {
                 state->complete(false, {}, QStringLiteral("%1: request cancelled").arg(QString::fromLatin1(kCancelledError)));
             } else {
                 const int httpStatus = reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
                 if (reply->error() != QNetworkReply::NoError || httpStatus < 200 || httpStatus >= 300) {
-                    state->complete(false, {}, QStringLiteral("LLM network error (HTTP %1, code %2)")
-                                                   .arg(httpStatus)
-                                                   .arg(static_cast<int>(reply->error())));
+                    state->appendProviderErrorBody(finalBytes);
+                    state->complete(
+                        false, {},
+                        networkErrorMessage(httpStatus, reply->error(),
+                                            reply->errorString(),
+                                            state->providerErrorBody,
+                                            state->apiKey));
                 } else {
                     QString error;
-                    if (!state->parser->finish(&error)) {
+                    if (!finalBytes.isEmpty()
+                        && !state->parser->feed(finalBytes, &error)) {
+                        state->failProtocol(error);
+                    } else if (!state->parser->finish(&error)) {
                         state->failProtocol(error);
                     } else if (!state->sawMessageStop) {
                         state->failProtocol(QStringLiteral("stream ended without message_stop"));

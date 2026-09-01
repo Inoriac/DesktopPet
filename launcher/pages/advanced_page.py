@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QHBoxLayout
-from qfluentwidgets import SwitchButton, ComboBox, SpinBox
+from qfluentwidgets import ComboBox, CompactSpinBox, SwitchButton
 
 from app_state import AppState
 from ._ui import ScrollPage, Section
@@ -73,11 +73,11 @@ class AdvancedPage(ScrollPage):
         self.addStretch()
 
     @staticmethod
-    def _spin(lo, hi, value, on_change) -> SpinBox:
+    def _spin(lo, hi, value, on_change) -> QWidget:
         wrap = QWidget()
         hl = QHBoxLayout(wrap)
         hl.setContentsMargins(0, 0, 0, 0)
-        spin = SpinBox()
+        spin = CompactSpinBox()
         spin.setRange(lo, hi)
         spin.setValue(value)
         spin.setFixedWidth(132)

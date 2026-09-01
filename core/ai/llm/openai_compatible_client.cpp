@@ -234,12 +234,20 @@ QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
                      [reply, apiKey = config.apiKey, callback = std::move(callback)]() mutable {
         const QByteArray responseBytes = reply->isOpen() ? reply->readAll() : QByteArray{};
         const QNetworkReply::NetworkError networkError = reply->error();
+        const int httpStatus =
+            reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
 
         if (networkError != QNetworkReply::NoError) {
+            const QString transportMessage = httpStatus >= 100
+                ? QStringLiteral("Network error (HTTP %1, code %2): %3")
+                      .arg(httpStatus)
+                      .arg(static_cast<int>(networkError))
+                      .arg(reply->errorString())
+                : QStringLiteral("Network error (code %1): %2")
+                      .arg(static_cast<int>(networkError))
+                      .arg(reply->errorString());
             const QString errorMessage = redactSecret(
-                QStringLiteral("Network error (%1): %2")
-                    .arg(static_cast<int>(networkError))
-                    .arg(reply->errorString()),
+                transportMessage,
                 apiKey);
             if (callback) {
                 callback(false, {}, errorMessage);

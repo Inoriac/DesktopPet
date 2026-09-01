@@ -7,22 +7,18 @@ PySide6 + PySide6-Fluent-Widgets 实现的 Fluent Design 启动器。
 
 ## 运行
 
-```bash
-cd launcher
-python3 -m venv .venv
-# 阿里镜像（国内更快）；PyPI 也行
-.venv/bin/pip install -i https://mirrors.aliyun.com/pypi/simple/ "PySide6-Essentials==6.7.3" darkdetect PySide6-Fluent-Widgets PySideSix-Frameless-Window
-.venv/bin/python main.py
+```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
+.\.venv\Scripts\python.exe launcher\main.py
 ```
 
 > 本项目未使用 PySide6-Addons（WebEngine/3D），只装 Essentials 即可，省 ~300MB 下载。
-> PySideSix-Frameless-Window 会拉一整套 pyobjc macOS 框架绑定（~150 个小包），首次安装较久但属正常。
 
 ## 前置
 
-- C++ 核心须已构建：`scripts/build_mac.sh`（产物 `build/Desktop_Pet`）。
-- 启动器回写配置到 `~/Library/Application Support/Desktop Pet Team/Desktop Pet/launch_config.json`，
-  并以 `--config <绝对路径> --pet <角色名>` 启动核心。
+- C++ 核心须已构建到 `build/`；支持单配置产物和 `build/Release`、`build/Debug` 等多配置产物。
+- 启动器以 `--config <绝对路径> --pet <角色名> --profile-id <uuid>` 启动核心。
 - Windows 下配置保存在 `%APPDATA%\Desktop Pet Team\Desktop Pet\launch_config.json`。
   AI 页面可显式保存配置，launcher 下次启动时会自动恢复用户字段。
 
@@ -40,5 +36,5 @@ python3 -m venv .venv
 | `config_loader.py` | 模板加载 + 用户字段覆盖 + 导出 launch_config.json |
 | `pet_registry.py` | 读写 C++ `Pet` 注册表（AppData/pets.json） |
 | `pages/` | 宠物/AI/语音/气泡/高级/关于 各设置页 |
-| `pages/_cards.py` | Fluent `SettingCard` 嵌入自定义控件的助手 |
+| `pages/_ui.py` | Fluent 页面、分区和设置行布局助手 |
 | `requirements.txt` | 依赖清单 |

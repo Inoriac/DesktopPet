@@ -17,6 +17,7 @@ import base64
 import getpass
 import hashlib
 import json
+import re
 import secrets
 import tempfile
 from datetime import datetime, timedelta, timezone
@@ -42,16 +43,55 @@ from pages.bubble_page import BubblePage
 from pages.advanced_page import AdvancedPage
 from pages.about_page import AboutPage
 from pages.private_diary_page import PrivateDiaryPage
+from pages.chat_page import ChatPage
+from launcher_chat_client import LauncherChatClient, LauncherChatError
 from owner_diary_client import OwnerDiaryClient, OwnerDiaryError
 from process_tracker import PetProcessTracker
 
 # C++ 可执行文件位置（构建产物）。Windows 下产物带 .exe 后缀。
 _EXE_SUFFIX = ".exe" if sys.platform == "win32" else ""
 _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CPP_EXECUTABLE = os.environ.get(
-    "DESKTOP_PET_EXECUTABLE",
-    os.path.join(_PROJECT_ROOT, "build", f"Desktop_Pet{_EXE_SUFFIX}"),
-)
+_REQUIRED_CORE_MARKER = b"launcher-chat-bootstrap"
+
+
+def core_supports_launcher_chat(path: str) -> bool:
+    """Check the executable contract without launching a second GUI process."""
+    try:
+        with open(path, "rb") as executable:
+            overlap = b""
+            while True:
+                chunk = executable.read(256 * 1024)
+                if not chunk:
+                    return False
+                payload = overlap + chunk
+                if _REQUIRED_CORE_MARKER in payload:
+                    return True
+                overlap = payload[-len(_REQUIRED_CORE_MARKER):]
+    except OSError:
+        return False
+
+
+def resolve_cpp_executable() -> str:
+    override = os.environ.get("DESKTOP_PET_EXECUTABLE")
+    if override:
+        return os.path.abspath(os.path.expanduser(os.path.expandvars(override)))
+
+    name = f"Desktop_Pet{_EXE_SUFFIX}"
+    candidates = [
+        os.path.join(_PROJECT_ROOT, "cmake-build-release-mingw_qt", name),
+        os.path.join(_PROJECT_ROOT, "build", "Release", name),
+        os.path.join(_PROJECT_ROOT, "build", "RelWithDebInfo", name),
+        os.path.join(_PROJECT_ROOT, "build", name),
+        os.path.join(_PROJECT_ROOT, "cmake-build-debug-mingw_qt", name),
+        os.path.join(_PROJECT_ROOT, "build", "Debug", name),
+    ]
+    existing = [path for path in candidates if os.path.isfile(path)]
+    for path in existing:
+        if core_supports_launcher_chat(path):
+            return path
+    if existing:
+        return existing[0]
+    return candidates[0]
 
 THEME_KEY = "ui/theme"  # 与 C++ ThemeManager 逐字一致
 
@@ -213,7 +253,7 @@ class TitleBar(MSFluentTitleBar):
 class LauncherWindow(MSFluentWindow):
     def __init__(self):
         super().__init__()
-        self.state = AppState.from_config(config_loader.load_saved_config())
+        self.state = AppState.from_config(config_loader.load_effective_config())
         self.setTitleBar(TitleBar(self))
         self.setWindowTitle("DesktopPet 启动器")
         self.resize(1000, 720)
@@ -222,6 +262,12 @@ class LauncherWindow(MSFluentWindow):
         self._owner_capability_token: str | None = None
         self._owner_bootstrap_path: str | None = None
         self._owner_connect_generation = 0
+        self.launcher_chat_client: LauncherChatClient | None = None
+        self._chat_socket_name: str | None = None
+        self._chat_capability_token: str | None = None
+        self._chat_bootstrap_path: str | None = None
+        self._chat_connect_generation = 0
+        self._chat_log_path: str | None = None
         self._pet_process_tracker = PetProcessTracker()
 
         # 主题：从共享 QSettings 读取并应用
@@ -233,6 +279,7 @@ class LauncherWindow(MSFluentWindow):
         self.voice_page = VoicePage(self.state)
         self.bubble_page = BubblePage(self.state)
         self.advanced_page = AdvancedPage(self.state)
+        self.chat_page = ChatPage()
         self.private_diary_page = PrivateDiaryPage()
         self.about_page = AboutPage()
 
@@ -245,7 +292,10 @@ class LauncherWindow(MSFluentWindow):
         self.addSubInterface(self.voice_page, FIF.MEGAPHONE, "语音")
         self.addSubInterface(self.bubble_page, FIF.CHAT, "气泡")
         self.addSubInterface(self.advanced_page, FIF.SETTING, "高级")
+        self.addSubInterface(self.chat_page, FIF.MESSAGE, "聊天")
         self.addSubInterface(self.private_diary_page, FIF.DOCUMENT, "私人日记")
+        self.chat_page.openRequested.connect(self._show_chat_page)
+        self.chat_page.connectionLost.connect(self._on_chat_connection_lost)
 
         # 主题切换项：放「关于」之上（底部区，先于关于加入即排在关于上方）。
         # 不可选中（isSelectable=False），点击切换主题不切换页面。
@@ -270,6 +320,11 @@ class LauncherWindow(MSFluentWindow):
         self._pet_process_timer.timeout.connect(self._refresh_alive_pet_count)
         self._pet_process_timer.start()
         self._refresh_alive_pet_count()
+        if self.pet_page.registry_error:
+            message = self.pet_page.registry_error
+            QTimer.singleShot(0, lambda: InfoBar.error(
+                "角色清单不可用", message, parent=self,
+                position=InfoBarPosition.TOP, duration=8000))
 
     # —— 主题（与 C++ 共享 QSettings）——
     def _read_theme(self) -> str:
@@ -282,6 +337,9 @@ class LauncherWindow(MSFluentWindow):
             setTheme(Theme.DARK if theme == "dark" else Theme.LIGHT)
         except Exception:
             pass
+        chat_page = getattr(self, "chat_page", None)
+        if chat_page is not None:
+            chat_page.refresh_theme()
         self._sync_theme_glyph()
 
     def _sync_theme_glyph(self):
@@ -304,8 +362,17 @@ class LauncherWindow(MSFluentWindow):
         self.pet_page.set_alive_count(count)
         return count
 
+    def _show_chat_page(self) -> None:
+        self.switchTo(self.chat_page)
+        if self.isMinimized():
+            self.showNormal()
+        else:
+            self.show()
+        self.raise_()
+        self.activateWindow()
+
     def _export_current_configuration(self) -> str:
-        template = config_loader.load_saved_config() or config_loader.load_template()
+        template = config_loader.load_effective_config()
         cfg = config_loader.apply_settings(
             template, self.state.to_settings_dict())
         overrides = self.state.to_advanced_overrides()
@@ -331,26 +398,40 @@ class LauncherWindow(MSFluentWindow):
             parent=self, position=InfoBarPosition.TOP, duration=3000)
 
     # —— 启动 C++ 核心 ——
-    def _on_start(self):
+    def _on_start(self) -> bool:
         if not self.state.pet_name:
             InfoBar.warning("未选择角色", "请先在「宠物」页选择一个角色",
                             parent=self, position=InfoBarPosition.TOP, duration=3000)
-            return
+            return False
         try:
             profile = find_pet(self.state.pet_name)
         except PetRegistryError as error:
             InfoBar.error("角色清单不可用", str(error),
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
-            return
+            return False
         if profile is None:
             InfoBar.warning("未找到角色", "请刷新角色清单后重试",
                             parent=self, position=InfoBarPosition.TOP, duration=3000)
-            return
+            return False
         self.state.pet_profile_id = profile.profile_id
-        if not os.path.exists(CPP_EXECUTABLE):
-            InfoBar.error("找不到核心", f"未找到可执行文件：{CPP_EXECUTABLE}\n请先构建 C++ 部分",
+        core_executable = resolve_cpp_executable()
+        if not os.path.isfile(core_executable):
+            InfoBar.error("找不到核心", f"未找到可执行文件：{core_executable}\n请先构建 C++ 部分",
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
-            return
+            return False
+        if not core_supports_launcher_chat(core_executable):
+            InfoBar.error(
+                "核心版本不兼容",
+                f"当前主体不支持 Launcher 聊天协议：{core_executable}\n"
+                "请重新构建 Desktop_Pet 后再启动。",
+                parent=self, position=InfoBarPosition.TOP, duration=7000)
+            return False
+
+        if not self.state.ai_enabled:
+            InfoBar.warning(
+                "AI 未启用",
+                "桌宠会正常启动，但不会调用模型；需要对话时请先在 AI 页面开启 AI 开关",
+                parent=self, position=InfoBarPosition.TOP, duration=6000)
 
         try:
             # 1) 导出当前配置，启动与显式保存共用同一持久化路径。
@@ -358,32 +439,52 @@ class LauncherWindow(MSFluentWindow):
         except Exception as e:
             InfoBar.error("导出配置失败", str(e),
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
-            return
-
-        try:
-            bootstrap = self._create_owner_diary_bootstrap(profile.profile_id)
-        except OSError as error:
-            InfoBar.error("私有日记初始化失败", str(error),
-                          parent=self, position=InfoBarPosition.TOP, duration=5000)
-            return
+            return False
 
         self._close_owner_diary_session()
-        self._owner_socket_name = bootstrap["socket_name"]
-        self._owner_capability_token = bootstrap["capability_token"]
-        self._owner_bootstrap_path = bootstrap["path"]
+        self._close_chat_session()
+        owner_bootstrap = None
+        chat_bootstrap = None
+        try:
+            owner_bootstrap = self._create_owner_diary_bootstrap(
+                profile.profile_id)
+            chat_bootstrap = self._create_chat_bootstrap(profile.profile_id)
+        except OSError as error:
+            if owner_bootstrap is not None:
+                self._secure_remove_bootstrap(owner_bootstrap["path"])
+            if chat_bootstrap is not None:
+                self._secure_remove_bootstrap(chat_bootstrap["path"])
+            InfoBar.error("本地服务初始化失败", str(error),
+                          parent=self, position=InfoBarPosition.TOP, duration=5000)
+            return False
+
+        self._owner_socket_name = owner_bootstrap["socket_name"]
+        self._owner_capability_token = owner_bootstrap["capability_token"]
+        self._owner_bootstrap_path = owner_bootstrap["path"]
         self._owner_connect_generation += 1
-        generation = self._owner_connect_generation
+        owner_generation = self._owner_connect_generation
+        self._chat_socket_name = chat_bootstrap["socket_name"]
+        self._chat_capability_token = chat_bootstrap["capability_token"]
+        self._chat_bootstrap_path = chat_bootstrap["path"]
+        self._chat_connect_generation += 1
+        chat_generation = self._chat_connect_generation
 
         # 2) 启动 C++ 核心（绝对路径 --config）。detach 语义跨平台：
         #    POSIX 用 start_new_session（新进程组/会话）；Windows 用
         #    DETACHED_PROCESS|CREATE_NEW_PROCESS_GROUP，否则子进程可能随父退出。
+        log_stream = None
+        log_path = ""
         try:
+            log_stream, log_path = self._open_core_log(
+                profile.name, profile.profile_id, core_executable, config_path)
+            self._chat_log_path = log_path
             args = [
-                CPP_EXECUTABLE,
+                core_executable,
                 "--config", config_path,  # 绝对路径，避开 QDir::setCurrent 歧义
                 "--pet", profile.name,
                 "--profile-id", profile.profile_id,
-                "--owner-diary-bootstrap", bootstrap["path"],
+                "--owner-diary-bootstrap", owner_bootstrap["path"],
+                "--launcher-chat-bootstrap", chat_bootstrap["path"],
             ]
             if sys.platform == "win32":
                 DETACHED_PROCESS = 0x00000008
@@ -391,31 +492,73 @@ class LauncherWindow(MSFluentWindow):
                 core_process = subprocess.Popen(
                     args,
                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
-                    close_fds=True)
+                    close_fds=True,
+                    stdout=log_stream,
+                    stderr=subprocess.STDOUT,
+                    cwd=_PROJECT_ROOT)
             else:
-                core_process = subprocess.Popen(args, start_new_session=True)
+                core_process = subprocess.Popen(
+                    args, start_new_session=True, cwd=_PROJECT_ROOT,
+                    stdout=log_stream, stderr=subprocess.STDOUT)
         except OSError as e:
             self._close_owner_diary_session()
+            self._close_chat_session()
             InfoBar.error("启动失败", str(e),
                           parent=self, position=InfoBarPosition.TOP, duration=5000)
-            return
+            return False
+        finally:
+            if log_stream is not None:
+                log_stream.close()
 
         alive_count = self._pet_process_tracker.add(core_process)
         self.pet_page.set_alive_count(alive_count)
 
         QTimer.singleShot(
-            200, lambda: self._connect_owner_diary(generation, 0))
+            200, lambda: self._connect_owner_diary(owner_generation, 0))
+        QTimer.singleShot(
+            200, lambda: self._connect_chat(chat_generation, 0))
+        QTimer.singleShot(
+            600,
+            lambda: self._confirm_core_started(
+                core_process, profile.name, log_path))
+        return True
 
-        InfoBar.success("已启动", f"已唤起 {self.state.pet_name}（运行中：{alive_count}）",
-                        parent=self, position=InfoBarPosition.TOP, duration=3000)
+    def _confirm_core_started(
+            self, process, pet_name: str, log_path: str = "") -> None:
+        self.pet_page.set_starting(False)
+        return_code = process.poll()
+        alive_count = self._refresh_alive_pet_count()
+        if return_code is not None:
+            self._close_owner_diary_session()
+            self._close_chat_session()
+            detail = f"核心进程过早退出（代码 {return_code}）"
+            if log_path:
+                detail += f"，日志：{log_path}"
+            InfoBar.error(
+                "启动失败",
+                detail,
+                parent=self, position=InfoBarPosition.TOP, duration=6000)
+            return
+        InfoBar.success(
+            "已启动", f"已唤起 {pet_name}（运行中：{alive_count}）",
+            parent=self, position=InfoBarPosition.TOP, duration=3000)
 
     def _create_owner_diary_bootstrap(self, profile_id: str) -> dict:
+        return self._create_private_bootstrap(
+            profile_id, "owner", 65536)
+
+    def _create_chat_bootstrap(self, profile_id: str) -> dict:
+        return self._create_private_bootstrap(
+            profile_id, "chat", 1024 * 1024)
+
+    def _create_private_bootstrap(
+            self, profile_id: str, purpose: str, max_frame_bytes: int) -> dict:
         token = base64.urlsafe_b64encode(
             secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
         user = getpass.getuser().encode("utf-8", errors="replace")
         user_hash = hashlib.sha256(user).hexdigest()[:16]
         socket_name = (
-            f"desktop-pet-owner-{user_hash}-{profile_id}-{secrets.token_hex(8)}")
+            f"desktop-pet-{purpose}-{user_hash}-{profile_id}-{secrets.token_hex(8)}")
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=60)) \
             .isoformat(timespec="milliseconds").replace("+00:00", "Z")
         payload = json.dumps({
@@ -424,11 +567,12 @@ class LauncherWindow(MSFluentWindow):
             "socketName": socket_name,
             "capabilityToken": token,
             "expiresAt": expires_at,
-            "maxFrameBytes": 65536,
+            "maxFrameBytes": int(max_frame_bytes),
             "sessionTtlSeconds": 300,
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         path = os.path.join(
-            tempfile.gettempdir(), f"desktop-pet-owner-{secrets.token_hex(16)}.json")
+            tempfile.gettempdir(),
+            f"desktop-pet-{purpose}-{secrets.token_hex(16)}.json")
         descriptor = _open_private_bootstrap(path)
         try:
             if sys.platform != "win32":
@@ -437,7 +581,7 @@ class LauncherWindow(MSFluentWindow):
             while written < len(payload):
                 count = os.write(descriptor, payload[written:])
                 if count <= 0:
-                    raise OSError("failed to write owner diary bootstrap")
+                    raise OSError("failed to write private bootstrap")
                 written += count
             os.fsync(descriptor)
         except Exception:
@@ -448,6 +592,35 @@ class LauncherWindow(MSFluentWindow):
             os.close(descriptor)
         return {"path": os.path.abspath(path), "socket_name": socket_name,
                 "capability_token": token}
+
+    @staticmethod
+    def _open_core_log(
+            pet_name: str,
+            profile_id: str,
+            executable: str,
+            config_path: str):
+        log_directory = os.path.join(_PROJECT_ROOT, "log", "launcher")
+        os.makedirs(log_directory, exist_ok=True)
+        safe_name = re.sub(r"[^A-Za-z0-9_.-]+", "_", pet_name).strip("._")
+        if not safe_name:
+            safe_name = "pet"
+        timestamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")[:-3]
+        path = os.path.join(
+            log_directory, f"core-{timestamp}-{safe_name}.log")
+        stream = open(path, "ab", buffering=0)
+        metadata = {
+            "type": "launcher_start",
+            "timestamp": datetime.now(timezone.utc)
+                .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "petName": pet_name,
+            "profileId": profile_id,
+            "executable": os.path.abspath(executable),
+            "configPath": os.path.abspath(config_path),
+        }
+        stream.write((json.dumps(
+            metadata, ensure_ascii=False, separators=(",", ":"))
+            + "\n").encode("utf-8"))
+        return stream, os.path.abspath(path)
 
     def _connect_owner_diary(self, generation: int, attempt: int) -> None:
         if generation != self._owner_connect_generation \
@@ -476,6 +649,78 @@ class LauncherWindow(MSFluentWindow):
         self._owner_socket_name = None
         self._owner_capability_token = None
         self._owner_bootstrap_path = None
+
+    def _connect_chat(self, generation: int, attempt: int) -> None:
+        if generation != self._chat_connect_generation \
+                or self._chat_socket_name is None \
+                or self._chat_capability_token is None:
+            return
+        client = LauncherChatClient(timeout_ms=750)
+        try:
+            client.connect_to_server(
+                self._chat_socket_name, self._chat_capability_token)
+        except LauncherChatError as error:
+            client.close()
+            if attempt == 0 or (attempt + 1) % 10 == 0 or attempt >= 59:
+                self._append_chat_log("connect_failed", attempt=attempt + 1,
+                                      error=error)
+            if attempt < 59:
+                QTimer.singleShot(
+                    250,
+                    lambda: self._connect_chat(generation, attempt + 1))
+                return
+            self._chat_socket_name = None
+            self._chat_capability_token = None
+            self._secure_remove_bootstrap(self._chat_bootstrap_path)
+            self._chat_bootstrap_path = None
+            self.chat_page.set_client(None)
+            return
+        self._append_chat_log("connected", attempt=attempt + 1)
+        self.launcher_chat_client = client
+        self.chat_page.set_client(client)
+        self._chat_bootstrap_path = None
+
+    def _on_chat_connection_lost(self, reason: str) -> None:
+        client = self.launcher_chat_client
+        if client is None or client.is_connected:
+            return
+        self._append_chat_log(
+            "connection_lost", error=LauncherChatError(reason))
+        self.launcher_chat_client = None
+        self.chat_page.set_client(None)
+        client.close()
+        generation = self._chat_connect_generation
+        if self._chat_socket_name and self._chat_capability_token:
+            QTimer.singleShot(
+                250, lambda: self._connect_chat(generation, 0))
+
+    def _append_chat_log(self, event: str, *, attempt: int = 0,
+                         error: Exception | None = None) -> None:
+        if not self._chat_log_path:
+            return
+        record = {
+            "type": "launcher_chat",
+            "timestamp": datetime.now(timezone.utc)
+                .isoformat(timespec="milliseconds").replace("+00:00", "Z"),
+            "event": event,
+        }
+        if attempt > 0:
+            record["attempt"] = attempt
+        if self._chat_socket_name:
+            record["socketHash"] = hashlib.sha256(
+                self._chat_socket_name.encode("utf-8", errors="replace")) \
+                .hexdigest()[:12]
+        if error is not None:
+            record["errorType"] = type(error).__name__
+            record["errorCode"] = str(getattr(error, "code", ""))
+            record["message"] = str(error)
+        try:
+            with open(self._chat_log_path, "ab", buffering=0) as stream:
+                stream.write((json.dumps(
+                    record, ensure_ascii=False, separators=(",", ":"))
+                    + "\n").encode("utf-8"))
+        except OSError:
+            pass
 
     @staticmethod
     def _secure_remove_bootstrap(path: str | None) -> None:
@@ -513,8 +758,23 @@ class LauncherWindow(MSFluentWindow):
         self._secure_remove_bootstrap(self._owner_bootstrap_path)
         self._owner_bootstrap_path = None
 
+    def _close_chat_session(self) -> None:
+        self._chat_connect_generation += 1
+        self.chat_page.set_client(None)
+        if self.launcher_chat_client is not None:
+            self.launcher_chat_client.close()
+        self.launcher_chat_client = None
+        self._chat_socket_name = None
+        self._chat_capability_token = None
+        self._secure_remove_bootstrap(self._chat_bootstrap_path)
+        self._chat_bootstrap_path = None
+        self._chat_log_path = None
+
     def closeEvent(self, event):
         self._close_owner_diary_session()
+        self._close_chat_session()
+        self._pet_process_timer.stop()
+        self._pet_process_tracker.terminate_all()
         super().closeEvent(event)
 
 

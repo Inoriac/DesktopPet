@@ -51,7 +51,6 @@ private:
                                const MemoryQuery& query) const;
     double decayLambda(MemoryType type) const;
 
-    void reinforceMemory(MemoryStore& store, const QString& id) const;
 };
 
 #endif // DESKTOP_PET_MEMORY_RETRIEVER_H

@@ -69,6 +69,9 @@ QByteArray encodeEntry(const ChatHistoryEntry& entry) {
     if (!entry.replyToId.isEmpty()) {
         object.insert(QStringLiteral("replyToId"), entry.replyToId);
     }
+    if (!entry.errorMessage.isEmpty()) {
+        object.insert(QStringLiteral("errorMessage"), entry.errorMessage);
+    }
     return QJsonDocument(object).toJson(QJsonDocument::Compact);
 }
 
@@ -81,6 +84,7 @@ std::optional<ChatHistoryEntry> decodeVersionTwo(const QJsonObject& object) {
     entry.role = object.value(QStringLiteral("role")).toString();
     entry.replyToId = object.value(QStringLiteral("replyToId")).toString();
     entry.content = object.value(QStringLiteral("content")).toString();
+    entry.errorMessage = object.value(QStringLiteral("errorMessage")).toString();
     entry.timestamp = QDateTime::fromString(
         object.value(QStringLiteral("timestamp")).toString(), Qt::ISODateWithMs);
     if (!entry.timestamp.isValid()) {

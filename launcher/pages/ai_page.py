@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import re
 import uuid
 
@@ -10,6 +9,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QHBoxLayout
 from qfluentwidgets import (
     ComboBox,
+    CompactSpinBox,
     FluentIcon as FIF,
     InfoBar,
     InfoBarPosition,
@@ -17,8 +17,8 @@ from qfluentwidgets import (
     PasswordLineEdit,
     PrimaryPushButton,
     PushButton,
-    SpinBox,
     SwitchButton,
+    ToolButton,
 )
 
 from api_connection_tester import ApiConnectionTester
@@ -46,7 +46,13 @@ class AiPage(ScrollPage):
             endpoint_id: None for endpoint_id in state.model_endpoints}
         self._connection_test_buttons = {}
         self._role_endpoint_combos = {}
-        self._test_models_by_endpoint = {}
+        self._role_model_edits = {}
+        self._models_by_endpoint = {
+            endpoint_id: next((
+                role.model for role in self.state.model_roles.values()
+                if role.endpoint_ref == endpoint_id and role.model), "")
+            for endpoint_id in self.state.model_endpoints
+        }
         self.connection_tester.finished.connect(
             self._on_connection_test_finished)
 
@@ -81,14 +87,14 @@ class AiPage(ScrollPage):
         interval_layout = QHBoxLayout(interval_wrap)
         interval_layout.setContentsMargins(0, 0, 0, 0)
         interval_layout.setSpacing(12)
-        self.min_spin = SpinBox()
+        self.min_spin = CompactSpinBox()
         self.min_spin.setRange(1000, 86400000)
         self.min_spin.setValue(self.state.chat_interval_min_ms)
         self.min_spin.setFixedWidth(160)
         spin_font = QFont(self.min_spin.font().family())
         spin_font.setPointSize(11)
         self.min_spin.setFont(spin_font)
-        self.max_spin = SpinBox()
+        self.max_spin = CompactSpinBox()
         self.max_spin.setRange(1000, 86400000)
         self.max_spin.setValue(self.state.chat_interval_max_ms)
         self.max_spin.setFixedWidth(160)
@@ -117,7 +123,7 @@ class AiPage(ScrollPage):
         self.endpoint_selector.currentTextChanged.connect(
             self._select_endpoint)
         selector_layout.addWidget(self.endpoint_selector)
-        self.delete_endpoint_button = PushButton(FIF.DELETE, "", selector_wrap)
+        self.delete_endpoint_button = ToolButton(FIF.DELETE, selector_wrap)
         self.delete_endpoint_button.setFixedSize(36, 36)
         self.delete_endpoint_button.setToolTip("删除连接档案")
         self.delete_endpoint_button.clicked.connect(self._delete_current_endpoint)
@@ -132,11 +138,11 @@ class AiPage(ScrollPage):
         self.new_endpoint_id.setPlaceholderText("VISION_VENDOR")
         self.new_endpoint_id.setMinimumWidth(220)
         add_layout.addWidget(self.new_endpoint_id)
-        add_button = PushButton(FIF.ADD, "", add_wrap)
-        add_button.setFixedSize(36, 36)
-        add_button.setToolTip("新增连接档案")
-        add_button.clicked.connect(self._add_endpoint)
-        add_layout.addWidget(add_button)
+        self.add_endpoint_button = ToolButton(FIF.ADD, add_wrap)
+        self.add_endpoint_button.setFixedSize(36, 36)
+        self.add_endpoint_button.setToolTip("新增连接档案")
+        self.add_endpoint_button.clicked.connect(self._add_endpoint)
+        add_layout.addWidget(self.add_endpoint_button)
         section.addRow("新增档案", "字母开头，可使用数字、_ 和 -", add_wrap)
 
         self.endpoint_provider = ComboBox(section)
@@ -145,11 +151,11 @@ class AiPage(ScrollPage):
         self.endpoint_provider.setFixedWidth(220)
         self.endpoint_provider.currentTextChanged.connect(
             lambda value: self._set_endpoint_value("provider", value))
-        section.addRow("提供商", "连接协议", self.endpoint_provider)
+        section.addRow("连接协议", "模型服务使用的 API 协议", self.endpoint_provider)
 
         self.endpoint_base_url = self._endpoint_line_edit(
             section, "base_url")
-        section.addRow("Base URL", "模型服务地址", self.endpoint_base_url)
+        section.addRow("URL", "模型服务地址", self.endpoint_base_url)
 
         self.endpoint_api_key = PasswordLineEdit(section)
         self._size_text_control(self.endpoint_api_key)
@@ -158,25 +164,11 @@ class AiPage(ScrollPage):
         section.addRow(
             "API Key", "只保存于当前连接档案", self.endpoint_api_key)
 
-        self.endpoint_anthropic_version = self._endpoint_line_edit(
-            section, "anthropic_version")
-        self.anthropic_version_row = section.addRow(
-            "Anthropic Version", "请求头协议版本",
-            self.endpoint_anthropic_version)
-
-        self.endpoint_extra_headers = LineEdit(section)
-        self._size_text_control(self.endpoint_extra_headers)
-        self.endpoint_extra_headers.setPlaceholderText(
-            '{"x-gateway-tenant":"desktop-pet"}')
-        self.endpoint_extra_headers.textChanged.connect(
-            self._set_extra_headers)
+        self.endpoint_model = LineEdit(section)
+        self._size_text_control(self.endpoint_model)
+        self.endpoint_model.textChanged.connect(self._set_endpoint_model)
         section.addRow(
-            "额外请求头", "JSON 字符串键值对象", self.endpoint_extra_headers)
-
-        self.test_model = LineEdit(section)
-        self._size_text_control(self.test_model)
-        self.test_model.textChanged.connect(self._remember_test_model)
-        section.addRow("测试模型", "仅用于当前连接测试", self.test_model)
+            "模型名", "作为当前档案的默认模型", self.endpoint_model)
 
         self.test_connection_button = PushButton(
             FIF.SYNC, "测试连接", section)
@@ -209,8 +201,7 @@ class AiPage(ScrollPage):
             endpoint_combo.setFixedWidth(180)
             endpoint_combo.currentTextChanged.connect(
                 lambda value, active_role=role:
-                setattr(self.state.model_roles[active_role],
-                        "endpoint_ref", value))
+                self._on_role_endpoint_changed(active_role, value))
             model = LineEdit(wrap)
             model.setText(role_state.model)
             model.setMinimumWidth(200)
@@ -221,6 +212,7 @@ class AiPage(ScrollPage):
             layout.addWidget(endpoint_combo)
             layout.addWidget(model)
             self._role_endpoint_combos[role] = endpoint_combo
+            self._role_model_edits[role] = model
             label, description = ROLE_LABELS[role]
             section.addRow(label, description, wrap)
 
@@ -260,25 +252,30 @@ class AiPage(ScrollPage):
         if endpoint is None:
             return
         setattr(endpoint, field_name, value)
-        if field_name == "provider":
-            self.anthropic_version_row.setVisible(
-                value == "anthropic-messages")
 
-    def _set_extra_headers(self, value: str) -> None:
-        endpoint = self._current_endpoint()
-        if endpoint is None:
+    def _set_endpoint_model(self, model: str) -> None:
+        endpoint_id = self._current_endpoint_id()
+        if not endpoint_id:
             return
-        if not value.strip():
-            endpoint.extra_headers = {}
+        self._models_by_endpoint[endpoint_id] = model
+        for role, role_state in self.state.model_roles.items():
+            if role_state.endpoint_ref != endpoint_id:
+                continue
+            role_state.model = model
+            control = self._role_model_edits.get(role)
+            if control is not None and control.text() != model:
+                control.setText(model)
+
+    def _on_role_endpoint_changed(self, role: str, endpoint_id: str) -> None:
+        role_state = self.state.model_roles[role]
+        role_state.endpoint_ref = endpoint_id
+        if endpoint_id not in self._models_by_endpoint:
             return
-        try:
-            parsed = json.loads(value)
-        except json.JSONDecodeError:
-            return
-        if (isinstance(parsed, dict) and
-                all(isinstance(key, str) and isinstance(item, str)
-                    for key, item in parsed.items())):
-            endpoint.extra_headers = parsed
+        model = self._models_by_endpoint[endpoint_id]
+        role_state.model = model
+        control = self._role_model_edits.get(role)
+        if control is not None and control.text() != model:
+            control.setText(model)
 
     def _select_endpoint(self, endpoint_id: str) -> None:
         endpoint = self.state.model_endpoints.get(endpoint_id)
@@ -288,37 +285,21 @@ class AiPage(ScrollPage):
             self.endpoint_provider,
             self.endpoint_base_url,
             self.endpoint_api_key,
-            self.endpoint_anthropic_version,
-            self.endpoint_extra_headers,
-            self.test_model,
+            self.endpoint_model,
         )
         for control in controls:
             control.blockSignals(True)
         self.endpoint_provider.setCurrentText(endpoint.provider)
         self.endpoint_base_url.setText(endpoint.base_url)
         self.endpoint_api_key.setText(endpoint.api_key)
-        self.endpoint_anthropic_version.setText(endpoint.anthropic_version)
-        self.endpoint_extra_headers.setText(json.dumps(
-            endpoint.extra_headers, ensure_ascii=False, separators=(",", ":")))
-        model = self._test_models_by_endpoint.get(endpoint_id)
-        if model is None:
-            model = next((
-                role.model for role in self.state.model_roles.values()
-                if role.endpoint_ref == endpoint_id and role.model), "")
-        self.test_model.setText(model)
+        self.endpoint_model.setText(
+            self._models_by_endpoint.get(endpoint_id, ""))
         for control in controls:
             control.blockSignals(False)
-        self.anthropic_version_row.setVisible(
-            endpoint.provider == "anthropic-messages")
         self.delete_endpoint_button.setEnabled(endpoint_id != "DEFAULT")
         self._connection_test_buttons[endpoint_id] = self.test_connection_button
         self.test_connection_button.setEnabled(
             not bool(self._active_connection_test_ids.get(endpoint_id)))
-
-    def _remember_test_model(self, model: str) -> None:
-        endpoint_id = self._current_endpoint_id()
-        if endpoint_id:
-            self._test_models_by_endpoint[endpoint_id] = model
 
     def _add_endpoint(self) -> None:
         endpoint_id = self.new_endpoint_id.text().strip()
@@ -330,6 +311,7 @@ class AiPage(ScrollPage):
             return
         self.state.model_endpoints[endpoint_id] = ModelEndpointState()
         self._active_connection_test_ids[endpoint_id] = None
+        self._models_by_endpoint[endpoint_id] = ""
         self.endpoint_selector.addItem(endpoint_id)
         for combo in self._role_endpoint_combos.values():
             combo.addItem(endpoint_id)
@@ -348,6 +330,7 @@ class AiPage(ScrollPage):
             return
         self.state.model_endpoints.pop(endpoint_id, None)
         self._active_connection_test_ids.pop(endpoint_id, None)
+        self._models_by_endpoint.pop(endpoint_id, None)
         index = self.endpoint_selector.findText(endpoint_id)
         if index >= 0:
             self.endpoint_selector.removeItem(index)
@@ -362,7 +345,7 @@ class AiPage(ScrollPage):
         endpoint = self.state.model_endpoints.get(endpoint_id)
         if endpoint is not None:
             self._start_connection_test(
-                endpoint_id, endpoint, self.test_model.text().strip())
+                endpoint_id, endpoint, self.endpoint_model.text().strip())
 
     def _start_connection_test(
         self, endpoint_id: str, endpoint: ModelEndpointState, model: str
@@ -405,6 +388,12 @@ class AiPage(ScrollPage):
         message: str,
     ) -> None:
         if success:
+            if not self.state.ai_enabled:
+                InfoBar.warning(
+                    f"{endpoint_id} 连接成功",
+                    "接口可用，但 AI 开关尚未启用",
+                    parent=self, position=InfoBarPosition.TOP, duration=5000)
+                return
             InfoBar.success(
                 f"{endpoint_id} 连接成功", message, parent=self,
                 position=InfoBarPosition.TOP, duration=3000)

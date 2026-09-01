@@ -32,6 +32,8 @@ public:
     void showChatBubble(const QString& text, int durationMs) override;
     void notifyUser(const QString& title, const QString& message,
                     int durationMs) override;
+    void setAnimationSystem(AnimationPlayer* animationPlayer,
+                            AnimationManager* animationManager);
     AnimationPlayer* animationPlayer() const override { return m_animationPlayer; }
     AnimationManager* animationManager() const override { return m_animationManager; }
 

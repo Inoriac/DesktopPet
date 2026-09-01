@@ -29,26 +29,31 @@
 #include <QDir>
 #include <QMetaObject>
 
+#include <iostream>
 #include <utility>
 
 void PetWindow::setupAiBrain() {
-    if (!aiBrain || !renderViewport || !renderViewport->getRenderEngine()) {
+    std::cerr << "[AIBrain] setup started" << std::endl;
+    if (!aiBrain) {
+        qWarning() << "[AIBrain] setup skipped: AI brain is unavailable";
         return;
     }
 
-    auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
-    auto* animationManager = renderViewport->getAnimationManager();
-    if (!player) {
-        qWarning() << "[AIBrain] AnimationPlayer not ready, skip setup";
-        return;
-    }
-    if (!animationManager) {
-        qWarning() << "[AIBrain] AnimationManager not ready, skip setup";
-        return;
-    }
     if (runtimeServices || runtimeUiBridge) {
         qWarning() << "[AIBrain] runtime is already configured, skip duplicate setup";
         return;
+    }
+
+    AnimationPlayer* player = nullptr;
+    AnimationManager* animationManager = nullptr;
+    if (renderViewport) {
+        animationManager = renderViewport->getAnimationManager();
+        if (RenderEngine* renderEngine = renderViewport->getRenderEngine()) {
+            player = renderEngine->getAnimationPlayer();
+        }
+    }
+    if (!player || !animationManager) {
+        qInfo() << "[AIBrain] starting basic chat before animation tools are ready";
     }
 
     QPointer<PetWindow> window(this);
@@ -99,6 +104,9 @@ void PetWindow::setupAiBrain() {
     const Result<RuntimeStartReport, DomainError> runtimeStarted =
         AgentBootstrap::start(*runtimeServices, runtimeRequest);
     if (!runtimeStarted.isOk()) {
+        std::cerr << "[AIBrain] runtime bootstrap failed: "
+                  << runtimeStarted.error().code.toStdString() << " "
+                  << runtimeStarted.error().message.toStdString() << std::endl;
         qWarning() << "[AIBrain] runtime bootstrap failed:"
                    << runtimeStarted.error().code << runtimeStarted.error().message;
         runtimeServices.reset();
@@ -111,6 +119,10 @@ void PetWindow::setupAiBrain() {
         qWarning() << "[AIBrain] runtime started in degraded mode:"
                    << runtimeReport.diagnostics;
     }
+    std::cerr << "[AIBrain] storage initialized; runtime mode="
+              << (runtimeReport.mode == RuntimeMode::Running
+                      ? "running" : "degraded")
+              << std::endl;
 
     // 设置文件/命令工具允许的根目录。默认来自配置，未配置时退回到应用目录和当前工作目录。
     const AiToolAccessPolicy& toolAccessPolicy = config.getAiToolAccessPolicy();
@@ -159,11 +171,6 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<ScheduleListTool>(agentScheduler.get()));
     aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get(), memoryStore));
     aiToolRegistry->registerTool(std::make_unique<ScheduleSnoozeTool>(agentScheduler.get(), memoryStore));
-    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
-    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
-    aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));
-    aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(player));
-    aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(player, animationManager));
     aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
     aiToolRegistry->registerTool(std::make_unique<GetUserIdleStateTool>());
     aiToolRegistry->registerTool(std::make_unique<GetBatteryStatusTool>());
@@ -245,8 +252,36 @@ void PetWindow::setupAiBrain() {
 
     if (aiEnabled) {
         aiBrain->start();
-        qDebug() << "[AIBrain] started for pet:" << modelName;
+        qInfo() << "[AIBrain] started for pet:" << modelName;
     }
+    std::cerr << "[AIBrain] setup completed; awaiting runtime settings"
+              << std::endl;
+}
+
+void PetWindow::setupAiAnimationTools() {
+    if (!aiToolRegistry || !runtimeUiBridge || !renderViewport
+        || !renderViewport->getRenderEngine()) {
+        qWarning() << "[AIBrain] animation tools could not be attached";
+        return;
+    }
+    AnimationPlayer* player =
+        renderViewport->getRenderEngine()->getAnimationPlayer();
+    AnimationManager* animationManager = renderViewport->getAnimationManager();
+    if (!player || !animationManager) {
+        qWarning() << "[AIBrain] model has no usable animation system; chat remains available";
+        return;
+    }
+
+    runtimeUiBridge->setAnimationSystem(player, animationManager);
+    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
+    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
+    aiToolRegistry->registerTool(
+        std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));
+    aiToolRegistry->registerTool(
+        std::make_unique<GetActionTransitionStatusTool>(player));
+    aiToolRegistry->registerTool(
+        std::make_unique<RequestIdleTransitionTool>(player, animationManager));
+    qInfo() << "[AIBrain] animation tools attached";
 }
 
 void PetWindow::teardownAiRuntime() {

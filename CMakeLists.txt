@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 4.0)
+cmake_minimum_required(VERSION 3.20)
 project(Desktop_Pet)
 
 if(NOT CMAKE_BUILD_TYPE)
@@ -20,8 +20,6 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
-
-set(CMAKE_PREFIX_PATH "E:/Qt/6.5.3/mingw_64/lib/cmake")
 
 find_package(Qt6 COMPONENTS
         Core
@@ -75,8 +73,6 @@ set(UI_SOURCES
     ui/switch_button.h
     ui/theme_manager.cpp
     ui/theme_manager.h
-    ui/chat_history_window.cpp
-    ui/chat_history_window.h
     ui/chat_conversation_model.cpp
     ui/chat_conversation_model.h
     ui/streaming_text_paginator.cpp
@@ -248,6 +244,8 @@ set(CORE_SOURCES
     core/ai/chat/chat_types.cpp
     core/ai/chat/profile_chat_history_store.h
     core/ai/chat/profile_chat_history_store.cpp
+    core/ai/chat/launcher_chat_server.h
+    core/ai/chat/launcher_chat_server.cpp
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
@@ -575,6 +573,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME ApiConnectionTesterTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_api_connection_tester.py)
     set_tests_properties(ApiConnectionTesterTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME LauncherChatTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_chat.py)
+    set_tests_properties(LauncherChatTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
@@ -1388,12 +1390,17 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif ()
 
     # ---- 推断 Qt 安装路径 ----
-    set(QT_INSTALL_PATH "${CMAKE_PREFIX_PATH}")
-    if (NOT EXISTS "${QT_INSTALL_PATH}/bin")
-        set(QT_INSTALL_PATH "${QT_INSTALL_PATH}/..")
-        if (NOT EXISTS "${QT_INSTALL_PATH}/bin")
-            set(QT_INSTALL_PATH "${QT_INSTALL_PATH}/..")
+    set(QT_INSTALL_PATH "")
+    if (TARGET Qt6::qmake)
+        get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
+        if (QT_QMAKE_EXECUTABLE)
+            get_filename_component(QT_BIN_PATH "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
+            get_filename_component(QT_INSTALL_PATH "${QT_BIN_PATH}" DIRECTORY)
         endif ()
+    endif ()
+    if (NOT EXISTS "${QT_INSTALL_PATH}/bin" AND Qt6Core_DIR)
+        get_filename_component(
+            QT_INSTALL_PATH "${Qt6Core_DIR}/../../.." ABSOLUTE)
     endif ()
 
     message(STATUS "Detected Qt install path: ${QT_INSTALL_PATH}")
@@ -1419,7 +1426,7 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     endif ()
 
     # ---- 复制 Qt 核心 DLL ----
-    foreach (QT_LIB Core Gui Widgets OpenGL OpenGLWidgets Sql)
+    foreach (QT_LIB Core Gui Widgets Network OpenGL OpenGLWidgets Sql)
         if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
             add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -1439,7 +1446,7 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
                 --no-translations
                 --no-system-d3d-compiler
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+                "$<TARGET_FILE:${PROJECT_NAME}>"
                 COMMENT "Running windeployqt to copy Qt runtime dependencies...")
     endif ()
 

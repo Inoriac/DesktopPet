@@ -161,6 +161,9 @@ private slots:
     void completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions();
     void completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse();
     void completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope();
+    void completeStreamAsync_whenOnlyRouteFails_shouldPreserveProviderError();
+    void completeAsync_whenPrimaryReturnsHttp400_shouldKeepPrimaryAvailable();
+    void completeAsync_whenOnlyRouteTimesOut_shouldKeepOnlyRouteAvailable();
     void requestVisionSummary_whenVisionRoleUsesIndependentEndpoint_shouldRouteWithoutGlobalCredentials();
 
     void assemble_whenDialogueRole_shouldIncludePersonaMemoryAndSkillSummary();
@@ -319,6 +322,81 @@ void ModelRouterTests::completeAsync_whenProviderTimesOut_shouldTryFallbackWitho
     QCOMPARE(client.messageBatches.at(0).at(0).content,
              client.messageBatches.at(1).at(0).content);
     QCOMPARE(client.messageBatches.at(1).size(), request.messages.size());
+}
+
+void ModelRouterTests::completeStreamAsync_whenOnlyRouteFails_shouldPreserveProviderError() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("dialogue-primary"), QStringLiteral("model-a"))})});
+    FakeModelCompletionClient client;
+    const QString providerError = QStringLiteral(
+        "LLM HTTP error (HTTP 400, code 302): invalid tool schema");
+    client.replies = {{false, {}, providerError}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Dialogue;
+    request.messages = {message(QStringLiteral("user"), QStringLiteral("hello"))};
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    const auto handle = router.completeStreamAsync(
+        request, {},
+        [&](Result<ModelCompletion, DomainError> value) {
+            result.emplace(std::move(value));
+        });
+    const auto resolved = router.resolve(ModelRole::Dialogue, {});
+
+    QVERIFY(handle != nullptr);
+    QVERIFY(result.has_value());
+    QVERIFY(!result->isOk());
+    QCOMPARE(result->error().code, QStringLiteral("MODEL_PROVIDER_ERROR"));
+    QCOMPARE(result->error().message, providerError);
+    QCOMPARE(result->error().details.value(QStringLiteral("routeId")).toString(),
+             QStringLiteral("dialogue-primary"));
+    QVERIFY(resolved.isOk());
+    QCOMPARE(resolved.value().routeId, QStringLiteral("dialogue-primary"));
+}
+
+void ModelRouterTests::completeAsync_whenPrimaryReturnsHttp400_shouldKeepPrimaryAvailable() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("primary"), QStringLiteral("model-a")),
+         route(QStringLiteral("fallback"), QStringLiteral("model-b"))})});
+    FakeModelCompletionClient client;
+    client.replies = {
+        {false, {}, QStringLiteral("LLM HTTP error (HTTP 400, code 302)")},
+        {true, responseWithContent(QStringLiteral("fallback response")), {}}
+    };
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Dialogue;
+    std::optional<Result<ModelCompletion, DomainError>> result;
+
+    router.completeAsync(request, [&](Result<ModelCompletion, DomainError> value) {
+        result.emplace(std::move(value));
+    });
+    const auto resolved = router.resolve(ModelRole::Dialogue, {});
+
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QVERIFY(resolved.isOk());
+    QCOMPARE(resolved.value().routeId, QStringLiteral("primary"));
+}
+
+void ModelRouterTests::completeAsync_whenOnlyRouteTimesOut_shouldKeepOnlyRouteAvailable() {
+    ModelRoleRegistry registry({roleConfig(
+        ModelRole::Dialogue,
+        {route(QStringLiteral("only"), QStringLiteral("model-a"))})});
+    FakeModelCompletionClient client;
+    client.replies = {{false, {}, QStringLiteral("provider timeout")}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::Dialogue;
+
+    router.completeAsync(request, [](Result<ModelCompletion, DomainError>) {});
+    const auto resolved = router.resolve(ModelRole::Dialogue, {});
+
+    QVERIFY(resolved.isOk());
+    QCOMPARE(resolved.value().routeId, QStringLiteral("only"));
 }
 
 void ModelRouterTests::requestVisionSummary_whenVisionRoleUsesIndependentEndpoint_shouldRouteWithoutGlobalCredentials() {

@@ -17,7 +17,6 @@ namespace {
 bool containsType(const QList<MemoryType>& types, MemoryType type) {
     return std::find(types.cbegin(), types.cend(), type) != types.cend();
 }
-
 bool hasAllTags(const QStringList& entryTags, const QStringList& requiredTags) {
     for (const QString& requiredTag : requiredTags) {
         if (!entryTags.contains(requiredTag, Qt::CaseInsensitive)) return false;
@@ -182,12 +181,15 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
         result.removeLast();
     }
 
-    // Phase 6: reinforce retrieved memories (strength + accessCount)
+    // Phase 6: reinforce retrieved memories in one transaction. Committing each
+    // hit separately can visibly stall the render loop during message send.
+    QStringList reinforcementIds;
     for (const RetrievedMemory& mem : result) {
         if (!mem.fromGraphExpansion) {
-            reinforceMemory(store, mem.entry.id);
+            reinforcementIds.append(mem.entry.id);
         }
     }
+    store.reinforceEntries(reinforcementIds);
 
     return result;
 }
@@ -343,14 +345,4 @@ double MemoryRetriever::decayLambda(MemoryType type) const {
     default:
         return 0.05;
     }
-}
-
-void MemoryRetriever::reinforceMemory(MemoryStore& store, const QString& id) const {
-    MemoryEntry* entry = store.findById(id);
-    if (!entry) return;
-
-    entry->strength = qMin(1.0, entry->strength + 0.1);
-    entry->accessCount += 1;
-    entry->lastAccessedAt = QDateTime::currentDateTimeUtc();
-    store.updateEntryById(*entry);
 }
