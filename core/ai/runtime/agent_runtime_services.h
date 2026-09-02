@@ -47,6 +47,7 @@ public:
     RuntimeSnapshot captureSnapshot(
         const QString& sessionId,
         const QString& subjectId = QStringLiteral("owner")) const;
+    ChatPreparationRuntimeMetadata chatPreparationRuntimeMetadata() const;
     PersonaProjection projectPersona(
         const RuntimeSnapshot& snapshot,
         const InteractionContext& context) const;
@@ -83,6 +84,7 @@ private:
         const ProfileMigrationResult& migration);
 
     QString m_profileId;
+    QString m_runtimeDatabasePath;
     QString m_configHash;
     int m_identityBaselineSchemaVersion = 1;
     QString m_identityBaselineHash;

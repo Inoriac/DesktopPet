@@ -246,6 +246,9 @@ set(CORE_SOURCES
     core/ai/chat/profile_chat_history_store.cpp
     core/ai/chat/launcher_chat_server.h
     core/ai/chat/launcher_chat_server.cpp
+    core/ai/chat/chat_preparation_types.h
+    core/ai/chat/chat_preparation_executor.h
+    core/ai/chat/chat_preparation_executor.cpp
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
@@ -643,6 +646,9 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/ai_brain.cpp
     core/ai/ai_brain_router.cpp
     core/ai/ai_brain_loop.cpp
+    core/ai/chat/chat_preparation_types.h
+    core/ai/chat/chat_preparation_executor.h
+    core/ai/chat/chat_preparation_executor.cpp
     core/ai/ai_call_logger.h
     core/ai/ai_call_logger.cpp
     core/ai/agent/agent_session.h
@@ -909,6 +915,34 @@ add_desktop_pet_cpp_test(streaming_dialogue_tests StreamingDialogueTests
         $<$<PLATFORM_ID:Windows>:psapi>
     APPLE_CORE_GRAPHICS
     PRIVATE_REFLECTION
+)
+target_compile_definitions(streaming_dialogue_tests PRIVATE
+    DESKTOP_PET_ENABLE_TEST_SEAMS=1
+)
+
+# ---- Thread-owned chat context preparation tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(chat_preparation_executor_tests ChatPreparationExecutorTests
+    SOURCES
+        tests/test_chat_preparation_executor.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES
+        Qt::Core
+        Qt::Gui
+        Qt::Network
+        Qt::Sql
+        Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
+)
+target_compile_definitions(chat_preparation_executor_tests PRIVATE
+    DESKTOP_PET_ENABLE_TEST_SEAMS=1
 )
 
 # ---- Profile-scoped chat persistence tests (no ONNX dependency) ----

@@ -4,6 +4,8 @@
 
 #include "ai_brain.h"
 
+#include "chat/chat_preparation_types.h"
+
 #include <QCoreApplication>
 #include <QDir>
 #include <QJsonArray>
@@ -17,10 +19,10 @@
 #include "memory/working_memory_cache.h"
 #include "skill/skill_matcher.h"
 
-bool AIBrain::tryHandleRoutedIntent(const QString& reason,
+bool AIBrain::tryHandleRoutedIntent(const IntentRoute& route,
+                                    const QString& reason,
                                     const QString& triggerTag,
                                     const QString& sessionId) {
-    const IntentRoute route = m_intentRouter.route(reason, triggerTag);
     if (route.type == IntentRouteType::NeedLLM) {
         return false;
     }
@@ -180,6 +182,31 @@ bool AIBrain::tryHandleRoutedIntent(const QString& reason,
     finishActiveResponse(ChatMessageStatus::Failed,
                          QStringLiteral("unsupported route type"));
     return true;
+}
+
+ChatPreparationRequest AIBrain::makeChatPreparationRequest(
+    const QString& requestId,
+    quint64 generation,
+    const QString& reason,
+    const QString& triggerTag,
+    const QString& sessionId) const {
+    ChatPreparationRequest request;
+    request.requestId = requestId;
+    request.generation = generation;
+    request.sessionId = sessionId;
+    request.reason = reason;
+    request.triggerTag = triggerTag;
+    request.petName = m_petName;
+    request.allowedActions = allowedActionsForTrigger(triggerTag);
+    request.conversationMemory = m_memory;
+    request.workingMemory = m_workingMemoryCache.all();
+    request.skills = m_skillStore.all();
+    request.emotion = currentEmotionSnapshot();
+    request.runtimeMetadata = m_chatPreparationRuntimeMetadata;
+    request.identityBaseline = m_identityBaseline;
+    request.personalityPolicy = m_personalityPolicy;
+    request.promptTemplate = m_promptTemplate;
+    return request;
 }
 
 ToolPolicyContext AIBrain::buildToolPolicyContext(const QString& triggerTag,

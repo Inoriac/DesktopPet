@@ -206,6 +206,7 @@ private slots:
     void triggerThink_whenUserRequestStorageIsNotInitialized_shouldRejectVisibly();
 
     void captureSnapshot_whenSessionStarts_shouldPinIdentityAndConfigVersions();
+    void chatPreparationRuntimeMetadata_whenStarted_shouldExposeExactImmutableValues();
     void captureSnapshot_whenStateChangesLater_shouldKeepExistingSessionProjectionStable();
     void bindRuntimeSnapshot_whenSessionIdsMatch_shouldPinSnapshotOnce();
     void bindRuntimeSnapshot_whenCalledTwice_shouldPreserveOriginalSnapshot();
@@ -593,6 +594,25 @@ void TestAgentRuntimeServices::captureSnapshot_whenSessionStarts_shouldPinIdenti
     QCOMPARE(snapshot.identityBaselineHash, runtime.request.identityBaselineHash);
     QCOMPARE(snapshot.configHash, runtime.request.configHash);
     QVERIFY(snapshot.capturedAt.isValid());
+}
+
+void TestAgentRuntimeServices::
+chatPreparationRuntimeMetadata_whenStarted_shouldExposeExactImmutableValues() {
+    StartedRuntime runtime;
+    QVERIFY(runtime.ready());
+
+    const ChatPreparationRuntimeMetadata metadata =
+        runtime.services.chatPreparationRuntimeMetadata();
+
+    QCOMPARE(metadata.profileId, kProfileId);
+    QCOMPARE(metadata.runtimeDatabasePath,
+             QDir(runtime.directory.path()).filePath(
+                 QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(kProfileId)));
+    QCOMPARE(metadata.identityBaselineSchemaVersion,
+             runtime.request.identityBaselineSchemaVersion);
+    QCOMPARE(metadata.identityBaselineHash, runtime.request.identityBaselineHash);
+    QCOMPARE(metadata.configHash, runtime.request.configHash);
+    QCOMPARE(metadata.subjectId, QStringLiteral("owner"));
 }
 
 void TestAgentRuntimeServices::captureSnapshot_whenStateChangesLater_shouldKeepExistingSessionProjectionStable() {

@@ -4,6 +4,7 @@
 #include <cmath>
 
 #include <QDateTime>
+#include <QHash>
 #include <QRegularExpression>
 #include <QSet>
 
@@ -47,6 +48,115 @@ QString bestSummary(const MemoryEntry& entry) {
     return entry.key.trimmed();
 }
 
+}
+
+QList<RetrievedMemory> MemoryRetriever::retrieve(
+    const QList<MemoryEntry>& entries,
+    const MemoryQuery& query,
+    const QList<WorkingMemoryItem>& workingMemory,
+    const QList<MemoryRelation>& relations) const {
+    QList<RetrievedMemory> result;
+    const QStringList tokens = tokenize(query.text);
+    const int limit = query.limit <= 0 ? 8 : query.limit;
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (const WorkingMemoryItem& item : workingMemory) {
+        if (item.expiresAt.isValid() && item.expiresAt <= now) continue;
+        const QString searchText = (item.summary + QLatin1Char(' ') + item.content
+                                    + QLatin1Char(' ') + item.tags.join(QLatin1Char(' '))).toLower();
+        bool hit = tokens.isEmpty();
+        for (const QString& token : tokens) {
+            if (searchText.contains(token)) {
+                hit = true;
+                break;
+            }
+        }
+        if (!hit) continue;
+
+        MemoryEntry synthetic;
+        synthetic.id = QStringLiteral("wm:") + item.id;
+        synthetic.type = MemoryType::Working;
+        synthetic.status = MemoryStatus::Active;
+        synthetic.summary = item.summary;
+        synthetic.content = item.content;
+        synthetic.tags = item.tags;
+        synthetic.source = item.source;
+        synthetic.importance = item.importance;
+        synthetic.createdAt = item.createdAt;
+        QStringList reasons{QStringLiteral("working_memory")};
+        const double score = scoreEntry(synthetic, query, tokens, &reasons) + 1.5;
+        result.append({synthetic, score, reasons, false});
+    }
+
+    for (const MemoryEntry& entry : entries) {
+        if (!query.includeInactive && entry.status != MemoryStatus::Active) continue;
+        if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) continue;
+        if (!query.requiredTags.isEmpty()
+            && !hasAllTags(entry.tags, query.requiredTags)) {
+            continue;
+        }
+        QStringList reasons;
+        const double score = scoreEntry(entry, query, tokens, &reasons);
+        if (score > 0.0) result.append({entry, score, reasons, false});
+    }
+
+    std::sort(result.begin(), result.end(), [](const RetrievedMemory& left,
+                                               const RetrievedMemory& right) {
+        if (std::abs(left.score - right.score) > 0.0001) {
+            return left.score > right.score;
+        }
+        return left.entry.updatedAt > right.entry.updatedAt;
+    });
+
+    QHash<QString, MemoryEntry> entriesById;
+    for (const MemoryEntry& entry : entries) entriesById.insert(entry.id, entry);
+    QSet<QString> seenIds;
+    for (const RetrievedMemory& memory : result) seenIds.insert(memory.entry.id);
+    const int expansionCount = qMin(3, result.size());
+    QList<RetrievedMemory> expanded;
+    for (int i = 0; i < expansionCount; ++i) {
+        const RetrievedMemory& source = result.at(i);
+        QList<MemoryRelation> neighbors;
+        for (const MemoryRelation& relation : relations) {
+            if (relation.fromMemoryId == source.entry.id
+                || relation.toMemoryId == source.entry.id) {
+                neighbors.append(relation);
+            }
+        }
+        std::sort(neighbors.begin(), neighbors.end(),
+                  [](const MemoryRelation& left, const MemoryRelation& right) {
+                      return left.weight > right.weight;
+                  });
+        while (neighbors.size() > 10) neighbors.removeLast();
+        for (const MemoryRelation& relation : neighbors) {
+            const QString neighborId = relation.fromMemoryId == source.entry.id
+                ? relation.toMemoryId : relation.fromMemoryId;
+            if (seenIds.contains(neighborId) || !entriesById.contains(neighborId)) continue;
+            const MemoryEntry& neighbor = entriesById[neighborId];
+            if (!query.includeInactive && neighbor.status != MemoryStatus::Active) continue;
+            if (!query.includeSensitive
+                && neighbor.privacyLevel == PrivacyLevel::Sensitive) {
+                continue;
+            }
+            RetrievedMemory memory;
+            memory.entry = neighbor;
+            memory.score = source.score * relation.weight * 0.5;
+            memory.reasons = {QStringLiteral("graph_expansion")};
+            memory.fromGraphExpansion = true;
+            expanded.append(memory);
+            seenIds.insert(neighborId);
+        }
+    }
+    result.append(expanded);
+    std::sort(result.begin(), result.end(), [](const RetrievedMemory& left,
+                                               const RetrievedMemory& right) {
+        if (std::abs(left.score - right.score) > 0.0001) {
+            return left.score > right.score;
+        }
+        return left.entry.updatedAt > right.entry.updatedAt;
+    });
+    while (result.size() > limit) result.removeLast();
+    return result;
 }
 
 QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,

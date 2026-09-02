@@ -12,6 +12,7 @@
 #include <QList>
 #include <QStringList>
 #include <functional>
+#include <memory>
 #include <optional>
 
 #include "ai_types.h"
@@ -36,6 +37,10 @@
 class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
 class AgentScheduler;  // Daydream 距待办判定用，可选注入
 class AgentRuntimeServices;
+class ChatPreparationExecutor;
+struct ChatPreparationEnvironment;
+struct ChatPreparationRequest;
+struct ChatPreparationResult;
 #include "router/intent_router.h"
 #include "skill/skill_matcher.h"
 #include "skill/skill_store.h"
@@ -54,6 +59,7 @@ public:
     AIBrain(ModelCompletionClient* modelClient,
             QList<ModelRoleConfig> modelRoles,
             QObject* parent = nullptr);
+    ~AIBrain() override;
 
     Result<void, DomainError> initializeStorage(const AIBrainStorageConfig& config);
     bool isStorageInitialized() const { return m_storageInitialized; }
@@ -65,8 +71,11 @@ public:
     void setEmotionSnapshotProvider(EmotionSnapshotProvider provider);
 
     // 注入通用提示词模版与独立身份基线（转发给 ContextBuilder）。
-    void setIdentityBaseline(const IdentityBaseline& baseline) { m_contextBuilder.setIdentityBaseline(baseline); }
-    void setPromptTemplate(const PromptTemplate& templ) { m_contextBuilder.setPromptTemplate(templ); }
+    void setIdentityBaseline(const IdentityBaseline& baseline);
+    void setPromptTemplate(const PromptTemplate& templ);
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+    void setChatPreparationDelayForTests(int delayMs);
+#endif
 
     void setEnabled(bool enabled);
     bool isEnabled() const { return m_enabled; }
@@ -135,10 +144,22 @@ private:
                       const QString& sessionId,
                       int toolRound,
                       const QList<ChatMessage>& workingMessages);
+    void continuePreparedThink(ChatPreparationResult result);
+    ChatPreparationRequest makeChatPreparationRequest(
+        const QString& requestId,
+        quint64 generation,
+        const QString& reason,
+        const QString& triggerTag,
+        const QString& sessionId) const;
+    QString beginPreparationRuntimeSession(const QString& reason,
+                                           const QString& triggerTag);
+    Result<void, DomainError> startChatPreparationExecutor();
 
-    bool tryHandleRoutedIntent(const QString& reason,
+    bool tryHandleRoutedIntent(const IntentRoute& route,
+                               const QString& reason,
                                const QString& triggerTag,
                                const QString& sessionId);
+    bool bindLocalRuntimeSnapshot(const QString& sessionId);
     bool shouldUseLocalRouter(const QString& triggerTag) const;
     ToolPolicyContext buildToolPolicyContext(const QString& triggerTag,
                                              const QString& userInput,
@@ -196,6 +217,12 @@ private:
     AgentRuntimeServices* m_runtimeServices = nullptr; // non-owning
 
     ContextBuilder m_contextBuilder;
+    IdentityBaseline m_identityBaseline = IdentityBaseline::defaults();
+    PersonalityPolicy m_personalityPolicy;
+    PromptTemplate m_promptTemplate;
+    std::unique_ptr<ChatPreparationExecutor> m_chatPreparationExecutor;
+    std::unique_ptr<ChatPreparationEnvironment> m_chatPreparationEnvironment;
+    ChatPreparationRuntimeMetadata m_chatPreparationRuntimeMetadata;
     LlmChatService m_chatService;
     ModelRoleRegistry m_modelRoleRegistry{configuredModelRoles()};
     LlmChatModelClient m_modelClient{&m_chatService};
@@ -243,6 +270,9 @@ private:
         QString replyToId;
         QString triggerTag;
         QString sessionId;
+        QString reason;
+        QString preparationRequestId;
+        QStringList reinforcementIds;
         QString visibleContent;
         ChatMessageStatus status = ChatMessageStatus::Pending;
         ChatActivityStage stage = ChatActivityStage::WaitingForModel;

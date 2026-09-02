@@ -64,6 +64,7 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
 
     const QString runtimeDatabasePath = QDir(request.profileMigration.appDataRoot)
         .filePath(QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(m_profileId));
+    m_runtimeDatabasePath = runtimeDatabasePath;
     m_eventSchemas = std::make_unique<EventSchemaRegistry>();
     const Result<void, DomainError> schemas = registerBuiltInEventSchemas(*m_eventSchemas);
     if (!schemas.isOk()) {
@@ -282,6 +283,19 @@ RuntimeSnapshot AgentRuntimeServices::captureSnapshot(
     return snapshot;
 }
 
+ChatPreparationRuntimeMetadata
+AgentRuntimeServices::chatPreparationRuntimeMetadata() const {
+    if (!m_started) return {};
+    ChatPreparationRuntimeMetadata metadata;
+    metadata.profileId = m_profileId;
+    metadata.runtimeDatabasePath = m_runtimeDatabasePath;
+    metadata.identityBaselineSchemaVersion = m_identityBaselineSchemaVersion;
+    metadata.identityBaselineHash = m_identityBaselineHash;
+    metadata.configHash = m_configHash;
+    metadata.subjectId = QStringLiteral("owner");
+    return metadata;
+}
+
 PersonaProjection AgentRuntimeServices::projectPersona(
     const RuntimeSnapshot& snapshot,
     const InteractionContext& context) const {
@@ -417,6 +431,7 @@ void AgentRuntimeServices::stop() {
     m_uiBridge = nullptr;
     m_aiBrain = nullptr;
     m_profileId.clear();
+    m_runtimeDatabasePath.clear();
     m_configHash.clear();
     m_identityBaselineHash.clear();
     m_identityBaseline = IdentityBaseline::defaults();

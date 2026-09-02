@@ -36,6 +36,15 @@ struct RuntimeSnapshot {
     QDateTime capturedAt;
 };
 
+struct ChatPreparationRuntimeMetadata {
+    QString profileId;
+    QString runtimeDatabasePath;
+    int identityBaselineSchemaVersion = 1;
+    QString identityBaselineHash;
+    QString configHash;
+    QString subjectId = QStringLiteral("owner");
+};
+
 struct RuntimeStartRequest {
     PetProfile profile;
     ProfileMigrationRequest profileMigration;

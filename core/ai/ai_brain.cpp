@@ -17,6 +17,7 @@
 #include <utility>
 
 #include "configLoader/config_manager.h"
+#include "chat/chat_preparation_executor.h"
 #include "runtime/agent_runtime_services.h"
 #include "event/event_ledger.h"
 #include "tools/environment_tools.h"
@@ -31,10 +32,20 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     , m_modelRoleRegistry(std::move(modelRoles))
     , m_modelRouter(&m_modelRoleRegistry,
                     modelClient ? modelClient : &m_modelClient) {
+    m_identityBaseline = ConfigManager::instance().getIdentityBaseline();
+    m_personalityPolicy = ConfigManager::instance().getPersonalityPolicy();
+    m_contextBuilder.setIdentityBaseline(m_identityBaseline);
+    m_chatPreparationExecutor = std::make_unique<ChatPreparationExecutor>();
+    connect(m_chatPreparationExecutor.get(), &ChatPreparationExecutor::prepared,
+            this, &AIBrain::continuePreparedThink);
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
     m_skillStore.load();
+}
+
+AIBrain::~AIBrain() {
+    if (m_chatPreparationExecutor) m_chatPreparationExecutor->stop();
 }
 
 Result<void, DomainError> AIBrain::initializeStorage(
@@ -58,7 +69,42 @@ Result<void, DomainError> AIBrain::initializeStorage(
             domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"), errorMessage));
     }
     m_storageInitialized = true;
+    m_chatPreparationEnvironment = std::make_unique<ChatPreparationEnvironment>();
+    m_chatPreparationEnvironment->memoryDatabasePath = m_memoryStore.databasePath();
+    m_chatPreparationEnvironment->identityBaseline = m_identityBaseline;
+    m_chatPreparationEnvironment->personalityPolicy = m_personalityPolicy;
+    m_chatPreparationEnvironment->promptTemplate = m_promptTemplate;
+    const auto preparationStarted = startChatPreparationExecutor();
+    if (!preparationStarted.isOk()) {
+        qWarning() << "[AIBrain] chat preparation executor unavailable:"
+                   << preparationStarted.error().message;
+    }
     return Result<void, DomainError>::success();
+}
+
+Result<void, DomainError> AIBrain::startChatPreparationExecutor() {
+    if (!m_chatPreparationExecutor || !m_chatPreparationEnvironment) {
+        return Result<void, DomainError>::failure(domainError(
+            QStringLiteral("CHAT_PREPARATION_UNAVAILABLE"),
+            QStringLiteral("chat preparation environment is unavailable")));
+    }
+    return m_chatPreparationExecutor->start(*m_chatPreparationEnvironment);
+}
+
+void AIBrain::setIdentityBaseline(const IdentityBaseline& baseline) {
+    m_identityBaseline = baseline;
+    m_contextBuilder.setIdentityBaseline(baseline);
+    if (m_chatPreparationEnvironment) {
+        m_chatPreparationEnvironment->identityBaseline = baseline;
+    }
+}
+
+void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
+    m_promptTemplate = templ;
+    m_contextBuilder.setPromptTemplate(templ);
+    if (m_chatPreparationEnvironment) {
+        m_chatPreparationEnvironment->promptTemplate = templ;
+    }
 }
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
@@ -70,7 +116,18 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     m_runtimeSessions.clear();
     m_busy = false;
     m_runtimeServices = services;
+    m_chatPreparationRuntimeMetadata = services
+        ? services->chatPreparationRuntimeMetadata()
+        : ChatPreparationRuntimeMetadata{};
 }
+
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+void AIBrain::setChatPreparationDelayForTests(int delayMs) {
+    if (m_chatPreparationExecutor) {
+        m_chatPreparationExecutor->setTestPreparationDelayMs(delayMs);
+    }
+}
+#endif
 
 void AIBrain::resolveToolConfirmation(const QString& requestId, bool approved) {
     const auto it = m_pendingToolConfirmations.find(requestId);
@@ -148,6 +205,11 @@ void AIBrain::start() {
     }
 
     m_running = true;
+    const auto preparationStarted = startChatPreparationExecutor();
+    if (!preparationStarted.isOk()) {
+        qWarning() << "[AIBrain] unable to restart chat preparation executor:"
+                   << preparationStarted.error().message;
+    }
     std::cerr << "[AIBrain] runtime loop started" << std::endl;
     scheduleTrigger("idle_action");
     scheduleTrigger("proactive_chat");
@@ -171,6 +233,7 @@ void AIBrain::stop() {
     m_pendingToolConfirmations.clear();
     m_runtimeSessions.clear();
     m_busy = false;
+    if (m_chatPreparationExecutor) m_chatPreparationExecutor->stop();
 }
 
 void AIBrain::triggerThink(const QString& reason,
@@ -222,34 +285,104 @@ void AIBrain::triggerThink(const QString& reason,
     emit thinkingStarted(reason);
     beginActiveResponse(replyToId, triggerTag, {});
 
-    QString sessionId = beginRuntimeSession(reason, triggerTag);
+    QString sessionId = beginPreparationRuntimeSession(reason, triggerTag);
     if (m_runtimeServices && sessionId.isEmpty()) {
         qWarning() << "[AIBrain] runtime session unavailable; continuing basic chat";
     }
     if (m_activeDialogueResponse) {
         m_activeDialogueResponse->sessionId = sessionId;
     }
+    if (shouldUseLocalRouter(triggerTag)) {
+        const IntentRoute route = m_intentRouter.route(reason, triggerTag);
+        if (route.type != IntentRouteType::NeedLLM) {
+            bindLocalRuntimeSnapshot(sessionId);
+            if (m_runtimeServices && !sessionId.isEmpty() && !appendRuntimeEvent(
+                    QStringLiteral("UserMessageReceived"), sessionId,
+                    {{QStringLiteral("text"), reason},
+                     {QStringLiteral("triggerTag"), triggerTag}})) {
+                qWarning() << "[AIBrain] unable to record local user message event";
+            }
+            processUserMemoryWrite(reason, triggerTag);
+            if (tryHandleRoutedIntent(route, reason, triggerTag, sessionId)) return;
+        }
+    }
+
+    const QString preparationRequestId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
+    if (m_activeDialogueResponse) {
+        m_activeDialogueResponse->reason = reason;
+        m_activeDialogueResponse->preparationRequestId = preparationRequestId;
+    }
+    if (!m_chatPreparationExecutor) {
+        finishActiveResponse(ChatMessageStatus::Failed,
+                             QStringLiteral("Chat preparation is unavailable"));
+        return;
+    }
+    m_chatPreparationExecutor->submit(makeChatPreparationRequest(
+        preparationRequestId, m_requestGeneration, reason, triggerTag, sessionId));
+}
+
+QString AIBrain::beginPreparationRuntimeSession(const QString& reason,
+                                                const QString& triggerTag) {
+    if (!m_runtimeServices) return QString();
+    AgentSession session = AgentSession::create(reason, triggerTag);
+    const QString sessionId = session.id();
+    m_runtimeSessions.insert(sessionId, std::move(session));
+    return sessionId;
+}
+
+bool AIBrain::bindLocalRuntimeSnapshot(const QString& sessionId) {
+    if (!m_runtimeServices || sessionId.isEmpty()) return true;
+    auto session = m_runtimeSessions.find(sessionId);
+    if (session == m_runtimeSessions.end()) return false;
+    // Local routes never enqueue model preparation. Capture their identity
+    // versions only after routing has proved the request will stay local.
+    const RuntimeSnapshot snapshot = m_runtimeServices->captureSnapshot(
+        sessionId, QStringLiteral("owner"));
+    return !snapshot.sessionId.isEmpty()
+        && session->bindRuntimeSnapshot(snapshot).isOk();
+}
+
+void AIBrain::continuePreparedThink(ChatPreparationResult result) {
+    if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal
+        || result.generation != m_requestGeneration
+        || result.generation != m_activeDialogueResponse->generation
+        || result.requestId != m_activeDialogueResponse->preparationRequestId) {
+        return;
+    }
+    if (!result.error.code.isEmpty() || result.messages.isEmpty()) {
+        const QString error = result.error.message.isEmpty()
+            ? QStringLiteral("Unable to build model context") : result.error.message;
+        finishActiveResponse(ChatMessageStatus::Failed, error);
+        return;
+    }
+
+    const QString reason = m_activeDialogueResponse->reason;
+    const QString triggerTag = m_activeDialogueResponse->triggerTag;
+    const QString sessionId = m_activeDialogueResponse->sessionId;
+    m_activeDialogueResponse->reinforcementIds = result.reinforcementIds;
+
+    if (m_runtimeServices && !sessionId.isEmpty()) {
+        auto session = m_runtimeSessions.find(sessionId);
+        if (session == m_runtimeSessions.end() || !result.runtimeSnapshot.has_value()
+            || !session->bindRuntimeSnapshot(*result.runtimeSnapshot).isOk()) {
+            finishActiveResponse(ChatMessageStatus::Failed,
+                                 QStringLiteral("Unable to bind runtime snapshot"));
+            return;
+        }
+    }
+
+    // These persistence effects are moved to the ordered side-effect queue in
+    // §3.3. Keeping them after preparation already removes them from the send
+    // entry point without changing their existing semantics in this slice.
     if (m_runtimeServices && !sessionId.isEmpty() && !appendRuntimeEvent(
             QStringLiteral("UserMessageReceived"), sessionId,
             {{QStringLiteral("text"), reason},
              {QStringLiteral("triggerTag"), triggerTag}})) {
         qWarning() << "[AIBrain] unable to record user message event; continuing basic chat";
     }
-
     processUserMemoryWrite(reason, triggerTag);
-
-    if (shouldUseLocalRouter(triggerTag)
-        && tryHandleRoutedIntent(reason, triggerTag, sessionId)) {
-        return;
-    }
-
-    QList<ChatMessage> base = buildBaseMessages(reason, triggerTag, sessionId);
-    if (base.isEmpty()) {
-        finishActiveResponse(ChatMessageStatus::Failed,
-                             QStringLiteral("Unable to build model context"));
-        return;
-    }
-    thinkInternal(reason, triggerTag, sessionId, 0, base);
+    thinkInternal(reason, triggerTag, sessionId, 0, result.messages);
 }
 
 void AIBrain::beginActiveResponse(const QString& replyToId,

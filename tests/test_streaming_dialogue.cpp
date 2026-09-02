@@ -1,14 +1,20 @@
 #include <QtTest>
 
+#include <QDir>
 #include <QTemporaryDir>
+#include <QTimer>
 
 #include <memory>
 #include <optional>
 
 #include "ai/ai_brain.h"
 #include "ai/ai_tool.h"
+#include "ai/event/event_ledger.h"
 #include "ai/model/model_role_registry.h"
 #include "ai/model/model_router.h"
+#include "ai/runtime/agent_bootstrap.h"
+#include "ai/runtime/agent_runtime_services.h"
+#include "ai/runtime/runtime_ui_bridge.h"
 #include "ai/tool_registry.h"
 
 namespace {
@@ -185,6 +191,38 @@ bool initializeBrain(AIBrain& brain, QTemporaryDir& directory) {
                                     directory.filePath(QStringLiteral("memory.json"))}).isOk();
 }
 
+std::unique_ptr<CallbackRuntimeUiBridge> makeRuntimeBridge() {
+    RuntimeUiCallbacks callbacks;
+    callbacks.showChatBubble = [](const QString&, int) {};
+    callbacks.notifyUser = [](const QString&, const QString&, int) {};
+    return std::make_unique<CallbackRuntimeUiBridge>(
+        std::move(callbacks),
+        reinterpret_cast<AnimationPlayer*>(quintptr(1)),
+        reinterpret_cast<AnimationManager*>(quintptr(2)));
+}
+
+RuntimeStartRequest runtimeRequestFor(QTemporaryDir& directory,
+                                      AIBrain* brain,
+                                      RuntimeUiBridge* bridge) {
+    const QString profileId = QStringLiteral(
+        "11111111-1111-4111-8111-111111111111");
+    RuntimeStartRequest request;
+    request.profile = {QStringLiteral("Milltina"), QStringLiteral("model.gltf"), profileId};
+    request.profileMigration.profileId = profileId;
+    request.profileMigration.registeredProfileIds = {profileId};
+    request.profileMigration.appDataRoot = directory.path();
+    request.profileMigration.legacyDatabasePath =
+        directory.filePath(QStringLiteral("legacy-memory.db"));
+    request.profileMigration.legacyJsonPath =
+        directory.filePath(QStringLiteral("legacy-memory.json"));
+    request.configHash = QString(64, QLatin1Char('a'));
+    request.identityBaselineSchemaVersion = 1;
+    request.identityBaselineHash = QString(64, QLatin1Char('b'));
+    request.aiBrain = brain;
+    request.uiBridge = bridge;
+    return request;
+}
+
 LlmStreamEvent delta(const QString& text) {
     return {LlmStreamEventType::TextDelta, QStringLiteral("provider-request"),
             ChatActivityStage::StreamingText, text};
@@ -216,6 +254,11 @@ private slots:
     void stopCurrentResponse_whenNoResponseIsActive_shouldBeNoOp();
     void finishActiveResponse_whenProviderCompletesTwice_shouldEmitFinishedExactlyOnce();
     void finishActiveResponse_whenFinishedSlotStartsNextResponse_shouldPreserveNewLifecycle();
+    void triggerThink_whenPreparationIsDelayed_shouldKeepGuiEventLoopResponsiveAndDispatchOnce();
+    void triggerThink_whenStoppedBeforePreparationCompletes_shouldDiscardStaleResult();
+    void triggerThink_whenPreparationFails_shouldFinishResponseAndClearBusyState();
+    void triggerThink_whenLocalRouterHandlesRequest_shouldPreserveFastPath();
+    void triggerThink_whenExplicitForgetNeedsLlm_shouldExcludeForgottenMemoryFromPrompt();
 };
 
 void StreamingDialogueTests::completeStreamAsync_whenPrimaryCompletes_shouldReturnPrimaryStream() {
@@ -337,6 +380,7 @@ void StreamingDialogueTests::triggerThink_whenStreamingReplyCompletes_shouldEmit
     brain.triggerThink(QStringLiteral("请回答一个复杂问题"),
                        QStringLiteral("user_request"), QStringLiteral("user-1"));
 
+    QTRY_COMPARE_WITH_TIMEOUT(statuses.size(), 1, 2000);
     QCOMPARE(startedIds.size(), 1);
     QCOMPARE(joined, QStringLiteral("你好"));
     QCOMPARE(deltaIds, QList<QString>({startedIds.first(), startedIds.first()}));
@@ -375,6 +419,7 @@ void StreamingDialogueTests::triggerThink_whenUserMessageIdProvided_shouldPreser
     brain.triggerThink(QStringLiteral("分析并使用工具"),
                        QStringLiteral("user_request"), QStringLiteral("user-source"));
 
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 2, 2000);
     QCOMPARE(client.routeIds.size(), 2);
     QCOMPARE(messageIds.size(), 1);
     QCOMPARE(replyIds, QStringList({QStringLiteral("user-source")}));
@@ -418,6 +463,7 @@ void StreamingDialogueTests::thinkInternal_whenToolUseCompletes_shouldAppendCont
     brain.triggerThink(QStringLiteral("use the echo tool"),
                        QStringLiteral("user_request"), QStringLiteral("user-2"));
 
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 2, 2000);
     QCOMPARE(client.messageBatches.size(), 2);
     const QList<ChatMessage>& continuation = client.messageBatches.at(1);
     const auto assistant = std::find_if(
@@ -464,9 +510,11 @@ void StreamingDialogueTests::triggerThink_afterToolRound_shouldNotLeakToolProtoc
 
     brain.triggerThink(QStringLiteral("第一次请求"),
                        QStringLiteral("user_request"), QStringLiteral("user-1"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 2, 2000);
     brain.triggerThink(QStringLiteral("第二次请求"),
                        QStringLiteral("user_request"), QStringLiteral("user-2"));
 
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 3, 2000);
     QCOMPARE(client.messageBatches.size(), 3);
     const QList<ChatMessage>& secondRequest = client.messageBatches.at(2);
     QVERIFY(std::none_of(
@@ -573,6 +621,7 @@ void StreamingDialogueTests::stopCurrentResponse_whenStreamIsActive_shouldKeepPa
 
     brain.triggerThink(QStringLiteral("long network answer"),
                        QStringLiteral("user_request"), QStringLiteral("user-stop"));
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
     client.publishPending(delta(QStringLiteral("partial")));
     brain.stopCurrentResponse();
     client.finishPendingEvenIfCancelled();
@@ -654,6 +703,7 @@ void StreamingDialogueTests::finishActiveResponse_whenProviderCompletesTwice_sho
     brain.triggerThink(QStringLiteral("duplicate provider callback"),
                        QStringLiteral("user_request"), QStringLiteral("user-dup"));
 
+    QTRY_COMPARE_WITH_TIMEOUT(finishCount, 1, 2000);
     QCOMPARE(finishCount, 1);
     QCOMPARE(compatibilityCount, 1);
 }
@@ -693,7 +743,7 @@ void StreamingDialogueTests::finishActiveResponse_whenFinishedSlotStartsNextResp
 
     brain.triggerThink(QStringLiteral("first complex request"),
                        QStringLiteral("user_request"), QStringLiteral("user-first"));
-    QVERIFY(client.pending.has_value());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
     client.publishPending(delta(QStringLiteral("second")));
     client.finishPendingEvenIfCancelled();
 
@@ -702,6 +752,168 @@ void StreamingDialogueTests::finishActiveResponse_whenFinishedSlotStartsNextResp
     QCOMPARE(finishedIds, startedIds);
     QCOMPARE(visible, QStringList({QStringLiteral("first"),
                                    QStringLiteral("second")}));
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::
+triggerThink_whenPreparationIsDelayed_shouldKeepGuiEventLoopResponsiveAndDispatchOnce() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("done"))}, true,
+                        textResponse(QStringLiteral("done")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    brain.setChatPreparationDelayForTests(100);
+    int timerTicks = 0;
+    bool timerAdvancedBeforeDispatch = false;
+    QTimer frameTimer;
+    frameTimer.setInterval(16);
+    connect(&frameTimer, &QTimer::timeout, this,
+            [&client, &timerTicks, &timerAdvancedBeforeDispatch]() {
+                ++timerTicks;
+                if (client.routeIds.isEmpty()) timerAdvancedBeforeDispatch = true;
+            });
+    frameTimer.start();
+
+    brain.triggerThink(QStringLiteral("需要模型处理的复杂问题"),
+                       QStringLiteral("user_request"), QStringLiteral("user-async"));
+
+    QCOMPARE(client.routeIds.size(), 0);
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 1, 2000);
+    frameTimer.stop();
+    QCOMPARE(client.routeIds.size(), 1);
+    QVERIFY(timerAdvancedBeforeDispatch);
+    QVERIFY(timerTicks >= 3);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::
+triggerThink_whenStoppedBeforePreparationCompletes_shouldDiscardStaleResult() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("must-not-run"))}, true,
+                        textResponse(QStringLiteral("must-not-run")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    brain.setChatPreparationDelayForTests(100);
+    QList<ChatMessageStatus> statuses;
+    connect(&brain, &AIBrain::assistantResponseFinished, this,
+            [&statuses](const QString&, ChatMessageStatus status, const QString&) {
+                statuses.append(status);
+            });
+
+    brain.triggerThink(QStringLiteral("需要模型处理并允许立刻取消"),
+                       QStringLiteral("user_request"), QStringLiteral("user-stop-prep"));
+    QTest::qWait(10);
+    brain.stopCurrentResponse();
+    QTest::qWait(140);
+
+    QCOMPARE(client.routeIds.size(), 0);
+    QCOMPARE(statuses, QList<ChatMessageStatus>({ChatMessageStatus::Stopped}));
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::
+triggerThink_whenPreparationFails_shouldFinishResponseAndClearBusyState() {
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    brain.stop();
+    QList<ChatMessageStatus> statuses;
+    connect(&brain, &AIBrain::assistantResponseFinished, this,
+            [&statuses](const QString&, ChatMessageStatus status, const QString&) {
+                statuses.append(status);
+            });
+
+    brain.triggerThink(QStringLiteral("准备执行器已停止后的复杂请求"),
+                       QStringLiteral("user_request"), QStringLiteral("user-prep-fail"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(statuses.size(), 1, 1000);
+    QCOMPARE(statuses.first(), ChatMessageStatus::Failed);
+    QCOMPARE(client.routeIds.size(), 0);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::
+triggerThink_whenLocalRouterHandlesRequest_shouldPreserveFastPath() {
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    const RuntimeStartRequest request = runtimeRequestFor(
+        directory, &brain, bridge.get());
+    const auto started = AgentBootstrap::start(services, request);
+    QVERIFY(started.isOk());
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<CurrentTimeTool>());
+    brain.setToolRegistry(&tools);
+    QList<ChatMessageStatus> statuses;
+    connect(&brain, &AIBrain::assistantResponseFinished, this,
+            [&statuses](const QString&, ChatMessageStatus status, const QString&) {
+                statuses.append(status);
+            });
+
+    brain.triggerThink(QStringLiteral("我喜欢爵士乐，现在几点"),
+                       QStringLiteral("user_request"),
+                       QStringLiteral("user-fast"));
+
+    QCOMPARE(statuses, QList<ChatMessageStatus>({ChatMessageStatus::Complete}));
+    QCOMPARE(client.routeIds.size(), 0);
+    const QList<MemoryEntry> storedMemories = brain.memoryStore()->all();
+    QVERIFY(std::any_of(
+        storedMemories.cbegin(), storedMemories.cend(),
+        [](const MemoryEntry& entry) {
+            return entry.summary.contains(QStringLiteral("爵士乐"))
+                || entry.content.contains(QStringLiteral("爵士乐"));
+        }));
+    const auto authorization = services.authorizationFor(QStringLiteral("identity"));
+    QVERIFY(authorization.isOk());
+    EventFilter filter{{QStringLiteral("UserMessageReceived")},
+                       QString(), authorization.value()};
+    const auto events = services.eventLedger()->readAfter(0, filter, 20);
+    QVERIFY(events.isOk());
+    QCOMPARE(events.value().size(), 1);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::
+triggerThink_whenExplicitForgetNeedsLlm_shouldExcludeForgottenMemoryFromPrompt() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("已忘记"))}, true,
+                        textResponse(QStringLiteral("已忘记")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    MemoryEntry memory;
+    memory.id = QStringLiteral("forget-jazz-memory");
+    memory.type = MemoryType::Preference;
+    memory.status = MemoryStatus::Active;
+    memory.key = QStringLiteral("preference:jazz");
+    memory.summary = QStringLiteral("主人喜欢爵士乐 OLD_MEMORY_SENTINEL");
+    memory.content = memory.summary;
+    memory.importance = 0.9;
+    memory.strength = 0.8;
+    memory.confidence = 0.9;
+    memory.createdAt = QDateTime::currentDateTimeUtc();
+    memory.updatedAt = memory.createdAt;
+    const MemoryEntry stored = brain.memoryStore()->addEntry(memory);
+    QCOMPARE(stored.status, MemoryStatus::Active);
+
+    brain.triggerThink(QStringLiteral("忘记爵士乐"),
+                       QStringLiteral("user_request"),
+                       QStringLiteral("user-forget"));
+
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    for (const ChatMessage& message : client.messageBatches.first()) {
+        QVERIFY2(!message.content.contains(QStringLiteral("OLD_MEMORY_SENTINEL")),
+                 qPrintable(message.content));
+    }
+    const MemoryEntry* forgotten = brain.memoryStore()->findById(stored.id);
+    QVERIFY(forgotten);
+    QCOMPARE(forgotten->status, MemoryStatus::Deleted);
     QVERIFY(!brain.isBusy());
 }
 

@@ -6,10 +6,12 @@
 #include <QStringList>
 
 #include "memory_types.h"
+#include "memory_relation.h"
 
 class MemoryStore;
 class WorkingMemoryCache;
 class EmbeddingIndex;
+struct WorkingMemoryItem;
 
 struct MemoryQuery {
     QString text;
@@ -31,6 +33,12 @@ struct RetrievedMemory {
 
 class MemoryRetriever {
 public:
+    QList<RetrievedMemory> retrieve(
+        const QList<MemoryEntry>& entries,
+        const MemoryQuery& query,
+        const QList<WorkingMemoryItem>& workingMemory = {},
+        const QList<MemoryRelation>& relations = {}) const;
+
     QList<RetrievedMemory> retrieve(MemoryStore& store,
                                     const MemoryQuery& query,
                                     const WorkingMemoryCache* cache = nullptr,

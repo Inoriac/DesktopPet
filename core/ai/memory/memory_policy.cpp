@@ -4,17 +4,6 @@
 
 namespace {
 
-bool textMatches(const MemoryEntry& entry, const QString& query) {
-    const QString trimmed = query.trimmed();
-    if (trimmed.isEmpty()) return false;
-    for (const QString& tag : entry.tags) {
-        if (tag.contains(trimmed, Qt::CaseInsensitive)) return true;
-    }
-    return entry.key.contains(trimmed, Qt::CaseInsensitive)
-        || entry.summary.contains(trimmed, Qt::CaseInsensitive)
-        || entry.content.contains(trimmed, Qt::CaseInsensitive);
-}
-
 bool hasDuplicateActiveMemory(const MemoryStore* store, const MemoryCandidate& candidate) {
     if (!store || candidate.operation != MemoryCandidateOperation::Write) return false;
 
@@ -68,6 +57,18 @@ bool isFirstOfScopeAndType(const MemoryStore* store, const MemoryEntry& entry) {
 
 }
 
+bool MemoryPolicy::matchesForgetQuery(const MemoryEntry& entry,
+                                      const QString& query) {
+    const QString trimmed = query.trimmed();
+    if (trimmed.isEmpty()) return false;
+    for (const QString& tag : entry.tags) {
+        if (tag.contains(trimmed, Qt::CaseInsensitive)) return true;
+    }
+    return entry.key.contains(trimmed, Qt::CaseInsensitive)
+        || entry.summary.contains(trimmed, Qt::CaseInsensitive)
+        || entry.content.contains(trimmed, Qt::CaseInsensitive);
+}
+
 MemoryPolicyReport MemoryPolicy::applyCandidates(const QList<MemoryCandidate>& candidates,
                                                  MemoryStore* store) const {
     MemoryPolicyReport report;
@@ -84,7 +85,7 @@ MemoryPolicyReport MemoryPolicy::applyCandidates(const QList<MemoryCandidate>& c
         if (candidate.operation == MemoryCandidateOperation::Forget) {
             bool matched = false;
             for (const MemoryEntry& entry : store->all()) {
-                if (!textMatches(entry, candidate.query)) continue;
+                if (!matchesForgetQuery(entry, candidate.query)) continue;
                 QJsonObject payloadPatch;
                 payloadPatch["forget_query"] = candidate.query;
                 payloadPatch["forget_source"] = candidate.rawText;

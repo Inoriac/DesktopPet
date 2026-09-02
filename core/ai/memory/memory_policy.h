@@ -19,6 +19,9 @@ struct MemoryPolicyReport {
 
 class MemoryPolicy {
 public:
+    static bool matchesForgetQuery(const MemoryEntry& entry,
+                                   const QString& query);
+
     MemoryPolicyReport applyCandidates(const QList<MemoryCandidate>& candidates,
                                        MemoryStore* store) const;
 
