@@ -68,19 +68,25 @@ HNSW 文件无法参与 SQLite 事务，因此 Worker 合并一批任务后先�
 最终排序采用 ACT-R 启发式而非完整 ACT-R 仿真。对候选记忆 `i` 计算：
 
 ```text
-A_i = B_i + C_i + R_i + E_i + G_i
+A_i = 1.0 * B_i
+    + 1.0 * C_i
+    + 1.5 * R_i
+    + 0.3 * E_i
+    + 0.6 * G_i
 
 B_i = 1.0 * strength
-    + 0.8 * importance
+    + 1.0 * importance
     + ln(1 + sum((1 + accessAgeHours)^-0.5))
 
-C_i = 2.5 * semanticCue + 1.2 * lexicalOrTagCue
-R_i = 1.5 * runtimeActivation
-E_i = 0.6 * emotionMatch * currentIntensity * memoryEmotionConfidence
+C_i = 2.0 * semanticCue + 1.2 * lexicalOrTagCue
+R_i = runtimeActivation
+E_i = emotionMatch * currentIntensity * memoryEmotionConfidence
 G_i = graphPropagation
 ```
 
-所有 cue 值归一化到 `[0,1]`；cosine 相似度默认从 0.55 开始线性映射到 `[0,1]`，低于阈值不作为语义种子。访问历史只为最多 64 个候选批量读取最近 32 次记录，并以现有 `strength`、`importance` 和累计 `accessCount` 吸收更早历史。`memory_access_log` 增加 `(memory_id, created_at)` 索引。
+五个顶层系数分别对应 `baseLevelWeight=1.0`、`cueMatchWeight=1.0`、`runtimeWeight=1.5`、`emotionWeight=0.3` 和 `graphWeight=0.6`。基础激活与当前线索贡献均衡，运行时工作记忆具有明显优势；情绪只作调节，图传播由于已在边和跳数上衰减，不再作为主导分量。`B_i`、`C_i`、`R_i`、`E_i` 和 `G_i` 进入顶层加权前均使用固定边界归一化到 `[0,1]`；禁止按当轮候选集做 min-max 归一化，避免同一记忆的分数因竞争者变化而漂移。
+
+所有 cue 值归一化到 `[0,1]`；`semanticCueCoeff=2.0`、`lexicalOrTagCueCoeff=1.2`。cosine 相似度默认从 `cosineSimilarityThreshold=0.50` 开始线性映射到 `[0,1]`，低于阈值不作为语义种子。访问历史只为最多 64 个候选批量读取最近 32 次记录，并以现有 `strength`、`importance` 和累计 `accessCount` 吸收更早历史。`importanceCoeff=1.0`，与 strength 同等计入基础激活；`accessDecayExponent=-0.5`，保持 ACT-R 常用的幂律衰减。`memory_access_log` 增加 `(memory_id, created_at)` 索引。
 
 只有最终进入 Prompt 的记忆才记录一次访问并获得强化；同一轮对话对同一记忆最多强化一次。取消当前“所有直接候选都强化”的行为，避免召回器自身形成不可控的赢家循环。访问日志写入异步持久化队列，不阻塞网络请求派发。
 
@@ -129,13 +135,13 @@ delta = sigmoid(sourceActivation)
       / sqrt(max(1, traversableDegree))
 ```
 
-默认关系系数为：`DerivedFrom=1.0`、`CreatedTask=0.9`、`ConflictsWith=0.8`、`TopicOf=0.75`、`Related=0.65`、`MentionedWith=0.4`。`Supersedes` 使用定向规则：旧记忆命中时将激活完整转向新记忆，新记忆不因该关系把已取代内容带回。冲突边成对召回并显式标记，不把冲突内容当成普通事实合并。
+默认关系系数按联想强度为：`DerivedFrom=1.0`、`CreatedTask=0.85`、`TopicOf=0.8`、`ConflictsWith=0.7`、`Related=0.6`、`MentionedWith=0.3`。`Supersedes` 不作为普通扩散边计分，而使用定向版本解析规则：旧记忆命中时将激活完整转向新记忆，新记忆不因该关系把已取代内容带回。冲突边成对召回并显式标记，不把冲突内容当成普通事实合并。
 
 标签共现图先从明确标签扩展最多 4 个高权重邻接标签，再通过倒排索引产生记忆种子；记忆关系图随后传播具体经历。传播记录完整路径并防止环路，同一节点从多条路径获得的增量累加但封顶为 1。
 
 ### 12. 性格、情绪与受控随机联想
 
-传播采用平均约 80% 的稳定利用和 20% 的人格化探索。稳定分支选择当前综合激活最高的前沿；探索分支使用 Softmax 加权抽样。基础探索概率为 `clamp(0.10 + 0.20 * openness, 0.10, 0.30)`，默认人格约为 22%；温度为 `0.15 + 0.50 * openness`。
+传播采用约 70% 至 85% 的稳定利用和 15% 至 30% 的人格化探索。稳定分支选择当前综合激活最高的前沿；探索分支使用 Softmax 加权抽样。基础探索概率为 `clamp(0.15 + 0.15 * openness, 0.15, 0.30)`，即 `explorationBaseline=0.15`、`explorationOpennessRange=0.15`；中性开放度 `openness=0.5` 时为 22.5%。温度保持 `0.15 + 0.50 * openness`。
 
 `openness` 提高新奇联想，`sociability` 轻度提高 `Relationship` 类型记忆以及 `MentionedWith`、`Related` 边，`initiative` 轻度提高未完成目标与任务相关边，单项偏置不超过 15%。当前情绪提高情绪一致记忆的唤起概率，但不降低事实置信度。最终最多允许 1 条探索记忆进入 Top 8，其余位置按确定性激活排序。
 
@@ -181,3 +187,4 @@ Hippocampus 扫描需要在 50、100 和 200 条三个容量档位分别基准�
 - [2026-09-03] Hippocampus 在线扫描工作集默认最多 200 条，优先使用内存有界线性扫描，不引入第二套 ANN；扫描 P95 超过 10ms 或工作集扩大到 500 条以上时重新评估，积压不得导致原始经历丢失。
 - [2026-09-03] Daydream 成功后将原始经历标记为 `Consolidated` 并作为 evidence 归档，不再物理删除。
 - [2026-09-03] Daydream 以夜间 Sleep Cycle 为主触发；Hippocampus 达到 80% 容量或最老项等待超过 24 小时时，可在白天空闲期补充触发。
+- [2026-09-03] 激活精排采用均衡的基础/线索权重，强化运行时记忆，降低情绪、图传播和弱关系的主导性；语义阈值调整为 0.50，人格化探索范围调整为 15% 至 30%。
