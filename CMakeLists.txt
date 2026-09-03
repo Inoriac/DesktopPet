@@ -322,6 +322,10 @@ set(CORE_SOURCES
     core/ai/memory/tag_cooccurrence_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/active_memory_pool.h
+    core/ai/memory/active_memory_pool.cpp
+    core/ai/memory/hippocampus_working_set.h
+    core/ai/memory/hippocampus_working_set.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -1265,6 +1269,40 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         Qt::Core
         Qt::Sql
         Qt::Network
+        Qt::Test
+    APPLE_CORE_GRAPHICS
+)
+
+# ---- 类人激活式召回（Phase 1/2 基础组件）测试 ----
+add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
+    SOURCES
+        tests/test_memory_recall.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/active_memory_pool.h
+        core/ai/memory/active_memory_pool.cpp
+        core/ai/memory/hippocampus_working_set.h
+        core/ai/memory/hippocampus_working_set.cpp
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_json_codec.h
+        core/ai/memory/memory_json_codec.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+        core/ai/memory/partition_policy.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
         Qt::Test
     APPLE_CORE_GRAPHICS
 )

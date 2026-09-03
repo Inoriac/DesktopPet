@@ -242,6 +242,8 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "  created_at TEXT"
             ")"
         ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_access_log_memory_created "
+                       "ON memory_access_log(memory_id, created_at)"),
 
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS memory_embeddings ("
@@ -273,6 +275,37 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "CREATE INDEX IF NOT EXISTS idx_memory_sleep_staged_status "
             "ON sleep_staged_change(session_id, status)"
         ),
+
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS memory_index_jobs ("
+            "  id TEXT PRIMARY KEY,"
+            "  memory_id TEXT NOT NULL,"
+            "  operation TEXT NOT NULL,"
+            "  model TEXT,"
+            "  content_hash TEXT,"
+            "  status TEXT NOT NULL DEFAULT 'Pending',"
+            "  attempt_count INTEGER DEFAULT 0,"
+            "  created_at TEXT NOT NULL,"
+            "  updated_at TEXT"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_status "
+                       "ON memory_index_jobs(status, created_at)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_memory "
+                       "ON memory_index_jobs(memory_id)"),
+
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS memory_activation_snapshots ("
+            "  memory_id TEXT PRIMARY KEY,"
+            "  activation REAL NOT NULL,"
+            "  source TEXT,"
+            "  last_activated_at TEXT NOT NULL,"
+            "  context_id TEXT,"
+            "  saved_at TEXT NOT NULL"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_activation_snapshots_activation "
+                       "ON memory_activation_snapshots(activation DESC)"),
     };
 
     for (const QString& sql : statements) {
