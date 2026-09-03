@@ -9,6 +9,7 @@
 #include <QRandomGenerator>
 #include <QCoreApplication>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QUuid>
 
 #include <algorithm>
@@ -21,6 +22,16 @@
 #include "runtime/agent_runtime_services.h"
 #include "event/event_ledger.h"
 #include "tools/environment_tools.h"
+
+namespace {
+
+qint64 monotonicMilliseconds() {
+    QElapsedTimer timer;
+    timer.start();
+    return timer.msecsSinceReference();
+}
+
+} // namespace
 
 AIBrain::AIBrain(QObject* parent)
     : AIBrain(nullptr, configuredModelRoles(), parent) {}
@@ -38,6 +49,13 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     m_chatPreparationExecutor = std::make_unique<ChatPreparationExecutor>();
     connect(m_chatPreparationExecutor.get(), &ChatPreparationExecutor::prepared,
             this, &AIBrain::continuePreparedThink);
+    m_chatSideEffectQueue = std::make_unique<ChatSideEffectQueue>();
+    connect(m_chatSideEffectQueue.get(), &ChatSideEffectQueue::barrierCommitted,
+            this, &AIBrain::handleSideEffectBarrier);
+    connect(m_chatSideEffectQueue.get(), &ChatSideEffectQueue::persistenceWarning,
+            this, [](const QString& message) {
+                qWarning() << "[AIBrain]" << message;
+            });
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
@@ -45,6 +63,7 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
 }
 
 AIBrain::~AIBrain() {
+    if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(false);
     if (m_chatPreparationExecutor) m_chatPreparationExecutor->stop();
 }
 
@@ -79,6 +98,13 @@ Result<void, DomainError> AIBrain::initializeStorage(
         qWarning() << "[AIBrain] chat preparation executor unavailable:"
                    << preparationStarted.error().message;
     }
+    if (!m_chatPreparationRuntimeMetadata.runtimeDatabasePath.isEmpty()) {
+        const auto effectsStarted = startChatSideEffectQueue();
+        if (!effectsStarted.isOk()) {
+            qWarning() << "[AIBrain] chat side-effect queue unavailable:"
+                       << effectsStarted.error().message;
+        }
+    }
     return Result<void, DomainError>::success();
 }
 
@@ -89,6 +115,23 @@ Result<void, DomainError> AIBrain::startChatPreparationExecutor() {
             QStringLiteral("chat preparation environment is unavailable")));
     }
     return m_chatPreparationExecutor->start(*m_chatPreparationEnvironment);
+}
+
+Result<void, DomainError> AIBrain::startChatSideEffectQueue() {
+    if (!m_chatSideEffectQueue || !m_storageInitialized
+        || m_chatPreparationRuntimeMetadata.profileId.trimmed().isEmpty()
+        || m_chatPreparationRuntimeMetadata.runtimeDatabasePath.trimmed().isEmpty()) {
+        return Result<void, DomainError>::failure(domainError(
+            QStringLiteral("CHAT_SIDE_EFFECT_UNAVAILABLE"),
+            QStringLiteral("chat persistence environment is unavailable")));
+    }
+    ChatSideEffectEnvironment environment;
+    environment.profileId = m_chatPreparationRuntimeMetadata.profileId;
+    environment.runtimeDatabasePath =
+        m_chatPreparationRuntimeMetadata.runtimeDatabasePath;
+    environment.memoryDatabasePath = m_memoryStore.databasePath();
+    environment.aiCallLogPath = m_callLogger.logFilePath();
+    return m_chatSideEffectQueue->start(environment);
 }
 
 void AIBrain::setIdentityBaseline(const IdentityBaseline& baseline) {
@@ -111,6 +154,7 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
     stopCurrentResponse();
     ++m_requestGeneration;
+    if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(true);
     m_toolRuntime.cancelPendingConfirmations(QStringLiteral("runtime services changed"));
     m_pendingToolConfirmations.clear();
     m_runtimeSessions.clear();
@@ -119,12 +163,32 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     m_chatPreparationRuntimeMetadata = services
         ? services->chatPreparationRuntimeMetadata()
         : ChatPreparationRuntimeMetadata{};
+    if (services && m_storageInitialized) {
+        const auto started = startChatSideEffectQueue();
+        if (!started.isOk()) {
+            qWarning() << "[AIBrain] chat side-effect queue unavailable:"
+                       << started.error().message;
+        }
+    }
 }
 
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
 void AIBrain::setChatPreparationDelayForTests(int delayMs) {
     if (m_chatPreparationExecutor) {
         m_chatPreparationExecutor->setTestPreparationDelayMs(delayMs);
+    }
+}
+
+void AIBrain::setChatSideEffectDelayForTests(int delayMs) {
+    if (m_chatSideEffectQueue) {
+        m_chatSideEffectQueue->setTestEffectDelayMs(delayMs);
+    }
+}
+
+void AIBrain::setChatSideEffectLifecycleProbeForTests(
+    ChatSideEffectQueue::LifecycleProbe probe) {
+    if (m_chatSideEffectQueue) {
+        m_chatSideEffectQueue->setTestLifecycleProbe(std::move(probe));
     }
 }
 #endif
@@ -210,6 +274,11 @@ void AIBrain::start() {
         qWarning() << "[AIBrain] unable to restart chat preparation executor:"
                    << preparationStarted.error().message;
     }
+    const auto effectsStarted = startChatSideEffectQueue();
+    if (!effectsStarted.isOk()) {
+        qWarning() << "[AIBrain] unable to restart chat side-effect queue:"
+                   << effectsStarted.error().message;
+    }
     std::cerr << "[AIBrain] runtime loop started" << std::endl;
     scheduleTrigger("idle_action");
     scheduleTrigger("proactive_chat");
@@ -231,14 +300,17 @@ void AIBrain::stop() {
     m_idleRetryScheduled = false;
     m_toolRuntime.cancelPendingConfirmations(QStringLiteral("AI brain stopped"));
     m_pendingToolConfirmations.clear();
-    m_runtimeSessions.clear();
     m_busy = false;
     if (m_chatPreparationExecutor) m_chatPreparationExecutor->stop();
+    if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(true);
+    m_pendingSideEffectBarriers.clear();
+    m_runtimeSessions.clear();
 }
 
 void AIBrain::triggerThink(const QString& reason,
                            const QString& triggerTag,
                            const QString& replyToId) {
+    const qint64 triggerStartedAt = monotonicMilliseconds();
     const bool userInitiated = triggerTag == QLatin1String("manual")
         || triggerTag == QLatin1String("user_request")
         || triggerTag == QLatin1String("touch_event");
@@ -279,11 +351,19 @@ void AIBrain::triggerThink(const QString& reason,
     }
 
     m_busy = true;
+    ++m_requestGeneration;
     qInfo() << "[AIBrain] accepted request, trigger:" << triggerTag;
     std::cerr << "[AIBrain] accepted request: trigger="
               << triggerTag.toStdString() << std::endl;
     emit thinkingStarted(reason);
     beginActiveResponse(replyToId, triggerTag, {});
+    const QString preparationRequestId = QUuid::createUuid().toString(
+        QUuid::WithoutBraces);
+    if (m_activeDialogueResponse) {
+        m_activeDialogueResponse->preparationRequestId = preparationRequestId;
+        m_activeDialogueResponse->uiAcknowledgeMs = qMax<qint64>(
+            0, monotonicMilliseconds() - triggerStartedAt);
+    }
 
     QString sessionId = beginPreparationRuntimeSession(reason, triggerTag);
     if (m_runtimeServices && sessionId.isEmpty()) {
@@ -302,16 +382,21 @@ void AIBrain::triggerThink(const QString& reason,
                      {QStringLiteral("triggerTag"), triggerTag}})) {
                 qWarning() << "[AIBrain] unable to record local user message event";
             }
-            processUserMemoryWrite(reason, triggerTag);
+            enqueueUserMemoryWrite(reason, triggerTag, preparationRequestId,
+                                   m_requestGeneration, sessionId);
             if (tryHandleRoutedIntent(route, reason, triggerTag, sessionId)) return;
         }
     }
 
-    const QString preparationRequestId = QUuid::createUuid().toString(
-        QUuid::WithoutBraces);
+    if (m_runtimeServices && !sessionId.isEmpty() && !appendRuntimeEvent(
+            QStringLiteral("UserMessageReceived"), sessionId,
+            {{QStringLiteral("text"), reason},
+             {QStringLiteral("triggerTag"), triggerTag}})) {
+        qWarning() << "[AIBrain] unable to queue user message event";
+    }
+
     if (m_activeDialogueResponse) {
         m_activeDialogueResponse->reason = reason;
-        m_activeDialogueResponse->preparationRequestId = preparationRequestId;
     }
     if (!m_chatPreparationExecutor) {
         finishActiveResponse(ChatMessageStatus::Failed,
@@ -361,6 +446,9 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
     const QString triggerTag = m_activeDialogueResponse->triggerTag;
     const QString sessionId = m_activeDialogueResponse->sessionId;
     m_activeDialogueResponse->reinforcementIds = result.reinforcementIds;
+    m_activeDialogueResponse->preparedAtMonotonicMs = monotonicMilliseconds();
+    m_activeDialogueResponse->preparationMs = qMax<qint64>(
+        0, result.preparationDurationMs);
 
     if (m_runtimeServices && !sessionId.isEmpty()) {
         auto session = m_runtimeSessions.find(sessionId);
@@ -372,16 +460,26 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
         }
     }
 
-    // These persistence effects are moved to the ordered side-effect queue in
-    // §3.3. Keeping them after preparation already removes them from the send
-    // entry point without changing their existing semantics in this slice.
-    if (m_runtimeServices && !sessionId.isEmpty() && !appendRuntimeEvent(
-            QStringLiteral("UserMessageReceived"), sessionId,
-            {{QStringLiteral("text"), reason},
-             {QStringLiteral("triggerTag"), triggerTag}})) {
-        qWarning() << "[AIBrain] unable to record user message event; continuing basic chat";
+    const MemoryReinforcementBatch reinforcement =
+        m_memoryStore.stageReinforcement(result.reinforcementIds);
+    if (!reinforcement.entries.isEmpty() && m_chatSideEffectQueue
+        && m_chatSideEffectQueue->isAccepting()) {
+        DeferredChatSideEffect effect;
+        effect.type = ChatSideEffectType::MemoryReinforcement;
+        effect.requestId = result.requestId;
+        effect.generation = result.generation;
+        effect.sessionId = sessionId;
+        effect.reinforcedEntries = reinforcement.entries;
+        if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
+            m_memoryStore.rollbackReinforcement(reinforcement);
+            qWarning() << "[AIBrain] unable to queue memory reinforcement";
+        }
+    } else if (!reinforcement.entries.isEmpty()) {
+        m_memoryStore.rollbackReinforcement(reinforcement);
+        qWarning() << "[AIBrain] memory reinforcement queue is unavailable";
     }
-    processUserMemoryWrite(reason, triggerTag);
+    enqueueUserMemoryWrite(reason, triggerTag, result.requestId,
+                           result.generation, sessionId);
     thinkInternal(reason, triggerTag, sessionId, 0, result.messages);
 }
 
@@ -394,6 +492,7 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
     response.triggerTag = triggerTag;
     response.sessionId = sessionId;
     response.generation = m_requestGeneration;
+    response.acceptedAtMonotonicMs = monotonicMilliseconds();
     m_activeDialogueResponse.emplace(std::move(response));
     emit assistantResponseStarted(m_activeDialogueResponse->messageId,
                                   m_activeDialogueResponse->replyToId,
@@ -423,7 +522,8 @@ void AIBrain::appendActiveDelta(const QString& textDelta) {
 }
 
 void AIBrain::finishActiveResponse(ChatMessageStatus status,
-                                   const QString& errorMessage) {
+                                   const QString& errorMessage,
+                                   const QJsonObject& responseLog) {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     m_activeDialogueResponse->terminal = true;
     m_activeDialogueResponse->status = status;
@@ -437,14 +537,21 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
             QStringLiteral("AssistantResponseProduced"), finished.sessionId,
             {{QStringLiteral("text"), finished.visibleContent},
              {QStringLiteral("triggerTag"), finished.triggerTag},
-             {QStringLiteral("modelRole"), QStringLiteral("dialogue")}});
+             {QStringLiteral("modelRole"), QStringLiteral("dialogue")}},
+            finished.preparationRequestId, finished.generation);
         ChatMessage assistantMessage;
         assistantMessage.role = QStringLiteral("assistant");
         assistantMessage.content = finished.visibleContent;
         appendToMemory(assistantMessage);
     }
 
-    finishRuntimeSession(finished.sessionId);
+    if (!responseLog.isEmpty()) {
+        enqueueCallLog(ChatSideEffectType::ResponseLog,
+                       responseLog.value(QStringLiteral("request_id")).toString(),
+                       finished.sessionId, finished.generation, responseLog);
+    }
+
+    finishRuntimeSession(finished.sessionId, finished.generation);
     m_busy = false;
     if (status == ChatMessageStatus::Complete
         && !finished.visibleContent.isEmpty()) {
@@ -459,6 +566,23 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
 
 void AIBrain::stopCurrentResponse() {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    const QString sessionId = m_activeDialogueResponse->sessionId;
+    const quint64 generation = m_activeDialogueResponse->generation;
+    const auto pendingIds = m_pendingResponseLogs.keys();
+    for (const QString& requestId : pendingIds) {
+        const PendingResponseLog pending = m_pendingResponseLogs.value(requestId);
+        if (pending.sessionId != sessionId || pending.generation != generation
+            || !pending.handled
+            || pending.handled->exchange(true, std::memory_order_acq_rel)) {
+            continue;
+        }
+        enqueueCallLog(
+            ChatSideEffectType::ResponseLog, requestId, sessionId, generation,
+            AiCallLogger::responseRecord(
+                requestId, m_petName, false, {},
+                QStringLiteral("LLM_REQUEST_CANCELLED")));
+        m_pendingResponseLogs.remove(requestId);
+    }
     ++m_requestGeneration;
     if (m_activeDialogueResponse->requestHandle) {
         m_activeDialogueResponse->requestHandle->cancel();
@@ -484,32 +608,83 @@ QString AIBrain::beginRuntimeSession(const QString& reason,
     return sessionId;
 }
 
-void AIBrain::finishRuntimeSession(const QString& sessionId) {
+void AIBrain::finishRuntimeSession(const QString& sessionId, quint64 generation) {
     if (sessionId.isEmpty()) return;
-    if (m_runtimeServices && m_runtimeSessions.contains(sessionId)) {
+    if (m_chatSideEffectQueue && m_chatSideEffectQueue->isAccepting()) {
+        m_pendingSideEffectBarriers.insert(sessionId, generation);
+        if (m_chatSideEffectQueue->tryEnqueueBarrier(sessionId, generation)) {
+            return;
+        }
+        m_pendingSideEffectBarriers.remove(sessionId);
+        qWarning() << "[AIBrain] unable to queue session persistence barrier";
+    }
+    m_runtimeSessions.remove(sessionId);
+}
+
+void AIBrain::handleSideEffectBarrier(const QString& sessionId,
+                                      quint64 generation) {
+    const auto pending = m_pendingSideEffectBarriers.constFind(sessionId);
+    if (pending == m_pendingSideEffectBarriers.constEnd()
+        || pending.value() != generation) {
+        return;
+    }
+    m_pendingSideEffectBarriers.remove(sessionId);
+    if (generation == m_requestGeneration && m_runtimeServices
+        && m_runtimeSessions.contains(sessionId)) {
         m_runtimeServices->reflectOnCompletedSession(sessionId);
     }
     m_runtimeSessions.remove(sessionId);
 }
 
+void AIBrain::enqueueCallLog(ChatSideEffectType type,
+                             const QString& requestId,
+                             const QString& sessionId,
+                             quint64 generation,
+                             QJsonObject record) {
+    if (!m_chatSideEffectQueue || !m_chatSideEffectQueue->isAccepting()) return;
+    DeferredChatSideEffect effect;
+    effect.type = type;
+    effect.requestId = requestId;
+    effect.sessionId = sessionId;
+    effect.generation = generation;
+    effect.logRecord = std::move(record);
+    m_chatSideEffectQueue->enqueue(std::move(effect));
+}
+
 bool AIBrain::appendRuntimeEvent(const QString& type,
                                  const QString& sessionId,
-                                 const QJsonObject& payload) {
+                                 const QJsonObject& payload,
+                                 const QString& requestId,
+                                 quint64 generation) {
     if (!m_runtimeServices) return true;
-    EventLedger* ledger = m_runtimeServices->eventLedger();
-    if (!ledger) return true;
+    if (!m_runtimeServices->eventLedger()) return true;
+    if (!m_chatSideEffectQueue || !m_chatSideEffectQueue->isAccepting()) return false;
     const auto session = m_runtimeSessions.constFind(sessionId);
-    if (session == m_runtimeSessions.constEnd()
-        || !session->runtimeSnapshot().has_value()) {
-        return false;
+    QString profileId = m_chatPreparationRuntimeMetadata.profileId;
+    if (session != m_runtimeSessions.constEnd()
+        && session->runtimeSnapshot().has_value()) {
+        profileId = session->runtimeSnapshot()->profileId;
     }
+    if (profileId.trimmed().isEmpty()) return false;
     EventDraft draft;
-    draft.profileId = session->runtimeSnapshot()->profileId;
+    draft.profileId = profileId;
     draft.type = type;
     draft.source = QStringLiteral("AIBrain");
     draft.sessionId = sessionId;
     draft.payload = payload;
-    return ledger->append(draft).isOk();
+    DeferredChatSideEffect effect;
+    effect.type = ChatSideEffectType::RuntimeEvent;
+    effect.requestId = !requestId.isEmpty()
+        ? requestId
+        : m_activeDialogueResponse
+            ? m_activeDialogueResponse->preparationRequestId : sessionId;
+    effect.generation = generation > 0
+        ? generation
+        : m_activeDialogueResponse
+            ? m_activeDialogueResponse->generation : m_requestGeneration;
+    effect.sessionId = sessionId;
+    effect.event = std::move(draft);
+    return m_chatSideEffectQueue->tryEnqueue(std::move(effect));
 }
 
 void AIBrain::onUserInteraction(const QString& eventName, const QString& detail) {
@@ -529,8 +704,11 @@ bool AIBrain::shouldUseLocalRouter(const QString& triggerTag) const {
     return triggerTag == "manual" || triggerTag == "user_request";
 }
 
-void AIBrain::processUserMemoryWrite(const QString& input,
-                                     const QString& triggerTag) {
+void AIBrain::enqueueUserMemoryWrite(const QString& input,
+                                     const QString& triggerTag,
+                                     const QString& requestId,
+                                     quint64 generation,
+                                     const QString& sessionId) {
     if (!shouldUseLocalRouter(triggerTag)) {
         return;
     }
@@ -542,44 +720,65 @@ void AIBrain::processUserMemoryWrite(const QString& input,
                 annotateMemoryEntry(candidate.entry);
             }
         }
-        // Explicit remember/forget requests keep their deterministic, immediate
-        // semantics and must not also be duplicated into the Daydream inbox.
-        m_memoryPolicy.applyCandidates(candidates, &m_memoryStore);
-        return;
     }
-
-    if (!m_daydreamConfig.enabled) {
-        return;
+    MemoryEntry impression;
+    if (candidates.isEmpty() && m_daydreamConfig.enabled) {
+        impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
+        if (!impression.content.isEmpty()) annotateMemoryEntry(impression);
     }
+    if (candidates.isEmpty() && impression.content.isEmpty()) return;
 
-    MemoryEntry impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
-    if (impression.content.isEmpty()) return;
-    annotateMemoryEntry(impression);
-
-    // Coalesce exact repeated self-disclosures so recurrence becomes a useful
-    // consolidation signal instead of creating duplicate inbox rows.
-    for (const MemoryEntry& existing : m_memoryStore.all()) {
-        if (existing.status != MemoryStatus::Active
-            || existing.partition != QLatin1String("hippocampus")
-            || existing.key != impression.key) {
-            continue;
+    MemoryMutationBatch mutations;
+    if (!candidates.isEmpty()) {
+        mutations = m_memoryPolicy.stageCandidates(candidates, &m_memoryStore).mutations;
+    } else {
+        bool staged = false;
+        for (const MemoryEntry& existing : m_memoryStore.all()) {
+            if (existing.status != MemoryStatus::Active
+                || existing.partition != QLatin1String("hippocampus")
+                || existing.key != impression.key) {
+                continue;
+            }
+            MemoryEntry updated = existing;
+            updated.mentionCount = qMax(1, existing.mentionCount) + 1;
+            updated.updatedAt = QDateTime::currentDateTimeUtc();
+            if (!updated.evidence.contains(impression.content)) {
+                updated.evidence.append(impression.content);
+            }
+            staged = m_memoryStore.stageEntryUpdate(updated, &mutations);
+            break;
         }
-        MemoryEntry updated = existing;
-        updated.mentionCount = qMax(1, existing.mentionCount) + 1;
-        updated.updatedAt = QDateTime::currentDateTimeUtc();
-        if (!updated.evidence.contains(impression.content)) {
-            updated.evidence.append(impression.content);
+        if (!staged) {
+            int pendingCount = 0;
+            for (const MemoryEntry& entry : m_memoryStore.all()) {
+                if (entry.status == MemoryStatus::Active
+                    && entry.partition == QLatin1String("hippocampus")) {
+                    ++pendingCount;
+                }
+            }
+            if (m_daydreamConfig.inboxLimit <= 0
+                || pendingCount < m_daydreamConfig.inboxLimit) {
+                m_memoryStore.stageEntry(impression, &mutations);
+            }
         }
-        m_memoryStore.updateEntryById(updated);
+    }
+    if (mutations.isEmpty()) return;
+    if (!m_chatSideEffectQueue || !m_chatSideEffectQueue->isAccepting()) {
+        m_memoryStore.rollbackMutationBatch(mutations);
+        qWarning() << "[AIBrain] user memory persistence queue is unavailable";
         return;
     }
 
-    DaydreamConsolidator consolidator(m_memoryStore);
-    if (consolidator.pendingCount() >= m_daydreamConfig.inboxLimit) {
-        qWarning() << "[Daydream] inbox capacity reached; skipping new impression";
-        return;
+    DeferredChatSideEffect effect;
+    effect.type = ChatSideEffectType::UserMemoryWrite;
+    effect.requestId = requestId;
+    effect.generation = generation;
+    effect.sessionId = sessionId;
+    effect.memoryMutations = mutations;
+    if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
+        m_memoryStore.rollbackMutationBatch(mutations);
+        qWarning() << "[AIBrain] unable to queue user memory persistence";
     }
-    m_memoryStore.addEntry(impression);
 }
 
 std::optional<EmotionSnapshot> AIBrain::currentEmotionSnapshot() const {

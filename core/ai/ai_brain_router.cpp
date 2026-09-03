@@ -260,16 +260,34 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
         event["error"] = outcome.result.errorMessage;
     }
 
-    MemoryEntry storedEvent = m_memoryStore.add(
-        MemoryType::Event,
-        "tool_execution",
-        event,
-        {triggerTag, initiatedByLlm ? "llm" : "router", toolName});
-    annotateMemoryEntry(storedEvent);
-    if (!storedEvent.id.isEmpty() && storedEvent.emotion != EmotionType::Neutral) {
-        m_memoryStore.updateEntryById(storedEvent);
+    MemoryEntry toolMemory;
+    toolMemory.type = MemoryType::Event;
+    toolMemory.key = QStringLiteral("tool_execution");
+    toolMemory.value = event;
+    toolMemory.tags = {triggerTag,
+                       initiatedByLlm ? QStringLiteral("llm")
+                                      : QStringLiteral("router"),
+                       toolName};
+    toolMemory.source = QStringLiteral("tool_result");
+    annotateMemoryEntry(toolMemory);
+    MemoryMutationBatch mutations;
+    m_memoryStore.stageEntry(toolMemory, &mutations);
+    if (m_chatSideEffectQueue && m_chatSideEffectQueue->isAccepting()) {
+        DeferredChatSideEffect effect;
+        effect.type = ChatSideEffectType::UserMemoryWrite;
+        effect.requestId = outcome.requestId;
+        effect.generation = m_activeDialogueResponse
+            ? m_activeDialogueResponse->generation : m_requestGeneration;
+        effect.sessionId = sessionId;
+        effect.memoryMutations = mutations;
+        if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
+            m_memoryStore.rollbackMutationBatch(mutations);
+            qWarning() << "[AIBrain] unable to queue tool outcome memory";
+        }
+    } else {
+        m_memoryStore.rollbackMutationBatch(mutations);
+        qWarning() << "[AIBrain] tool outcome persistence queue is unavailable";
     }
-    m_memoryStore.save();
 
     const QString summary = QStringLiteral("工具 %1 执行%2")
         .arg(toolName, outcome.result.success ? QStringLiteral("成功") : QStringLiteral("失败"));

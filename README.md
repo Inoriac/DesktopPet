@@ -54,6 +54,31 @@
 * 继续完善 `Trigger + Policy + Action` 调度策略，利用现有天气、节假日、电量、网络状态和用户空闲能力提供克制的主动陪伴。
 * 记忆质量评估（retrieval_hit_rate / utility_score）与按 DesktopPet 自身指标微调遗忘参数。
 * Cross-Encoder 重排序、记忆 ID 语义化、SQLite 连接池等工程优化。
+* 在下面列出的量化条件触发后，将聊天编排从分阶段异步流水线迁移为完整 Agent Actor；触发前优先做缺陷修复和定点性能调优。
+
+---
+
+## 💬 聊天异步架构与 Agent Actor 演进
+
+当前聊天链路采用分阶段异步流水线，保留单 active response 的成熟状态机：初始发送入口的 GUI 线程只完成请求校验、pending assistant 发布和不可变任务投递；准备线程读取 persona / memory 并构建 prompt，结果回到 GUI 线程通过 `requestId + generation` 门禁后立即派发网络请求；副作用线程使用独立 SQLite 连接，按 FIFO 提交 runtime event、记忆强化、用户记忆写入和 AI 调用日志，session barrier 提交后才允许反思与资源释放。副作用队列默认容量为 256，满载时优先丢弃 request / response 日志，不以非关键持久化阻塞 GUI 或模型派发。
+
+当前不卡顿保证覆盖初始发送、上下文准备和持久化链路。工具实现本身仍由现有聊天状态机同步调用；若单次工具执行开始稳定占用一帧以上，优先将工具执行迁入独立 executor，并把它作为升级完整 Agent Actor 的触发信号。
+
+当前性能预算如下：
+
+* GUI 线程单段聊天逻辑 P95 `< 4ms`。
+* 用户消息与 pending assistant 的 UI acknowledge P95 `< 16ms`。
+* 本地准备完成到网络派发 P95 `< 50ms`。
+* 16ms GUI timer 在 50-100ms 模拟准备延迟期间应持续推进。
+
+满足以下任一条件时，启动完整 Agent Actor 迁移评审：
+
+* 上述任一核心预算在连续两个发布版本的 Windows 性能回归中超限，且定点优化后仍无法恢复。
+* 产品需要同时运行 `>= 2` 个相互独立的多轮会话，现有单 active response 状态机不再成立。
+* 视觉、语音、工具等形成 `>= 3` 个需要独立取消、优先级和背压策略的并发消息生产者。
+* 代表性负载下队列深度连续 5 分钟保持在 `>= 192`（容量的 75%），或非关键日志丢弃率达到 1%。
+
+迁移时沿用现有不可变消息、generation 门禁和 barrier 契约，由单一 Agent Actor 独占会话状态并通过 mailbox 处理优先级、取消与背压；渲染和聊天展示仍只消费状态事件，不直接等待 Actor 内部工作。
 
 ---
 

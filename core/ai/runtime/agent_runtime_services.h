@@ -2,6 +2,7 @@
 #define DESKTOP_PET_AGENT_RUNTIME_SERVICES_H
 
 #include <memory>
+#include <functional>
 
 #include "ai/domain/domain_result.h"
 #include "ai/event/event_types.h"
@@ -73,6 +74,11 @@ public:
     }
     OwnerDiaryServer* ownerDiaryServer() const { return m_ownerDiaryServer.get(); }
     void reflectOnCompletedSession(const QString& sessionId);
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+    void setReflectionProbeForTests(std::function<void(const QString&)> probe) {
+        m_reflectionProbeForTests = std::move(probe);
+    }
+#endif
     void cancelSleepForUserInteraction();
     bool isStarted() const { return m_started; }
     void stop();
@@ -92,6 +98,9 @@ private:
     PersonalityPolicy m_personalityPolicy;
     EmotionStateProvider* m_emotionStateProvider = nullptr;
     AgentScheduler* m_agentScheduler = nullptr;
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+    std::function<void(const QString&)> m_reflectionProbeForTests;
+#endif
     AIBrain* m_aiBrain = nullptr;
     RuntimeUiBridge* m_uiBridge = nullptr;
     bool m_started = false;

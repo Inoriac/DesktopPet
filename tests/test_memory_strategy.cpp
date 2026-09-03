@@ -46,6 +46,7 @@ private slots:
     void testPolicyWritesAndSkipsDuplicate();
     void testPolicyRejectsSensitiveMemory();
     void testPolicyMarksMatchedMemoryDeleted();
+    void stageCandidates_whenWriteSupersedesAndForget_shouldKeepGuiCacheAheadOfPersistence();
     void testStoreUpdateEntryByIdPersists();
     void testStoreDoesNotMutateWhenPersistenceFails();
     void testRepositoryClearRollsBackOnFailure();
@@ -63,6 +64,8 @@ private slots:
     void testRetrieverEmotionBoost();
     void testRetrieverReinforcement();
     void testRetrieverReinforcementPersists();
+    void stageReinforcement_whenIdsExist_shouldUpdateMemoryAndReturnOneBatch();
+    void stageReinforcement_whenIdsRepeatOrAreMissing_shouldUpdateEachKnownEntryOnce();
     void testRetrieverGraphExpansion();
     void testMemoryOrganizeDryRun();
     void testMemoryOrganizeExpiresWithoutDeleting();
@@ -246,6 +249,70 @@ void TestMemoryStrategy::testPolicyMarksMatchedMemoryDeleted() {
     QCOMPARE(forgetReport.forgotten, 1);
     QCOMPARE(store.all().size(), 1);
     QCOMPARE(store.all().first().status, MemoryStatus::Deleted);
+}
+
+void TestMemoryStrategy::
+stageCandidates_whenWriteSupersedesAndForget_shouldKeepGuiCacheAheadOfPersistence() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    MemoryEntry existing;
+    existing.id = QStringLiteral("existing-preference");
+    existing.type = MemoryType::Preference;
+    existing.key = QStringLiteral("preference:language");
+    existing.scope = QStringLiteral("preference");
+    existing.summary = QStringLiteral("用户喜欢 Java");
+    existing.content = existing.summary;
+    existing.confidence = 0.95;
+    existing.importance = 0.7;
+    existing.strength = 0.7;
+    const MemoryEntry stored = store.addEntry(existing);
+
+    MemoryCandidate replacement;
+    replacement.operation = MemoryCandidateOperation::Write;
+    replacement.explicitRequest = true;
+    replacement.entry.type = MemoryType::Preference;
+    replacement.entry.key = existing.key;
+    replacement.entry.scope = existing.scope;
+    replacement.entry.summary = QStringLiteral("用户喜欢 C++");
+    replacement.entry.content = replacement.entry.summary;
+    replacement.entry.confidence = 0.96;
+    replacement.entry.importance = 0.75;
+    replacement.entry.strength = 0.75;
+
+    MemoryPolicy policy;
+    const StagedMemoryPolicyResult staged = policy.stageCandidates({replacement}, &store);
+    QCOMPARE(staged.report.written, 1);
+    QCOMPARE(store.findById(stored.id)->status, MemoryStatus::Superseded);
+    QCOMPARE(store.all().size(), 2);
+    QCOMPARE(store.all().last().status, MemoryStatus::Active);
+
+    MemoryStore beforeCommit;
+    setupStoreWithDb(beforeCommit, tempDir);
+    QCOMPARE(beforeCommit.all().size(), 1);
+    QCOMPARE(beforeCommit.findById(stored.id)->status, MemoryStatus::Active);
+
+    QVERIFY(store.persistMutationBatch(staged.mutations));
+    MemoryStore afterCommit;
+    setupStoreWithDb(afterCommit, tempDir);
+    QCOMPARE(afterCommit.all().size(), 2);
+    QCOMPARE(afterCommit.findById(stored.id)->status, MemoryStatus::Superseded);
+
+    MemoryCandidate forget;
+    forget.operation = MemoryCandidateOperation::Forget;
+    forget.explicitRequest = true;
+    forget.query = QStringLiteral("C++");
+    forget.rawText = QStringLiteral("忘记 C++");
+    const StagedMemoryPolicyResult forgotten = policy.stageCandidates({forget}, &store);
+    QCOMPARE(forgotten.report.forgotten, 1);
+    QCOMPARE(store.all().last().status, MemoryStatus::Deleted);
+
+    MemoryStore beforeForgetCommit;
+    setupStoreWithDb(beforeForgetCommit, tempDir);
+    QCOMPARE(beforeForgetCommit.all().last().status, MemoryStatus::Active);
+    QVERIFY(store.persistMutationBatch(forgotten.mutations));
 }
 
 void TestMemoryStrategy::testStoreUpdateEntryByIdPersists() {
@@ -850,6 +917,75 @@ void TestMemoryStrategy::testRetrieverReinforcementPersists() {
     QCOMPARE(reinforced->accessCount, 1);
     QVERIFY(reinforced->strength >= 0.6);
     QVERIFY(reinforced->lastAccessedAt.isValid());
+}
+
+void TestMemoryStrategy::
+stageReinforcement_whenIdsExist_shouldUpdateMemoryAndReturnOneBatch() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+
+    MemoryEntry first;
+    first.type = MemoryType::Preference;
+    first.key = QStringLiteral("reinforcement:first");
+    first.summary = QStringLiteral("first staged reinforcement");
+    first.content = first.summary;
+    first.strength = 0.4;
+    first.confidence = 0.9;
+    const MemoryEntry storedFirst = store.addEntry(first);
+
+    MemoryEntry second = first;
+    second.key = QStringLiteral("reinforcement:second");
+    second.summary = QStringLiteral("second staged reinforcement");
+    second.content = second.summary;
+    const MemoryEntry storedSecond = store.addEntry(second);
+    const QDateTime accessedAt = QDateTime::currentDateTimeUtc();
+
+    const MemoryReinforcementBatch batch = store.stageReinforcement(
+        {storedFirst.id, storedSecond.id}, accessedAt);
+
+    QCOMPARE(batch.entries.size(), 2);
+    QCOMPARE(store.findById(storedFirst.id)->accessCount, 1);
+    QCOMPARE(store.findById(storedSecond.id)->accessCount, 1);
+    QCOMPARE(store.findById(storedFirst.id)->lastAccessedAt, accessedAt);
+
+    MemoryStore persisted;
+    setupStoreWithDb(persisted, directory);
+    QCOMPARE(persisted.findById(storedFirst.id)->accessCount, 0);
+    QCOMPARE(persisted.findById(storedSecond.id)->accessCount, 0);
+}
+
+void TestMemoryStrategy::
+stageReinforcement_whenIdsRepeatOrAreMissing_shouldUpdateEachKnownEntryOnce() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+
+    MemoryEntry active;
+    active.type = MemoryType::Semantic;
+    active.key = QStringLiteral("reinforcement:active");
+    active.summary = QStringLiteral("active staged reinforcement");
+    active.content = active.summary;
+    active.strength = 0.4;
+    const MemoryEntry storedActive = store.addEntry(active);
+
+    MemoryEntry deleted = active;
+    deleted.key = QStringLiteral("reinforcement:deleted");
+    deleted.summary = QStringLiteral("deleted staged reinforcement");
+    deleted.content = deleted.summary;
+    deleted.status = MemoryStatus::Deleted;
+    const MemoryEntry storedDeleted = store.addEntry(deleted);
+
+    const MemoryReinforcementBatch batch = store.stageReinforcement(
+        {storedActive.id, QStringLiteral("missing"), storedActive.id,
+         storedDeleted.id});
+
+    QCOMPARE(batch.entries.size(), 1);
+    QCOMPARE(store.findById(storedActive.id)->accessCount, 1);
+    QCOMPARE(store.findById(storedDeleted.id)->accessCount, 0);
+    QCOMPARE(store.findById(storedDeleted.id)->status, MemoryStatus::Deleted);
 }
 
 void TestMemoryStrategy::testRetrieverGraphExpansion() {

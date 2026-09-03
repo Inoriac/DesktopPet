@@ -328,6 +328,9 @@ Result<EventReadAuthorization, DomainError> AgentRuntimeServices::authorizationF
 }
 
 void AgentRuntimeServices::reflectOnCompletedSession(const QString& sessionId) {
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+    if (m_reflectionProbeForTests) m_reflectionProbeForTests(sessionId);
+#endif
     if (!m_started || sessionId.trimmed().isEmpty() || !m_eventLedger
         || !m_innerThoughtService || !m_reflectionCancellation) {
         return;

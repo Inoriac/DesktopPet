@@ -382,23 +382,41 @@ bool MemoryStore::removeEntryById(const QString& id) {
 }
 
 bool MemoryStore::load(QString* errorMessage) {
+    if (!loadDatabaseOnly(errorMessage)) return false;
+
+    if (m_entries.isEmpty() && !m_memoryFilePath.trimmed().isEmpty()
+        && QFile::exists(m_memoryFilePath)) {
+        if (!importLegacyJson(m_memoryFilePath, errorMessage)) return false;
+        m_entries = m_repository->loadAll();
+    }
+
+    return true;
+}
+
+bool MemoryStore::openDatabase(QString* errorMessage) {
+    if (m_repository && m_repository->isOpen()) return true;
     QString dbError;
-    if (!m_repository->open(m_databasePath, &dbError)) {
-        if (errorMessage) *errorMessage = QStringLiteral("SQLite open failed: %1").arg(dbError);
+    if (!m_repository || !m_repository->open(m_databasePath, &dbError)) {
+        if (errorMessage) {
+            *errorMessage = QStringLiteral("SQLite open failed: %1").arg(dbError);
+        }
         return false;
     }
 
     m_relationGraph.setConnectionName(m_repository->connectionName());
     m_tagCooccurrenceGraph.setConnectionName(m_repository->connectionName());
+    return true;
+}
 
-    QList<MemoryEntry> existing = m_repository->loadAll();
+bool MemoryStore::loadDatabaseOnly(QString* errorMessage) {
+    if (!openDatabase(errorMessage)) return false;
+    m_entries = m_repository->loadAll();
+    return true;
+}
 
-    if (existing.isEmpty() && QFile::exists(m_memoryFilePath)) {
-        if (!importLegacyJson(m_memoryFilePath, errorMessage)) return false;
-        existing = m_repository->loadAll();
-    }
-
-    m_entries = existing;
+bool MemoryStore::refreshDatabaseOnly(QString* errorMessage) {
+    if (!openDatabase(errorMessage)) return false;
+    m_entries = m_repository->loadAll();
     return true;
 }
 
@@ -464,6 +482,7 @@ bool MemoryStore::importLegacyJson(const QString& jsonPath, QString* errorMessag
 }
 
 bool MemoryStore::save(QString* errorMessage) const {
+    if (m_memoryFilePath.trimmed().isEmpty()) return true;
     const QFileInfo info(m_memoryFilePath);
     if (!info.dir().exists() && !QDir().mkpath(info.dir().path())) {
         if (errorMessage) *errorMessage = "failed to create memory directory";
@@ -509,6 +528,16 @@ MemoryEntry MemoryStore::add(MemoryType type,
 }
 
 MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
+    MemoryMutationBatch batch;
+    const MemoryEntry stored = stageEntry(entry, &batch);
+    if (!persistMutationBatch(batch)) {
+        rollbackMutationBatch(batch);
+        return {};
+    }
+    return stored;
+}
+
+MemoryEntry MemoryStore::normalizedEntry(const MemoryEntry& entry) const {
     MemoryEntry stored = entry;
     if (stored.id.trimmed().isEmpty()) {
         stored.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -545,11 +574,76 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
         if (stored.strength < 0.8) stored.strength = 0.8;
     }
 
-    if (!persistEntry(stored)) {
-        return {};
-    }
-    m_entries.append(stored);
     return stored;
+}
+
+MemoryEntry MemoryStore::stageEntry(const MemoryEntry& entry,
+                                    MemoryMutationBatch* batch) {
+    if (!batch) return {};
+    const MemoryEntry stored = normalizedEntry(entry);
+    m_entries.append(stored);
+    batch->entries.append({std::nullopt, stored});
+    return stored;
+}
+
+bool MemoryStore::stageEntryUpdate(const MemoryEntry& entry,
+                                   MemoryMutationBatch* batch) {
+    if (!batch || entry.id.trimmed().isEmpty()) return false;
+    for (MemoryEntry& existing : m_entries) {
+        if (existing.id != entry.id) continue;
+        MemoryEntry stored = entry;
+        if (!stored.createdAt.isValid()) {
+            stored.createdAt = existing.createdAt.isValid()
+                ? existing.createdAt : QDateTime::currentDateTimeUtc();
+        }
+        if (!stored.updatedAt.isValid() || stored.updatedAt == existing.updatedAt) {
+            stored.updatedAt = QDateTime::currentDateTimeUtc();
+        }
+        if (stored.summary.trimmed().isEmpty()) {
+            stored.summary = fallbackSummary(stored);
+        }
+        batch->entries.append({existing, stored});
+        existing = stored;
+        return true;
+    }
+    return false;
+}
+
+void MemoryStore::rollbackMutationBatch(const MemoryMutationBatch& batch) {
+    for (auto it = batch.entries.crbegin(); it != batch.entries.crend(); ++it) {
+        for (int index = 0; index < m_entries.size(); ++index) {
+            if (m_entries.at(index).id != it->after.id) continue;
+            if (it->before.has_value()) {
+                m_entries[index] = *it->before;
+            } else {
+                m_entries.removeAt(index);
+            }
+            break;
+        }
+    }
+}
+
+bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch) {
+    if (batch.isEmpty() || !m_repository || !m_repository->isOpen()) return true;
+    if (!m_repository->beginTransaction()) return false;
+    bool ok = true;
+    for (const MemoryEntryMutation& mutation : batch.entries) {
+        ok = mutation.before.has_value()
+            ? m_repository->update(mutation.after)
+            : m_repository->insert(mutation.after);
+        if (!ok) break;
+    }
+    if (ok) {
+        for (const MemoryRelation& relation : batch.relations) {
+            if (!m_relationGraph.addRelation(relation)) {
+                ok = false;
+                break;
+            }
+        }
+    }
+    if (ok) ok = m_repository->commitTransaction();
+    if (!ok) m_repository->rollbackTransaction();
+    return ok;
 }
 
 bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
@@ -583,6 +677,42 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
     }
 
     return false;
+}
+
+MemoryReinforcementBatch MemoryStore::stageReinforcement(
+    const QStringList& ids, const QDateTime& accessedAt) {
+    MemoryReinforcementBatch batch;
+    batch.accessedAt = accessedAt.isValid()
+        ? accessedAt.toUTC() : QDateTime::currentDateTimeUtc();
+    QSet<QString> seen;
+    for (const QString& id : ids) {
+        if (id.trimmed().isEmpty() || seen.contains(id)) continue;
+        seen.insert(id);
+        for (MemoryEntry& entry : m_entries) {
+            if (entry.id != id) continue;
+            if (entry.status != MemoryStatus::Active) break;
+            batch.previousEntries.append(entry);
+            entry.strength = qMin(1.0, entry.strength + 0.1);
+            entry.accessCount += 1;
+            entry.lastAccessedAt = batch.accessedAt;
+            entry.updatedAt = batch.accessedAt;
+            batch.entries.append(entry);
+            break;
+        }
+    }
+    return batch;
+}
+
+void MemoryStore::rollbackReinforcement(
+    const MemoryReinforcementBatch& batch) {
+    for (const MemoryEntry& previous : batch.previousEntries) {
+        for (MemoryEntry& entry : m_entries) {
+            if (entry.id == previous.id) {
+                entry = previous;
+                break;
+            }
+        }
+    }
 }
 
 bool MemoryStore::reinforceEntries(const QStringList& ids) {

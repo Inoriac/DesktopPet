@@ -7,11 +7,13 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QElapsedTimer>
 #include <QPointer>
 #include <QRandomGenerator>
 #include <QTimer>
 #include <QUuid>
 
+#include <atomic>
 #include <utility>
 
 #include "configLoader/config_manager.h"
@@ -107,6 +109,7 @@ void AIBrain::thinkInternal(const QString& reason,
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
     const QString activeMessageId = m_activeDialogueResponse->messageId;
+    const QString loggedPetName = m_petName;
     const qint64 requestedAtMs = QDateTime::currentMSecsSinceEpoch();
     const QPointer<AIBrain> guard(this);
 
@@ -127,10 +130,22 @@ void AIBrain::thinkInternal(const QString& reason,
         message.transportBlocks = {};
         message.toolCalls = {};
     }
-    m_callLogger.logRequest(requestId, m_petName, reason, triggerTag, toolRound,
-                            loggedMessages, tools);
+    enqueueCallLog(
+        ChatSideEffectType::RequestLog, requestId, sessionId, requestGeneration,
+        AiCallLogger::requestRecord(requestId, m_petName, reason, triggerTag,
+                                    toolRound, loggedMessages, tools));
+    const qint64 preparedAtMonotonicMs =
+        m_activeDialogueResponse->preparedAtMonotonicMs;
+    ChatPreparationTimings timings;
+    timings.uiAcknowledgeMs = m_activeDialogueResponse->uiAcknowledgeMs;
+    timings.preparationMs = m_activeDialogueResponse->preparationMs;
+    timings.sideEffectQueueDepth = m_chatSideEffectQueue
+        ? m_chatSideEffectQueue->queueDepth() : 0;
 
     auto roundVisibleContent = std::make_shared<QString>();
+    auto completionHandled = std::make_shared<std::atomic_bool>(false);
+    m_pendingResponseLogs.insert(
+        requestId, {sessionId, requestGeneration, completionHandled});
     const auto isCurrent = [this, guard, requestGeneration, activeMessageId]() {
         return guard && requestGeneration == m_requestGeneration
             && m_activeDialogueResponse
@@ -152,9 +167,10 @@ void AIBrain::thinkInternal(const QString& reason,
         },
         [this, guard, isCurrent, requestGeneration, requestId, requestedAtMs,
          reason, triggerTag, sessionId, toolRound, workingMessages,
-         roundVisibleContent, activeMessageId]
+         roundVisibleContent, completionHandled, activeMessageId, loggedPetName]
         (Result<ModelCompletion, DomainError> modelResult) mutable {
-            if (!isCurrent()) return;
+            if (completionHandled->exchange(true, std::memory_order_acq_rel)) return;
+            if (guard) m_pendingResponseLogs.remove(requestId);
             const bool ok = modelResult.isOk();
             LlmResponse response;
             LlmCallDimensions dimensions;
@@ -180,7 +196,15 @@ void AIBrain::thinkInternal(const QString& reason,
             for (LlmToolCall& call : loggedResponse.toolCalls) {
                 call.arguments = {};
             }
-            m_callLogger.logResponse(requestId, m_petName, ok, loggedResponse, error);
+            const QJsonObject responseLog = AiCallLogger::responseRecord(
+                requestId, loggedPetName, ok, loggedResponse, error);
+            if (!isCurrent()) {
+                if (guard) {
+                    enqueueCallLog(ChatSideEffectType::ResponseLog, requestId,
+                                   sessionId, requestGeneration, responseLog);
+                }
+                return;
+            }
 
             QJsonObject modelEvent{
                 {QStringLiteral("role"), QStringLiteral("dialogue")},
@@ -212,7 +236,7 @@ void AIBrain::thinkInternal(const QString& reason,
                         && !m_activeDialogueResponse->visibleContent.isEmpty()
                     ? ChatMessageStatus::Interrupted
                     : ChatMessageStatus::Failed;
-                finishActiveResponse(status, error);
+                finishActiveResponse(status, error, responseLog);
                 if (m_running) {
                     scheduleTrigger(triggerTag);
                 }
@@ -234,11 +258,12 @@ void AIBrain::thinkInternal(const QString& reason,
                     && (!m_activeDialogueResponse
                         || m_activeDialogueResponse->visibleContent.isEmpty())) {
                     finishActiveResponse(ChatMessageStatus::Failed,
-                                         QStringLiteral("Maximum tool rounds reached"));
+                                         QStringLiteral("Maximum tool rounds reached"),
+                                         responseLog);
                     return;
                 }
                 publishActiveStage(ChatActivityStage::Finalizing);
-                finishActiveResponse(ChatMessageStatus::Complete);
+                finishActiveResponse(ChatMessageStatus::Complete, {}, responseLog);
                 if (m_running) {
                     scheduleTrigger(triggerTag);
                 }
@@ -246,6 +271,8 @@ void AIBrain::thinkInternal(const QString& reason,
             }
 
             QJsonArray assistantToolCalls;
+            enqueueCallLog(ChatSideEffectType::ResponseLog, requestId, sessionId,
+                           requestGeneration, responseLog);
             QList<ChatMessage> nextMessages = workingMessages;
             nextMessages.append(assistantMessage);
             const int assistantIndex = nextMessages.size() - 1;
@@ -361,6 +388,15 @@ void AIBrain::thinkInternal(const QString& reason,
             publishActiveStage(ChatActivityStage::Finalizing);
             thinkInternal(reason, triggerTag, sessionId, toolRound + 1, nextMessages);
         });
+    if (toolRound == 0) {
+        QElapsedTimer dispatchClock;
+        dispatchClock.start();
+        timings.dispatchLagMs = preparedAtMonotonicMs > 0
+            ? qMax<qint64>(
+                  0, dispatchClock.msecsSinceReference() - preparedAtMonotonicMs)
+            : 0;
+        emit chatPreparationTimingsObserved(timings);
+    }
     if (m_activeDialogueResponse && !m_activeDialogueResponse->terminal
         && m_activeDialogueResponse->messageId == activeMessageId
         && requestGeneration == m_requestGeneration) {

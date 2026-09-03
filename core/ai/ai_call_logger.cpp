@@ -25,6 +25,17 @@ void AiCallLogger::logRequest(const QString& requestId,
                               int toolRound,
                               const QList<ChatMessage>& messages,
                               const QJsonArray& tools) {
+    appendRecord(requestRecord(requestId, petName, reason, triggerTag, toolRound,
+                               messages, tools));
+}
+
+QJsonObject AiCallLogger::requestRecord(const QString& requestId,
+                                        const QString& petName,
+                                        const QString& reason,
+                                        const QString& triggerTag,
+                                        int toolRound,
+                                        const QList<ChatMessage>& messages,
+                                        const QJsonArray& tools) {
     QJsonArray msgArr;
     for (const ChatMessage& msg : messages) {
         msgArr.append(messageToJson(msg));
@@ -41,7 +52,7 @@ void AiCallLogger::logRequest(const QString& requestId,
     obj["messages"] = msgArr;
     obj["tools"] = tools;
 
-    appendLine(obj);
+    return obj;
 }
 
 void AiCallLogger::logResponse(const QString& requestId,
@@ -49,6 +60,14 @@ void AiCallLogger::logResponse(const QString& requestId,
                                bool success,
                                const LlmResponse& response,
                                const QString& errorMessage) {
+    appendRecord(responseRecord(requestId, petName, success, response, errorMessage));
+}
+
+QJsonObject AiCallLogger::responseRecord(const QString& requestId,
+                                         const QString& petName,
+                                         bool success,
+                                         const LlmResponse& response,
+                                         const QString& errorMessage) {
     QJsonArray toolCallsArr;
     for (const LlmToolCall& call : response.toolCalls) {
         toolCallsArr.append(toolCallToJson(call));
@@ -79,10 +98,10 @@ void AiCallLogger::logResponse(const QString& requestId,
     obj["tool_calls"] = toolCallsArr;
     obj["usage"] = usageObj;
 
-    appendLine(obj);
+    return obj;
 }
 
-bool AiCallLogger::appendLine(const QJsonObject& lineObject) const {
+bool AiCallLogger::appendRecord(const QJsonObject& lineObject) const {
     if (m_logFilePath.isEmpty()) {
         return false;
     }

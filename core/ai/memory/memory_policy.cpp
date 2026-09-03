@@ -1,5 +1,7 @@
 #include "memory_policy.h"
 
+#include <QCryptographicHash>
+
 #include "memory_store.h"
 
 namespace {
@@ -55,6 +57,24 @@ bool isFirstOfScopeAndType(const MemoryStore* store, const MemoryEntry& entry) {
     return true;
 }
 
+MemoryRelation stagedRelation(const MemoryEntry& from,
+                              const MemoryEntry& to,
+                              MemoryRelationType type,
+                              double weight) {
+    MemoryRelation relation;
+    relation.fromMemoryId = from.id;
+    relation.toMemoryId = to.id;
+    relation.type = type;
+    relation.weight = weight;
+    relation.createdAt = QDateTime::currentDateTimeUtc();
+    const QByteArray identity = QStringLiteral("%1\n%2\n%3")
+        .arg(relation.fromMemoryId, relation.toMemoryId,
+             memoryRelationTypeToString(type)).toUtf8();
+    relation.id = QString::fromLatin1(
+        QCryptographicHash::hash(identity, QCryptographicHash::Sha256).toHex());
+    return relation;
+}
+
 }
 
 bool MemoryPolicy::matchesForgetQuery(const MemoryEntry& entry,
@@ -71,14 +91,33 @@ bool MemoryPolicy::matchesForgetQuery(const MemoryEntry& entry,
 
 MemoryPolicyReport MemoryPolicy::applyCandidates(const QList<MemoryCandidate>& candidates,
                                                  MemoryStore* store) const {
-    MemoryPolicyReport report;
+    StagedMemoryPolicyResult staged = stageCandidates(candidates, store);
+    if (!store) return staged.report;
+    if (!store->persistMutationBatch(staged.mutations)) {
+        store->rollbackMutationBatch(staged.mutations);
+        staged.report.notes.append(QStringLiteral("保存记忆失败"));
+        return staged.report;
+    }
+    if (!staged.mutations.entries.isEmpty()) {
+        QString error;
+        if (!store->save(&error)) {
+            staged.report.notes.append(QStringLiteral("保存记忆失败：%1").arg(error));
+        }
+    }
+    return staged.report;
+}
+
+StagedMemoryPolicyResult MemoryPolicy::stageCandidates(
+    const QList<MemoryCandidate>& candidates,
+    MemoryStore* store) const {
+    StagedMemoryPolicyResult staged;
+    MemoryPolicyReport& report = staged.report;
     if (!store) {
         report.skipped = candidates.size();
         report.notes.append(QStringLiteral("MemoryStore 未配置"));
-        return report;
+        return staged;
     }
 
-    bool changed = false;
     QList<MemoryEntry> writtenEntries;
 
     for (const MemoryCandidate& candidate : candidates) {
@@ -86,12 +125,13 @@ MemoryPolicyReport MemoryPolicy::applyCandidates(const QList<MemoryCandidate>& c
             bool matched = false;
             for (const MemoryEntry& entry : store->all()) {
                 if (!matchesForgetQuery(entry, candidate.query)) continue;
-                QJsonObject payloadPatch;
-                payloadPatch["forget_query"] = candidate.query;
-                payloadPatch["forget_source"] = candidate.rawText;
-                if (store->updateStatusByKey(entry.type, entry.key, MemoryStatus::Deleted, payloadPatch)) {
+                MemoryEntry updated = entry;
+                updated.status = MemoryStatus::Deleted;
+                updated.updatedAt = QDateTime::currentDateTimeUtc();
+                updated.payload[QStringLiteral("forget_query")] = candidate.query;
+                updated.payload[QStringLiteral("forget_source")] = candidate.rawText;
+                if (store->stageEntryUpdate(updated, &staged.mutations)) {
                     matched = true;
-                    changed = true;
                 }
             }
             if (matched) {
@@ -122,26 +162,18 @@ MemoryPolicyReport MemoryPolicy::applyCandidates(const QList<MemoryCandidate>& c
             toWrite.importance = qMin(1.0, toWrite.importance + 0.15);
         }
 
-        const MemoryEntry stored = store->addEntry(toWrite);
-        changed = true;
+        const MemoryEntry stored = store->stageEntry(toWrite, &staged.mutations);
         ++report.written;
         writtenEntries.append(stored);
 
-        discoverRelations(stored, store, &report);
+        discoverRelations(stored, store, &report, &staged.mutations);
     }
 
     if (writtenEntries.size() >= 2) {
-        discoverMentionedWith(writtenEntries, store, &report);
+        discoverMentionedWith(writtenEntries, &report, &staged.mutations);
     }
 
-    if (changed) {
-        QString error;
-        if (!store->save(&error)) {
-            report.notes.append(QStringLiteral("保存记忆失败：%1").arg(error));
-        }
-    }
-
-    return report;
+    return staged;
 }
 
 bool MemoryPolicy::shouldAutoWrite(const MemoryCandidate& candidate, QString* reason) const {
@@ -168,89 +200,61 @@ bool MemoryPolicy::shouldAutoWrite(const MemoryCandidate& candidate, QString* re
 
 void MemoryPolicy::discoverRelations(const MemoryEntry& newEntry,
                                       MemoryStore* store,
-                                      MemoryPolicyReport* report) const {
-    MemoryRelationGraph& graph = store->relationGraph();
-
+                                      MemoryPolicyReport* report,
+                                      MemoryMutationBatch* mutations) const {
     for (const MemoryEntry& existing : store->all()) {
         if (existing.id == newEntry.id) continue;
         if (existing.status != MemoryStatus::Active) continue;
 
         // Supersedes: same type + same key
         if (existing.type == newEntry.type && existing.key == newEntry.key) {
-            MemoryRelation rel;
-            rel.fromMemoryId = newEntry.id;
-            rel.toMemoryId = existing.id;
-            rel.type = MemoryRelationType::Supersedes;
-            rel.weight = 1.0;
-            if (graph.addRelation(rel)) {
-                ++report->relationsCreated;
-            }
-            QJsonObject payloadPatch;
-            payloadPatch[QStringLiteral("superseded_by")] = newEntry.id;
-            store->updateStatusById(existing.id, MemoryStatus::Superseded, payloadPatch);
+            mutations->relations.append(stagedRelation(
+                newEntry, existing, MemoryRelationType::Supersedes, 1.0));
+            ++report->relationsCreated;
+            MemoryEntry superseded = existing;
+            superseded.status = MemoryStatus::Superseded;
+            superseded.updatedAt = QDateTime::currentDateTimeUtc();
+            superseded.payload[QStringLiteral("superseded_by")] = newEntry.id;
+            store->stageEntryUpdate(superseded, mutations);
             continue;
         }
 
         // ConflictsWith: same scope, sentiment opposite
         if (!existing.scope.isEmpty() && existing.scope == newEntry.scope
             && isSentimentOpposite(newEntry.summary, existing.summary)) {
-            if (!graph.hasRelation(newEntry.id, existing.id, MemoryRelationType::ConflictsWith)) {
-                MemoryRelation rel;
-                rel.fromMemoryId = newEntry.id;
-                rel.toMemoryId = existing.id;
-                rel.type = MemoryRelationType::ConflictsWith;
-                rel.weight = 0.8;
-                if (graph.addRelation(rel)) {
-                    ++report->relationsCreated;
-                }
-            }
+            mutations->relations.append(stagedRelation(
+                newEntry, existing, MemoryRelationType::ConflictsWith, 0.8));
+            ++report->relationsCreated;
         }
 
         // Related: shared tags >= 2
         if (countSharedTags(newEntry.tags, existing.tags) >= 2) {
-            if (!graph.hasRelation(newEntry.id, existing.id, MemoryRelationType::Related)
-                && !graph.hasRelation(existing.id, newEntry.id, MemoryRelationType::Related)) {
-                MemoryRelation rel;
-                rel.fromMemoryId = newEntry.id;
-                rel.toMemoryId = existing.id;
-                rel.type = MemoryRelationType::Related;
-                rel.weight = 0.6;
-                if (graph.addRelation(rel)) {
-                    ++report->relationsCreated;
-                }
-            }
+            mutations->relations.append(stagedRelation(
+                newEntry, existing, MemoryRelationType::Related, 0.6));
+            ++report->relationsCreated;
         }
     }
 
     // DerivedFrom: sourceMemoryIds
     for (const QString& sourceId : newEntry.sourceMemoryIds) {
         if (sourceId.isEmpty()) continue;
-        MemoryRelation rel;
-        rel.fromMemoryId = newEntry.id;
-        rel.toMemoryId = sourceId;
-        rel.type = MemoryRelationType::DerivedFrom;
-        rel.weight = 1.0;
-        if (graph.addRelation(rel)) {
-            ++report->relationsCreated;
-        }
+        MemoryEntry source;
+        source.id = sourceId;
+        mutations->relations.append(stagedRelation(
+            newEntry, source, MemoryRelationType::DerivedFrom, 1.0));
+        ++report->relationsCreated;
     }
 }
 
 void MemoryPolicy::discoverMentionedWith(const QList<MemoryEntry>& writtenEntries,
-                                          MemoryStore* store,
-                                          MemoryPolicyReport* report) const {
-    MemoryRelationGraph& graph = store->relationGraph();
-
+                                          MemoryPolicyReport* report,
+                                          MemoryMutationBatch* mutations) const {
     for (int i = 0; i < writtenEntries.size(); ++i) {
         for (int j = i + 1; j < writtenEntries.size(); ++j) {
-            MemoryRelation rel;
-            rel.fromMemoryId = writtenEntries[i].id;
-            rel.toMemoryId = writtenEntries[j].id;
-            rel.type = MemoryRelationType::MentionedWith;
-            rel.weight = 0.5;
-            if (graph.addRelation(rel)) {
-                ++report->relationsCreated;
-            }
+            mutations->relations.append(stagedRelation(
+                writtenEntries[i], writtenEntries[j],
+                MemoryRelationType::MentionedWith, 0.5));
+            ++report->relationsCreated;
         }
     }
 }

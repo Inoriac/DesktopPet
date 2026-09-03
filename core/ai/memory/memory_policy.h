@@ -6,8 +6,7 @@
 
 #include "memory_extractor.h"
 #include "memory_relation.h"
-
-class MemoryStore;
+#include "memory_store.h"
 
 struct MemoryPolicyReport {
     int written = 0;
@@ -17,6 +16,11 @@ struct MemoryPolicyReport {
     QStringList notes;
 };
 
+struct StagedMemoryPolicyResult {
+    MemoryPolicyReport report;
+    MemoryMutationBatch mutations;
+};
+
 class MemoryPolicy {
 public:
     static bool matchesForgetQuery(const MemoryEntry& entry,
@@ -24,15 +28,19 @@ public:
 
     MemoryPolicyReport applyCandidates(const QList<MemoryCandidate>& candidates,
                                        MemoryStore* store) const;
+    StagedMemoryPolicyResult stageCandidates(
+        const QList<MemoryCandidate>& candidates,
+        MemoryStore* store) const;
 
 private:
     bool shouldAutoWrite(const MemoryCandidate& candidate, QString* reason) const;
     void discoverRelations(const MemoryEntry& newEntry,
                            MemoryStore* store,
-                           MemoryPolicyReport* report) const;
+                           MemoryPolicyReport* report,
+                           MemoryMutationBatch* mutations) const;
     void discoverMentionedWith(const QList<MemoryEntry>& writtenEntries,
-                               MemoryStore* store,
-                               MemoryPolicyReport* report) const;
+                               MemoryPolicyReport* report,
+                               MemoryMutationBatch* mutations) const;
 };
 
 #endif // DESKTOP_PET_MEMORY_POLICY_H

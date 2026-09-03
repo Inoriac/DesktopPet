@@ -1,6 +1,10 @@
 cmake_minimum_required(VERSION 3.20)
 project(Desktop_Pet)
 
+option(DESKTOP_PET_ENABLE_ONNX_RUNTIME
+    "Build optional ONNX Runtime embedding tests when a compatible runtime exists"
+    ON)
+
 if(NOT CMAKE_BUILD_TYPE)
     set(CMAKE_BUILD_TYPE Release)
 endif()
@@ -249,6 +253,8 @@ set(CORE_SOURCES
     core/ai/chat/chat_preparation_types.h
     core/ai/chat/chat_preparation_executor.h
     core/ai/chat/chat_preparation_executor.cpp
+    core/ai/chat/chat_side_effect_queue.h
+    core/ai/chat/chat_side_effect_queue.cpp
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
@@ -649,6 +655,8 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/chat/chat_preparation_types.h
     core/ai/chat/chat_preparation_executor.h
     core/ai/chat/chat_preparation_executor.cpp
+    core/ai/chat/chat_side_effect_queue.h
+    core/ai/chat/chat_side_effect_queue.cpp
     core/ai/ai_call_logger.h
     core/ai/ai_call_logger.cpp
     core/ai/agent/agent_session.h
@@ -945,6 +953,42 @@ target_compile_definitions(chat_preparation_executor_tests PRIVATE
     DESKTOP_PET_ENABLE_TEST_SEAMS=1
 )
 
+# ---- Ordered deferred chat persistence tests (no ONNX dependency) ----
+add_desktop_pet_cpp_test(chat_side_effect_queue_tests ChatSideEffectQueueTests
+    SOURCES
+        tests/test_chat_side_effect_queue.cpp
+        ${EVENT_LEDGER_SOURCES}
+        core/ai/chat/chat_side_effect_queue.h
+        core/ai/chat/chat_side_effect_queue.cpp
+        core/ai/ai_call_logger.h
+        core/ai/ai_call_logger.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_policy.h
+        core/ai/memory/memory_policy.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
+)
+target_compile_definitions(chat_side_effect_queue_tests PRIVATE
+    DESKTOP_PET_ENABLE_TEST_SEAMS=1
+)
+
 # ---- Profile-scoped chat persistence tests (no ONNX dependency) ----
 add_desktop_pet_cpp_test(chat_history_tests ChatHistoryTests
     SOURCES
@@ -1231,21 +1275,23 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
 # 不存在，语义检索退化为 Noop），不阻塞构建。
 set(ORT_ROOT "")
 set(ORT_LIB "")
-file(GLOB _ort_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/onnxruntime-*")
-foreach(d ${_ort_dirs})
-    if(EXISTS "${d}/include/onnxruntime_cxx_api.h")
-        set(ORT_ROOT "${d}")
-        break()
-    endif()
-endforeach()
-if(ORT_ROOT)
-    find_library(ORT_LIB onnxruntime NO_DEFAULT_PATH PATHS "${ORT_ROOT}/lib")
-    if(NOT ORT_LIB)
-        # macOS 包名带版本，再放宽找一次
-        file(GLOB _ort_lib "${ORT_ROOT}/lib/libonnxruntime*.dylib" "${ORT_ROOT}/lib/libonnxruntime*.so" "${ORT_ROOT}/lib/onnxruntime*.dll")
-        if(_ort_lib)
-            list(GET _ort_lib 0 ORT_LIB)
-            set(ORT_LIB ${ORT_LIB} CACHE FILEPATH "")
+if(DESKTOP_PET_ENABLE_ONNX_RUNTIME)
+    file(GLOB _ort_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/onnxruntime-*")
+    foreach(d ${_ort_dirs})
+        if(EXISTS "${d}/include/onnxruntime_cxx_api.h")
+            set(ORT_ROOT "${d}")
+            break()
+        endif()
+    endforeach()
+    if(ORT_ROOT)
+        find_library(ORT_LIB onnxruntime NO_DEFAULT_PATH PATHS "${ORT_ROOT}/lib")
+        if(NOT ORT_LIB)
+            # macOS 包名带版本，再放宽找一次
+            file(GLOB _ort_lib "${ORT_ROOT}/lib/libonnxruntime*.dylib" "${ORT_ROOT}/lib/libonnxruntime*.so" "${ORT_ROOT}/lib/onnxruntime*.dll")
+            if(_ort_lib)
+                list(GET _ort_lib 0 ORT_LIB)
+                set(ORT_LIB ${ORT_LIB} CACHE FILEPATH "")
+            endif()
         endif()
     endif()
 endif()

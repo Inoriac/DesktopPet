@@ -17,6 +17,21 @@ public:
     explicit AiCallLogger(const QString& logFilePath = "log/ai_calls.jsonl");
 
     void setLogFilePath(const QString& path);
+    const QString& logFilePath() const { return m_logFilePath; }
+
+    static QJsonObject requestRecord(const QString& requestId,
+                                     const QString& petName,
+                                     const QString& reason,
+                                     const QString& triggerTag,
+                                     int toolRound,
+                                     const QList<ChatMessage>& messages,
+                                     const QJsonArray& tools);
+    static QJsonObject responseRecord(const QString& requestId,
+                                      const QString& petName,
+                                      bool success,
+                                      const LlmResponse& response,
+                                      const QString& errorMessage);
+    bool appendRecord(const QJsonObject& lineObject) const;
 
     void logRequest(const QString& requestId,
                     const QString& petName,
@@ -35,7 +50,6 @@ public:
 private:
     QString m_logFilePath;
 
-    bool appendLine(const QJsonObject& lineObject) const;
     static QJsonObject messageToJson(const ChatMessage& msg);
     static QJsonObject toolCallToJson(const LlmToolCall& call);
 };

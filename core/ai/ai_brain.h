@@ -11,6 +11,7 @@
 #include <QTimer>
 #include <QList>
 #include <QStringList>
+#include <atomic>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -18,6 +19,7 @@
 #include "ai_types.h"
 #include "agent/agent_session.h"
 #include "ai_call_logger.h"
+#include "chat/chat_side_effect_queue.h"
 #include "domain/domain_result.h"
 #include "context_builder.h"
 #include "emotion/emotion_types.h"
@@ -75,6 +77,9 @@ public:
     void setPromptTemplate(const PromptTemplate& templ);
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     void setChatPreparationDelayForTests(int delayMs);
+    void setChatSideEffectDelayForTests(int delayMs);
+    void setChatSideEffectLifecycleProbeForTests(
+        ChatSideEffectQueue::LifecycleProbe probe);
 #endif
 
     void setEnabled(bool enabled);
@@ -137,6 +142,7 @@ signals:
     void daydreamStarted(int itemCount);
     void daydreamFinished(const QJsonObject& summary);
     void daydreamCancelled(const QString& reason);
+    void chatPreparationTimingsObserved(ChatPreparationTimings timings);
 
 private:
     void thinkInternal(const QString& reason,
@@ -154,6 +160,13 @@ private:
     QString beginPreparationRuntimeSession(const QString& reason,
                                            const QString& triggerTag);
     Result<void, DomainError> startChatPreparationExecutor();
+    Result<void, DomainError> startChatSideEffectQueue();
+    void handleSideEffectBarrier(const QString& sessionId, quint64 generation);
+    void enqueueCallLog(ChatSideEffectType type,
+                        const QString& requestId,
+                        const QString& sessionId,
+                        quint64 generation,
+                        QJsonObject record);
 
     bool tryHandleRoutedIntent(const IntentRoute& route,
                                const QString& reason,
@@ -169,8 +182,11 @@ private:
                              bool initiatedByLlm,
                              const ToolExecutionOutcome& outcome,
                              const QString& sessionId = QString());
-    void processUserMemoryWrite(const QString& input,
-                                const QString& triggerTag);
+    void enqueueUserMemoryWrite(const QString& input,
+                                const QString& triggerTag,
+                                const QString& requestId,
+                                quint64 generation,
+                                const QString& sessionId);
     std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
     void annotateMemoryEntry(MemoryEntry& entry) const;
     QList<ChatMessage> buildBaseMessages(const QString& reason,
@@ -182,9 +198,11 @@ private:
     void appendToMemory(const ChatMessage& message);
     bool appendRuntimeEvent(const QString& type,
                             const QString& sessionId,
-                            const QJsonObject& payload);
+                            const QJsonObject& payload,
+                            const QString& requestId = {},
+                            quint64 generation = 0);
     QString beginRuntimeSession(const QString& reason, const QString& triggerTag);
-    void finishRuntimeSession(const QString& sessionId);
+    void finishRuntimeSession(const QString& sessionId, quint64 generation);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
     void beginActiveResponse(const QString& replyToId,
@@ -193,7 +211,8 @@ private:
     void publishActiveStage(ChatActivityStage stage);
     void appendActiveDelta(const QString& textDelta);
     void finishActiveResponse(ChatMessageStatus status,
-                              const QString& errorMessage = {});
+                              const QString& errorMessage = {},
+                              const QJsonObject& responseLog = {});
     // Daydream: snapshot batches are decided asynchronously, then committed once.
     void checkDaydreamTrigger();
     void runDaydreamSession();
@@ -221,6 +240,7 @@ private:
     PersonalityPolicy m_personalityPolicy;
     PromptTemplate m_promptTemplate;
     std::unique_ptr<ChatPreparationExecutor> m_chatPreparationExecutor;
+    std::unique_ptr<ChatSideEffectQueue> m_chatSideEffectQueue;
     std::unique_ptr<ChatPreparationEnvironment> m_chatPreparationEnvironment;
     ChatPreparationRuntimeMetadata m_chatPreparationRuntimeMetadata;
     LlmChatService m_chatService;
@@ -277,6 +297,10 @@ private:
         ChatMessageStatus status = ChatMessageStatus::Pending;
         ChatActivityStage stage = ChatActivityStage::WaitingForModel;
         quint64 generation = 0;
+        qint64 acceptedAtMonotonicMs = 0;
+        qint64 preparedAtMonotonicMs = 0;
+        qint64 uiAcknowledgeMs = 0;
+        qint64 preparationMs = 0;
         std::shared_ptr<LlmRequestHandle> requestHandle;
         bool terminal = false;
     };
@@ -287,6 +311,13 @@ private:
 
     QList<ChatMessage> m_memory;
     QHash<QString, AgentSession> m_runtimeSessions;
+    QHash<QString, quint64> m_pendingSideEffectBarriers;
+    struct PendingResponseLog {
+        QString sessionId;
+        quint64 generation = 0;
+        std::shared_ptr<std::atomic_bool> handled;
+    };
+    QHash<QString, PendingResponseLog> m_pendingResponseLogs;
     QHash<QString, std::function<void(bool)>> m_pendingToolConfirmations;
     AiCallLogger m_callLogger;
     EmotionSnapshotProvider m_emotionSnapshotProvider;

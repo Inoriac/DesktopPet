@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <memory>
+#include <optional>
 
 #include "ai/domain/domain_result.h"
 #include "memory_types.h"
@@ -12,6 +13,24 @@
 #include "tag_cooccurrence_graph.h"
 
 class MemoryRepository;
+
+struct MemoryReinforcementBatch {
+    QList<MemoryEntry> previousEntries;
+    QList<MemoryEntry> entries;
+    QDateTime accessedAt;
+};
+
+struct MemoryEntryMutation {
+    std::optional<MemoryEntry> before;
+    MemoryEntry after;
+};
+
+struct MemoryMutationBatch {
+    QList<MemoryEntryMutation> entries;
+    QList<MemoryRelation> relations;
+
+    bool isEmpty() const { return entries.isEmpty() && relations.isEmpty(); }
+};
 
 class MemoryStore {
 public:
@@ -25,6 +44,10 @@ public:
     const QString& databasePath() const { return m_databasePath; }
 
     bool load(QString* errorMessage = nullptr);
+    // Opens and loads SQLite only. Background workers must not import or mirror
+    // the legacy JSON file owned by the GUI-side migration path.
+    bool loadDatabaseOnly(QString* errorMessage = nullptr);
+    bool refreshDatabaseOnly(QString* errorMessage = nullptr);
     bool save(QString* errorMessage = nullptr) const;
     bool importLegacyJson(const QString& jsonPath,
                           QString* errorMessage = nullptr);
@@ -35,6 +58,16 @@ public:
                     const QStringList& tags = {});
     MemoryEntry addEntry(const MemoryEntry& entry);
     bool updateEntryById(const MemoryEntry& entry);
+    MemoryEntry stageEntry(const MemoryEntry& entry,
+                           MemoryMutationBatch* batch);
+    bool stageEntryUpdate(const MemoryEntry& entry,
+                          MemoryMutationBatch* batch);
+    void rollbackMutationBatch(const MemoryMutationBatch& batch);
+    bool persistMutationBatch(const MemoryMutationBatch& batch);
+    MemoryReinforcementBatch stageReinforcement(
+        const QStringList& ids,
+        const QDateTime& accessedAt = QDateTime::currentDateTimeUtc());
+    void rollbackReinforcement(const MemoryReinforcementBatch& batch);
     bool reinforceEntries(const QStringList& ids);
     bool updateStatusById(const QString& id,
                           MemoryStatus status,
@@ -91,6 +124,8 @@ public:
     const MemoryEntry* findById(const QString& id) const;
 
 private:
+    bool openDatabase(QString* errorMessage);
+    MemoryEntry normalizedEntry(const MemoryEntry& entry) const;
     bool persistEntry(const MemoryEntry& entry);
     bool persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
 
