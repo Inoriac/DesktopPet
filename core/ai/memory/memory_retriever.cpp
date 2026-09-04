@@ -456,3 +456,164 @@ double MemoryRetriever::decayLambda(MemoryType type) const {
         return 0.05;
     }
 }
+
+// ============================================================================
+// 类人激活式召回（设计 §1/§6/§7，Phase 2：无图谱传播）
+// ============================================================================
+
+#include "active_memory_pool.h"
+#include "hippocampus_working_set.h"
+#include "memory_keyword_index.h"
+#include "memory_cue_extractor.h"
+
+namespace {
+
+constexpr int kActivePoolBudget = 12;
+constexpr int kWorkingSetBudget = 8;
+constexpr int kEmbeddingBudget = 32;
+constexpr int kKeywordBudget = 12;
+constexpr int kSeedBudget = 16;
+
+bool passesFilters(const MemoryEntry& entry, const MemoryQuery& query) {
+    if (!query.includeInactive && entry.status != MemoryStatus::Active) return false;
+    if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) return false;
+    if (!query.requiredTags.isEmpty()) {
+        for (const QString& requiredTag : query.requiredTags) {
+            if (!entry.tags.contains(requiredTag, Qt::CaseInsensitive)) return false;
+        }
+    }
+    return true;
+}
+
+}
+
+QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
+    MemoryStore& store,
+    const MemoryQuery& query,
+    const ActivationChannels& channels,
+    MemoryCueExtractor* cueExtractor) const {
+
+    const int limit = query.limit <= 0 ? 8 : query.limit;
+
+    // ---- 阶段 0：时间维护（读取激活池之前必须先衰减）----
+    if (channels.activePool) {
+        channels.activePool->decayToNow();
+    }
+
+    // ---- 阶段 1：本地线索提取（无模型调用）----
+    MemoryCue cue;
+    if (cueExtractor) {
+        cue = cueExtractor->extractFromQuery(query.text);
+    } else {
+        MemoryCueExtractor fallbackExtractor;
+        cue = fallbackExtractor.extractFromQuery(query.text);
+    }
+    cue.currentEmotion = query.currentEmotion;
+    cue.emotionIntensity = query.currentEmotionIntensity;
+
+    // ---- 阶段 2：多路种子（固定预算，某一路不足不强行补齐）----
+    // candidateId -> channels
+    QHash<QString, QStringList> seedChannels;
+    QHash<QString, double> seedRuntimeActivation;
+
+    // 通道 1：近期激活池（最多 12 条）
+    if (channels.activePool) {
+        const QList<ActiveMemoryItem> activeItems = channels.activePool->activeItems();
+        int taken = 0;
+        for (const ActiveMemoryItem& item : activeItems) {
+            if (taken >= kActivePoolBudget) break;
+            seedChannels[item.memoryId].append(QStringLiteral("active_pool"));
+            seedRuntimeActivation[item.memoryId] = item.activation;
+            ++taken;
+        }
+    }
+
+    // 通道 2：Hippocampus 工作集扫描（最多 8 条）
+    if (channels.workingSet && !channels.workingSet->isEmpty()) {
+        const QList<MemoryEntry> scanned = channels.workingSet->scan(
+            query.text, query.requiredTags, kWorkingSetBudget);
+        for (const MemoryEntry& entry : scanned) {
+            if (!seedChannels[entry.id].contains(QLatin1String("hippocampus"))) {
+                seedChannels[entry.id].append(QStringLiteral("hippocampus"));
+            }
+        }
+    }
+
+    // 通道 3：Embedding / HNSW（最多 32 条；Noop 索引返回空，自动跳过）
+    if (channels.embeddingIndex && !query.text.isEmpty()) {
+        const QList<EmbeddingSearchResult> semanticHits =
+            channels.embeddingIndex->search(query.text, kEmbeddingBudget);
+        for (const EmbeddingSearchResult& hit : semanticHits) {
+            if (!seedChannels[hit.memoryId].contains(QLatin1String("embedding"))) {
+                seedChannels[hit.memoryId].append(QStringLiteral("embedding"));
+            }
+        }
+    }
+
+    // 通道 4：关键词/标签倒排索引（最多 12 条）
+    if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
+        const QList<QString> keywordHits = channels.keywordIndex->lookup(
+            cue.tokens, cue.knownTags, kKeywordBudget);
+        for (const QString& memId : keywordHits) {
+            if (!seedChannels[memId].contains(QLatin1String("keyword"))) {
+                seedChannels[memId].append(QStringLiteral("keyword"));
+            }
+        }
+    }
+
+    // ---- 阶段 3：合并、过滤、构建候选 ----
+    QList<CandidateMemory> candidates;
+    for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
+        const MemoryEntry* entry = store.findById(it.key());
+        if (!entry) continue;
+        if (!passesFilters(*entry, query)) continue;
+
+        CandidateMemory candidate;
+        candidate.entry = *entry;
+        candidate.sourceChannels = it.value();
+        candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
+        candidates.append(candidate);
+    }
+
+    // 多通道命中优先，超出种子预算时按通道数截断
+    if (candidates.size() > kSeedBudget) {
+        std::sort(candidates.begin(), candidates.end(),
+            [](const CandidateMemory& a, const CandidateMemory& b) {
+                if (a.sourceChannels.size() != b.sourceChannels.size()) {
+                    return a.sourceChannels.size() > b.sourceChannels.size();
+                }
+                return a.runtimeActivation > b.runtimeActivation;
+            });
+        while (candidates.size() > kSeedBudget) candidates.removeLast();
+    }
+
+    // ---- 阶段 4：ACT-R 精排 ----
+    ACTRRanker ranker;
+    const QList<CandidateMemory> ranked = ranker.rank(candidates, cue);
+
+    // ---- 阶段 5：输出与强化（只强化最终进入结果的记忆）----
+    QList<RetrievedMemory> result;
+    QStringList reinforcementIds;
+    for (const CandidateMemory& candidate : ranked) {
+        if (result.size() >= limit) break;
+
+        RetrievedMemory memory;
+        memory.entry = candidate.entry;
+        memory.score = candidate.finalScore;
+        memory.reasons = candidate.sourceChannels;
+        memory.sourceChannels = candidate.sourceChannels;
+        memory.baseActivation = candidate.baseActivation;
+        memory.cueMatch = candidate.cueMatch;
+        memory.runtimeActivation = candidate.runtimeActivation;
+        memory.emotionBoost = candidate.emotionBoost;
+        result.append(memory);
+
+        reinforcementIds.append(candidate.entry.id);
+    }
+
+    if (!reinforcementIds.isEmpty()) {
+        store.reinforceEntries(reinforcementIds);
+    }
+
+    return result;
+}

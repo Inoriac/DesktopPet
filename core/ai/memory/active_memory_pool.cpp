@@ -79,6 +79,22 @@ void ActiveMemoryPool::decay(double elapsedMinutes) {
     }
 }
 
+void ActiveMemoryPool::decayToNow(const QDateTime& now) {
+    if (!now.isValid()) return;
+    
+    if (!m_lastDecayAt.isValid()) {
+        // 首次调用：只记录基准点，不衰减（池内项刚刚激活）
+        m_lastDecayAt = now;
+        return;
+    }
+    
+    const qint64 elapsedSecs = m_lastDecayAt.secsTo(now);
+    if (elapsedSecs < 60) return;  // 不足 1 分钟不衰减，避免频繁微小更新
+    
+    decay(elapsedSecs / 60.0);
+    m_lastDecayAt = now;
+}
+
 QList<ActiveMemoryItem> ActiveMemoryPool::activeItems() const {
     QList<ActiveMemoryItem> items = m_pool.values();
     std::sort(items.begin(), items.end(),

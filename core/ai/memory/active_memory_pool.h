@@ -25,6 +25,10 @@ public:
     
     void decay(double elapsedMinutes);
     
+    // 基于墙钟的惰性衰减：计算距上次衰减的分钟数并执行 decay。
+    // 召回流水线入口处调用（读取激活池之前），同一轮不重复衰减。
+    void decayToNow(const QDateTime& now = QDateTime::currentDateTimeUtc());
+    
     QList<ActiveMemoryItem> activeItems() const;
     QList<QString> activeMemoryIds(double minActivation = 0.0) const;
     
@@ -43,6 +47,7 @@ private:
     static double halfLifeMinutes(const QString& source);
     
     QHash<QString, ActiveMemoryItem> m_pool;
+    QDateTime m_lastDecayAt;
 };
 
 #endif // DESKTOP_PET_ACTIVE_MEMORY_POOL_H

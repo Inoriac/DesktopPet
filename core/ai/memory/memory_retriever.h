@@ -7,10 +7,15 @@
 
 #include "memory_types.h"
 #include "memory_relation.h"
+#include "actr_ranker.h"
 
 class MemoryStore;
 class WorkingMemoryCache;
 class EmbeddingIndex;
+class ActiveMemoryPool;
+class HippocampusWorkingSet;
+class MemoryKeywordIndex;
+class MemoryCueExtractor;
 struct WorkingMemoryItem;
 
 struct MemoryQuery {
@@ -29,6 +34,20 @@ struct RetrievedMemory {
     double score = 0.0;
     QStringList reasons;
     bool fromGraphExpansion = false;
+    // 激活式召回的可解释性字段（设计 §13）
+    QStringList sourceChannels;       // 候选来源：active_pool/hippocampus/keyword/embedding
+    double baseActivation = 0.0;
+    double cueMatch = 0.0;
+    double runtimeActivation = 0.0;
+    double emotionBoost = 0.0;
+};
+
+// 激活式召回的可选通道集合。为空的通道自动跳过，不强行补齐。
+struct ActivationChannels {
+    ActiveMemoryPool* activePool = nullptr;
+    HippocampusWorkingSet* workingSet = nullptr;
+    const MemoryKeywordIndex* keywordIndex = nullptr;
+    EmbeddingIndex* embeddingIndex = nullptr;
 };
 
 class MemoryRetriever {
@@ -43,6 +62,15 @@ public:
                                     const MemoryQuery& query,
                                     const WorkingMemoryCache* cache = nullptr,
                                     EmbeddingIndex* embeddingIndex = nullptr) const;
+
+    // 类人激活式召回（设计 §1/§6/§7，Phase 2：无图谱传播）。
+    // 固定候选预算：激活池 12 + 工作集 8 + embedding 32 + 关键词/标签 12，
+    // 合并去重后最多 16 个种子进 ACT-R 精排，输出最多 query.limit 条。
+    // 不扫描 MemoryStore::all()；只强化最终输出的记忆。
+    QList<RetrievedMemory> retrieveActivated(MemoryStore& store,
+                                             const MemoryQuery& query,
+                                             const ActivationChannels& channels,
+                                             MemoryCueExtractor* cueExtractor = nullptr) const;
 
     QStringList formatForContext(const QList<RetrievedMemory>& memories) const;
 
