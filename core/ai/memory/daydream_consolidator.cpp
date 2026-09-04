@@ -417,19 +417,77 @@ bool DaydreamConsolidator::requiresModelDecision(const MemoryEntry& entry) {
         && !entry.tags.contains(QStringLiteral("assistant"), Qt::CaseInsensitive);
 }
 
+namespace {
+
+// 兜底分区分类（pre-phase4-roadmap §一）：LLM 不可用时的启发式替代，
+// 准确率低于模型但保证积压可被消化。关键词命中优先级：
+// Preference > Procedural > Semantic > Episodic（默认）。
+MemoryType heuristicTargetType(const MemoryEntry& entry) {
+    const QString text = (entry.key + QLatin1Char(' ') + entry.summary
+                          + QLatin1Char(' ') + entry.content).toLower();
+    const bool hasPreferenceTag =
+        entry.tags.contains(QStringLiteral("preference"), Qt::CaseInsensitive)
+        || entry.tags.contains(QStringLiteral("偏好"), Qt::CaseInsensitive);
+    if (hasPreferenceTag
+        || text.contains(QStringLiteral("喜欢"))
+        || text.contains(QStringLiteral("讨厌"))
+        || text.contains(QStringLiteral("偏好"))
+        || text.contains(QStringLiteral("习惯"))
+        || text.contains(QLatin1String("likes"))
+        || text.contains(QLatin1String("dislikes"))) {
+        return MemoryType::Preference;
+    }
+    const bool hasTaskTag =
+        entry.tags.contains(QStringLiteral("task"), Qt::CaseInsensitive)
+        || entry.tags.contains(QStringLiteral("procedure"), Qt::CaseInsensitive);
+    if (hasTaskTag
+        || entry.source.contains(QLatin1String("tool"))
+        || text.contains(QStringLiteral("步骤"))
+        || text.contains(QStringLiteral("如何"))
+        || text.contains(QStringLiteral("方法"))) {
+        return MemoryType::Procedural;
+    }
+    if (entry.mentionCount >= 3
+        || text.contains(QStringLiteral("叫做"))
+        || text.contains(QStringLiteral("定义"))
+        || text.contains(QStringLiteral("生日"))
+        || text.contains(QStringLiteral("住在"))) {
+        return MemoryType::Semantic;
+    }
+    return MemoryType::Episodic;
+}
+
+// 兜底质量评分：importance 主导，mention/emotion 辅助，clamp 0-10。
+double heuristicQualityScore(const MemoryEntry& entry) {
+    double score = entry.importance * 10.0;
+    score += qMin(2.0, entry.mentionCount * 0.5);
+    score += entry.emotionIntensity * 3.0;
+    return qBound(0.0, score, 10.0);
+}
+
+}
+
 QList<DaydreamConsolidator::Decision> DaydreamConsolidator::hardcodedDecisions(
     const QList<MemoryEntry>& batch) {
     QList<Decision> decisions;
+    QSet<QString> seenContent;  // 批内去重：相同归一化正文只升级第一条
     for (const MemoryEntry& entry : batch) {
         Decision decision;
         decision.sourceId = entry.id;
+        const QString normalized =
+            (entry.summary + entry.content).simplified().toLower();
         if (!requiresModelDecision(entry)) {
             decision.action = Action::Discard;
-        } else if (entry.mentionCount >= 2 || entry.emotionIntensity >= 0.7) {
+        } else if (!normalized.isEmpty() && seenContent.contains(normalized)) {
+            decision.action = Action::Discard;  // 批内重复
+        } else if (entry.mentionCount >= 2
+                   || entry.emotionIntensity >= 0.7
+                   || entry.importance >= 0.6) {
             decision.action = Action::Create;
-            decision.targetType = MemoryType::Episodic;
-            decision.qualityScore = qBound(0.0, entry.importance * 10.0 + 1.0, 10.0);
+            decision.targetType = heuristicTargetType(entry);
+            decision.qualityScore = heuristicQualityScore(entry);
             decision.tags = entry.tags;
+            seenContent.insert(normalized);
         } else {
             decision.action = Action::Discard;
         }
