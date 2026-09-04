@@ -18,6 +18,8 @@
 #include "ai/prompt/prompt_template_store.h"
 #include "ai/runtime/agent_bootstrap.h"
 #include "ai/runtime/agent_runtime_services.h"
+#include "ai/reflection/reflection_types.h"
+#include "ai/reflection/sleep_cycle_coordinator.h"
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "configLoader/config_manager.h"
 #include "controller/pet_controller.h"
@@ -303,4 +305,28 @@ void PetWindow::teardownAiRuntime() {
     agentScheduler.reset();
     aiToolRegistry.reset();
     aiBrain.reset();
+}
+
+void PetWindow::onManualDaydreamRequested() {
+    if (!runtimeServices || !runtimeServices->sleepCycleCoordinator()) {
+        showBubbleMessage(QStringLiteral("记忆整理功能未就绪"), 3000);
+        return;
+    }
+
+    SleepTrigger trigger;
+    trigger.type = SleepTriggerType::Manual;
+    trigger.observedIdleSeconds = 0;
+    trigger.now = QDateTime::currentDateTime();
+    trigger.profileId = profile.profileId;
+
+    auto result = runtimeServices->sleepCycleCoordinator()->tryStart(trigger);
+    if (!result.isOk()) {
+        QString errorMsg = QStringLiteral("无法开始记忆整理: ") +
+                           result.error().message;
+        showBubbleMessage(errorMsg, 3000);
+        qWarning() << "[Manual Daydream] Failed to start:" << errorMsg;
+    } else {
+        showBubbleMessage(QStringLiteral("开始整理记忆..."), 2000);
+        qInfo() << "[Manual Daydream] Started session:" << result.value();
+    }
 }

@@ -118,6 +118,7 @@ private:
     void startThinkingBubble(const QString& reason);
     void stopThinkingBubble(bool keepCurrentBubble = false);
     void updateThinkingBubble();
+    void onManualDaydreamRequested();
     void beginStreamingBubble(const QString& messageId);
     void updateStreamingBubbleStage(const QString& messageId,
                                     ChatActivityStage stage);

@@ -102,6 +102,10 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
         showBubbleInput();
     });
 
+    QAction* manualDaydreamAction = contextMenu->addAction(QStringLiteral("让我打个盹（整理记忆）"));
+    connect(manualDaydreamAction, &QAction::triggered, this,
+            &PetWindow::onManualDaydreamRequested);
+
     openChatHistoryAction = contextMenu->addAction("在 Launcher 中打开聊天");
     connect(openChatHistoryAction, &QAction::triggered, this, [this]() {
         openChatHistoryWindow();
