@@ -88,6 +88,9 @@ Result<void, DomainError> AIBrain::initializeStorage(
             domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"), errorMessage));
     }
     m_storageInitialized = true;
+    // 初始化类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
+    m_hippocampusWorkingSet.setStore(&m_memoryStore);
+    refreshActivationRecallIndexes(true);
     m_chatPreparationEnvironment = std::make_unique<ChatPreparationEnvironment>();
     m_chatPreparationEnvironment->memoryDatabasePath = m_memoryStore.databasePath();
     m_chatPreparationEnvironment->identityBaseline = m_identityBaseline;
@@ -821,4 +824,19 @@ void AIBrain::annotateMemoryEntry(MemoryEntry& entry) const {
     entry.emotion = snapshot->active;
     entry.emotionIntensity = std::clamp(snapshot->intensity, 0.0, 1.0);
     entry.emotionConfidence = std::clamp(snapshot->confidence, 0.0, 1.0);
+}
+
+// 类人激活式召回索引刷新（pre-phase4-roadmap #10）。
+// 惰性策略：60s 缓存窗口；工作集/倒排索引/已知标签全量重建（内存操作，
+// 典型规模下毫秒级；大库优化方向：增量 upsert 钩子）。
+void AIBrain::refreshActivationRecallIndexes(bool force) {
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    if (!force && m_recallIndexRefreshedAt.isValid()
+        && m_recallIndexRefreshedAt.secsTo(now) < 60) {
+        return;
+    }
+    m_recallIndexRefreshedAt = now;
+    m_hippocampusWorkingSet.refresh();
+    m_memoryKeywordIndex.rebuild(m_memoryStore.all());
+    m_memoryCueExtractor.setKnownTags(m_memoryKeywordIndex.knownTags());
 }

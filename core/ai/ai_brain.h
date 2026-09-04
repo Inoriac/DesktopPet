@@ -31,6 +31,11 @@
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
+#include "memory/active_memory_pool.h"
+#include "memory/hippocampus_working_set.h"
+#include "memory/memory_keyword_index.h"
+#include "memory/memory_cue_extractor.h"
+#include "memory/associative_activation_engine.h"
 #include "scheduler/daydream_trigger_policy.h"
 #include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
@@ -232,6 +237,8 @@ private:
     void scheduleIdleRetryIfBusyFailure(const QString& toolName,
                                         const QString& toolPayload);
     static QList<ModelRoleConfig> configuredModelRoles();
+    // 类人激活式召回索引刷新（pre-phase4-roadmap #10）
+    void refreshActivationRecallIndexes(bool force = false);
 
 private:
     QString m_petName;
@@ -257,6 +264,13 @@ private:
     MemoryPolicy m_memoryPolicy;
     MemoryRetriever m_memoryRetriever;
     WorkingMemoryCache m_workingMemoryCache;
+    // 类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
+    ActiveMemoryPool m_activeMemoryPool;
+    HippocampusWorkingSet m_hippocampusWorkingSet;
+    MemoryKeywordIndex m_memoryKeywordIndex;
+    MemoryCueExtractor m_memoryCueExtractor;
+    AssociativeActivationEngine m_associativeEngine;
+    QDateTime m_recallIndexRefreshedAt;
     SkillStore m_skillStore;
     SkillMatcher m_skillMatcher;
     EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选

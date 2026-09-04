@@ -9,7 +9,7 @@
 - ✅ Phase 2（bc4fe3b）：MemoryCueExtractor、MemoryKeywordIndex、ACTRRanker、retrieveActivated()
 - ✅ Phase 3（5c81f91 + eca5f46）：AssociativeActivationEngine（两跳传播 + 人格化探索）、retrieveWithGraphPropagation()
 - 测试：27 个召回相关单元测试全部通过（Phase1 7 + Phase2 9 + Phase3 11，此外 memory_strategy_tests 有 7 个与 Daydream commit 相关的预存失败，与召回改造无关）
-- ⏳ 未接入生产：新召回入口尚未被 AIBrain / ChatPreparationExecutor 调用
+- ✅ AIBrain 侧已接入生产（retrieveMemoryHints）；⏳ ChatPreparationExecutor 仍用快照式召回（后台线程，不阻塞 GUI，Phase 4 迁移）
 - ⏳ macOS 无 ONNX：embedding 通道以 Noop 优雅退化，词法/激活/图谱三路可用
 
 ---
@@ -140,7 +140,7 @@ CREATE TABLE diary_fragments (
 | 7 | 片段收集器（空闲窗口写便签） | 中 | #6 | ⭐⭐⭐ |
 | 8 | 夜间缝合改造 + 补写流程 | 中 | #6 #7 | ⭐⭐⭐ |
 | 9 | SleepTimePredictor 作息学习 | 中 | #2 | ⭐⭐（观察反馈后再做）|
-| 10 | 新召回入口接入生产（AIBrain/ChatPreparation） | 中 | 无 | ⭐⭐⭐⭐（Phase 1-3 的价值兑现）|
+| 10 | ~~新召回入口接入生产~~ | ✅/⏳ | ✅ | **AIBrain 侧已完成**（retrieveMemoryHints → retrieveWithGraphPropagation + 60s 惰性索引刷新 + 会话激活回写）；ChatPreparationExecutor 侧因独立线程/独立连接需要重构方法签名，留给 Phase 4 与快照契约一起做 |
 
 完成 #2-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
 

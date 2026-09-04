@@ -399,7 +399,25 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
         query.limit = qMin(limit, 4);
     }
 
-    return m_memoryRetriever.formatForContext(m_memoryRetriever.retrieve(m_memoryStore, query, &m_workingMemoryCache, m_embeddingIndex));
+    // 类人激活式召回（Phase 1-3，pre-phase4-roadmap #10）：
+    // 多路种子（激活池/工作集/关键词/embedding）+ 图谱传播 + ACT-R 精排，
+    // 不再全量扫描 MemoryStore::all()。各通道缺失时自动跳过（优雅退化）。
+    refreshActivationRecallIndexes(false);
+    ActivationChannels channels;
+    channels.activePool = &m_activeMemoryPool;
+    channels.workingSet = &m_hippocampusWorkingSet;
+    channels.keywordIndex = &m_memoryKeywordIndex;
+    channels.embeddingIndex = m_embeddingIndex;
+    channels.graphPropagation = &m_associativeEngine;
+    const QList<RetrievedMemory> memories = m_memoryRetriever.retrieveWithGraphPropagation(
+        m_memoryStore, query, channels, &m_memoryCueExtractor);
+    // 进入 Prompt 的记忆保持在“脑海中”（设计 §8：会话来源，半衰期 60min）
+    for (const RetrievedMemory& memory : memories) {
+        m_activeMemoryPool.activate(memory.entry.id,
+                                    qBound(0.1, memory.score / 3.0, 1.0),
+                                    QStringLiteral("session"));
+    }
+    return m_memoryRetriever.formatForContext(memories);
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {
