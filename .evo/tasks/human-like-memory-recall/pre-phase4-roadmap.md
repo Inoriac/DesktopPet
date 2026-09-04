@@ -131,15 +131,15 @@ CREATE TABLE diary_fragments (
 
 | # | 事项 | 规模 | 依赖 | 优先级 |
 |---|------|------|------|--------|
-| 1 | macOS 空闲检测（CGEventSource） | 小 | 无 | ⭐⭐⭐⭐⭐（触发链路的地基）|
-| 2 | SleepPolicy 行为驱动触发（去 bedtime 硬编码） | 小 | #1 | ⭐⭐⭐⭐ |
+| 1 | ~~macOS 空闲检测（CGEventSource）~~ | ✅ | ✅ | **已完成**（environment_tools.cpp 已实现并链接 CoreGraphics）|
+| 2 | SleepPolicy 行为驱动触发（去 bedtime 硬编码） | 小 | 无 | ⭐⭐⭐⭐⭐ |
 | 3 | Daydream 中断人格化记录 | 小 | 无 | ⭐⭐⭐⭐（收益/成本比最高）|
 | 4 | 巩固兜底：规则增强 + 容量分级触发 | 中 | 无 | ⭐⭐⭐⭐ |
 | 5 | 手动触发入口（托盘 + toast/进度） | 中 | #4 | ⭐⭐⭐ |
 | 6 | diary_fragments 表 + 片段落库 + 启动恢复检测 | 中 | 无 | ⭐⭐⭐ |
-| 7 | 片段收集器（空闲窗口写便签） | 中 | #1 #6 | ⭐⭐⭐ |
+| 7 | 片段收集器（空闲窗口写便签） | 中 | #6 | ⭐⭐⭐ |
 | 8 | 夜间缝合改造 + 补写流程 | 中 | #6 #7 | ⭐⭐⭐ |
 | 9 | SleepTimePredictor 作息学习 | 中 | #2 | ⭐⭐（观察反馈后再做）|
 | 10 | 新召回入口接入生产（AIBrain/ChatPreparation） | 中 | 无 | ⭐⭐⭐⭐（Phase 1-3 的价值兑现）|
 
-完成 #1-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
+完成 #2-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
