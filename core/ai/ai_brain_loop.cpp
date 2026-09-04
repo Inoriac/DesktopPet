@@ -622,6 +622,8 @@ void AIBrain::finishDaydreamSession(quint64 generation) {
 
 void AIBrain::cancelDaydreamSession(const QString& reason) {
     if (!m_daydreamRunning) return;
+    const int processedBatches = m_daydreamBatchOffset;
+    const int totalItems = m_daydreamSnapshot.size();
     ++m_daydreamGeneration;
     m_daydreamRunning = false;
     m_lastDaydreamInterrupted = true;
@@ -631,7 +633,50 @@ void AIBrain::cancelDaydreamSession(const QString& reason) {
     m_daydreamFallbackBatches = 0;
     m_daydreamInvalidBatches = 0;
     qInfo() << "[Daydream] session cancelled:" << reason;
+    recordDaydreamInterruption(reason, processedBatches, totalItems);
     emit daydreamCancelled(reason);
+}
+
+// 小憩被打断的人格化记录（pre-phase4-roadmap §三）：只对用户活动引起的
+// 中断写一条轻情绪 ShortTerm 记忆进 Hippocampus，后续由 Daydream 自主消化、
+// 对话中经正常召回自然流露。技术性取消（停机/外部协调器接管）不记录。
+// 1 小时节流，避免频繁中断刷屏；重复中断由同 key 记忆的 mentionCount 叠加表达。
+void AIBrain::recordDaydreamInterruption(const QString& reason,
+                                         int processedBatches,
+                                         int totalItems) {
+    const bool userCaused = reason.contains(QLatin1String("user interaction"))
+        || reason.contains(QLatin1String("idle conditions changed"));
+    if (!userCaused) return;
+
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    if (m_lastInterruptionMemoryAt.isValid()
+        && m_lastInterruptionMemoryAt.secsTo(now) < 3600) {
+        return;
+    }
+    m_lastInterruptionMemoryAt = now;
+
+    MemoryEntry entry;
+    entry.type = MemoryType::ShortTerm;  // → Hippocampus 分区，等待 Daydream 消化
+    entry.status = MemoryStatus::Active;
+    entry.privacyLevel = PrivacyLevel::Personal;
+    entry.key = QStringLiteral("daydream:interrupted:%1")
+                    .arg(now.toString(QStringLiteral("yyyyMMddHH")));
+    entry.summary = QStringLiteral("小憩被打断了");
+    entry.content = QStringLiteral(
+        "正在整理记忆时主人开始活动，只好先停下来（当时已处理 %1 批，共 %2 条待整理）。"
+        "有点可惜，不过陪主人更重要。")
+        .arg(processedBatches)
+        .arg(totalItems);
+    entry.tags = {QStringLiteral("daydream"), QStringLiteral("interruption"),
+                  QStringLiteral("self_experience")};
+    entry.scope = QStringLiteral("self");
+    entry.source = QStringLiteral("daydream_interruption");
+    entry.emotion = EmotionType::Sadness;
+    entry.emotionIntensity = 0.25;   // 轻微，不夸张
+    entry.emotionConfidence = 0.8;
+    entry.importance = 0.3;
+    entry.confidence = 0.9;
+    m_memoryStore.addEntry(entry);
 }
 
 AiTriggerConfig AIBrain::triggerConfigForTag(const QString& triggerTag) const {

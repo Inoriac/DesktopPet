@@ -27,6 +27,8 @@ public:
     bool recordExplicitFeedbackText(const QString& text,
                                     const QDateTime& nowUtc = QDateTime::currentDateTimeUtc(),
                                     const QString& eventId = {});
+    bool recordDaydreamInterruption(const QDateTime& nowUtc = QDateTime::currentDateTimeUtc(),
+                                    const QString& eventId = {});
 
 signals:
     void affectEventAccepted(QString eventId, AffectEventKind kind);

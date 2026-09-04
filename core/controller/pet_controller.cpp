@@ -124,6 +124,23 @@ bool PetController::recordExplicitFeedbackText(const QString& text,
     return submit(event, nowUtc, makeEventId(QStringLiteral("feedback"), eventId));
 }
 
+bool PetController::recordDaydreamInterruption(const QDateTime& nowUtc,
+                                               const QString& eventId) {
+    AffectEvent event;
+    event.kind = AffectEventKind::ExternalObstruction;
+    event.source = AffectSource::System;
+    event.sourceId = QStringLiteral("daydream_interrupted");
+    event.goalCongruence = -0.15;  // 轻微负面，目标被打断
+    event.novelty = 0.05;
+    event.certainty = 1.0;
+    event.controllability = 0.3;   // 无法控制用户何时活动
+    event.relevance = 0.25;        // 不算大事
+    event.agency = AffectAgency::Environment;
+    event.outcome = AffectOutcome::Failure;
+    event.confidence = 1.0;
+    return submit(event, nowUtc, makeEventId(QStringLiteral("daydream"), eventId));
+}
+
 bool PetController::submit(AffectEvent event,
                            const QDateTime& nowUtc,
                            const QString& eventId) {

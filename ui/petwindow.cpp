@@ -248,6 +248,12 @@ PetWindow::PetWindow(PetProfile profile,
             petController->recordToolOutcome(toolName, success);
         }
     });
+    connect(aiBrain.get(), &AIBrain::daydreamCancelled, this, [this]() {
+        qDebug() << "[AIBrain] daydream cancelled (interrupted)";
+        if (petController) {
+            petController->recordDaydreamInterruption();
+        }
+    });
     connect(aiBrain.get(), &AIBrain::toolConfirmationRequired, this,
             [this](const QString& requestId,
                    const QString& toolName,

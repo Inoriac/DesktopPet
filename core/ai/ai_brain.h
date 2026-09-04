@@ -219,6 +219,9 @@ private:
     void runNextDaydreamBatch(quint64 generation);
     void finishDaydreamSession(quint64 generation);
     void cancelDaydreamSession(const QString& reason);
+    void recordDaydreamInterruption(const QString& reason,
+                                    int processedBatches,
+                                    int totalItems);
     bool canContinueDaydream() const;
     void armDaydreamTimer();
     AiTriggerConfig triggerConfigForTag(const QString& triggerTag) const;
@@ -270,6 +273,7 @@ private:
     QDateTime m_daydreamHourAnchor;
     int m_daydreamCountThisHour = 0;
     bool m_lastDaydreamInterrupted = false;
+    QDateTime m_lastInterruptionMemoryAt;
     quint64 m_daydreamGeneration = 0;
     DaydreamConsolidator::Snapshot m_daydreamSnapshot;
     QList<DaydreamConsolidator::Decision> m_daydreamDecisions;
