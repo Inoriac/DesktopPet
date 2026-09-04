@@ -16,6 +16,7 @@ class ActiveMemoryPool;
 class HippocampusWorkingSet;
 class MemoryKeywordIndex;
 class MemoryCueExtractor;
+class AssociativeActivationEngine;
 struct WorkingMemoryItem;
 
 struct MemoryQuery {
@@ -48,6 +49,7 @@ struct ActivationChannels {
     HippocampusWorkingSet* workingSet = nullptr;
     const MemoryKeywordIndex* keywordIndex = nullptr;
     EmbeddingIndex* embeddingIndex = nullptr;
+    AssociativeActivationEngine* graphPropagation = nullptr;  // Phase 3
 };
 
 class MemoryRetriever {
@@ -71,6 +73,14 @@ public:
                                              const MemoryQuery& query,
                                              const ActivationChannels& channels,
                                              MemoryCueExtractor* cueExtractor = nullptr) const;
+
+    // Phase 3 完整版：含图谱传播（两跳扩展 + 人格化探索）。
+    // 种子预算同上，图谱传播候选预算 64，合并后 ACT-R 精排，输出最多 query.limit。
+    QList<RetrievedMemory> retrieveWithGraphPropagation(
+        MemoryStore& store,
+        const MemoryQuery& query,
+        const ActivationChannels& channels,
+        MemoryCueExtractor* cueExtractor = nullptr) const;
 
     QStringList formatForContext(const QList<RetrievedMemory>& memories) const;
 

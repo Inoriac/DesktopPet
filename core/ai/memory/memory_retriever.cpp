@@ -617,3 +617,193 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
 
     return result;
 }
+
+// ============================================================================
+// Phase 3: 图谱激活传播 + 人格化探索
+// ============================================================================
+
+#include "associative_activation_engine.h"
+
+QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
+    MemoryStore& store,
+    const MemoryQuery& query,
+    const ActivationChannels& channels,
+    MemoryCueExtractor* cueExtractor) const {
+
+    const int limit = query.limit <= 0 ? 8 : query.limit;
+
+    // ---- 阶段 0：时间维护 ----
+    if (channels.activePool) {
+        channels.activePool->decayToNow();
+    }
+
+    // ---- 阶段 1：本地线索提取 ----
+    MemoryCue cue;
+    if (cueExtractor) {
+        cue = cueExtractor->extractFromQuery(query.text);
+    } else {
+        MemoryCueExtractor fallbackExtractor;
+        cue = fallbackExtractor.extractFromQuery(query.text);
+    }
+    cue.currentEmotion = query.currentEmotion;
+    cue.emotionIntensity = query.currentEmotionIntensity;
+
+    // ---- 阶段 2：多路种子采集（同 Phase 2）----
+    QHash<QString, QStringList> seedChannels;
+    QHash<QString, double> seedRuntimeActivation;
+
+    // 通道 1: 激活池
+    if (channels.activePool) {
+        const QList<ActiveMemoryItem> activeItems = channels.activePool->activeItems();
+        int taken = 0;
+        for (const ActiveMemoryItem& item : activeItems) {
+            if (taken >= kActivePoolBudget) break;
+            seedChannels[item.memoryId].append(QStringLiteral("active_pool"));
+            seedRuntimeActivation[item.memoryId] = item.activation;
+            ++taken;
+        }
+    }
+
+    // 通道 2: Hippocampus 工作集
+    if (channels.workingSet && !channels.workingSet->isEmpty()) {
+        const QList<MemoryEntry> scanned = channels.workingSet->scan(
+            query.text, query.requiredTags, kWorkingSetBudget);
+        for (const MemoryEntry& entry : scanned) {
+            if (!seedChannels[entry.id].contains(QLatin1String("hippocampus"))) {
+                seedChannels[entry.id].append(QStringLiteral("hippocampus"));
+            }
+        }
+    }
+
+    // 通道 3: Embedding
+    if (channels.embeddingIndex && !query.text.isEmpty()) {
+        const QList<EmbeddingSearchResult> semanticHits =
+            channels.embeddingIndex->search(query.text, kEmbeddingBudget);
+        for (const EmbeddingSearchResult& hit : semanticHits) {
+            if (!seedChannels[hit.memoryId].contains(QLatin1String("embedding"))) {
+                seedChannels[hit.memoryId].append(QStringLiteral("embedding"));
+            }
+        }
+    }
+
+    // 通道 4: 关键词倒排
+    if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
+        const QList<QString> keywordHits = channels.keywordIndex->lookup(
+            cue.tokens, cue.knownTags, kKeywordBudget);
+        for (const QString& memId : keywordHits) {
+            if (!seedChannels[memId].contains(QLatin1String("keyword"))) {
+                seedChannels[memId].append(QStringLiteral("keyword"));
+            }
+        }
+    }
+
+    // ---- 阶段 3：图谱激活传播（Phase 3 新增）----
+    QHash<QString, double> graphActivations;
+    QHash<QString, QStringList> graphPaths;
+
+    if (channels.graphPropagation) {
+        // Build seed activation map from Phase 2 seeds
+        QHash<QString, double> propagationSeeds;
+        for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
+            // Use runtime activation if available, otherwise default 0.8
+            const double activation = seedRuntimeActivation.value(it.key(), 0.8);
+            propagationSeeds[it.key()] = activation;
+        }
+
+        // Propagate (two hops, max 64 candidates)
+        const QList<PropagatedMemory> propagated =
+            channels.graphPropagation->propagate(
+                propagationSeeds,
+                store.relationGraph(),
+                &store.tagCooccurrenceGraph(),
+                cue.knownTags
+            );
+
+        // Record graph activation and paths
+        for (const PropagatedMemory& prop : propagated) {
+            graphActivations[prop.memoryId] = prop.activation;
+            graphPaths[prop.memoryId] = prop.propagationPath;
+
+            // Add to seed channels if not already present
+            if (!seedChannels.contains(prop.memoryId)) {
+                QStringList channels;
+                channels.append(prop.isExploratory ? 
+                    QStringLiteral("graph_exploratory") : 
+                    QStringLiteral("graph_propagation"));
+                seedChannels[prop.memoryId] = channels;
+            } else if (!seedChannels[prop.memoryId].contains(QLatin1String("graph_propagation"))) {
+                seedChannels[prop.memoryId].append(
+                    prop.isExploratory ? 
+                        QStringLiteral("graph_exploratory") : 
+                        QStringLiteral("graph_propagation"));
+            }
+        }
+    }
+
+    // ---- 阶段 4：合并、过滤、构建候选 ----
+    QList<CandidateMemory> candidates;
+    for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
+        const MemoryEntry* entry = store.findById(it.key());
+        if (!entry) continue;
+        if (!passesFilters(*entry, query)) continue;
+
+        CandidateMemory candidate;
+        candidate.entry = *entry;
+        candidate.sourceChannels = it.value();
+        candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
+        candidate.graphActivation = graphActivations.value(it.key(), 0.0);
+        candidates.append(candidate);
+    }
+
+    // 多通道命中优先
+    if (candidates.size() > kSeedBudget) {
+        std::sort(candidates.begin(), candidates.end(),
+            [](const CandidateMemory& a, const CandidateMemory& b) {
+                if (a.sourceChannels.size() != b.sourceChannels.size()) {
+                    return a.sourceChannels.size() > b.sourceChannels.size();
+                }
+                return (a.runtimeActivation + a.graphActivation) > 
+                       (b.runtimeActivation + b.graphActivation);
+            });
+        while (candidates.size() > kSeedBudget) candidates.removeLast();
+    }
+
+    // ---- 阶段 5：ACT-R 精排（含 G_i 图谱分量）----
+    ACTRRanker ranker;
+    const QList<CandidateMemory> ranked = ranker.rank(candidates, cue);
+
+    // ---- 阶段 6：输出与强化 ----
+    QList<RetrievedMemory> result;
+    QStringList reinforcementIds;
+    for (const CandidateMemory& candidate : ranked) {
+        if (result.size() >= limit) break;
+
+        RetrievedMemory memory;
+        memory.entry = candidate.entry;
+        memory.score = candidate.finalScore;
+        memory.reasons = candidate.sourceChannels;
+        memory.sourceChannels = candidate.sourceChannels;
+        memory.baseActivation = candidate.baseActivation;
+        memory.cueMatch = candidate.cueMatch;
+        memory.runtimeActivation = candidate.runtimeActivation;
+        memory.emotionBoost = candidate.emotionBoost;
+        
+        // Add graph propagation path if available
+        if (graphPaths.contains(candidate.entry.id)) {
+            const QStringList& path = graphPaths[candidate.entry.id];
+            if (path.size() > 1) {
+                memory.reasons.append(
+                    QStringLiteral("graph_path:") + path.join(QStringLiteral("→")));
+            }
+        }
+        
+        result.append(memory);
+        reinforcementIds.append(candidate.entry.id);
+    }
+
+    if (!reinforcementIds.isEmpty()) {
+        store.reinforceEntries(reinforcementIds);
+    }
+
+    return result;
+}

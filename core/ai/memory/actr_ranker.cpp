@@ -44,7 +44,7 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
         // E_i: emotion boost
         candidate.emotionBoost = computeEmotionBoost(candidate.entry, cue);
         
-        // G_i: graph propagation（Phase 3，当前恒 0，调用方可预填）
+        // G_i: graph propagation（Phase 3：由 retrieveWithGraphPropagation 预填）
         candidate.graphActivation = clamp01(candidate.graphActivation);
         
         // A_i = 1.0*B + 1.0*C + 1.5*R + 0.3*E + 0.6*G（设计 §7）

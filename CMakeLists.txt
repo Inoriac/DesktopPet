@@ -332,6 +332,8 @@ set(CORE_SOURCES
     core/ai/memory/memory_keyword_index.cpp
     core/ai/memory/actr_ranker.h
     core/ai/memory/actr_ranker.cpp
+    core/ai/memory/associative_activation_engine.h
+    core/ai/memory/associative_activation_engine.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -711,6 +713,18 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/memory/memory_policy.cpp
     core/ai/memory/memory_retriever.h
     core/ai/memory/memory_retriever.cpp
+    core/ai/memory/memory_cue_extractor.h
+    core/ai/memory/memory_cue_extractor.cpp
+    core/ai/memory/memory_keyword_index.h
+    core/ai/memory/memory_keyword_index.cpp
+    core/ai/memory/actr_ranker.h
+    core/ai/memory/actr_ranker.cpp
+    core/ai/memory/associative_activation_engine.h
+    core/ai/memory/associative_activation_engine.cpp
+    core/ai/memory/active_memory_pool.h
+    core/ai/memory/active_memory_pool.cpp
+    core/ai/memory/hippocampus_working_set.h
+    core/ai/memory/hippocampus_working_set.cpp
     core/ai/memory/memory_store.h
     core/ai/memory/memory_store.cpp
     core/ai/memory/memory_repository.h
@@ -1235,6 +1249,18 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/memory_policy.cpp
         core/ai/memory/memory_retriever.h
         core/ai/memory/memory_retriever.cpp
+        core/ai/memory/associative_activation_engine.h
+        core/ai/memory/associative_activation_engine.cpp
+        core/ai/memory/actr_ranker.h
+        core/ai/memory/actr_ranker.cpp
+        core/ai/memory/memory_cue_extractor.h
+        core/ai/memory/memory_cue_extractor.cpp
+        core/ai/memory/memory_keyword_index.h
+        core/ai/memory/memory_keyword_index.cpp
+        core/ai/memory/active_memory_pool.h
+        core/ai/memory/active_memory_pool.cpp
+        core/ai/memory/hippocampus_working_set.h
+        core/ai/memory/hippocampus_working_set.cpp
         core/ai/memory/memory_store.h
         core/ai/memory/memory_store.cpp
         core/ai/memory/memory_repository.h
@@ -1318,6 +1344,55 @@ add_desktop_pet_cpp_test(memory_recall_phase2_tests MemoryRecallPhase2Tests
     SOURCES
         tests/test_memory_recall_phase2.cpp
         core/ai/memory/memory_types.h
+        core/ai/memory/memory_cue_extractor.h
+        core/ai/memory/memory_cue_extractor.cpp
+        core/ai/memory/memory_keyword_index.h
+        core/ai/memory/memory_keyword_index.cpp
+        core/ai/memory/actr_ranker.h
+        core/ai/memory/actr_ranker.cpp
+        core/ai/memory/associative_activation_engine.h
+        core/ai/memory/associative_activation_engine.cpp
+        core/ai/memory/active_memory_pool.h
+        core/ai/memory/active_memory_pool.cpp
+        core/ai/memory/hippocampus_working_set.h
+        core/ai/memory/hippocampus_working_set.cpp
+        core/ai/memory/memory_retriever.h
+        core/ai/memory/memory_retriever.cpp
+        core/ai/memory/working_memory_cache.h
+        core/ai/memory/working_memory_cache.cpp
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_json_codec.h
+        core/ai/memory/memory_json_codec.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+        core/ai/memory/embedding_index.h
+        core/ai/memory/partition_policy.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
+    APPLE_CORE_GRAPHICS
+)
+
+# ---- 类人激活式召回 Phase 3（图谱传播 + 人格化探索）测试 ----
+add_desktop_pet_cpp_test(memory_recall_phase3_tests MemoryRecallPhase3Tests
+    SOURCES
+        tests/test_memory_recall_phase3.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/associative_activation_engine.h
+        core/ai/memory/associative_activation_engine.cpp
         core/ai/memory/memory_cue_extractor.h
         core/ai/memory/memory_cue_extractor.cpp
         core/ai/memory/memory_keyword_index.h
