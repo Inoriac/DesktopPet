@@ -10,6 +10,7 @@
 #include "ai/context/context_assembler.h"
 #include "ai/event/event_ledger.h"
 #include "ai/model/model_router.h"
+#include "diary_fragment_service.h"
 #include "private_key_provider.h"
 #include "private_psyche_crypto.h"
 #include "sqlite_private_psyche_repository.h"
@@ -92,7 +93,9 @@ Result<DiaryEntry, DomainError> parseDiaryEnvelope(
     return Result<DiaryEntry, DomainError>::success(entry);
 }
 
-QList<ChatMessage> diaryProjection(const DiaryRequest& request) {
+QList<ChatMessage> diaryProjection(const DiaryRequest& request,
+                                   const QList<DiaryFragment>& fragments,
+                                   bool recovery) {
     QJsonObject input;
     input.insert(QStringLiteral("localDate"), request.localDate.toString(Qt::ISODate));
     input.insert(QStringLiteral("events"), QJsonArray::fromStringList(
@@ -103,12 +106,41 @@ QList<ChatMessage> diaryProjection(const DiaryRequest& request) {
         request.committedMemorySummaries.mid(0, 32)));
     input.insert(QStringLiteral("emotionTrajectoryAvailable"),
                  !request.emotionTrajectory.isEmpty());
+    if (!fragments.isEmpty()) {
+        // 白天随手记的便签：冻结了当时的情绪，是缝合的主要素材。
+        QJsonArray fragmentArray;
+        for (const DiaryFragment& fragment : fragments) {
+            QJsonObject obj;
+            obj.insert(QStringLiteral("body"), fragment.body);
+            obj.insert(QStringLiteral("writtenAt"),
+                       fragment.createdAt.toString(QStringLiteral("HH:mm")));
+            if (!fragment.emotionSnapshot.isEmpty()) {
+                obj.insert(QStringLiteral("emotion"), fragment.emotionSnapshot);
+            }
+            fragmentArray.append(obj);
+        }
+        input.insert(QStringLiteral("fragments"), fragmentArray);
+    }
+    if (recovery) {
+        input.insert(QStringLiteral("recovery"), true);
+    }
 
     ChatMessage system;
     system.role = QStringLiteral("system");
-    system.content = QStringLiteral(
+    QString prompt = QStringLiteral(
         "写一篇自由但简短的睡前日记。只能依据输入事实；没有情绪轨迹时不要编造"
         "连续情绪经历。只返回 body 字符串和不含正文的 index 对象。");
+    if (!fragments.isEmpty()) {
+        prompt += QStringLiteral(
+            "输入中的 fragments 是你白天随手记的几段便签（含当时的心情），"
+            "把它们按时间顺序整理成连贯的日记，保留心情变化，不要逐条罗列。");
+    }
+    if (recovery) {
+        prompt += QStringLiteral(
+            "这是一篇补写的日记（当晚没来得及写就休息了），"
+            "可以在开头自然地提一句补写这件事，但正文仍用当天视角。");
+    }
+    system.content = prompt;
     ChatMessage user;
     user.role = QStringLiteral("user");
     user.content = QString::fromUtf8(
@@ -179,9 +211,21 @@ void DiaryService::composeAsync(
     ContextRequest contextRequest;
     contextRequest.queryBudgetChars = 16000;
     contextRequest.requestedPartitions = {ContextPartition::DiaryProjection};
+    // 缝合模式：白天的 Draft 便签作为主要素材（冻结了当时情绪）
+    QList<DiaryFragment> fragments;
+    if (m_fragmentService) {
+        const auto drafts = m_fragmentService->draftsForDate(request.localDate);
+        if (drafts.isOk()) {
+            fragments = drafts.value();
+        }
+    }
+    QStringList fragmentIds;
+    for (const DiaryFragment& fragment : fragments) {
+        fragmentIds.append(fragment.fragmentId);
+    }
     contextRequest.projections = {
         ContextProjection{ContextPartition::DiaryProjection,
-                          diaryProjection(request)}};
+                          diaryProjection(request, fragments, request.recovery)}};
     const auto messages = m_contextAssembler->assemble(
         ModelRole::Diary, contextRequest);
     if (!messages.isOk()) {
@@ -200,7 +244,7 @@ void DiaryService::composeAsync(
     const std::shared_ptr<std::atomic_bool> alive = m_alive;
     m_modelRouter->completeAsync(
         modelRequest,
-        [this, alive, request, sessionId, token, keyMaterial,
+        [this, alive, request, sessionId, token, keyMaterial, fragmentIds,
          handler = std::move(handler)]
         (Result<ModelCompletion, DomainError> completion) mutable {
             if (!alive->load(std::memory_order_acquire)) return;
@@ -225,6 +269,12 @@ void DiaryService::composeAsync(
             entry.localDate = request.localDate;
             entry.body = parsed.value().first;
             entry.index = parsed.value().second;
+            if (!fragmentIds.isEmpty()) {
+                // 记录被缝合的片段 id，finalizeSession 据此精确标记 Consumed；
+                // compose 之后新增的片段不受影响（保持 Draft，下次补写处理）。
+                entry.index.insert(QStringLiteral("fragmentIds"),
+                                   QJsonArray::fromStringList(fragmentIds));
+            }
             entry.sourceCutoffSequence = request.sourceCutoffSequence;
             entry.keyVersion = keyMaterial.keyVersion;
             entry.createdAt = QDateTime::currentDateTimeUtc();
@@ -245,6 +295,41 @@ void DiaryService::composeAsync(
                 return;
             }
             handler(Result<QString, DomainError>::success(entry.entryId));
+        });
+}
+
+void DiaryService::composeRecoveryAsync(const QDate& localDate,
+                                        DiaryHandler handler) {
+    DiaryRequest request;
+    request.profileId = m_profileId;
+    request.sessionId = QStringLiteral("diary-recovery-%1")
+                            .arg(localDate.toString(Qt::ISODate));
+    request.localDate = localDate;
+    request.recovery = true;
+    StagingSession staging{request.sessionId, 0};
+    const QString sessionId = request.sessionId;
+    const std::shared_ptr<std::atomic_bool> alive = m_alive;
+    composeAsync(
+        request, staging, CancellationToken{},
+        [this, alive, sessionId, handler = std::move(handler)]
+        (Result<QString, DomainError> result) mutable {
+            if (!alive->load(std::memory_order_acquire)) return;
+            if (!result.isOk()) {
+                abortSession(sessionId);
+                if (handler) handler(std::move(result));
+                return;
+            }
+            const auto finalized = finalizeSession(sessionId);
+            if (!finalized.isOk()) {
+                abortSession(sessionId);
+                if (handler) {
+                    handler(Result<QString, DomainError>::failure(finalized.error()));
+                }
+                return;
+            }
+            qInfo("[Diary] recovery diary stitched for %s",
+                  qUtf8Printable(sessionId));
+            if (handler) handler(std::move(result));
         });
 }
 
@@ -354,6 +439,22 @@ Result<void, DomainError> DiaryService::finalizeSession(
             sessionId, entry.value(), record.encrypted);
         if (!finalized.isOk()) {
             return Result<void, DomainError>::failure(finalized.error());
+        }
+        // 缝合成功后消费便签：只标记 compose 时实际纳入日记的片段，
+        // 失败不阻断会话（片段多消费一次优于丢日记）。
+        const QJsonArray fragmentIdArray =
+            entry.value().index.value(QStringLiteral("fragmentIds")).toArray();
+        if (!fragmentIdArray.isEmpty()) {
+            QStringList fragmentIds;
+            for (const QJsonValue& value : fragmentIdArray) {
+                fragmentIds.append(value.toString());
+            }
+            const auto consumed = m_repository->markFragmentsConsumed(
+                m_profileId, entry.value().localDate, fragmentIds);
+            if (!consumed.isOk()) {
+                qWarning("[Diary] fragments were stitched but not marked consumed: %s",
+                         qUtf8Printable(consumed.error().message));
+            }
         }
         if (m_eventLedger) {
             EventDraft event;

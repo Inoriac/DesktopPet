@@ -55,3 +55,20 @@ std::optional<SleepSessionState> sleepSessionStateFromString(
     if (value == QLatin1String("Completed")) return SleepSessionState::Completed;
     return std::nullopt;
 }
+
+QString diaryFragmentStatusToString(DiaryFragmentStatus status) {
+    switch (status) {
+    case DiaryFragmentStatus::Draft: return QStringLiteral("Draft");
+    case DiaryFragmentStatus::Consumed: return QStringLiteral("Consumed");
+    case DiaryFragmentStatus::Abandoned: return QStringLiteral("Abandoned");
+    }
+    return QStringLiteral("Draft");
+}
+
+std::optional<DiaryFragmentStatus> diaryFragmentStatusFromString(
+    const QString& value) {
+    if (value == QLatin1String("Draft")) return DiaryFragmentStatus::Draft;
+    if (value == QLatin1String("Consumed")) return DiaryFragmentStatus::Consumed;
+    if (value == QLatin1String("Abandoned")) return DiaryFragmentStatus::Abandoned;
+    return std::nullopt;
+}

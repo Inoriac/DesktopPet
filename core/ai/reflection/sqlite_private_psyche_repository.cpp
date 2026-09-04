@@ -164,7 +164,7 @@ Result<void, DomainError> SqlitePrivatePsycheRepository::migrateSchema(
                      versionQuery.lastError()));
     }
     const int version = versionQuery.value(0).toInt();
-    if (version < 0 || version > 1) {
+    if (version < 0 || version > 2) {
         return Result<void, DomainError>::failure(
             sqlError(QStringLiteral("private schema version is newer than supported")));
     }
@@ -204,7 +204,21 @@ Result<void, DomainError> SqlitePrivatePsycheRepository::migrateSchema(
             "PRIMARY KEY(session_id, change_id))"),
         QStringLiteral(
             "CREATE INDEX IF NOT EXISTS idx_private_sleep_staged_status "
-            "ON sleep_staged_change(session_id, status)")
+            "ON sleep_staged_change(session_id, status)"),
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS diary_fragment ("
+            "fragment_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL,"
+            "local_date TEXT NOT NULL, segment_index INTEGER NOT NULL,"
+            "key_version INTEGER NOT NULL, nonce BLOB NOT NULL,"
+            "ciphertext BLOB NOT NULL, emotion_snapshot_json TEXT,"
+            "source_from_sequence INTEGER NOT NULL,"
+            "source_to_sequence INTEGER NOT NULL,"
+            "status TEXT NOT NULL DEFAULT 'Draft',"
+            "created_at TEXT NOT NULL,"
+            "UNIQUE(profile_id, local_date, segment_index))"),
+        QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_diary_fragment_profile_date_status "
+            "ON diary_fragment(profile_id, local_date, status)")
     };
     for (const QString& sql : statements) {
         if (!query.exec(sql)) {
@@ -214,8 +228,8 @@ Result<void, DomainError> SqlitePrivatePsycheRepository::migrateSchema(
                          query.lastError()));
         }
     }
-    if (version == 0
-        && !query.exec(QStringLiteral("PRAGMA user_version=1"))) {
+    if (version < 2
+        && !query.exec(QStringLiteral("PRAGMA user_version=2"))) {
         database.rollback();
         return Result<void, DomainError>::failure(
             sqlError(QStringLiteral("failed to set private schema version"),
@@ -676,4 +690,168 @@ QByteArray SqlitePrivatePsycheRepository::stagedDiaryCiphertext(
         "WHERE session_id=? AND target_type='diary_entry' AND status='Prepared' LIMIT 1"));
     query.addBindValue(sessionId);
     return query.exec() && query.next() ? query.value(0).toByteArray() : QByteArray{};
+}
+
+Result<QString, DomainError> SqlitePrivatePsycheRepository::saveFragment(
+    const DiaryFragment& fragment,
+    const EncryptedPrivatePayload& encrypted) {
+    if (!isOpen()) {
+        return Result<QString, DomainError>::failure(
+            sqlError(QStringLiteral("private repository is closed")));
+    }
+    QSqlDatabase database = QSqlDatabase::database(m_connectionName);
+    const QString emotionJson = fragment.emotionSnapshot.isEmpty()
+        ? QString{}
+        : QString::fromUtf8(QJsonDocument(fragment.emotionSnapshot)
+                                .toJson(QJsonDocument::Compact));
+    const QString createdAt = fragment.createdAt.toString(Qt::ISODateWithMs);
+    QSqlQuery query(database);
+    query.prepare(QStringLiteral(
+        "INSERT INTO diary_fragment(fragment_id, profile_id, local_date, segment_index,"
+        "key_version, nonce, ciphertext, emotion_snapshot_json,"
+        "source_from_sequence, source_to_sequence, status, created_at)"
+        " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)"
+        " ON CONFLICT(profile_id, local_date, segment_index) DO UPDATE SET"
+        " fragment_id=excluded.fragment_id, key_version=excluded.key_version,"
+        " nonce=excluded.nonce, ciphertext=excluded.ciphertext,"
+        " emotion_snapshot_json=excluded.emotion_snapshot_json,"
+        " source_from_sequence=excluded.source_from_sequence,"
+        " source_to_sequence=excluded.source_to_sequence,"
+        " status=excluded.status, created_at=excluded.created_at"));
+    query.addBindValue(fragment.fragmentId);
+    query.addBindValue(fragment.profileId);
+    query.addBindValue(fragment.localDate.toString(Qt::ISODate));
+    query.addBindValue(fragment.segmentIndex);
+    query.addBindValue(encrypted.keyVersion);
+    query.addBindValue(encrypted.nonce);
+    query.addBindValue(encrypted.ciphertext);
+    query.addBindValue(emotionJson);
+    query.addBindValue(fragment.sourceFromSequence);
+    query.addBindValue(fragment.sourceToSequence);
+    query.addBindValue(diaryFragmentStatusToString(fragment.status));
+    query.addBindValue(createdAt);
+    if (!query.exec()) {
+        return Result<QString, DomainError>::failure(
+            sqlError(QStringLiteral("failed to save diary fragment"),
+                     query.lastError()));
+    }
+    return Result<QString, DomainError>::success(fragment.fragmentId);
+}
+
+Result<QList<EncryptedDiaryFragment>, DomainError>
+SqlitePrivatePsycheRepository::draftFragments(
+    const QString& profileId, const QDate& localDate) const {
+    if (!isOpen()) {
+        return Result<QList<EncryptedDiaryFragment>, DomainError>::failure(
+            sqlError(QStringLiteral("private repository is closed")));
+    }
+    QSqlQuery query(QSqlDatabase::database(m_connectionName));
+    query.prepare(QStringLiteral(
+        "SELECT fragment_id, profile_id, local_date, segment_index,"
+        "key_version, nonce, ciphertext, emotion_snapshot_json,"
+        "source_from_sequence, source_to_sequence, status, created_at"
+        " FROM diary_fragment WHERE profile_id=? AND local_date=? AND status='Draft'"
+        " ORDER BY segment_index ASC"));
+    query.addBindValue(profileId);
+    query.addBindValue(localDate.toString(Qt::ISODate));
+    if (!query.exec()) {
+        return Result<QList<EncryptedDiaryFragment>, DomainError>::failure(
+            sqlError(QStringLiteral("failed to query draft fragments"),
+                     query.lastError()));
+    }
+    QList<EncryptedDiaryFragment> fragments;
+    while (query.next()) {
+        EncryptedDiaryFragment fragment;
+        fragment.fragmentId = query.value(0).toString();
+        fragment.profileId = query.value(1).toString();
+        fragment.localDate = QDate::fromString(query.value(2).toString(), Qt::ISODate);
+        fragment.segmentIndex = query.value(3).toInt();
+        fragment.encrypted.keyVersion = query.value(4).toInt();
+        fragment.encrypted.nonce = query.value(5).toByteArray();
+        fragment.encrypted.ciphertext = query.value(6).toByteArray();
+        fragment.emotionSnapshot = parseObject(query.value(7).toString());
+        fragment.sourceFromSequence = query.value(8).toLongLong();
+        fragment.sourceToSequence = query.value(9).toLongLong();
+        const auto status = diaryFragmentStatusFromString(query.value(10).toString());
+        fragment.status = status.value_or(DiaryFragmentStatus::Draft);
+        fragment.createdAt = QDateTime::fromString(
+            query.value(11).toString(), Qt::ISODateWithMs);
+        fragments.append(fragment);
+    }
+    return Result<QList<EncryptedDiaryFragment>, DomainError>::success(fragments);
+}
+
+Result<void, DomainError> SqlitePrivatePsycheRepository::markFragmentsConsumed(
+    const QString& profileId, const QDate& localDate,
+    const QStringList& fragmentIds) {
+    if (!isOpen()) {
+        return Result<void, DomainError>::failure(
+            sqlError(QStringLiteral("private repository is closed")));
+    }
+    if (fragmentIds.isEmpty()) {
+        return Result<void, DomainError>::success();
+    }
+    QSqlDatabase database = QSqlDatabase::database(m_connectionName);
+    if (!database.transaction()) {
+        return Result<void, DomainError>::failure(
+            sqlError(QStringLiteral("failed to begin fragment consume transaction"),
+                     database.lastError()));
+    }
+    QSqlQuery query(database);
+    QStringList placeholderList;
+    placeholderList.reserve(fragmentIds.size());
+    for (int i = 0; i < fragmentIds.size(); ++i) {
+        placeholderList.append(QStringLiteral("?"));
+    }
+    const QString placeholders = placeholderList.join(QStringLiteral(","));
+    query.prepare(QStringLiteral(
+        "UPDATE diary_fragment SET status='Consumed'"
+        " WHERE profile_id=? AND local_date=? AND fragment_id IN (%1)"
+        " AND status='Draft'").arg(placeholders));
+    query.addBindValue(profileId);
+    query.addBindValue(localDate.toString(Qt::ISODate));
+    for (const QString& id : fragmentIds) {
+        query.addBindValue(id);
+    }
+    if (!query.exec()) {
+        database.rollback();
+        return Result<void, DomainError>::failure(
+            sqlError(QStringLiteral("failed to mark fragments consumed"),
+                     query.lastError()));
+    }
+    if (!database.commit()) {
+        database.rollback();
+        return Result<void, DomainError>::failure(
+            sqlError(QStringLiteral("failed to commit fragment consume"),
+                     database.lastError()));
+    }
+    return Result<void, DomainError>::success();
+}
+
+Result<QList<QPair<QDate, int>>, DomainError>
+SqlitePrivatePsycheRepository::orphanDraftDates(
+    const QString& profileId) const {
+    if (!isOpen()) {
+        return Result<QList<QPair<QDate, int>>, DomainError>::failure(
+            sqlError(QStringLiteral("private repository is closed")));
+    }
+    QSqlQuery query(QSqlDatabase::database(m_connectionName));
+    query.prepare(QStringLiteral(
+        "SELECT f.local_date, COUNT(*) FROM diary_fragment f"
+        " LEFT JOIN diary_entry d ON f.profile_id=d.profile_id AND f.local_date=d.local_date"
+        " WHERE f.profile_id=? AND f.status='Draft' AND d.entry_id IS NULL"
+        " GROUP BY f.local_date ORDER BY f.local_date ASC"));
+    query.addBindValue(profileId);
+    if (!query.exec()) {
+        return Result<QList<QPair<QDate, int>>, DomainError>::failure(
+            sqlError(QStringLiteral("failed to query orphan draft dates"),
+                     query.lastError()));
+    }
+    QList<QPair<QDate, int>> orphans;
+    while (query.next()) {
+        const QDate date = QDate::fromString(query.value(0).toString(), Qt::ISODate);
+        const int count = query.value(1).toInt();
+        orphans.append({date, count});
+    }
+    return Result<QList<QPair<QDate, int>>, DomainError>::success(orphans);
 }

@@ -14,6 +14,7 @@ class ContextAssembler;
 class CancellationSource;
 class DaydreamSleepAdapter;
 class DiaryService;
+class DiaryFragmentService;
 class EmotionStateProvider;
 class EventConsumerCheckpointStore;
 class EventLedger;
@@ -69,6 +70,9 @@ public:
         return m_innerThoughtService.get();
     }
     DiaryService* diaryService() const { return m_diaryService.get(); }
+    DiaryFragmentService* diaryFragmentService() const {
+        return m_diaryFragmentService.get();
+    }
     SleepCycleCoordinator* sleepCycleCoordinator() const {
         return m_sleepCycleCoordinator.get();
     }
@@ -124,6 +128,7 @@ private:
     std::unique_ptr<ContextAssembler> m_reflectionContextAssembler;
     std::unique_ptr<InnerThoughtService> m_innerThoughtService;
     std::unique_ptr<DiaryService> m_diaryService;
+    std::unique_ptr<DiaryFragmentService> m_diaryFragmentService;
     std::unique_ptr<OwnerDiaryFacade> m_ownerDiaryFacade;
     std::unique_ptr<OwnerDiaryServer> m_ownerDiaryServer;
     std::unique_ptr<DaydreamSleepAdapter> m_daydreamSleepAdapter;

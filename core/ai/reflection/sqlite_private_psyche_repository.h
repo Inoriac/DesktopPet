@@ -45,6 +45,17 @@ public:
         const QString& profileId,
         const DiaryListQuery& query) const;
 
+    Result<QString, DomainError> saveFragment(
+        const DiaryFragment& fragment,
+        const EncryptedPrivatePayload& encrypted);
+    Result<QList<EncryptedDiaryFragment>, DomainError> draftFragments(
+        const QString& profileId, const QDate& localDate) const;
+    Result<void, DomainError> markFragmentsConsumed(
+        const QString& profileId, const QDate& localDate,
+        const QStringList& fragmentIds);
+    Result<QList<QPair<QDate, int>>, DomainError> orphanDraftDates(
+        const QString& profileId) const;
+
     Result<void, DomainError> abortSession(const QString& sessionId);
 
     int innerThoughtCount(const QString& profileId) const;

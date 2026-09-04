@@ -53,6 +53,8 @@ struct DiaryRequest {
     QStringList innerThoughtRefs;
     QStringList committedMemorySummaries;
     QString petName;
+    // 补写模式：启动恢复时对历史日期的孤儿便签补写日记（人格化叙事）
+    bool recovery = false;
 };
 
 struct DiaryEntry {
@@ -63,6 +65,45 @@ struct DiaryEntry {
     QJsonObject index;
     qint64 sourceCutoffSequence = 0;
     int keyVersion = 1;
+    QDateTime createdAt;
+};
+
+struct EncryptedPrivatePayload {
+    int schemaVersion = 1;
+    int keyVersion = 1;
+    QByteArray nonce;
+    QByteArray ciphertext;
+};
+
+enum class DiaryFragmentStatus {
+    Draft,
+    Consumed,
+    Abandoned
+};
+
+struct DiaryFragment {
+    QString fragmentId;
+    QString profileId;
+    QDate localDate;
+    int segmentIndex = 0;
+    QString body;
+    QJsonObject emotionSnapshot;
+    qint64 sourceFromSequence = 0;
+    qint64 sourceToSequence = 0;
+    DiaryFragmentStatus status = DiaryFragmentStatus::Draft;
+    QDateTime createdAt;
+};
+
+struct EncryptedDiaryFragment {
+    QString fragmentId;
+    QString profileId;
+    QDate localDate;
+    int segmentIndex = 0;
+    EncryptedPrivatePayload encrypted;
+    QJsonObject emotionSnapshot;
+    qint64 sourceFromSequence = 0;
+    qint64 sourceToSequence = 0;
+    DiaryFragmentStatus status = DiaryFragmentStatus::Draft;
     QDateTime createdAt;
 };
 
@@ -164,13 +205,6 @@ struct PrivateRecordAad {
     QByteArray toBytes() const;
 };
 
-struct EncryptedPrivatePayload {
-    int schemaVersion = 1;
-    int keyVersion = 1;
-    QByteArray nonce;
-    QByteArray ciphertext;
-};
-
 struct StoredPrivateRecord {
     QString recordId;
     QString profileId;
@@ -187,6 +221,9 @@ QString sleepDecisionToString(SleepDecision decision);
 std::optional<SleepDecision> sleepDecisionFromString(const QString& value);
 QString sleepSessionStateToString(SleepSessionState state);
 std::optional<SleepSessionState> sleepSessionStateFromString(const QString& value);
+
+QString diaryFragmentStatusToString(DiaryFragmentStatus status);
+std::optional<DiaryFragmentStatus> diaryFragmentStatusFromString(const QString& value);
 
 using InnerThoughtHandler =
     std::function<void(Result<QString, DomainError>)>;

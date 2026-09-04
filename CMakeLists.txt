@@ -180,6 +180,8 @@ set(REFLECTION_SOURCES
     core/ai/reflection/daydream_sleep_adapter.cpp
     core/ai/reflection/diary_service.h
     core/ai/reflection/diary_service.cpp
+    core/ai/reflection/diary_fragment_service.h
+    core/ai/reflection/diary_fragment_service.cpp
     core/ai/reflection/sleep_session_repository.h
     core/ai/reflection/sleep_session_repository.cpp
     core/ai/reflection/sleep_cycle_coordinator.h

@@ -21,6 +21,7 @@
 #include "ai/owner/owner_diary_server.h"
 #include "ai/reflection/daydream_sleep_adapter.h"
 #include "ai/reflection/diary_service.h"
+#include "ai/reflection/diary_fragment_service.h"
 #include "ai/reflection/inner_thought_service.h"
 #include "ai/reflection/private_key_provider.h"
 #include "ai/reflection/private_psyche_crypto.h"
@@ -161,6 +162,27 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
                     m_reflectionContextAssembler.get(), m_privateKeyProvider.get(),
                     m_privateCrypto.get(), m_privateRepository.get(),
                     ModelRole::Diary, m_eventLedger.get());
+                m_diaryFragmentService = std::make_unique<DiaryFragmentService>(
+                    m_profileId, this, request.aiBrain->modelRouter(),
+                    m_reflectionContextAssembler.get(), m_privateKeyProvider.get(),
+                    m_privateCrypto.get(), m_privateRepository.get(),
+                    m_eventLedger.get());
+                m_diaryFragmentService->setIdleProbe([brain = request.aiBrain]() {
+                    return brain ? brain->userIdleSeconds() : -1;
+                });
+                m_diaryFragmentService->setBusyProbe([brain = request.aiBrain]() {
+                    return brain ? brain->isBusy() : false;
+                });
+                QObject::connect(
+                    m_diaryFragmentService.get(), &DiaryFragmentService::recoveryNeeded,
+                    [diary = m_diaryService.get()](const QDate& orphanDate) {
+                        if (!diary) return;
+                        qInfo("[DiaryFragment] orphan draft detected: %s, triggering recovery",
+                              qUtf8Printable(orphanDate.toString(Qt::ISODate)));
+                        diary->composeRecoveryAsync(orphanDate);
+                    });
+                m_diaryFragmentService->start();
+                m_diaryService->setFragmentService(m_diaryFragmentService.get());
                 m_daydreamSleepAdapter = std::make_unique<DaydreamSleepAdapter>(
                     m_profileId, request.profile.name, request.aiBrain->memoryStore(),
                     request.aiBrain->modelRouter());

@@ -13,6 +13,7 @@ class ModelRouter;
 class PrivateKeyProvider;
 class PrivatePsycheCrypto;
 class SqlitePrivatePsycheRepository;
+class DiaryFragmentService;
 
 class DiaryService {
 public:
@@ -26,10 +27,19 @@ public:
                  EventLedger* eventLedger = nullptr);
     ~DiaryService();
 
+    // 可选：注入片段服务后，composeAsync 会把当日 Draft 便签缝合进日记，
+    // finalizeSession 成功后把被缝合的片段标记为 Consumed。
+    void setFragmentService(DiaryFragmentService* fragmentService) {
+        m_fragmentService = fragmentService;
+    }
+
     void composeAsync(const DiaryRequest& request,
                       StagingSession& staging,
                       const CancellationToken& token,
                       DiaryHandler handler);
+    // 补写：对存在孤儿便签的历史日期独立缝合一篇日记（recovery 人格化叙事）。
+    // 自管理 staging session（"diary-recovery-<date>"），成功即 finalize，失败 abort。
+    void composeRecoveryAsync(const QDate& localDate, DiaryHandler handler = {});
     Result<DiaryEntry, DomainError> readForSelf(const QString& entryId) const;
     Result<DiaryPage, DomainError> listForOwner(
         const DiaryListQuery& query,
@@ -53,6 +63,7 @@ private:
     SqlitePrivatePsycheRepository* m_repository = nullptr;
     ModelRole m_selfReadRole = ModelRole::Diary;
     EventLedger* m_eventLedger = nullptr;
+    DiaryFragmentService* m_fragmentService = nullptr;
     std::shared_ptr<std::atomic_bool> m_alive =
         std::make_shared<std::atomic_bool>(true);
 };
