@@ -132,10 +132,10 @@ CREATE TABLE diary_fragments (
 | # | 事项 | 规模 | 依赖 | 优先级 |
 |---|------|------|------|--------|
 | 1 | ~~macOS 空闲检测（CGEventSource）~~ | ✅ | ✅ | **已完成**（environment_tools.cpp 已实现并链接 CoreGraphics）|
-| 2 | SleepPolicy 行为驱动触发（去 bedtime 硬编码） | 小 | 无 | ⭐⭐⭐⭐⭐ |
-| 3 | Daydream 中断人格化记录 | 小 | 无 | ⭐⭐⭐⭐（收益/成本比最高）|
-| 4 | 巩固兜底：规则增强 + 容量分级触发 | 中 | 无 | ⭐⭐⭐⭐ |
-| 5 | 手动触发入口（托盘 + toast/进度） | 中 | #4 | ⭐⭐⭐ |
+| 2 | ~~SleepPolicy 行为驱动触发（去 bedtime 硬编码）~~ | ✅ | ✅ | **已完成**（ff70b4e：timeBasedTrigger 默认关 + 积压放宽门槛）|
+| 3 | ~~Daydream 中断人格化记录~~ | ✅ | ✅ | **已完成**（35ced7f：Hippocampus 记忆 + ExternalObstruction 情绪事件）|
+| 4 | ~~巩固兜底：规则增强 + 容量分级触发~~ | ✅ | ✅ | **已完成**（bf211e2：启发式分类/评分/批内去重；分级触发在 #2 中落地）|
+| 5 | ~~手动触发入口（托盘 + toast/进度）~~ | ✅ | ✅ | **已完成**（a4b8cfc：右键菜单「让我打个盹」+ 气泡反馈）|
 | 6 | diary_fragments 表 + 片段落库 + 启动恢复检测 | 中 | 无 | ⭐⭐⭐ |
 | 7 | 片段收集器（空闲窗口写便签） | 中 | #6 | ⭐⭐⭐ |
 | 8 | 夜间缝合改造 + 补写流程 | 中 | #6 #7 | ⭐⭐⭐ |
@@ -143,3 +143,11 @@ CREATE TABLE diary_fragments (
 | 10 | 新召回入口接入生产（AIBrain/ChatPreparation） | 中 | 无 | ⭐⭐⭐⭐（Phase 1-3 的价值兑现）|
 
 完成 #2-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
+
+## 已知环境问题
+
+- macOS 下 memory_strategy_tests 有 7 个预存在失败（+3 个新增兜底规则测试被同样掩盖），
+  症状统一：显式 QSqlDatabase 事务 commit 后数据不可见（最小复现：
+  testTransactionCommitRetainsWrites）。README 声明 macOS 未纳入运行验证，
+  Windows 回归时需确认是否复现；若仅 macOS 复现，排查 SQLiteMemoryRepository
+  的事务与 WAL/SAVEPOINT 交互。

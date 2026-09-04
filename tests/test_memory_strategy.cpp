@@ -2111,7 +2111,7 @@ void TestMemoryStrategy::testDaydreamFallbackUpgradesHighImportance() {
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
     QCOMPARE(stats.scanned, 1);
-    QCOMPARE(stats.upgraded, 1); // importance >= 0.6 → 升级（新增兕底规则）
+    QCOMPARE(stats.upgraded, 1); // importance >= 0.6 → 升级（新增兜底规则）
     QCOMPARE(stats.discarded, 0);
 
     QVERIFY(store.load());
