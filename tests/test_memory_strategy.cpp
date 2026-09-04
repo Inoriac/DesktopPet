@@ -96,6 +96,9 @@ private slots:
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
     void testDaydreamDrainUpgradesViaPersistedMentionCount();
+    void testDaydreamFallbackUpgradesHighImportance();
+    void testDaydreamFallbackRoutesPreferenceKeyword();
+    void testDaydreamFallbackDeduplicatesBatch();
     void testDaydreamDiscardsLegacyAssistantInbox();
     void testDaydreamSessionLimitLeavesRemainder();
     void testDaydreamRejectsStaleSnapshotAtomically();
@@ -2087,6 +2090,94 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
     QCOMPARE(upgraded.type, MemoryType::Episodic);
     QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal); // review finding #3
     QCOMPARE(upgraded.source, QStringLiteral("daydream"));
+}
+
+void TestMemoryStrategy::testDaydreamFallbackUpgradesHighImportance() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryExtractor extractor;
+    MemoryEntry impression = extractor.extractDaydreamImpression(
+        QStringLiteral("我决定换一份新工作了"), QStringLiteral("user_request"));
+    QVERIFY(!impression.key.isEmpty()); // 自我披露检查通过
+    impression.importance = 0.7; // 高重要性（≥ 0.6 门槛），mentionCount 仍为 1
+    const MemoryEntry stored = store.addEntry(impression);
+    QVERIFY(!stored.id.isEmpty());
+    QCOMPARE(stored.partition, QStringLiteral("hippocampus"));
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1);
+    QCOMPARE(stats.upgraded, 1); // importance >= 0.6 → 升级（新增兕底规则）
+    QCOMPARE(stats.discarded, 0);
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 1);
+    const MemoryEntry upgraded = store.all().first();
+    QVERIFY(upgraded.partition != QLatin1String("hippocampus"));
+    QCOMPARE(upgraded.type, MemoryType::Episodic); // 无关键词命中 → 默认 Episodic
+}
+
+void TestMemoryStrategy::testDaydreamFallbackRoutesPreferenceKeyword() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryExtractor extractor;
+    MemoryEntry impression = extractor.extractDaydreamImpression(
+        QStringLiteral("我喜欢在深夜写代码"), QStringLiteral("user_request"));
+    QVERIFY(!impression.key.isEmpty());
+    impression.importance = 0.7; // 达到升级门槛
+    const MemoryEntry stored = store.addEntry(impression);
+    QVERIFY(!stored.id.isEmpty());
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 1);
+    QCOMPARE(stats.upgraded, 1);
+    QCOMPARE(stats.discarded, 0);
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 1);
+    const MemoryEntry upgraded = store.all().first();
+    QCOMPARE(upgraded.type, MemoryType::Preference); // 「喜欢」→ 路由为偏好
+    QCOMPARE(upgraded.partition, QStringLiteral("preference"));
+}
+
+void TestMemoryStrategy::testDaydreamFallbackDeduplicatesBatch() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryExtractor extractor;
+    // 3 条内容相同的高重要性印象（模拟重复采集）
+    for (int i = 0; i < 3; ++i) {
+        MemoryEntry impression = extractor.extractDaydreamImpression(
+            QStringLiteral("我最近在反复准备面试"), QStringLiteral("user_request"));
+        QVERIFY(!impression.key.isEmpty());
+        impression.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        impression.key = QStringLiteral("daydream:test:%1").arg(i); // 避免 key 覆盖
+        impression.importance = 0.7;
+        const MemoryEntry stored = store.addEntry(impression);
+        QVERIFY(!stored.id.isEmpty());
+    }
+    QCOMPARE(store.all().size(), 3);
+
+    DaydreamConsolidator consolidator(store);
+    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.scanned, 3);
+    QCOMPARE(stats.upgraded, 1); // 批内去重：相同正文只升级第一条
+    QCOMPARE(stats.discarded, 2);
+
+    QVERIFY(store.load());
+    QCOMPARE(store.all().size(), 1);
 }
 
 void TestMemoryStrategy::testDaydreamDiscardsLegacyAssistantInbox() {
