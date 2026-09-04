@@ -309,6 +309,7 @@ static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
 static SleepPolicy parseSleepPolicy(const QJsonObject& object) {
     SleepPolicy policy;
     policy.enabled = object.value(QStringLiteral("enabled")).toBool(policy.enabled);
+    policy.timeBasedTrigger = object.value(QStringLiteral("timeBasedTrigger")).toBool(policy.timeBasedTrigger);
     const QTime bedtime = QTime::fromString(
         object.value(QStringLiteral("bedtime")).toString(), QStringLiteral("HH:mm"));
     if (bedtime.isValid()) policy.bedtime = bedtime;
@@ -323,6 +324,14 @@ static SleepPolicy parseSleepPolicy(const QJsonObject& object) {
     };
     assignValidInt(QStringLiteral("minimumIdleSeconds"), 30, 24 * 60 * 60,
                    &policy.minimumIdleSeconds);
+    assignValidInt(QStringLiteral("inactivityWindowSeconds"), 60, 24 * 60 * 60,
+                   &policy.inactivityWindowSeconds);
+    assignValidInt(QStringLiteral("maxActivityInWindowSeconds"), 0, 24 * 60 * 60,
+                   &policy.maxActivityInWindowSeconds);
+    assignValidInt(QStringLiteral("hippocampusBacklogThreshold"), 0, 500,
+                   &policy.hippocampusBacklogThreshold);
+    assignValidInt(QStringLiteral("relaxedIdleSeconds"), 30, 24 * 60 * 60,
+                   &policy.relaxedIdleSeconds);
     assignValidInt(QStringLiteral("dueSoonThresholdSeconds"), 0, 24 * 60 * 60,
                    &policy.dueSoonThresholdSeconds);
     assignValidInt(QStringLiteral("maxItemsPerSession"), 1, 128,

@@ -53,7 +53,10 @@ bool SleepCycleCoordinator::isReady(const SleepTrigger& trigger) const {
     const QDateTime now = trigger.now.isValid()
         ? trigger.now : QDateTime::currentDateTime();
     if (m_backoffUntil.isValid() && now < m_backoffUntil) return false;
+    // 时间门控仅在 timeBasedTrigger 开启时生效；默认行为驱动（全天可触发），
+    // 不假定用户作息。每日单次语义由下方 hasCommittedDiaryForDate 保证。
     if (trigger.type == SleepTriggerType::Bedtime
+        && m_policy.timeBasedTrigger
         && now.time() < m_policy.bedtime) {
         return false;
     }
@@ -73,8 +76,16 @@ bool SleepCycleCoordinator::isReady(const SleepTrigger& trigger) const {
         ? trigger.observedIdleSeconds
         : (m_hooks.userIdleSeconds ? m_hooks.userIdleSeconds()
                                    : (m_aiBrain ? m_aiBrain->userIdleSeconds() : -1));
-    return trigger.type == SleepTriggerType::Manual
-        || idle >= m_policy.minimumIdleSeconds;
+    if (trigger.type == SleepTriggerType::Manual) return true;
+    // 积压分级：Hippocampus 待巩固量超阈值时降低空闲门槛，
+    // 避免用户长期不进入长空闲导致永不整理。
+    int requiredIdle = m_policy.minimumIdleSeconds;
+    if (m_hooks.hippocampusPendingCount
+        && m_policy.hippocampusBacklogThreshold > 0
+        && m_hooks.hippocampusPendingCount() >= m_policy.hippocampusBacklogThreshold) {
+        requiredIdle = qMin(requiredIdle, m_policy.relaxedIdleSeconds);
+    }
+    return idle >= requiredIdle;
 }
 
 Result<QString, DomainError> SleepCycleCoordinator::tryStart(

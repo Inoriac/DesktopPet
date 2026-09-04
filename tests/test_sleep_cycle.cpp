@@ -478,6 +478,9 @@ private slots:
     void tryStart_whenBedtimeIdleAndNoDueTask_shouldCreateDurablePendingSession();
     void tryStart_whenBrainBusyOrTaskDueSoon_shouldNotStart();
     void tryStart_whenDiaryAlreadyCommitted_shouldSkipBedtimeButAllowManual();
+    void tryStart_whenMorningWithBehaviorDrivenDefault_shouldStart();
+    void tryStart_whenTimeBasedTriggerEnabledBeforeBedtime_shouldNotStart();
+    void tryStart_whenHippocampusBacklogHigh_shouldRelaxIdleThreshold();
     void tryStart_whenAllParticipantsPrepared_shouldPersistCommitThenFinalizeAllStores();
     void tryStart_whenRestartFindsCommittedSession_shouldIdempotentlyFinishFinalize();
     void cancel_whenDecisionPending_shouldAbortAllStagingAndPreserveFormalState();
@@ -1020,6 +1023,85 @@ void SleepCycleTests::tryStart_whenDiaryAlreadyCommitted_shouldSkipBedtimeButAll
     QVERIFY(manual.isOk());
 }
 
+void SleepCycleTests::tryStart_whenMorningWithBehaviorDrivenDefault_shouldStart() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    SleepPolicy policy;  // 默认 timeBasedTrigger=false，行为驱动
+    QCOMPARE(policy.timeBasedTrigger, false);
+    QCOMPARE(policy.minimumIdleSeconds, 1800);
+    SleepCycleHooks hooks;
+    hooks.isBrainBusy = [] { return false; };
+    hooks.hasTaskDueBefore = [](const QDateTime&) { return false; };
+    hooks.userIdleSeconds = [] { return 1800; };
+    hooks.sourceCutoffSequence = [] { return 12; };
+    SleepCycleCoordinator coordinator(
+        kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
+        &fixture.privateRepository, nullptr, nullptr, hooks);
+    // 上午 10:00（远早于 bedtime 23:30），行为驱动下应可触发
+    const QDateTime morning(kLocalDate, QTime(10, 0));
+    const auto result = coordinator.tryStart({
+        SleepTriggerType::Bedtime, 1800, morning, kProfileId});
+    QVERIFY(result.isOk());
+}
+
+void SleepCycleTests::tryStart_whenTimeBasedTriggerEnabledBeforeBedtime_shouldNotStart() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    SleepPolicy policy;
+    policy.timeBasedTrigger = true;   // 显式启用时间门控
+    policy.bedtime = QTime(23, 30);
+    SleepCycleHooks hooks;
+    hooks.isBrainBusy = [] { return false; };
+    hooks.hasTaskDueBefore = [](const QDateTime&) { return false; };
+    hooks.userIdleSeconds = [] { return 3600; };
+    hooks.sourceCutoffSequence = [] { return 12; };
+    SleepCycleCoordinator coordinator(
+        kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
+        &fixture.privateRepository, nullptr, nullptr, hooks);
+    // 上午 10:00 早于 bedtime → 拒绝
+    const auto morning = coordinator.tryStart({
+        SleepTriggerType::Bedtime, 3600, QDateTime(kLocalDate, QTime(10, 0)), kProfileId});
+    QVERIFY(!morning.isOk());
+    QCOMPARE(morning.error().code, QStringLiteral("SLEEP_NOT_READY"));
+    // 23:31 晚于 bedtime → 允许
+    const auto night = coordinator.tryStart({
+        SleepTriggerType::Bedtime, 3600, QDateTime(kLocalDate, QTime(23, 31)), kProfileId});
+    QVERIFY(night.isOk());
+}
+
+void SleepCycleTests::tryStart_whenHippocampusBacklogHigh_shouldRelaxIdleThreshold() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    SleepPolicy policy;   // minimumIdle=1800, relaxed=900, backlogThreshold=120
+    SleepCycleHooks hooks;
+    hooks.isBrainBusy = [] { return false; };
+    hooks.hasTaskDueBefore = [](const QDateTime&) { return false; };
+    hooks.userIdleSeconds = [] { return 900; };  // 只有 15 分钟空闲
+    hooks.sourceCutoffSequence = [] { return 12; };
+
+    // 无积压：900 < 1800 → 拒绝
+    hooks.hippocampusPendingCount = [] { return 50; };
+    {
+        SleepCycleCoordinator coordinator(
+            kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
+            &fixture.privateRepository, nullptr, nullptr, hooks);
+        const auto result = coordinator.tryStart({
+            SleepTriggerType::Bedtime, 900, QDateTime::currentDateTime(), kProfileId});
+        QVERIFY(!result.isOk());
+    }
+
+    // 积压 150 ≥ 120：门槛放宽到 900 → 允许
+    hooks.hippocampusPendingCount = [] { return 150; };
+    {
+        SleepCycleCoordinator coordinator(
+            kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
+            &fixture.privateRepository, nullptr, nullptr, hooks);
+        const auto result = coordinator.tryStart({
+            SleepTriggerType::Bedtime, 900, QDateTime::currentDateTime(), kProfileId});
+        QVERIFY(result.isOk());
+    }
+}
+
 void SleepCycleTests::tryStart_whenAllParticipantsPrepared_shouldPersistCommitThenFinalizeAllStores() {
     ReflectionFixture fixture;
     QVERIFY(fixture.open());
@@ -1242,7 +1324,7 @@ void SleepCycleTests::getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults(
     QVERIFY(ConfigManager::instance().loadConfig(writeConfig(directory, root)));
     const SleepPolicy& policy = ConfigManager::instance().getSleepPolicy();
     QCOMPARE(policy.bedtime, QTime(23, 30));
-    QCOMPARE(policy.minimumIdleSeconds, 600);
+    QCOMPARE(policy.minimumIdleSeconds, 1800);
     QCOMPARE(policy.maxItemsPerSession, 32);
 }
 

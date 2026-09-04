@@ -25,6 +25,8 @@ struct SleepCycleHooks {
     std::function<qint64()> sourceCutoffSequence;
     std::function<void(bool)> publishCapability;
     std::function<void()> playSleepAnimation;
+    // 可选：Hippocampus 待巩固数量（积压分级触发用）；未提供时视为 0。
+    std::function<int()> hippocampusPendingCount;
 };
 
 class SleepCycleCoordinator {

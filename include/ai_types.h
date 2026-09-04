@@ -155,8 +155,21 @@ struct DaydreamConfig {
 
 struct SleepPolicy {
     bool enabled = true;
-    QTime bedtime = QTime(23, 30);
-    int minimumIdleSeconds = 600;
+    
+    // 触发策略：时间基础 vs 行为驱动
+    bool timeBasedTrigger = false;           // false = 全天可触发（仅依赖空闲）
+    QTime bedtime = QTime(23, 30);          // timeBasedTrigger=true 时生效
+    
+    // 空闲判定（行为驱动的核心）
+    int minimumIdleSeconds = 1800;          // 30 分钟连续空闲（提高自 600）
+    int inactivityWindowSeconds = 3600;     // 1 小时窗口（用于检测低活跃度）
+    int maxActivityInWindowSeconds = 300;   // 窗口内最多 5 分钟活跃
+    
+    // 积压应急触发（容量分级）
+    int hippocampusBacklogThreshold = 120;  // Hippocampus ≥ 120 条时放宽条件
+    int relaxedIdleSeconds = 900;           // 积压时降低到 15 分钟空闲
+    
+    // 其他
     int dueSoonThresholdSeconds = 600;
     int maxItemsPerSession = 32;
     int retryBackoffSeconds = 600;
