@@ -18,6 +18,7 @@
 #include "ai/model/model_role_registry.h"
 #include "ai/model/model_router.h"
 #include "ai/reflection/daydream_sleep_adapter.h"
+#include "ai/reflection/diary_fragment_service.h"
 #include "ai/reflection/diary_service.h"
 #include "ai/reflection/inner_thought_service.h"
 #include "ai/reflection/private_key_provider.h"
@@ -491,6 +492,8 @@ private slots:
 
     void getSleepPolicy_whenConfigured_shouldReturnSanitizedPolicy();
     void getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults();
+
+    void testDiaryFragmentsDetectOrphanAndRecover();
 };
 
 void SleepCycleTests::createAsync_whenHighValueEventCompletes_shouldStageShortPrivateSummaryWithoutBlockingReply() {
@@ -1326,6 +1329,77 @@ void SleepCycleTests::getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults(
     QCOMPARE(policy.bedtime, QTime(23, 30));
     QCOMPARE(policy.minimumIdleSeconds, 1800);
     QCOMPARE(policy.maxItemsPerSession, 32);
+}
+
+// ========== Diary Fragments 端到端测试 ==========
+
+void SleepCycleTests::testDiaryFragmentsDetectOrphanAndRecover() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+
+    // 1. 准备真实加密的片段信封
+    const QDate orphanDate = QDate(2026, 9, 1);
+    const QString fragmentId = QStringLiteral("frag-orphan-001");
+    
+    // 构造片段信封 JSON
+    QJsonObject envelope;
+    envelope[QStringLiteral("localDate")] = orphanDate.toString(Qt::ISODate);
+    envelope[QStringLiteral("segmentIndex")] = 0;
+    envelope[QStringLiteral("body")] = QStringLiteral("今天天气不错，用户心情很好。");
+    envelope[QStringLiteral("emotionSnapshot")] = QJsonObject{{QStringLiteral("mood"), QStringLiteral("happy")}};
+    envelope[QStringLiteral("sourceFromSequence")] = 1;
+    envelope[QStringLiteral("sourceToSequence")] = 10;
+    envelope[QStringLiteral("createdAt")] = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    const QByteArray plaintext = QJsonDocument(envelope).toJson(QJsonDocument::Compact);
+    
+    // 加载密钥并加密
+    const auto keyMaterial = fixture.keys.loadOrCreate(kProfileId);
+    QVERIFY(keyMaterial.isOk());
+    const PrivateRecordAad aad{1, kProfileId, QStringLiteral("diary_fragment"),
+                                fragmentId, keyMaterial.value().keyVersion};
+    const auto encrypted = fixture.crypto.encrypt(plaintext, aad, keyMaterial.value());
+    QVERIFY(encrypted.isOk());
+    
+    // 插入加密片段到数据库
+    QSqlDatabase db = QSqlDatabase::database(fixture.privateRepository.connectionName());
+    QSqlQuery insertQuery(db);
+    insertQuery.prepare(QStringLiteral(
+        "INSERT INTO diary_fragment(fragment_id, profile_id, local_date, segment_index,"
+        " key_version, nonce, ciphertext, emotion_snapshot_json,"
+        " source_from_sequence, source_to_sequence, status, created_at)"
+        " VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'Draft', ?)"));
+    insertQuery.addBindValue(fragmentId);
+    insertQuery.addBindValue(kProfileId);
+    insertQuery.addBindValue(orphanDate.toString(Qt::ISODate));
+    insertQuery.addBindValue(0);
+    insertQuery.addBindValue(encrypted.value().keyVersion);
+    insertQuery.addBindValue(encrypted.value().nonce);
+    insertQuery.addBindValue(encrypted.value().ciphertext);
+    insertQuery.addBindValue(QJsonDocument(envelope[QStringLiteral("emotionSnapshot")].toObject()).toJson(QJsonDocument::Compact));
+    insertQuery.addBindValue(1);
+    insertQuery.addBindValue(10);
+    insertQuery.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODate));
+    QVERIFY(insertQuery.exec());
+
+    // 2. 检测孤儿片段
+    DiaryFragmentService fragmentService(
+        kProfileId, nullptr, &fixture.router, &fixture.assembler,
+        &fixture.keys, &fixture.crypto, &fixture.privateRepository, nullptr);
+    const auto orphans = fragmentService.detectOrphanDrafts();
+    QVERIFY(orphans.isOk());
+    QCOMPARE(orphans.value().size(), 1);
+    QCOMPARE(orphans.value().first().first, orphanDate);
+    QCOMPARE(orphans.value().first().second, 1);  // 1 个孤儿片段
+
+    // 3. 获取该日期的草稿片段（现在应该能解密成功）
+    const auto drafts = fragmentService.draftsForDate(orphanDate);
+    QVERIFY(drafts.isOk());
+    QCOMPARE(drafts.value().size(), 1);
+    QCOMPARE(drafts.value().first().fragmentId, fragmentId);
+    QCOMPARE(drafts.value().first().body, QStringLiteral("今天天气不错，用户心情很好。"));
+    QCOMPARE(drafts.value().first().status, DiaryFragmentStatus::Draft);
+
+    // 4. 验证完毕（实际补写需要完整的 EventLedger/AgentRuntimeServices）
 }
 
 QTEST_MAIN(SleepCycleTests)
