@@ -287,31 +287,28 @@ public:
             request.allowedActions, projection.has_value() ? std::nullopt : request.emotion);
 
         if (m_memoryRepository) {
-            QList<MemoryEntry> entries = m_memoryRepository->loadAll();
-            notifyLifecycle(QStringLiteral("memory.load"));
-            QList<WorkingMemoryItem> workingMemory = request.workingMemory;
             const QStringList forgetQueries = forgetQueriesFor(request);
+            
+            // Phase 3: Use graph propagation recall (Plan 1 implementation)
+            const WorkerRecallResult recallResult = retrieveWithGraphPropagationForWorker(
+                m_environment.memoryDatabasePath,
+                memoryQueryFor(request),
+                request.workingMemory);
+            notifyLifecycle(QStringLiteral("memory.load"));
+            
+            // Filter out forgotten memories (in-memory forget queries from current request)
+            QList<RetrievedMemory> memories = recallResult.memories;
             if (!forgetQueries.isEmpty()) {
-                entries.erase(std::remove_if(
-                                  entries.begin(), entries.end(),
-                                  [&forgetQueries](const MemoryEntry& entry) {
-                                      return matchesAnyForgetQuery(entry, forgetQueries);
-                                  }),
-                              entries.end());
-                workingMemory.erase(std::remove_if(
-                                        workingMemory.begin(), workingMemory.end(),
-                                        [&forgetQueries](const WorkingMemoryItem& item) {
-                                            return matchesAnyForgetQuery(item, forgetQueries);
-                                        }),
-                                    workingMemory.end());
+                memories.erase(std::remove_if(
+                                   memories.begin(), memories.end(),
+                                   [&forgetQueries](const RetrievedMemory& memory) {
+                                       return matchesAnyForgetQuery(memory.entry, forgetQueries);
+                                   }),
+                               memories.end());
             }
-            MemoryRelationGraph relationGraph;
-            relationGraph.setConnectionName(m_memoryRepository->connectionName());
-            const QList<MemoryRelation> relations = relationGraph.all();
+            
             if (isCancelled(expectedEpoch)) return result;
             MemoryRetriever retriever;
-            const QList<RetrievedMemory> memories = retriever.retrieve(
-                entries, memoryQueryFor(request), workingMemory, relations);
             const QStringList hints = retriever.formatForContext(memories);
             if (!hints.isEmpty()) {
                 contextMessage.content += QStringLiteral("\n相关记忆：\n")
@@ -320,14 +317,24 @@ public:
                         "\n约束：不要编造未保存的历史；查询提醒时优先调用 schedule_list 获取真实任务状态；"
                         "敏感记忆未经确认不得主动暴露。\n");
             }
-            QSet<QString> uniqueIds;
-            for (const RetrievedMemory& memory : memories) {
-                if (!memory.entry.id.startsWith(QLatin1String("wm:"))
-                    && !memory.fromGraphExpansion
-                    && !uniqueIds.contains(memory.entry.id)) {
-                    uniqueIds.insert(memory.entry.id);
-                    result.reinforcementIds.append(memory.entry.id);
-                }
+            
+            // Collect reinforcement IDs (already filtered by helper)
+            result.reinforcementIds = recallResult.reinforcementIds;
+            
+            // Remove forgotten IDs from reinforcement list
+            if (!forgetQueries.isEmpty()) {
+                result.reinforcementIds.erase(
+                    std::remove_if(
+                        result.reinforcementIds.begin(), result.reinforcementIds.end(),
+                        [&forgetQueries, &recallResult](const QString& id) {
+                            for (const RetrievedMemory& memory : recallResult.memories) {
+                                if (memory.entry.id == id && matchesAnyForgetQuery(memory.entry, forgetQueries)) {
+                                    return true;
+                                }
+                            }
+                            return false;
+                        }),
+                    result.reinforcementIds.end());
             }
         }
 

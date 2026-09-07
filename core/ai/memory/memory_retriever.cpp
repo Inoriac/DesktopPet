@@ -628,7 +628,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     MemoryStore& store,
     const MemoryQuery& query,
     const ActivationChannels& channels,
-    MemoryCueExtractor* cueExtractor) const {
+    MemoryCueExtractor* cueExtractor,
+    bool skipReinforcement) const {
 
     const int limit = query.limit <= 0 ? 8 : query.limit;
 
@@ -801,9 +802,69 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         reinforcementIds.append(candidate.entry.id);
     }
 
-    if (!reinforcementIds.isEmpty()) {
+    if (!skipReinforcement && !reinforcementIds.isEmpty()) {
         store.reinforceEntries(reinforcementIds);
     }
 
+    return result;
+}
+
+// ========== Standalone Worker Helper ==========
+
+WorkerRecallResult retrieveWithGraphPropagationForWorker(
+    const QString& databasePath,
+    const MemoryQuery& query,
+    const QList<WorkingMemoryItem>& workingMemory) {
+    
+    WorkerRecallResult result;
+    
+    // 1. Create temporary MemoryStore for the Worker thread
+    MemoryStore store;
+    store.setDatabasePath(databasePath);
+    QString loadError;
+    if (!store.loadDatabaseOnly(&loadError)) {
+        // Failed to load — return empty result
+        return result;
+    }
+    
+    // 2. Build activation channels (lightweight, no persistent state)
+    ActiveMemoryPool activePool;  // Empty — no activation history in Worker
+    
+    HippocampusWorkingSet workingSet(&store);
+    workingSet.refresh();  // Load hippocampus entries
+    
+    MemoryKeywordIndex keywordIndex;
+    keywordIndex.rebuild(store.all());  // Build postings from all entries
+    
+    // EmbeddingIndex: use Noop on macOS (no ONNX), or SQLite if available
+    // For now, use nullptr (skip embedding channel in Worker)
+    EmbeddingIndex* embeddingIndex = nullptr;
+    
+    AssociativeActivationEngine graphEngine;
+    // Graph engine is configured with default params (2 hops, 64 candidates)
+    // relationGraph and tagGraph are passed to propagate() method, not constructor
+    
+    ActivationChannels channels;
+    channels.activePool = &activePool;
+    channels.workingSet = &workingSet;
+    channels.keywordIndex = &keywordIndex;
+    channels.embeddingIndex = embeddingIndex;
+    channels.graphPropagation = &graphEngine;
+    
+    // 3. Perform recall with graph propagation (skip reinforcement)
+    MemoryCueExtractor cueExtractor;
+    MemoryRetriever retriever;
+    const QList<RetrievedMemory> memories = retriever.retrieveWithGraphPropagation(
+        store, query, channels, &cueExtractor, /*skipReinforcement=*/true);
+    
+    // 4. Collect reinforcement IDs (Worker will apply them on main thread)
+    result.memories = memories;
+    for (const RetrievedMemory& memory : memories) {
+        if (!memory.entry.id.startsWith(QLatin1String("wm:"))
+            && !memory.fromGraphExpansion) {
+            result.reinforcementIds.append(memory.entry.id);
+        }
+    }
+    
     return result;
 }

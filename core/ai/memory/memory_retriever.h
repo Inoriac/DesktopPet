@@ -76,11 +76,13 @@ public:
 
     // Phase 3 完整版：含图谱传播（两跳扩展 + 人格化探索）。
     // 种子预算同上，图谱传播候选预算 64，合并后 ACT-R 精排，输出最多 query.limit。
+    // skipReinforcement: 若为 true，跳过自动 store.reinforceEntries()，由调用方自行处理强化。
     QList<RetrievedMemory> retrieveWithGraphPropagation(
         MemoryStore& store,
         const MemoryQuery& query,
         const ActivationChannels& channels,
-        MemoryCueExtractor* cueExtractor = nullptr) const;
+        MemoryCueExtractor* cueExtractor = nullptr,
+        bool skipReinforcement = false) const;
 
     QStringList formatForContext(const QList<RetrievedMemory>& memories) const;
 
@@ -98,5 +100,19 @@ private:
     double decayLambda(MemoryType type) const;
 
 };
+
+// Standalone helper for ChatPreparationExecutor Worker thread:
+// Creates a temporary MemoryStore, builds activation channels, and performs
+// graph propagation recall. Returns RetrievedMemory list + reinforcement IDs.
+// The caller (Worker) collects reinforcement IDs and applies them on the main thread.
+struct WorkerRecallResult {
+    QList<RetrievedMemory> memories;
+    QStringList reinforcementIds;
+};
+
+WorkerRecallResult retrieveWithGraphPropagationForWorker(
+    const QString& databasePath,
+    const MemoryQuery& query,
+    const QList<WorkingMemoryItem>& workingMemory = {});
 
 #endif // DESKTOP_PET_MEMORY_RETRIEVER_H
