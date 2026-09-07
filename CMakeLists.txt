@@ -336,6 +336,8 @@ set(CORE_SOURCES
     core/ai/memory/actr_ranker.cpp
     core/ai/memory/associative_activation_engine.h
     core/ai/memory/associative_activation_engine.cpp
+    core/ai/memory/batch_selector.h
+    core/ai/memory/batch_selector.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -739,6 +741,8 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/memory/tag_cooccurrence_graph.cpp
     core/ai/memory/working_memory_cache.h
     core/ai/memory/working_memory_cache.cpp
+    core/ai/memory/batch_selector.h
+    core/ai/memory/batch_selector.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -1287,6 +1291,8 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/sqlite_embedding_index.cpp
         core/ai/memory/model_downloader.h
         core/ai/memory/model_downloader.cpp
+        core/ai/memory/batch_selector.h
+        core/ai/memory/batch_selector.cpp
         core/ai/memory/daydream_consolidator.h
         core/ai/memory/daydream_consolidator.cpp
         core/ai/scheduler/daydream_trigger_policy.h

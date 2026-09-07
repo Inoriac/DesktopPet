@@ -2225,9 +2225,11 @@ void TestMemoryStrategy::testDaydreamSessionLimitLeavesRemainder() {
     DaydreamConsolidator consolidator(store);
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
-    QCOMPARE(stats.scanned, DaydreamConsolidator::SESSION_LIMIT);
-    QCOMPARE(stats.discarded, DaydreamConsolidator::SESSION_LIMIT);
-    QCOMPARE(consolidator.pendingCount(), 3);
+    // Phase 4: 批次选择器将整批上限设为 20（设计："整批最多 20 条"），
+    // 而非旧的 SESSION_LIMIT=32。35 条候选中处理 20 条，剩余 15 条。
+    QCOMPARE(stats.scanned, 20);
+    QCOMPARE(stats.discarded, 20);
+    QCOMPARE(consolidator.pendingCount(), DaydreamConsolidator::SESSION_LIMIT + 3 - 20);
 }
 
 void TestMemoryStrategy::testDaydreamRejectsStaleSnapshotAtomically() {

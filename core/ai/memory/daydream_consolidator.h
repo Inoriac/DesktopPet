@@ -5,11 +5,13 @@
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
+#include <memory>
 
 #include "ai/domain/domain_result.h"
 #include "memory_types.h"
 
 class MemoryStore;
+class BatchSelector;
 
 enum class DaydreamAction {
     Preserve,
@@ -73,6 +75,7 @@ public:
     using Stats = DaydreamStats;
 
     explicit DaydreamConsolidator(MemoryStore& store);
+    ~DaydreamConsolidator();
 
     int pendingCount() const;
     Snapshot createSnapshot(int maxItems = SESSION_LIMIT) const;
@@ -112,6 +115,7 @@ private:
                                   const Decision& decision) const;
 
     MemoryStore& m_store;
+    std::unique_ptr<BatchSelector> m_batchSelector;
 };
 
 #endif // DESKTOP_PET_DAYDREAM_CONSOLIDATOR_H

@@ -11,6 +11,7 @@
 #include <QHash>
 #include <QSet>
 
+#include "batch_selector.h"
 #include "memory_store.h"
 #include "partition_policy.h"
 
@@ -269,7 +270,10 @@ Result<DaydreamChangeSet, DomainError> DaydreamChangeSet::fromJson(
 }
 
 DaydreamConsolidator::DaydreamConsolidator(MemoryStore& store)
-    : m_store(store) {}
+    : m_store(store),
+      m_batchSelector(std::make_unique<BatchSelector>(store)) {}
+
+DaydreamConsolidator::~DaydreamConsolidator() = default;
 
 int DaydreamConsolidator::pendingCount() const {
     int count = 0;
@@ -285,21 +289,13 @@ int DaydreamConsolidator::pendingCount() const {
 DaydreamConsolidator::Snapshot DaydreamConsolidator::createSnapshot(int maxItems) const {
     Snapshot snapshot;
     if (maxItems <= 0) return snapshot;
-
-    for (const MemoryEntry& entry : m_store.all()) {
-        if (entry.partition == QLatin1String("hippocampus")
-            && entry.status == MemoryStatus::Active) {
-            snapshot.items.append(entry);
-        }
-    }
-    std::sort(snapshot.items.begin(), snapshot.items.end(),
-              [](const MemoryEntry& a, const MemoryEntry& b) {
-                  if (a.createdAt == b.createdAt) return a.id < b.id;
-                  return a.createdAt < b.createdAt;
-              });
-    if (snapshot.items.size() > maxItems) {
-        snapshot.items = snapshot.items.mid(0, maxItems);
-    }
+    
+    // Phase 4: 使用批次选择器（优先级评分 + 老化保底 + 锚点 + 情景簇扩展）
+    QList<MemoryEntry> anchors;
+    snapshot.items = m_batchSelector->selectBatch(maxItems, &anchors);
+    
+    // TODO: 记录 anchors 到 changeSet metadata 供审查验收
+    
     return snapshot;
 }
 
