@@ -1353,6 +1353,38 @@ add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
     APPLE_CORE_GRAPHICS
 )
 
+# ---- Phase 4.2 混合建图引擎测试 ----
+add_desktop_pet_cpp_test(hybrid_graph_builder_tests HybridGraphBuilderTests
+    SOURCES
+        tests/test_hybrid_graph_builder.cpp
+        core/ai/memory/memory_types.h
+        core/ai/memory/hybrid_graph_builder.h
+        core/ai/memory/hybrid_graph_builder.cpp
+        core/ai/memory/memory_store.h
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/memory_repository.h
+        core/ai/memory/sqlite_memory_repository.h
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_json_codec.h
+        core/ai/memory/memory_json_codec.cpp
+        core/ai/memory/memory_relation.h
+        core/ai/memory/memory_relation_graph.h
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.h
+        core/ai/memory/tag_cooccurrence_graph.cpp
+        core/ai/memory/partition_policy.h
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
+    APPLE_CORE_GRAPHICS
+)
+
 # ---- 类人激活式召回 Phase 2（线索提取 + 倒排索引 + ACT-R 精排 + 编排）测试 ----
 add_desktop_pet_cpp_test(memory_recall_phase2_tests MemoryRecallPhase2Tests
     SOURCES
