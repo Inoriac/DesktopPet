@@ -38,9 +38,9 @@ struct HnswIndexParams {
 // 线程模型：写操作（upsert/remove/save/rebuild/load）应由单个 MemoryIndexWorker 串行
 // 调用；search 可并发（内部 QReadWriteLock 保护）。GUI 线程不得调用 rebuild/save。
 //
-// 持久化：memory_hnsw_<model-hash8>.bin + 同名 .meta.json 旁路元数据。保存先写临时
-// 文件再 POSIX rename 原子替换；元数据不匹配/文件损坏/计数不一致 → loadFromDisk 返回
-// false，调用方走 rebuildFromRepository。
+// 持久化：memory_hnsw_<model-hash8>.bin + 同名 .meta.json 旁路元数据。
+// 两个文件分别由 QSaveFile 原子替换，SHA-256 校验检测中途退出造成的文件对不一致。
+// 校验失败时 loadFromDisk 返回 false，调用方必须恢复索引后才能继续消费任务。
 class HnswEmbeddingIndex : public EmbeddingIndex {
 public:
     // connectionName: 与 SqliteMemoryRepository 共用的连接名（label 表 / 向量表）。
@@ -68,7 +68,7 @@ public:
     // ---- 生命周期 ----
     // 从磁盘加载并校验元数据 + label 映射一致性；失败返回 false（调用方重建）。
     bool loadFromDisk(QString* errorMessage = nullptr);
-    // 临时文件 + 原子 rename；成功后 generation+1 写入元数据。
+    // 两个文件均成功替换后才发布新的 generation。
     bool saveToDisk(QString* errorMessage = nullptr);
     // 权威向量表全量重建：只纳入 Active、非 Sensitive、非 Hippocampus 分区的记忆；
     // 清空并重写本 model 的 label 映射，消除全部墓碑。

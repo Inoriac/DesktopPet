@@ -9,6 +9,8 @@
 #include <QFile>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QSaveFile>
+#include <QTemporaryFile>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QVariant>
@@ -147,8 +149,8 @@ bool HnswEmbeddingIndex::removeVector(const QString& memoryId) {
     QWriteLocker locker(&m_lock);
     auto it = m_activeLabelByMemory.find(memoryId);
     if (it == m_activeLabelByMemory.end()) return true;
+    if (!updateLabelStatus(it.value(), QStringLiteral("Deleted"))) return false;
     m_index->markDelete(it.value());
-    updateLabelStatus(it.value(), QStringLiteral("Deleted"));
     m_memoryByLabel.remove(it.value());
     m_activeLabelByMemory.erase(it);
     m_hashByMemory.remove(memoryId);
@@ -202,36 +204,98 @@ bool HnswEmbeddingIndex::loadLabelMapsFromDatabase() {
 }
 
 bool HnswEmbeddingIndex::saveToDisk(QString* errorMessage) {
-    QReadLocker locker(&m_lock);
-    if (!m_index) return false;
-    QDir().mkpath(m_indexDirectory);
-    const QString tmp = indexFilePath() + QStringLiteral(".tmp");
-    try { m_index->saveIndex(tmp.toStdString()); } catch (...) { if (errorMessage) *errorMessage = QStringLiteral("hnsw save failed"); return false; }
-    if (!QFile::remove(indexFilePath()) && QFile::exists(indexFilePath())) return false;
-    if (!QFile::rename(tmp, indexFilePath())) return false;
+    QWriteLocker locker(&m_lock);
+    if (!m_provider || m_provider->dimension() <= 0) return false;
+    if (!m_index && !ensureIndexAllocated(m_provider->dimension())) return false;
+    if (!QDir().mkpath(m_indexDirectory)) return false;
+    QTemporaryFile temporary(QDir(m_indexDirectory).filePath(QStringLiteral("hnsw-XXXXXX")));
+    if (!temporary.open()) return false;
+    const QString tmp = temporary.fileName();
+    temporary.close();
+    try { m_index->saveIndex(tmp.toStdString()); } catch (...) {
+        if (errorMessage) *errorMessage = QStringLiteral("hnsw save failed");
+        return false;
+    }
+    QFile source(tmp);
+    if (!source.open(QIODevice::ReadOnly) || source.size() != static_cast<qint64>(m_index->indexFileSize()))
+        return false;
+    QSaveFile binary(indexFilePath());
+    if (!binary.open(QIODevice::WriteOnly)) return false;
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    while (!source.atEnd()) {
+        const QByteArray block = source.read(64 * 1024);
+        if (block.isEmpty() || binary.write(block) != block.size()) return false;
+        digest.addData(block);
+    }
+    if (!binary.commit()) return false;
+    const qint64 nextGeneration = m_generation + 1;
     QJsonObject meta{{QStringLiteral("model"), m_provider->modelName()}, {QStringLiteral("dimension"), m_dimension},
                      {QStringLiteral("m"), m_params.m}, {QStringLiteral("efConstruction"), m_params.efConstruction},
-                     {QStringLiteral("generation"), ++m_generation}, {QStringLiteral("activeCount"), m_activeLabelByMemory.size()}};
-    QFile file(metaFilePath());
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Truncate)) return false;
-    file.write(QJsonDocument(meta).toJson(QJsonDocument::Compact));
+                     {QStringLiteral("generation"), nextGeneration}, {QStringLiteral("activeCount"), m_activeLabelByMemory.size()},
+                     {QStringLiteral("distance"), QStringLiteral("cosine")},
+                     {QStringLiteral("contentHashRule"), QStringLiteral("sha1-utf8")},
+                     {QStringLiteral("binarySha256"), QString::fromLatin1(digest.result().toHex())}};
+    QSaveFile file(metaFilePath());
+    if (!file.open(QIODevice::WriteOnly)) return false;
+    const QByteArray json = QJsonDocument(meta).toJson(QJsonDocument::Compact);
+    if (file.write(json) != json.size() || !file.commit()) return false;
+    m_generation = nextGeneration;
     return true;
 }
 
 bool HnswEmbeddingIndex::loadFromDisk(QString* errorMessage) {
     QWriteLocker locker(&m_lock);
+    m_index.reset();
+    m_space.reset();
+    m_activeLabelByMemory.clear();
+    m_memoryByLabel.clear();
+    m_hashByMemory.clear();
+    m_tombstones = 0;
+    if (!m_provider || m_provider->dimension() <= 0) return false;
     QFile file(metaFilePath());
     if (!file.open(QIODevice::ReadOnly)) return false;
     const QJsonObject meta = QJsonDocument::fromJson(file.readAll()).object();
     if (meta.value(QStringLiteral("model")).toString() != m_provider->modelName() ||
         meta.value(QStringLiteral("m")).toInt() != m_params.m ||
-        meta.value(QStringLiteral("efConstruction")).toInt() != m_params.efConstruction) return false;
+        meta.value(QStringLiteral("efConstruction")).toInt() != m_params.efConstruction ||
+        meta.value(QStringLiteral("dimension")).toInt() != m_provider->dimension() ||
+        meta.value(QStringLiteral("distance")).toString() != QStringLiteral("cosine") ||
+        meta.value(QStringLiteral("contentHashRule")).toString() != QStringLiteral("sha1-utf8")) return false;
+    QFile binary(indexFilePath());
+    if (!binary.open(QIODevice::ReadOnly)) return false;
+    QCryptographicHash digest(QCryptographicHash::Sha256);
+    if (!digest.addData(&binary) || QString::fromLatin1(digest.result().toHex()) !=
+        meta.value(QStringLiteral("binarySha256")).toString()) return false;
     m_dimension = meta.value(QStringLiteral("dimension")).toInt();
     if (!ensureIndexAllocated(m_dimension)) return false;
-    try { m_index->loadIndex(indexFilePath().toStdString(), m_space.get()); } catch (...) { if (errorMessage) *errorMessage = QStringLiteral("hnsw load failed"); return false; }
+    try { m_index->loadIndex(indexFilePath().toStdString(), m_space.get()); } catch (...) {
+        m_index.reset();
+        if (errorMessage) *errorMessage = QStringLiteral("hnsw load failed");
+        return false;
+    }
     m_index->setEf(m_params.efSearch);
     m_generation = meta.value(QStringLiteral("generation")).toInteger();
-    return loadLabelMapsFromDatabase();
+    m_tombstones = static_cast<int>(m_index->getDeletedCount());
+    if (!loadLabelMapsFromDatabase() ||
+        m_activeLabelByMemory.size() != meta.value(QStringLiteral("activeCount")).toInt(-1) ||
+        m_activeLabelByMemory.size() != static_cast<int>(m_index->getCurrentElementCount()) - m_tombstones) {
+        m_index.reset();
+        m_activeLabelByMemory.clear();
+        m_memoryByLabel.clear();
+        m_hashByMemory.clear();
+        return false;
+    }
+    try {
+        for (auto it = m_memoryByLabel.cbegin(); it != m_memoryByLabel.cend(); ++it)
+            m_index->getDataByLabel<float>(static_cast<hnswlib::labeltype>(it.key()));
+    } catch (...) {
+        m_index.reset();
+        m_activeLabelByMemory.clear();
+        m_memoryByLabel.clear();
+        m_hashByMemory.clear();
+        return false;
+    }
+    return true;
 }
 
 bool HnswEmbeddingIndex::rebuildFromRepository(QString* errorMessage) {

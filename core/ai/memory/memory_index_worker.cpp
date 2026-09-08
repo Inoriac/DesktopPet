@@ -5,6 +5,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QVariant>
+#include <cmath>
 
 namespace {
 QString utcNow() { return QDateTime::currentDateTimeUtc().toString(Qt::ISODate); }
@@ -31,6 +32,17 @@ int MemoryIndexWorker::processPending(int limit) {
 bool MemoryIndexWorker::processOne(const QString& jobId) {
     QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
     if (!db.isOpen()) return false;
+    if (m_index.provider() && m_index.provider()->dimension() > 0) {
+        // A restarted consumer must preserve entries from earlier completed jobs.
+        if (!m_index.isReady() && !m_index.loadFromDisk()) {
+            QSqlQuery completed(db);
+            if (!completed.exec(QStringLiteral("SELECT 1 FROM memory_index_jobs WHERE status='Completed' LIMIT 1")))
+                return false;
+            if (completed.next()) return false; // Requires repository recovery before consumption.
+        }
+    } else {
+        return false;
+    }
     QSqlQuery claim(db);
     claim.prepare(QStringLiteral("UPDATE memory_index_jobs SET status='Processing', attempt_count=attempt_count+1, updated_at=:ts "
                                 "WHERE id=:id AND status IN ('Pending','Processing')"));
@@ -44,29 +56,54 @@ bool MemoryIndexWorker::processOne(const QString& jobId) {
     const QString memoryId = read.value(0).toString();
     const QString operation = read.value(1).toString().toLower();
 
+    const auto remove = [&]() {
+        if (!m_index.removeVector(memoryId)) return false;
+        QSqlQuery erase(db);
+        erase.prepare(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id=:id"));
+        erase.bindValue(QStringLiteral(":id"), memoryId);
+        return erase.exec();
+    };
     bool ok = false;
     if (operation == QStringLiteral("delete")) {
-        ok = m_index.removeVector(memoryId);
+        ok = remove();
     } else if (operation == QStringLiteral("rebuild")) {
         ok = m_index.rebuildFromRepository();
     } else if (operation == QStringLiteral("upsert")) {
         QSqlQuery memory(db);
         memory.prepare(QStringLiteral("SELECT summary,content,privacy_level,status,partition FROM memory_items WHERE id=:id"));
         memory.bindValue(QStringLiteral(":id"), memoryId);
-        if (memory.exec() && memory.next()) {
+        if (!memory.exec()) return false;
+        if (memory.next()) {
             const QString privacy = memory.value(2).toString();
             const QString status = memory.value(3).toString();
             const QString partition = memory.value(4).toString();
             if (privacy != QStringLiteral("sensitive") && status == QStringLiteral("active") && partition != QStringLiteral("hippocampus")) {
                 const QString text = memory.value(0).toString() + QStringLiteral("\n") + memory.value(1).toString();
-                ok = m_index.upsert(memoryId, text);
+                const auto vector = m_index.provider()->embed(text);
+                double norm = 0.0;
+                for (float value : vector) norm += static_cast<double>(value) * value;
+                if (vector.size() == m_index.provider()->dimension() && std::isfinite(norm) && norm > 1e-12) {
+                    QSqlQuery persist(db);
+                    persist.prepare(QStringLiteral(
+                        "INSERT OR REPLACE INTO memory_embeddings(memory_id,model,dimension,vector_blob,content_hash,updated_at) "
+                        "VALUES(:id,:model,:dim,:blob,:hash,:ts)"));
+                    persist.bindValue(QStringLiteral(":id"), memoryId);
+                    persist.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+                    persist.bindValue(QStringLiteral(":dim"), vector.size());
+                    persist.bindValue(QStringLiteral(":blob"), QByteArray(reinterpret_cast<const char*>(vector.constData()), vector.size() * sizeof(float)));
+                    persist.bindValue(QStringLiteral(":hash"), HnswEmbeddingIndex::contentHash(text));
+                    persist.bindValue(QStringLiteral(":ts"), utcNow());
+                    ok = persist.exec() && m_index.upsertVector(memoryId, vector, HnswEmbeddingIndex::contentHash(text));
+                }
             } else {
-                ok = m_index.removeVector(memoryId);
+                ok = remove();
             }
         } else {
-            ok = m_index.removeVector(memoryId);
+            ok = remove();
         }
     }
+
+    if (ok) ok = m_index.saveToDisk();
 
     QSqlQuery finish(db);
     finish.prepare(QStringLiteral("UPDATE memory_index_jobs SET status=:status,updated_at=:ts WHERE id=:id"));
