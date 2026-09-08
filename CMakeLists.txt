@@ -340,6 +340,8 @@ set(CORE_SOURCES
     core/ai/memory/batch_selector.cpp
     core/ai/memory/hybrid_graph_builder.h
     core/ai/memory/hybrid_graph_builder.cpp
+    core/ai/memory/daydream_relation_reviewer.h
+    core/ai/memory/daydream_relation_reviewer.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -747,6 +749,8 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/memory/batch_selector.cpp
     core/ai/memory/hybrid_graph_builder.h
     core/ai/memory/hybrid_graph_builder.cpp
+    core/ai/memory/daydream_relation_reviewer.h
+    core/ai/memory/daydream_relation_reviewer.cpp
     core/ai/memory/daydream_consolidator.h
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
@@ -1299,6 +1303,8 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/batch_selector.cpp
         core/ai/memory/hybrid_graph_builder.h
         core/ai/memory/hybrid_graph_builder.cpp
+        core/ai/memory/daydream_relation_reviewer.h
+        core/ai/memory/daydream_relation_reviewer.cpp
         core/ai/memory/daydream_consolidator.h
         core/ai/memory/daydream_consolidator.cpp
         core/ai/scheduler/daydream_trigger_policy.h
@@ -1360,6 +1366,8 @@ add_desktop_pet_cpp_test(hybrid_graph_builder_tests HybridGraphBuilderTests
         core/ai/memory/memory_types.h
         core/ai/memory/hybrid_graph_builder.h
         core/ai/memory/hybrid_graph_builder.cpp
+        core/ai/memory/daydream_relation_reviewer.h
+        core/ai/memory/daydream_relation_reviewer.cpp
         core/ai/memory/memory_store.h
         core/ai/memory/memory_store.cpp
         core/ai/memory/memory_repository.h

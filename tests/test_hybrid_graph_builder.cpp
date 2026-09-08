@@ -2,6 +2,7 @@
 #include <QJsonObject>
 #include <QTemporaryDir>
 
+#include "ai/memory/daydream_relation_reviewer.h"
 #include "ai/memory/hybrid_graph_builder.h"
 #include "ai/memory/memory_relation_graph.h"
 #include "ai/memory/memory_store.h"
@@ -46,6 +47,12 @@ private slots:
     void testDecayAssociativeEdgesStructuralExempt();
     void testRemoveDanglingEdges();
     void testEnforceAssociativeEdgeCap();
+
+    // Phase 4.2.5 模型复核测试
+    void testValidateRelationProposalAcceptsValid();
+    void testValidateRelationProposalRejectsInvalid();
+    void testGenerateCandidatesCapAndOrdering();
+    void testApplyProposalsValidatedAndModelProvenance();
 
 private:
     QTemporaryDir m_dir;
@@ -241,6 +248,130 @@ void TestHybridGraphBuilder::testRemoveDanglingEdges() {
     const int removed = m_store.relationGraph().removeDanglingEdges(validIds);
     QCOMPARE(removed, 1);
     QCOMPARE(m_store.relationGraph().all().size(), 1);
+}
+
+void TestHybridGraphBuilder::testValidateRelationProposalAcceptsValid() {
+    RelationProposal proposal;
+    proposal.fromMemoryId = QStringLiteral("mem-a");
+    proposal.toMemoryId = QStringLiteral("mem-b");
+    proposal.type = MemoryRelationType::TopicOf;
+    proposal.confidence = 0.8;
+    proposal.evidence = QStringLiteral("两条记忆都围绕同一主题展开");
+    const QSet<QString> validIds = {QStringLiteral("mem-a"), QStringLiteral("mem-b")};
+    QCOMPARE(validateRelationProposal(proposal, validIds), QString());
+
+    // ConflictsWith 也是模型可判断类型
+    proposal.type = MemoryRelationType::ConflictsWith;
+    QCOMPARE(validateRelationProposal(proposal, validIds), QString());
+}
+
+void TestHybridGraphBuilder::testValidateRelationProposalRejectsInvalid() {
+    const QSet<QString> validIds = {QStringLiteral("mem-a"), QStringLiteral("mem-b")};
+
+    RelationProposal proposal;
+    proposal.fromMemoryId = QStringLiteral("mem-a");
+    proposal.toMemoryId = QStringLiteral("mem-b");
+    proposal.type = MemoryRelationType::TopicOf;
+    proposal.confidence = 0.8;
+    proposal.evidence = QStringLiteral("evidence");
+
+    // 节点不存在（模型不能自由创建节点）
+    proposal.toMemoryId = QStringLiteral("ghost");
+    QVERIFY(!validateRelationProposal(proposal, validIds).isEmpty());
+    proposal.toMemoryId = QStringLiteral("mem-b");
+
+    // 自环
+    proposal.toMemoryId = QStringLiteral("mem-a");
+    QVERIFY(!validateRelationProposal(proposal, validIds).isEmpty());
+    proposal.toMemoryId = QStringLiteral("mem-b");
+
+    // 非模型可判断类型（Related 由共现建立，DerivedFrom 由代码建立）
+    proposal.type = MemoryRelationType::Related;
+    QVERIFY(!validateRelationProposal(proposal, validIds).isEmpty());
+    proposal.type = MemoryRelationType::TopicOf;
+
+    // 置信度低于阈值
+    proposal.confidence = 0.3;
+    QVERIFY(!validateRelationProposal(proposal, validIds).isEmpty());
+    proposal.confidence = 0.8;
+
+    // 证据为空（不可审计）
+    proposal.evidence.clear();
+    QVERIFY(!validateRelationProposal(proposal, validIds).isEmpty());
+}
+
+void TestHybridGraphBuilder::testGenerateCandidatesCapAndOrdering() {
+    DaydreamRelationReviewer reviewer;  // 默认策略：每批最多 8 对
+
+    // 10 条记忆，两两共享标签 → 45 对，但候选上限 8
+    QList<MemoryEntry> entries;
+    for (int i = 0; i < 10; ++i) {
+        entries.append(makeEntry(
+            QStringLiteral("mem-%1").arg(i),
+            {QStringLiteral("shared"), QStringLiteral("tag-%1").arg(i)}));
+    }
+    const QList<QPair<QString, QString>> candidates =
+        reviewer.generateCandidates(entries);
+    QCOMPARE(candidates.size(), 8);  // 设计：每批最多 8 对
+
+    // 无共享标签 → 无候选
+    const QList<MemoryEntry> noShared = {
+        makeEntry(QStringLiteral("mem-x"), {QStringLiteral("a")}),
+        makeEntry(QStringLiteral("mem-y"), {QStringLiteral("b")}),
+    };
+    QVERIFY(reviewer.generateCandidates(noShared).isEmpty());
+}
+
+void TestHybridGraphBuilder::testApplyProposalsValidatedAndModelProvenance() {
+    setupStore();
+    DaydreamRelationReviewer reviewer;
+    const QList<MemoryEntry> entries = {
+        makeEntry(QStringLiteral("mem-a")),
+        makeEntry(QStringLiteral("mem-b")),
+        makeEntry(QStringLiteral("mem-c")),
+    };
+
+    QList<RelationProposal> proposals;
+    // 合法：TopicOf
+    RelationProposal good;
+    good.fromMemoryId = QStringLiteral("mem-a");
+    good.toMemoryId = QStringLiteral("mem-b");
+    good.type = MemoryRelationType::TopicOf;
+    good.confidence = 0.9;
+    good.evidence = QStringLiteral("主题相同");
+    proposals.append(good);
+    // 合法：ConflictsWith
+    RelationProposal conflict;
+    conflict.fromMemoryId = QStringLiteral("mem-b");
+    conflict.toMemoryId = QStringLiteral("mem-c");
+    conflict.type = MemoryRelationType::ConflictsWith;
+    conflict.confidence = 0.75;
+    conflict.evidence = QStringLiteral("事实矛盾");
+    proposals.append(conflict);
+    // 非法：引用不存在节点 → 丢弃
+    RelationProposal ghost;
+    ghost.fromMemoryId = QStringLiteral("mem-a");
+    ghost.toMemoryId = QStringLiteral("ghost");
+    ghost.type = MemoryRelationType::TopicOf;
+    ghost.confidence = 0.9;
+    ghost.evidence = QStringLiteral("evidence");
+    proposals.append(ghost);
+    // 重复：与 good 同对同类型 → 去重
+    proposals.append(good);
+
+    const int applied = reviewer.applyProposals(proposals, entries, m_store.relationGraph());
+    QCOMPARE(applied, 2);  // 只落库 2 条合法提案
+
+    const QList<MemoryRelation> relations = m_store.relationGraph().all();
+    QCOMPARE(relations.size(), 2);
+    for (const MemoryRelation& relation : relations) {
+        QCOMPARE(relation.provenance, RelationProvenance::Model);
+        QCOMPARE(relation.weight, relation.confidence);  // weight = confidence
+        QVERIFY(!relation.payload.value(QStringLiteral("evidence")).toString().isEmpty());
+        if (relation.type == MemoryRelationType::ConflictsWith) {
+            QVERIFY(relation.structural());  // 模型确认的冲突边为结构性
+        }
+    }
 }
 
 void TestHybridGraphBuilder::testEnforceAssociativeEdgeCap() {

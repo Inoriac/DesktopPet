@@ -105,6 +105,9 @@ private slots:
     void testDaydreamRejectsStaleUpdateTarget();
     void testDaydreamSnapshotDoesNotConsumeNewInboxItems();
     void testDaydreamParsesValidatedLlmDecisions();
+    void testDaydreamParsesRelationsProposalsFromObjectRoot();
+    void testDaydreamBuildChangeSetValidatesProposals();
+    void testDaydreamChangeSetProposalsHashCompatWithLegacyPayload();
     void testDaydreamTriggerPolicyAllConditions();
     void testDaydreamTriggerPolicyNegativeCases();
     void testDaydreamTriggerPolicyNoDueTodoNonBlocking();
@@ -2383,6 +2386,254 @@ void TestMemoryStrategy::testDaydreamParsesValidatedLlmDecisions() {
         "{\"source_id\":\"source-noise\",\"action\":\"discard\"}]");
     QVERIFY(!DaydreamConsolidator::parseDecisions(
         unauthorizedUpdate, batch, {}, &decisions, &error));
+}
+
+// Phase 4.2.5：对象根 {decisions, relations} 解析 + 提案校验（设计 §10）。
+void TestMemoryStrategy::testDaydreamParsesRelationsProposalsFromObjectRoot() {
+    MemoryEntry a;
+    a.id = QStringLiteral("source-a");
+    MemoryEntry b;
+    b.id = QStringLiteral("source-b");
+    const QList<MemoryEntry> batch = {a, b};
+    const QList<QPair<QString, QString>> candidates = {
+        {QStringLiteral("source-a"), QStringLiteral("source-b")}};
+
+    // 合法对象根：决策数组 + 1 条合法提案
+    const QString response = QStringLiteral(R"JSON(
+{
+  "decisions": [
+    {"source_id":"source-a","target_partition":"Semantic","action":"create",
+     "target_memory_id":"","merged_content":"a","quality_score":7,"new_tags":[]},
+    {"source_id":"source-b","action":"discard","quality_score":1,"new_tags":[]}
+  ],
+  "relations": [
+    {"from_source_id":"source-a","to_source_id":"source-b",
+     "relation":"topic_of","confidence":0.85,"evidence":"同一主题"}
+  ]
+}
+)JSON");
+    QList<DaydreamConsolidator::Decision> decisions;
+    QList<RelationProposal> proposals;
+    QString error;
+    QVERIFY2(DaydreamConsolidator::parseDecisions(
+                 response, batch, {}, &decisions, &error, &proposals, candidates),
+             qPrintable(error));
+    QCOMPARE(decisions.size(), 2);
+    QCOMPARE(proposals.size(), 1);
+    QCOMPARE(proposals.first().type, MemoryRelationType::TopicOf);
+    QCOMPARE(proposals.first().confidence, 0.85);
+
+    // 非候选对 → 丢弃（设计：只对候选集合内的关系做判断）
+    const QList<QPair<QString, QString>> otherCandidates = {};
+    QList<RelationProposal> filtered;
+    QVERIFY(DaydreamConsolidator::parseDecisions(
+        response, batch, {}, &decisions, &error, &filtered, otherCandidates));
+    // candidates 为空时不做候选限制（宽松）；提供非匹配候选时丢弃
+    const QList<QPair<QString, QString>> mismatched = {
+        {QStringLiteral("source-b"), QStringLiteral("source-a")}};
+    // 反序命中（候选对无向语义）
+    QList<RelationProposal> reverse;
+    QVERIFY(DaydreamConsolidator::parseDecisions(
+        response, batch, {}, &decisions, &error, &reverse, mismatched));
+    QCOMPARE(reverse.size(), 1);
+
+    // 引用批次外 id 的提案 → 静默丢弃，决策仍有效
+    const QString ghostProposal = QStringLiteral(R"JSON(
+{
+  "decisions": [
+    {"source_id":"source-a","target_partition":"Semantic","action":"create",
+     "target_memory_id":"","merged_content":"a","quality_score":7,"new_tags":[]},
+    {"source_id":"source-b","action":"discard","quality_score":1,"new_tags":[]}
+  ],
+  "relations": [
+    {"from_source_id":"source-a","to_source_id":"ghost",
+     "relation":"topic_of","confidence":0.9,"evidence":"e"}
+  ]
+}
+)JSON");
+    QList<RelationProposal> dropped;
+    QVERIFY(DaydreamConsolidator::parseDecisions(
+        ghostProposal, batch, {}, &decisions, &error, &dropped, candidates));
+    QCOMPARE(decisions.size(), 2);
+    QCOMPARE(dropped.size(), 0);
+
+    // 非法类型（related 非模型可判断）与缺证据 → 丢弃
+    const QString invalidProposals = QStringLiteral(R"JSON(
+{
+  "decisions": [
+    {"source_id":"source-a","target_partition":"Semantic","action":"create",
+     "target_memory_id":"","merged_content":"a","quality_score":7,"new_tags":[]},
+    {"source_id":"source-b","action":"discard","quality_score":1,"new_tags":[]}
+  ],
+  "relations": [
+    {"from_source_id":"source-a","to_source_id":"source-b",
+     "relation":"related","confidence":0.9,"evidence":"e"},
+    {"from_source_id":"source-a","to_source_id":"source-b",
+     "relation":"topic_of","confidence":0.9,"evidence":""}
+  ]
+}
+)JSON");
+    QList<RelationProposal> invalid;
+    QVERIFY(DaydreamConsolidator::parseDecisions(
+        invalidProposals, batch, {}, &decisions, &error, &invalid, candidates));
+    QCOMPARE(invalid.size(), 0);
+
+    // 旧格式纯数组仍兼容，proposals 为空
+    const QString legacyArray = QStringLiteral(
+        "[{\"source_id\":\"source-a\",\"target_partition\":\"Semantic\",\"action\":\"create\","
+        "\"target_memory_id\":\"\",\"merged_content\":\"a\",\"quality_score\":7,\"new_tags\":[]},"
+        "{\"source_id\":\"source-b\",\"action\":\"discard\",\"quality_score\":1,\"new_tags\":[]}]");
+    QList<RelationProposal> none;
+    QVERIFY(DaydreamConsolidator::parseDecisions(
+        legacyArray, batch, {}, &decisions, &error, &none, candidates));
+    QCOMPARE(decisions.size(), 2);
+    QCOMPARE(none.size(), 0);
+}
+
+// Phase 4.2.5：buildChangeSet 校验提案（引用批次内节点、上限 8、去重）+ 携带进哈希。
+void TestMemoryStrategy::testDaydreamBuildChangeSetValidatesProposals() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    // 两条 Active hippocampus 候选
+    MemoryEntry a;
+    a.type = MemoryType::ShortTerm;
+    a.key = QStringLiteral("k-a");
+    a.summary = QStringLiteral("a");
+    a.content = a.summary;
+    a.mentionCount = 3;
+    const QString idA = store.addEntry(a).id;
+    MemoryEntry b;
+    b.type = MemoryType::ShortTerm;
+    b.key = QStringLiteral("k-b");
+    b.summary = QStringLiteral("b");
+    b.content = b.summary;
+    b.mentionCount = 3;
+    const QString idB = store.addEntry(b).id;
+    QVERIFY(store.load());
+
+    DaydreamConsolidator consolidator(store);
+    DaydreamConsolidator::Snapshot snapshot;
+    for (const MemoryEntry& entry : store.all()) {
+        if (entry.partition == QLatin1String("hippocampus")) {
+            snapshot.items.append(entry);
+        }
+    }
+    QCOMPARE(snapshot.items.size(), 2);
+
+    QList<DaydreamConsolidator::Decision> decisions;
+    for (const MemoryEntry& entry : snapshot.items) {
+        DaydreamConsolidator::Decision decision;
+        decision.sourceId = entry.id;
+        decision.action = DaydreamConsolidator::Action::Create;
+        decision.targetType = MemoryType::Episodic;
+        decisions.append(decision);
+    }
+
+    // 合法提案
+    RelationProposal good;
+    good.fromMemoryId = idA;
+    good.toMemoryId = idB;
+    good.type = MemoryRelationType::TopicOf;
+    good.confidence = 0.8;
+    good.evidence = QStringLiteral("同一主题");
+
+    // 非法：引用批次外节点
+    RelationProposal ghost = good;
+    ghost.toMemoryId = QStringLiteral("ghost");
+
+    const auto changeSet = consolidator.buildChangeSet(
+        snapshot, decisions, {good, ghost, good});  // 合法 + 非法 + 重复
+    QVERIFY(changeSet.isOk());
+    QCOMPARE(changeSet.value().relationProposals.size(), 1);  // 只保留合法且去重后的 1 条
+    QCOMPARE(changeSet.value().relationProposals.first().fromMemoryId, idA);
+}
+
+// Phase 4.2.5：哈希兼容性——旧载荷（无提案）与新载荷（有提案）各自可验证。
+void TestMemoryStrategy::testDaydreamChangeSetProposalsHashCompatWithLegacyPayload() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    MemoryEntry a;
+    a.type = MemoryType::ShortTerm;
+    a.key = QStringLiteral("k-a");
+    a.summary = QStringLiteral("a");
+    a.content = a.summary;
+    a.mentionCount = 3;
+    const QString idA = store.addEntry(a).id;
+    MemoryEntry b;
+    b.type = MemoryType::ShortTerm;
+    b.key = QStringLiteral("k-b");
+    b.summary = QStringLiteral("b");
+    b.content = b.summary;
+    b.mentionCount = 3;
+    const QString idB = store.addEntry(b).id;
+    QVERIFY(store.load());
+
+    DaydreamConsolidator consolidator(store);
+    DaydreamConsolidator::Snapshot snapshot;
+    for (const MemoryEntry& entry : store.all()) {
+        if (entry.partition == QLatin1String("hippocampus")) {
+            snapshot.items.append(entry);
+        }
+    }
+    QCOMPARE(snapshot.items.size(), 2);
+    QList<DaydreamConsolidator::Decision> decisions;
+    for (const MemoryEntry& entry : snapshot.items) {
+        DaydreamConsolidator::Decision decision;
+        decision.sourceId = entry.id;
+        decision.action = DaydreamConsolidator::Action::Create;
+        decision.targetType = MemoryType::Episodic;
+        decisions.append(decision);
+    }
+
+    // 旧载荷：无提案 → toJson 不含 relationProposals 键，fromJson 往返哈希不变。
+    const auto legacyBuilt = consolidator.buildChangeSet(snapshot, decisions, {});
+    QVERIFY(legacyBuilt.isOk());
+    const QJsonObject legacyJson = legacyBuilt.value().toJson();
+    QVERIFY(!legacyJson.contains(QStringLiteral("relationProposals")));
+    const auto parsedLegacy = DaydreamChangeSet::fromJson(legacyJson);
+    QVERIFY(parsedLegacy.isOk());
+    QCOMPARE(parsedLegacy.value().relationProposals.size(), 0);
+    QCOMPARE(parsedLegacy.value().changeSetId, legacyBuilt.value().changeSetId);
+
+    // 新载荷：有提案 → 哈希覆盖提案，fromJson 往返一致。
+    RelationProposal proposal;
+    proposal.fromMemoryId = idA;
+    proposal.toMemoryId = idB;
+    proposal.type = MemoryRelationType::TopicOf;
+    proposal.confidence = 0.8;
+    proposal.evidence = QStringLiteral("同一主题");
+    const auto proposalsBuilt = consolidator.buildChangeSet(
+        snapshot, decisions, {proposal});
+    QVERIFY(proposalsBuilt.isOk());
+    QCOMPARE(proposalsBuilt.value().relationProposals.size(), 1);
+    const QJsonObject proposalsJson = proposalsBuilt.value().toJson();
+    QVERIFY(proposalsJson.contains(QStringLiteral("relationProposals")));
+    const auto parsedProposals = DaydreamChangeSet::fromJson(proposalsJson);
+    QVERIFY(parsedProposals.isOk());
+    QCOMPARE(parsedProposals.value().relationProposals.size(), 1);
+    QCOMPARE(parsedProposals.value().relationProposals.first().fromMemoryId, idA);
+    QCOMPARE(parsedProposals.value().relationProposals.first().evidence,
+             QStringLiteral("同一主题"));
+    QCOMPARE(parsedProposals.value().changeSetId, proposalsBuilt.value().changeSetId);
+
+    // 提案进入哈希：篡改提案 → 哈希失配被拒。
+    QJsonObject tampered = proposalsJson;
+    QJsonArray tamperedProposals = tampered.value(QStringLiteral("relationProposals")).toArray();
+    QJsonObject p0 = tamperedProposals.first().toObject();
+    p0.insert(QStringLiteral("evidence"), QStringLiteral("被篡改的证据"));
+    tamperedProposals[0] = p0;
+    tampered.insert(QStringLiteral("relationProposals"), tamperedProposals);
+    const auto parsedTampered = DaydreamChangeSet::fromJson(tampered);
+    QVERIFY(!parsedTampered.isOk());
+
+    // 新旧哈希不同
+    QVERIFY(proposalsBuilt.value().changeSetId != legacyBuilt.value().changeSetId);
 }
 
 // DaydreamTriggerPolicy 复合判定：全条件满足才触发。

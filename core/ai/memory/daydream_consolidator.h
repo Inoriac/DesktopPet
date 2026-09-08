@@ -8,6 +8,7 @@
 #include <memory>
 
 #include "ai/domain/domain_result.h"
+#include "daydream_relation_reviewer.h"
 #include "memory_types.h"
 
 class MemoryStore;
@@ -54,6 +55,9 @@ struct DaydreamChangeSet {
     QString changeSetId;
     DaydreamSnapshot snapshot;
     QList<DaydreamDecision> decisions;
+    // Phase 4.2（设计 §10）：模型复核提案（引用 source_id，落库时映射到产出 id）。
+    // 旧载荷无此字段 → 空列表 → changeSetContent 不含该键 → 哈希兼容。
+    QList<RelationProposal> relationProposals;
 
     QJsonObject toJson() const;
     QString payloadHash() const;
@@ -84,17 +88,23 @@ public:
 
     // Parse one complete LLM batch. The result must contain exactly one valid,
     // uniquely identified decision for every source in the batch.
+    // 输出格式兼容两种根：决策数组（旧）或 {decisions, relations} 对象（新）。
+    // proposals/candidatePairs 可选：relations 提案逐条校验（引用批次内 id、
+    // 枚举类型、置信度、证据非空、仅候选对、每批 ≤8），不合法提案静默丢弃。
     static bool parseDecisions(const QString& response,
                                const QList<MemoryEntry>& batch,
                                const QList<MemoryEntry>& allowedUpdateTargets,
                                QList<Decision>* decisions,
-                               QString* errorMessage = nullptr);
+                               QString* errorMessage = nullptr,
+                               QList<RelationProposal>* proposals = nullptr,
+                               const QList<QPair<QString, QString>>& candidatePairs = {});
     static bool requiresModelDecision(const MemoryEntry& entry);
     static QList<Decision> hardcodedDecisions(const QList<MemoryEntry>& batch);
 
     Result<DaydreamChangeSet, DomainError> buildChangeSet(
         const Snapshot& snapshot,
-        const QList<Decision>& decisions) const;
+        const QList<Decision>& decisions,
+        const QList<RelationProposal>& relationProposals = {}) const;
     Stats applyChangeSet(const DaydreamChangeSet& changeSet);
 
     // Applies a fully staged session in one short transaction. If any source was

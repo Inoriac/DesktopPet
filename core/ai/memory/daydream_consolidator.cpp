@@ -28,10 +28,21 @@ QString normalizedJsonPayload(QString response) {
         }
     }
 
+    // Phase 4.2：兼容两种根——数组 [...] 或对象 {decisions, relations}。
+    // 按哪个根字符先出现判定（数组根内的元素对象会含 '{'，不能优先对象）。
     const int arrayStart = response.indexOf('[');
-    const int arrayEnd = response.lastIndexOf(']');
-    if (arrayStart >= 0 && arrayEnd >= arrayStart) {
-        response = response.mid(arrayStart, arrayEnd - arrayStart + 1);
+    const int objectStart = response.indexOf('{');
+    if (objectStart >= 0 && (arrayStart < 0 || objectStart < arrayStart)) {
+        const int objectEnd = response.lastIndexOf('}');
+        if (objectEnd >= objectStart) {
+            return response.mid(objectStart, objectEnd - objectStart + 1);
+        }
+    }
+    if (arrayStart >= 0) {
+        const int arrayEnd = response.lastIndexOf(']');
+        if (arrayEnd >= arrayStart) {
+            response = response.mid(arrayStart, arrayEnd - arrayStart + 1);
+        }
     }
     return response;
 }
@@ -141,6 +152,27 @@ QJsonObject decisionToJson(const DaydreamDecision& decision,
     return object;
 }
 
+QJsonObject relationProposalToJson(const RelationProposal& proposal) {
+    return {
+        {QStringLiteral("fromMemoryId"), proposal.fromMemoryId},
+        {QStringLiteral("toMemoryId"), proposal.toMemoryId},
+        {QStringLiteral("type"), memoryRelationTypeToString(proposal.type)},
+        {QStringLiteral("confidence"), proposal.confidence},
+        {QStringLiteral("evidence"), proposal.evidence}
+    };
+}
+
+RelationProposal relationProposalFromJson(const QJsonObject& object) {
+    RelationProposal proposal;
+    proposal.fromMemoryId = object.value(QStringLiteral("fromMemoryId")).toString();
+    proposal.toMemoryId = object.value(QStringLiteral("toMemoryId")).toString();
+    proposal.type = memoryRelationTypeFromString(
+        object.value(QStringLiteral("type")).toString());
+    proposal.confidence = object.value(QStringLiteral("confidence")).toDouble();
+    proposal.evidence = object.value(QStringLiteral("evidence")).toString();
+    return proposal;
+}
+
 QJsonObject changeSetContent(const DaydreamChangeSet& changeSet,
                              bool legacySecondPrecision = false) {
     QJsonArray snapshot;
@@ -151,10 +183,19 @@ QJsonObject changeSetContent(const DaydreamChangeSet& changeSet,
     for (const DaydreamDecision& decision : changeSet.decisions) {
         decisions.append(decisionToJson(decision, legacySecondPrecision));
     }
-    return {
+    QJsonObject content{
         {QStringLiteral("snapshot"), snapshot},
         {QStringLiteral("decisions"), decisions}
     };
+    // Phase 4.2：仅在非空时包含提案键——旧载荷（无提案）哈希保持兼容。
+    if (!changeSet.relationProposals.isEmpty()) {
+        QJsonArray proposals;
+        for (const RelationProposal& proposal : changeSet.relationProposals) {
+            proposals.append(relationProposalToJson(proposal));
+        }
+        content.insert(QStringLiteral("relationProposals"), proposals);
+    }
+    return content;
 }
 
 QString jsonHash(const QJsonObject& object) {
@@ -258,6 +299,17 @@ Result<DaydreamChangeSet, DomainError> DaydreamChangeSet::fromJson(
         }
         changeSet.decisions.append(std::move(decision));
     }
+    // Phase 4.2：可选提案数组（旧载荷无此键 → 空列表）。
+    const QJsonArray proposals = object.value(QStringLiteral("relationProposals")).toArray();
+    for (const QJsonValue& value : proposals) {
+        if (!value.isObject()) {
+            return Result<DaydreamChangeSet, DomainError>::failure(
+                domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
+                            QStringLiteral("staged Daydream relation proposal is invalid")));
+        }
+        changeSet.relationProposals.append(
+            relationProposalFromJson(value.toObject()));
+    }
     const QString currentHash = jsonHash(changeSetContent(changeSet));
     const QString legacyHash = jsonHash(changeSetContent(changeSet, true));
     if (changeSet.changeSetId.isEmpty()
@@ -325,9 +377,12 @@ bool DaydreamConsolidator::parseDecisions(const QString& response,
                                           const QList<MemoryEntry>& batch,
                                           const QList<MemoryEntry>& allowedUpdateTargets,
                                           QList<Decision>* decisions,
-                                          QString* errorMessage) {
+                                          QString* errorMessage,
+                                          QList<RelationProposal>* proposals,
+                                          const QList<QPair<QString, QString>>& candidatePairs) {
     if (!decisions) return false;
     decisions->clear();
+    if (proposals) proposals->clear();
 
     QSet<QString> expectedIds;
     for (const MemoryEntry& entry : batch) expectedIds.insert(entry.id);
@@ -337,13 +392,31 @@ bool DaydreamConsolidator::parseDecisions(const QString& response,
     QJsonParseError parseError;
     const QJsonDocument document = QJsonDocument::fromJson(
         normalizedJsonPayload(response).toUtf8(), &parseError);
-    if (parseError.error != QJsonParseError::NoError || !document.isArray()) {
-        if (errorMessage) *errorMessage = QStringLiteral("Daydream 返回的内容不是有效 JSON 数组");
+    if (parseError.error != QJsonParseError::NoError) {
+        if (errorMessage) *errorMessage = QStringLiteral("Daydream 返回的内容不是有效 JSON");
+        return false;
+    }
+
+    // Phase 4.2：兼容两种根——数组（旧，仅决策）或对象（新，decisions + relations）。
+    QJsonArray decisionArray;
+    QJsonArray relationArray;
+    if (document.isArray()) {
+        decisionArray = document.array();
+    } else if (document.isObject()) {
+        const QJsonObject root = document.object();
+        decisionArray = root.value(QStringLiteral("decisions")).toArray();
+        relationArray = root.value(QStringLiteral("relations")).toArray();
+        if (!root.value(QStringLiteral("decisions")).isArray()) {
+            if (errorMessage) *errorMessage = QStringLiteral("Daydream 对象根缺少 decisions 数组");
+            return false;
+        }
+    } else {
+        if (errorMessage) *errorMessage = QStringLiteral("Daydream 返回的内容不是有效 JSON 数组或对象");
         return false;
     }
 
     QSet<QString> seenIds;
-    for (const QJsonValue& value : document.array()) {
+    for (const QJsonValue& value : decisionArray) {
         if (!value.isObject()) {
             if (errorMessage) *errorMessage = QStringLiteral("Daydream 决策项必须是对象");
             decisions->clear();
@@ -404,6 +477,52 @@ bool DaydreamConsolidator::parseDecisions(const QString& response,
         if (errorMessage) *errorMessage = QStringLiteral("Daydream 决策未覆盖当前批次的全部源记忆");
         decisions->clear();
         return false;
+    }
+
+    // Phase 4.2（设计 §10）：解析可选 relations 提案。
+    // 逐条宽松校验：引用批次内 id、枚举类型、置信度、证据非空、
+    // 仅候选对（若提供）、每批 ≤8。不合法提案静默丢弃（不影响决策有效性）。
+    if (proposals && !relationArray.isEmpty()) {
+        constexpr int kMaxProposalsPerBatch = 8;
+        QSet<QPair<QString, QString>> candidateSet;
+        for (const QPair<QString, QString>& pair : candidatePairs) {
+            candidateSet.insert(pair);
+            // 候选对无向语义：反序也算命中
+            candidateSet.insert({pair.second, pair.first});
+        }
+        QSet<QString> seenPairs;
+        for (const QJsonValue& value : relationArray) {
+            if (proposals->size() >= kMaxProposalsPerBatch) break;
+            if (!value.isObject()) continue;
+            const QJsonObject object = value.toObject();
+            RelationProposal proposal;
+            proposal.fromMemoryId = object.value(QStringLiteral("from_source_id"))
+                                        .toString().trimmed();
+            proposal.toMemoryId = object.value(QStringLiteral("to_source_id"))
+                                      .toString().trimmed();
+            const QString relation = object.value(QStringLiteral("relation")).toString();
+            proposal.type = memoryRelationTypeFromString(relation);
+            proposal.confidence = object.value(QStringLiteral("confidence")).toDouble();
+            proposal.evidence = object.value(QStringLiteral("evidence")).toString().trimmed();
+
+            // 逐条校验（不合法丢弃，不中断）
+            if (!expectedIds.contains(proposal.fromMemoryId)
+                || !expectedIds.contains(proposal.toMemoryId)) continue;
+            if (proposal.fromMemoryId == proposal.toMemoryId) continue;
+            if (proposal.type != MemoryRelationType::TopicOf
+                && proposal.type != MemoryRelationType::ConflictsWith) continue;
+            if (proposal.confidence < 0.0 || proposal.confidence > 1.0) continue;
+            if (proposal.evidence.isEmpty()) continue;
+            if (!candidateSet.isEmpty()
+                && !candidateSet.contains({proposal.fromMemoryId, proposal.toMemoryId})) {
+                continue;  // 设计：只对候选集合内的关系做判断
+            }
+            const QString pairKey = proposal.fromMemoryId + QLatin1Char('|')
+                + proposal.toMemoryId + QLatin1Char('|') + relation;
+            if (seenPairs.contains(pairKey)) continue;
+            seenPairs.insert(pairKey);
+            proposals->append(proposal);
+        }
     }
     return true;
 }
@@ -495,7 +614,8 @@ QList<DaydreamConsolidator::Decision> DaydreamConsolidator::hardcodedDecisions(
 
 Result<DaydreamChangeSet, DomainError> DaydreamConsolidator::buildChangeSet(
     const Snapshot& snapshot,
-    const QList<Decision>& decisions) const {
+    const QList<Decision>& decisions,
+    const QList<RelationProposal>& relationProposals) const {
     if (decisions.size() != snapshot.size()) {
         return Result<DaydreamChangeSet, DomainError>::failure(
             domainError(QStringLiteral("MODEL_OUTPUT_INVALID"),
@@ -545,6 +665,33 @@ Result<DaydreamChangeSet, DomainError> DaydreamConsolidator::buildChangeSet(
     DaydreamChangeSet changeSet;
     changeSet.snapshot = snapshot;
     changeSet.decisions = decisions;
+
+    // Phase 4.2（设计 §10）：校验模型复核提案。
+    // 提案只能引用批次内既有节点；类型/置信度/证据由 validateRelationProposal 把关；
+    // 每批上限 8 条，重复提案去重。不合法提案静默丢弃（不拒绝整个变更集）。
+    if (!relationProposals.isEmpty()) {
+        constexpr int kMaxProposalsPerBatch = 8;
+        int accepted = 0;
+        QSet<QString> seenPairs;
+        for (const RelationProposal& proposal : relationProposals) {
+            if (accepted >= kMaxProposalsPerBatch) break;
+            if (!sourceIds.contains(proposal.fromMemoryId)
+                || !sourceIds.contains(proposal.toMemoryId)) {
+                continue;  // 提案只能引用批次内既有节点
+            }
+            const QString error = validateRelationProposal(
+                proposal, sourceIds, 0.6);
+            if (!error.isEmpty()) continue;
+            const QString pairKey = proposal.fromMemoryId + QLatin1Char('|')
+                + proposal.toMemoryId + QLatin1Char('|')
+                + memoryRelationTypeToString(proposal.type);
+            if (seenPairs.contains(pairKey)) continue;
+            seenPairs.insert(pairKey);
+            changeSet.relationProposals.append(proposal);
+            ++accepted;
+        }
+    }
+
     changeSet.changeSetId = jsonHash(changeSetContent(changeSet));
     return Result<DaydreamChangeSet, DomainError>::success(std::move(changeSet));
 }
@@ -744,6 +891,35 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
     if (ok) {
         HybridGraphBuilder graphBuilder(m_store.relationGraph());
         graphBuilder.buildForConsolidationBatch(consolidatedResults);
+
+        // Phase 4.2（设计 §10）：模型复核提案落库。
+        // 提案引用 source_id；经产出记忆的 sourceMemoryIds 反查映射到产出 id，
+        // 校验后落库（provenance=Model）。不合法提案静默丢弃，不中断批次。
+        if (!changeSet.relationProposals.isEmpty()) {
+            QHash<QString, QString> sourceToResult;
+            for (const MemoryEntry& result : consolidatedResults) {
+                for (const QString& sourceId : result.sourceMemoryIds) {
+                    if (!sourceToResult.contains(sourceId)) {
+                        sourceToResult.insert(sourceId, result.id);
+                    }
+                }
+            }
+
+            QList<RelationProposal> translated;
+            for (const RelationProposal& proposal : changeSet.relationProposals) {
+                const QString from = sourceToResult.value(proposal.fromMemoryId);
+                const QString to = sourceToResult.value(proposal.toMemoryId);
+                if (from.isEmpty() || to.isEmpty() || from == to) continue;
+                RelationProposal mapped = proposal;
+                mapped.fromMemoryId = from;
+                mapped.toMemoryId = to;
+                translated.append(mapped);
+            }
+
+            DaydreamRelationReviewer reviewer;
+            reviewer.applyProposals(translated, consolidatedResults,
+                                    m_store.relationGraph());
+        }
 
         // 边维护（悬空清理兼顾崩溃一致性；节点上限仅检查本批涉及节点，控制开销）
         QSet<QString> validMemoryIds;
