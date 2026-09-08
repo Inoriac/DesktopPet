@@ -110,7 +110,8 @@ private:
     bool updateTargetsStillCurrent(const QList<Decision>& decisions) const;
     bool applyOne(const MemoryEntry& source,
                   const Decision& decision,
-                  Stats* stats);
+                  Stats* stats,
+                  MemoryEntry* resultingEntry = nullptr);
     MemoryEntry makeLongTermEntry(const MemoryEntry& source,
                                   const Decision& decision) const;
 

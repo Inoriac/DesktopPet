@@ -12,6 +12,7 @@
 #include <QSet>
 
 #include "batch_selector.h"
+#include "hybrid_graph_builder.h"
 #include "memory_store.h"
 #include "partition_policy.h"
 
@@ -609,7 +610,8 @@ MemoryEntry DaydreamConsolidator::makeLongTermEntry(const MemoryEntry& source,
 
 bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
                                     const Decision& decision,
-                                    Stats* stats) {
+                                    Stats* stats,
+                                    MemoryEntry* resultingEntry) {
     switch (decision.action) {
     case Action::Preserve:
         ++stats->preserved;
@@ -626,6 +628,7 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
             || !m_store.removeEntryById(source.id)) {
             return false;
         }
+        if (resultingEntry) *resultingEntry = created;
         ++stats->upgraded;
         return true;
     }
@@ -654,6 +657,7 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
             || !m_store.removeEntryById(source.id)) {
             return false;
         }
+        if (resultingEntry) *resultingEntry = updated;
         ++stats->updated;
         return true;
     }
@@ -721,12 +725,38 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
     }
 
     bool ok = true;
+    QList<MemoryEntry> consolidatedResults;  // Phase 4.2：巩固产出，供混合建图
     for (const MemoryEntry& source : changeSet.snapshot.items) {
-        if (!applyOne(source, decisionsById.value(source.id), &stats)) {
+        MemoryEntry resulting;
+        if (!applyOne(source, decisionsById.value(source.id), &stats, &resulting)) {
             ++stats.failed;
             ok = false;
             break;
         }
+        if (!resulting.id.isEmpty()) {
+            consolidatedResults.append(resulting);
+        }
+    }
+
+    // Phase 4.2（设计 §10）：巩固路径同时维护记忆关系图与标签共现图。
+    // 标签共现已在 applyOne 内记录；此处补关系图：批次内共现建图 + 边维护。
+    // 均在同一 SQLite 事务内，失败随 ROLLBACK 原子撤销。
+    if (ok) {
+        HybridGraphBuilder graphBuilder(m_store.relationGraph());
+        graphBuilder.buildForConsolidationBatch(consolidatedResults);
+
+        // 边维护（悬空清理兼顾崩溃一致性；节点上限仅检查本批涉及节点，控制开销）
+        QSet<QString> validMemoryIds;
+        QStringList touchedNodeIds;
+        const QList<MemoryEntry> allEntries = m_store.all();
+        validMemoryIds.reserve(allEntries.size());
+        for (const MemoryEntry& entry : allEntries) {
+            validMemoryIds.insert(entry.id);
+        }
+        for (const MemoryEntry& entry : consolidatedResults) {
+            touchedNodeIds.append(entry.id);
+        }
+        graphBuilder.maintain(validMemoryIds, touchedNodeIds);
     }
 
     if (ok && !m_store.finalizeSleepChange(
