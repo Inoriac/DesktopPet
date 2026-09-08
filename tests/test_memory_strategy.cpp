@@ -23,6 +23,7 @@
 #include "memory/partition_policy.h"
 #include "memory/sqlite_embedding_index.h"
 #include "memory/hnsw_embedding_index.h"
+#include "memory/memory_index_worker.h"
 #include "memory/sqlite_memory_repository.h"
 #include "memory/model_downloader.h"
 #include "memory/daydream_consolidator.h"
@@ -85,6 +86,7 @@ private slots:
     void testForgettingSweepExpiresStaleAndSparesImportant();
     void testSqliteEmbeddingIndexSearch();
     void testHnswEmbeddingIndexSearchAndPersistence();
+    void testMemoryIndexWorkerProcessesOutbox();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -1682,6 +1684,34 @@ void TestMemoryStrategy::testHnswEmbeddingIndexSearchAndPersistence() {
     QVERIFY(restored.loadFromDisk());
     QCOMPARE(restored.activeCount(), 1);
     QVERIFY(restored.search(QStringLiteral("beta"), 1).first().memoryId == QStringLiteral("hnsw-b"));
+}
+
+void TestMemoryStrategy::testMemoryIndexWorkerProcessesOutbox() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, tempDir.path());
+
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.key = QStringLiteral("worker:test");
+    entry.summary = QStringLiteral("worker indexed alpha");
+    const MemoryEntry stored = store.addEntry(entry);
+    QVERIFY(!stored.id.isEmpty());
+
+    MemoryIndexWorker worker(index);
+    QVERIFY(worker.processPending() >= 1);
+    QVERIFY(!index.search(QStringLiteral("alpha"), 1).isEmpty());
+
+    QSqlDatabase db = QSqlDatabase::database(store.databaseConnectionName(), false);
+    QSqlQuery status(db);
+    status.prepare(QStringLiteral("SELECT COUNT(*) FROM memory_index_jobs WHERE memory_id=:id AND status='Completed'"));
+    status.bindValue(QStringLiteral(":id"), stored.id);
+    QVERIFY(status.exec());
+    QVERIFY(status.next());
+    QVERIFY(status.value(0).toInt() >= 1);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.
