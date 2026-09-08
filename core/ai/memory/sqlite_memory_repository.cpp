@@ -261,6 +261,22 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             ")"
         ),
         QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS memory_hnsw_labels ("
+            "  memory_id TEXT NOT NULL," 
+            "  model TEXT NOT NULL," 
+            "  label INTEGER NOT NULL," 
+            "  content_hash TEXT," 
+            "  status TEXT NOT NULL DEFAULT 'Active'," 
+            "  created_at TEXT NOT NULL," 
+            "  updated_at TEXT," 
+            "  PRIMARY KEY(memory_id, model)," 
+            "  UNIQUE(model, label)"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_hnsw_labels_model_status "
+                       "ON memory_hnsw_labels(model, status)"),
+
+        QStringLiteral(
             "CREATE TABLE IF NOT EXISTS sleep_staged_change ("
             "  session_id TEXT NOT NULL,"
             "  change_id TEXT NOT NULL,"

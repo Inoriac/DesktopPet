@@ -641,6 +641,28 @@ bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch) {
             }
         }
     }
+    if (ok) {
+        QSqlDatabase db = QSqlDatabase::database(m_repository->connectionName(), false);
+        QSqlQuery job(db);
+        job.prepare(QStringLiteral(
+            "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at,updated_at) "
+            "VALUES(:id,:memory,:operation,'', 'Pending',:created,:updated)"));
+        for (const MemoryEntryMutation& mutation : batch.entries) {
+            job.bindValue(QStringLiteral(":id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+            job.bindValue(QStringLiteral(":memory"), mutation.after.id);
+            const bool deleted = mutation.after.status != MemoryStatus::Active
+                || mutation.after.privacyLevel == PrivacyLevel::Sensitive;
+            job.bindValue(QStringLiteral(":operation"), deleted ? QStringLiteral("delete") : QStringLiteral("upsert"));
+            const QString ts = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+            job.bindValue(QStringLiteral(":created"), ts);
+            job.bindValue(QStringLiteral(":updated"), ts);
+            if (!job.exec()) { ok = false; break; }
+            job.clear();
+            job.prepare(QStringLiteral(
+                "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at,updated_at) "
+                "VALUES(:id,:memory,:operation,'', 'Pending',:created,:updated)"));
+        }
+    }
     if (ok) ok = m_repository->commitTransaction();
     if (!ok) m_repository->rollbackTransaction();
     return ok;

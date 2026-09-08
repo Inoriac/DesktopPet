@@ -350,6 +350,10 @@ set(CORE_SOURCES
     core/ai/memory/partition_policy.h
     core/ai/memory/sqlite_embedding_index.h
     core/ai/memory/sqlite_embedding_index.cpp
+    core/ai/memory/hnsw_embedding_index.h
+    core/ai/memory/hnsw_embedding_index.cpp
+    core/ai/memory/memory_index_worker.h
+    core/ai/memory/memory_index_worker.cpp
     core/ai/memory/model_downloader.h
     core/ai/memory/model_downloader.cpp
     core/ai/mcp/mcp_client.h
@@ -467,6 +471,7 @@ target_include_directories(Desktop_Pet PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/core
     ${CMAKE_CURRENT_SOURCE_DIR}/engine
     ${CMAKE_CURRENT_SOURCE_DIR}/third_party/tinygltf
+    ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hnswlib
     ${CMAKE_CURRENT_SOURCE_DIR}/entity
     ${CMAKE_CURRENT_SOURCE_DIR}/statistic
     ${CMAKE_CURRENT_SOURCE_DIR}/music
@@ -1297,6 +1302,10 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/partition_policy.h
         core/ai/memory/sqlite_embedding_index.h
         core/ai/memory/sqlite_embedding_index.cpp
+        core/ai/memory/hnsw_embedding_index.h
+        core/ai/memory/hnsw_embedding_index.cpp
+        core/ai/memory/memory_index_worker.h
+        core/ai/memory/memory_index_worker.cpp
         core/ai/memory/model_downloader.h
         core/ai/memory/model_downloader.cpp
         core/ai/memory/batch_selector.h
@@ -1317,6 +1326,7 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/core
         ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/third_party/hnswlib
     LIBRARIES
         Qt::Core
         Qt::Sql

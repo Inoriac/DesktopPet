@@ -22,6 +22,7 @@
 #include "memory/noop_embedding_index.h"
 #include "memory/partition_policy.h"
 #include "memory/sqlite_embedding_index.h"
+#include "memory/hnsw_embedding_index.h"
 #include "memory/sqlite_memory_repository.h"
 #include "memory/model_downloader.h"
 #include "memory/daydream_consolidator.h"
@@ -83,6 +84,7 @@ private slots:
     void testLegacySchemaWithoutPartitionMigratesBeforeIndexCreation();
     void testForgettingSweepExpiresStaleAndSparesImportant();
     void testSqliteEmbeddingIndexSearch();
+    void testHnswEmbeddingIndexSearchAndPersistence();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -1653,7 +1655,36 @@ MemoryRetriever retriever;
     QVERIFY(hasEmbeddingReason);
 }
 
-// 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF。
+// HNSW：验证 ANN 查询、稳定 label、墓碑删除和文件重载。
+void TestMemoryStrategy::testHnswEmbeddingIndexSearchAndPersistence() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+
+    FakeEmbeddingProvider provider;
+    HnswIndexParams params;
+    params.initialCapacity = 32;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, tempDir.path(), params);
+    QVERIFY(index.upsert(QStringLiteral("hnsw-a"), QStringLiteral("alpha shared topic")));
+    QVERIFY(index.upsert(QStringLiteral("hnsw-b"), QStringLiteral("beta unrelated topic")));
+    const QList<EmbeddingSearchResult> first = index.search(QStringLiteral("alpha"), 2);
+    QVERIFY(!first.isEmpty());
+    QCOMPARE(first.first().memoryId, QStringLiteral("hnsw-a"));
+    QVERIFY(index.upsert(QStringLiteral("hnsw-a"), QStringLiteral("alpha shared topic")));
+    QCOMPARE(index.activeCount(), 2);
+    QVERIFY(index.remove(QStringLiteral("hnsw-a")));
+    for (const auto& hit : index.search(QStringLiteral("alpha"), 5))
+        QVERIFY(hit.memoryId != QStringLiteral("hnsw-a"));
+    QVERIFY(index.saveToDisk());
+
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, tempDir.path(), params);
+    QVERIFY(restored.loadFromDisk());
+    QCOMPARE(restored.activeCount(), 1);
+    QVERIFY(restored.search(QStringLiteral("beta"), 1).first().memoryId == QStringLiteral("hnsw-b"));
+}
+
+// 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.
 // 在临时"源仓库"里按 HF 布局 repo/resolve/rev/file 摆好测试文件，镜像 host 指向它。
 void TestMemoryStrategy::testModelDownloaderLocalMirror() {
     QTemporaryDir srcDir;
