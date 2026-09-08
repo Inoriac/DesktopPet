@@ -215,7 +215,11 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "  weight REAL DEFAULT 1.0,"
             "  confidence REAL DEFAULT 1.0,"
             "  created_at TEXT,"
-            "  payload_json TEXT"
+            "  payload_json TEXT,"
+            "  provenance TEXT DEFAULT 'rule',"
+            "  support_count INTEGER DEFAULT 1,"
+            "  updated_at TEXT,"
+            "  last_reinforced_at TEXT"
             ")"
         ),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_from ON memory_relations(from_memory_id)"),
@@ -353,6 +357,43 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         if (!query.exec(QStringLiteral(
             "CREATE INDEX IF NOT EXISTS idx_memory_items_partition "
             "ON memory_items(partition)"
+        ))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
+    // 迁移（Phase 4.2 设计 §10）：为既有库补关系表新列（来源/支持次数/时间戳）。
+    // 存量边回填：provenance='legacy'，support_count=1，updated_at=created_at。
+    {
+        QSqlQuery alter(db);
+        alter.exec(QStringLiteral(
+            "ALTER TABLE memory_relations ADD COLUMN provenance TEXT DEFAULT 'rule'"));
+        alter.exec(QStringLiteral(
+            "ALTER TABLE memory_relations ADD COLUMN support_count INTEGER DEFAULT 1"));
+        alter.exec(QStringLiteral(
+            "ALTER TABLE memory_relations ADD COLUMN updated_at TEXT"));
+        alter.exec(QStringLiteral(
+            "ALTER TABLE memory_relations ADD COLUMN last_reinforced_at TEXT"));
+        // 不检查 lastError：列已存在时为预期错误。
+
+        if (!query.exec(QStringLiteral(
+            "UPDATE memory_relations SET provenance = 'legacy'"
+            " WHERE provenance IS NULL OR provenance = ''"
+        ))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        if (!query.exec(QStringLiteral(
+            "UPDATE memory_relations SET support_count = 1"
+            " WHERE support_count IS NULL"
+        ))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        if (!query.exec(QStringLiteral(
+            "UPDATE memory_relations SET updated_at = created_at"
+            " WHERE updated_at IS NULL OR updated_at = ''"
         ))) {
             if (errorMessage) *errorMessage = query.lastError().text();
             return false;
