@@ -51,8 +51,8 @@ as completion of design sections 4 and 5 or Phase 4.3.
   reinforcement updates and physical deletion. Each path writes its index job
   inside the same transaction/savepoint as the memory mutation. `MemoryStore`
   remains the owner of this enqueue boundary.
-- MemoryStrategyTests now has 88 passing cases, including all HNSW, transaction,
-  Daydream rollback and outbox paths.
+- `efc34dc` contains this coverage and the full `MemoryStrategyTests` suite has
+  88 passing cases after the change.
 - No production background scheduler or Daydream completion wiring yet.
 - GUI/provider thread ownership, eligibility filtering across all APIs, index
   generation/SQLite consistency and full crash-point replay remain unaccepted.
