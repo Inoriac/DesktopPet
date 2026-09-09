@@ -144,10 +144,12 @@ CREATE TABLE diary_fragments (
 
 完成 #2-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
 
-## 已知环境问题
+## 事务问题（已解决）
 
-- macOS 下 memory_strategy_tests 有 7 个预存在失败（+3 个新增兜底规则测试被同样掩盖），
-  症状统一：显式 QSqlDatabase 事务 commit 后数据不可见（最小复现：
-  testTransactionCommitRetainsWrites）。README 声明 macOS 未纳入运行验证，
-  Windows 回归时需确认是否复现；若仅 macOS 复现，排查 SQLiteMemoryRepository
-  的事务与 WAL/SAVEPOINT 交互。
+- 原先归为 macOS 环境问题的事务失败，实际原因是 Daydream 外层事务与
+  `persistMutationBatch()` 内层事务重复执行 `BEGIN`。SQLite 不支持嵌套 BEGIN。
+- `SQLiteMemoryRepository` 现使用 savepoint 栈管理嵌套作用域；内层释放不提交外层，
+  内层失败只撤销内层，外层回滚同时撤销记忆、标签/关系和 outbox 写入。
+- 两项事务回归、新增 Daydream/outbox 故障回滚测试已通过；记忆策略、Sleep Cycle、
+  Phase 1/2/3 召回和混合建图六个测试套件连续三轮全部通过（macOS，无 ONNX）。
+  Windows 仍需在交付环境回归，但不再将该故障归因于 macOS/WAL。

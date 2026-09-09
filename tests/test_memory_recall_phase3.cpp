@@ -3,6 +3,8 @@
 #include <QFile>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QTemporaryDir>
+#include "core/ai/memory/sqlite_memory_repository.h"
 #include "core/ai/memory/working_memory_cache.h"
 #include "core/ai/memory/associative_activation_engine.h"
 #include "core/ai/memory/memory_relation_graph.h"
@@ -16,6 +18,7 @@ class TestMemoryRecallPhase3 : public QObject {
     Q_OBJECT
 
 private:
+    QTemporaryDir m_tempDir;
     QString m_dbPath;
 
 private slots:
@@ -61,25 +64,15 @@ MemoryRelation makeRelation(const QString& id,
 }
 
 void TestMemoryRecallPhase3::initTestCase() {
-    m_dbPath = QDir::temp().filePath("test_phase3_relations.db");
-    QFile::remove(m_dbPath);
+    QVERIFY(m_tempDir.isValid());
+    m_dbPath = m_tempDir.filePath("test_phase3_relations.db");
+    SQLiteMemoryRepository repository;
+    QVERIFY(repository.open(m_dbPath));
+    repository.close();
 
     QSqlDatabase db = QSqlDatabase::addDatabase("QSQLITE", "phase3_test_conn");
     db.setDatabaseName(m_dbPath);
     QVERIFY(db.open());
-
-    QSqlQuery query(db);
-    QVERIFY(query.exec(
-        "CREATE TABLE memory_relations ("
-        "  id TEXT PRIMARY KEY,"
-        "  from_memory_id TEXT NOT NULL,"
-        "  to_memory_id TEXT NOT NULL,"
-        "  relation_type TEXT NOT NULL,"
-        "  weight REAL DEFAULT 1.0,"
-        "  confidence REAL DEFAULT 1.0,"
-        "  created_at TEXT,"
-        "  payload_json TEXT"
-        ")"));
 }
 
 void TestMemoryRecallPhase3::cleanupTestCase() {

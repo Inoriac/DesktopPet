@@ -38,6 +38,7 @@ private:
     QStringList loadEvidence(const QString& memoryId);
 
     QString m_connectionName;
+    QStringList m_transactionSavepoints;
 };
 
 #endif // DESKTOP_PET_SQLITE_MEMORY_REPOSITORY_H

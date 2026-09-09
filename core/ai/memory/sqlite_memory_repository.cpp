@@ -90,6 +90,7 @@ bool SQLiteMemoryRepository::open(const QString& path, QString* errorMessage) {
 }
 
 void SQLiteMemoryRepository::close() {
+    m_transactionSavepoints.clear();
     if (QSqlDatabase::contains(m_connectionName)) {
         {
             QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
@@ -109,21 +110,33 @@ bool SQLiteMemoryRepository::isOpen() const {
 
 bool SQLiteMemoryRepository::beginTransaction() {
     if (!isOpen()) return false;
-    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    if (!db.driver()->hasFeature(QSqlDriver::Transactions)) return false;
-    return db.transaction();
+    // SAVEPOINT starts a transaction when needed, or nests inside a caller's
+    // transaction without committing it when the inner scope is released.
+    const QString savepoint = QStringLiteral("memory_tx_") +
+        QUuid::createUuid().toString(QUuid::Id128);
+    QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
+    if (!query.exec(QStringLiteral("SAVEPOINT %1").arg(savepoint))) return false;
+    m_transactionSavepoints.append(savepoint);
+    return true;
 }
 
 bool SQLiteMemoryRepository::commitTransaction() {
-    if (!isOpen()) return false;
-    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    return db.commit();
+    if (!isOpen() || m_transactionSavepoints.isEmpty()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
+    if (!query.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(m_transactionSavepoints.last())))
+        return false;
+    m_transactionSavepoints.removeLast();
+    return true;
 }
 
 bool SQLiteMemoryRepository::rollbackTransaction() {
-    if (!isOpen()) return false;
-    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    return db.rollback();
+    if (!isOpen() || m_transactionSavepoints.isEmpty()) return false;
+    QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
+    const QString savepoint = m_transactionSavepoints.last();
+    if (!query.exec(QStringLiteral("ROLLBACK TO SAVEPOINT %1").arg(savepoint)) ||
+        !query.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint))) return false;
+    m_transactionSavepoints.removeLast();
+    return true;
 }
 
 bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {

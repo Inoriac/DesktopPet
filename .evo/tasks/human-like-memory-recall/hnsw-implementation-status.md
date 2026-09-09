@@ -6,7 +6,7 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 
 - `10178e2`: initial HNSW wrapper, label table and outbox worker scaffold.
 - `d65aa65`: basic outbox consumption test.
-- Current durability fix: persist SQLite vectors and HNSW files before completing
+- `142e12e`: persist SQLite vectors and HNSW files before completing
   a job; failed saves leave jobs retryable. Delete also removes stored vectors.
   Binary and metadata files use QSaveFile individually; SHA-256 detects a torn
   pair. A failed load clears readiness instead of exposing a partial index.
@@ -19,9 +19,21 @@ Related design: design.md sections 4, 5, 14, 15, 16.
   and mismatched/corrupt file rejection.
 - The durable-completion and failed-save tests both failed before this fix.
 - Existing SQLite embedding and entry-update tests pass.
-- testTransactionRollbackRevertsWrites and testTransactionCommitRetainsWrites
-  fail on both the current working tree and a separately built d65aa65 worktree.
-  These failures remain unresolved; this is not a full-suite pass.
+- The two transaction regressions are now resolved: nested BEGIN calls in
+  Daydream -> addEntry -> persistMutationBatch failed in SQLite. Repository
+  transaction scopes now use a savepoint stack, including inside external
+  QSqlDatabase transactions. Closing the repository clears scope bookkeeping.
+- New tests cover inner rollback/outer commit, outer rollback of entries,
+  relations, tags and outbox, injected outbox failures, external transactions,
+  and rollback/retry of an entire two-item Daydream batch.
+- MemoryStrategyTests, SleepCycleTests, MemoryRecallTests,
+  MemoryRecallPhase2Tests, MemoryRecallPhase3Tests and HybridGraphBuilderTests
+  all pass three consecutive CTest runs. Desktop_Pet builds successfully.
+  This verifies these six suites, not every project test target.
+- Two stale test fixtures were corrected: mentionCount=3 selects Semantic,
+  not Episodic; Phase 3 now initializes its schema via the real repository.
+  A staged-memory assertion now looks up the entry by ID instead of relying
+  on database row order.
 - No ONNX inference or ONNX tests were run.
 
 ## Remaining Acceptance Gaps

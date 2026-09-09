@@ -94,9 +94,13 @@ private slots:
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
+    void testNestedTransactionsKeepOutboxAtomic();
+    void testNestedOutboxFailurePreservesOuterTransaction();
+    void testRepositoryTransactionsRespectExternalTransaction();
     void testTransactionRollbackRevertsRelationGraph();
     void testTransactionRollbackRevertsTagCooccurrence();
     void testDaydreamDrainUpgradesAndClearsHippocampus();
+    void testDaydreamOutboxFailureRollsBackBatch();
     void testDaydreamUpdatesTagCooccurrenceGraph();
     void testDaydreamUpdateRecordsTagCooccurrence();
     void testDaydreamTagCooccurrenceAccumulates();
@@ -301,7 +305,8 @@ stageCandidates_whenWriteSupersedesAndForget_shouldKeepGuiCacheAheadOfPersistenc
     QCOMPARE(staged.report.written, 1);
     QCOMPARE(store.findById(stored.id)->status, MemoryStatus::Superseded);
     QCOMPARE(store.all().size(), 2);
-    QCOMPARE(store.all().last().status, MemoryStatus::Active);
+    const QString replacementId = store.all().last().id;
+    QCOMPARE(store.findById(replacementId)->status, MemoryStatus::Active);
 
     MemoryStore beforeCommit;
     setupStoreWithDb(beforeCommit, tempDir);
@@ -321,11 +326,12 @@ stageCandidates_whenWriteSupersedesAndForget_shouldKeepGuiCacheAheadOfPersistenc
     forget.rawText = QStringLiteral("忘记 C++");
     const StagedMemoryPolicyResult forgotten = policy.stageCandidates({forget}, &store);
     QCOMPARE(forgotten.report.forgotten, 1);
-    QCOMPARE(store.all().last().status, MemoryStatus::Deleted);
+    QCOMPARE(store.findById(replacementId)->status, MemoryStatus::Deleted);
 
     MemoryStore beforeForgetCommit;
     setupStoreWithDb(beforeForgetCommit, tempDir);
-    QCOMPARE(beforeForgetCommit.all().last().status, MemoryStatus::Active);
+    QVERIFY(beforeForgetCommit.findById(replacementId));
+    QCOMPARE(beforeForgetCommit.findById(replacementId)->status, MemoryStatus::Active);
     QVERIFY(store.persistMutationBatch(forgotten.mutations));
 }
 
@@ -1977,6 +1983,100 @@ void TestMemoryStrategy::testTransactionCommitRetainsWrites() {
     QVERIFY(store.findById(written.id));
 }
 
+void TestMemoryStrategy::testNestedTransactionsKeepOutboxAtomic() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    const auto db = QSqlDatabase::database(store.databaseConnectionName(), false);
+    auto count = [&db](const QString& table) {
+        QSqlQuery query(db);
+        if (!query.exec(QStringLiteral("SELECT COUNT(*) FROM ") + table) || !query.next()) return -1;
+        return query.value(0).toInt();
+    };
+    QVERIFY(store.beginTransaction());
+    const auto first = store.add(MemoryType::Semantic, QStringLiteral("outer"), QStringLiteral("alpha"));
+    QVERIFY(!first.id.isEmpty());
+    QVERIFY(store.beginTransaction());
+    QVERIFY(!store.add(MemoryType::Semantic, QStringLiteral("inner"), QStringLiteral("beta")).id.isEmpty());
+    QCOMPARE(count(QStringLiteral("memory_index_jobs")), 2);
+    QVERIFY(store.rollbackTransaction());
+    QCOMPARE(count(QStringLiteral("memory_items")), 1);
+    QCOMPARE(count(QStringLiteral("memory_index_jobs")), 1);
+    QVERIFY(store.commitTransaction());
+    QVERIFY(store.loadDatabaseOnly());
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().first().id, first.id);
+
+    QVERIFY(store.beginTransaction());
+    const auto second = store.add(MemoryType::Semantic, QStringLiteral("rollback"), QStringLiteral("gamma"));
+    QVERIFY(!second.id.isEmpty());
+    MemoryRelation relation;
+    relation.fromMemoryId = first.id;
+    relation.toMemoryId = second.id;
+    relation.type = MemoryRelationType::Related;
+    QVERIFY(store.relationGraph().addRelation(relation));
+    QVERIFY(store.tagCooccurrenceGraph().recordTags({QStringLiteral("alpha"), QStringLiteral("gamma")}));
+    QCOMPARE(count(QStringLiteral("memory_index_jobs")), 2);
+    QVERIFY(store.rollbackTransaction());
+    QCOMPARE(count(QStringLiteral("memory_items")), 1);
+    QCOMPARE(count(QStringLiteral("memory_index_jobs")), 1);
+    QVERIFY(!store.relationGraph().hasRelation(first.id, second.id, MemoryRelationType::Related));
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(QStringLiteral("alpha"), QStringLiteral("gamma")), 0);
+    QVERIFY(!store.commitTransaction());
+    QVERIFY(!store.rollbackTransaction());
+}
+
+void TestMemoryStrategy::testNestedOutboxFailurePreservesOuterTransaction() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    QVERIFY(store.beginTransaction());
+    QVERIFY(!store.add(MemoryType::Semantic, QStringLiteral("before"), QStringLiteral("alpha")).id.isEmpty());
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral("CREATE TEMP TRIGGER fail_index_job BEFORE INSERT ON memory_index_jobs "
+                                      "BEGIN SELECT RAISE(ABORT, 'injected outbox failure'); END")));
+    QVERIFY(store.add(MemoryType::Semantic, QStringLiteral("failed"), QStringLiteral("beta")).id.isEmpty());
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM memory_items")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 1);
+    query.finish();
+    QVERIFY(query.exec(QStringLiteral("DROP TRIGGER fail_index_job")));
+    QVERIFY(!store.add(MemoryType::Semantic, QStringLiteral("after"), QStringLiteral("gamma")).id.isEmpty());
+    QVERIFY(store.commitTransaction());
+    QVERIFY(store.loadDatabaseOnly());
+    QCOMPARE(store.all().size(), 2);
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM memory_index_jobs")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 2);
+}
+
+void TestMemoryStrategy::testRepositoryTransactionsRespectExternalTransaction() {
+    QTemporaryDir dir;
+    SQLiteMemoryRepository repository;
+    QVERIFY(repository.open(dir.filePath(QStringLiteral("external.sqlite"))));
+    auto db = QSqlDatabase::database(repository.connectionName(), false);
+    QVERIFY(db.transaction());
+    QVERIFY(repository.beginTransaction());
+    MemoryEntry entry;
+    entry.id = QStringLiteral("external-entry");
+    entry.type = MemoryType::Semantic;
+    entry.partition = QStringLiteral("semantic");
+    entry.summary = QStringLiteral("alpha");
+    QVERIFY(repository.insert(entry));
+    QVERIFY(repository.commitTransaction());
+    QVERIFY(db.rollback());
+    QCOMPARE(repository.loadAll().size(), 0);
+    QVERIFY(repository.beginTransaction());
+    db = QSqlDatabase();
+    repository.close();
+    QVERIFY(repository.open(dir.filePath(QStringLiteral("external.sqlite"))));
+    QVERIFY(!repository.commitTransaction());
+    QVERIFY(repository.beginTransaction());
+    QVERIFY(repository.insert(entry));
+    QVERIFY(repository.commitTransaction());
+    QCOMPARE(repository.loadAll().size(), 1);
+}
+
 // ROLLBACK 也要撤销复用同一连接的 MemoryRelationGraph 写入（图残留防护）。
 void TestMemoryStrategy::testTransactionRollbackRevertsRelationGraph() {
     QTemporaryDir tempDir;
@@ -2043,7 +2143,7 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     hot.content = hot.summary;
     hot.source = QStringLiteral("user_interaction");
     hot.importance = 0.4;
-    hot.mentionCount = 3;
+    hot.mentionCount = 2; // Three mentions select Semantic in the fallback policy.
     const QString hotId = store.addEntry(hot).id;
     QVERIFY(store.load());
 
@@ -2066,6 +2166,53 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     QCOMPARE(episodicCount, 1);
     QVERIFY(!store.findById(hotId)); // 源条目已物理删除
     QCOMPARE(store.all().first().sourceMemoryIds, QStringList{hotId});
+}
+
+void TestMemoryStrategy::testDaydreamOutboxFailureRollsBackBatch() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    for (const QString& key : {QStringLiteral("first"), QStringLiteral("second")}) {
+        MemoryEntry source;
+        source.type = MemoryType::ShortTerm;
+        source.key = key;
+        source.summary = key;
+        source.source = QStringLiteral("user_interaction");
+        source.tags = {QStringLiteral("alpha"), QStringLiteral("beta")};
+        source.mentionCount = 2;
+        QVERIFY(!store.addEntry(source).id.isEmpty());
+    }
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    QCOMPARE(snapshot.size(), 2);
+    const auto decisions = DaydreamConsolidator::hardcodedDecisions(snapshot.items);
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral(
+        "CREATE TEMP TRIGGER fail_second_long_term BEFORE INSERT ON memory_index_jobs "
+        "WHEN (SELECT COUNT(*) FROM memory_items WHERE partition!='hippocampus')=2 "
+        "BEGIN SELECT RAISE(ABORT, 'second result outbox failure'); END")));
+    const auto failed = consolidator.applyDecisions(snapshot, decisions);
+    QVERIFY(!failed.committed);
+    QVERIFY(failed.failed > 0);
+    QVERIFY(store.loadDatabaseOnly());
+    QCOMPARE(store.all().size(), 2);
+    for (const auto& source : snapshot.items) QVERIFY(store.findById(source.id));
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(QStringLiteral("alpha"), QStringLiteral("beta")), 0);
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM memory_index_jobs")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 2);
+    query.finish();
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM sleep_staged_change WHERE status='Finalized'")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 0);
+    query.finish();
+    QVERIFY(query.exec(QStringLiteral("DROP TRIGGER fail_second_long_term")));
+    const auto retried = consolidator.applyDecisions(snapshot, decisions);
+    QVERIFY(retried.committed);
+    QCOMPARE(retried.upgraded, 2);
+    QCOMPARE(store.all().size(), 2);
+    for (const auto& entry : store.all()) QCOMPARE(entry.type, MemoryType::Episodic);
+    QCOMPARE(store.tagCooccurrenceGraph().weightBetween(QStringLiteral("alpha"), QStringLiteral("beta")), 2);
 }
 
 void TestMemoryStrategy::testDaydreamUpdatesTagCooccurrenceGraph() {
