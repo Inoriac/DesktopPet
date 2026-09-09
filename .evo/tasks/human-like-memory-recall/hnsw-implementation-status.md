@@ -41,12 +41,12 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 The earlier checklist overstated completion. Do not treat the scaffold commits
 as completion of design sections 4 and 5 or Phase 4.3.
 
-- Rebuild must read authoritative memory_embeddings, not re-embed memory_items.
-  Automatic recovery from a rejected index is not implemented. The consumer
-  currently refuses to replace an unavailable index when Completed jobs exist;
-  it requires recovery before continuing.
-- Label allocation/update semantics, changed-content hashes, capacity growth,
-  and tombstone accounting/compaction need dedicated tests and fixes.
+- Rebuild now reads eligible vectors from authoritative `memory_embeddings` rows
+  and does not re-embed `memory_items`; invalid blobs are skipped. Content hash
+  changes allocate a fresh label after tombstoning the old one. HNSW capacity
+  doubles when full.
+- Added tests for changed-content labels, authoritative rebuild and capacity
+  growth. These pass together with the previous durability/recovery tests.
 - Outbox currently covers persistMutationBatch, not every repository update,
   status transition or physical deletion. Model/content version checks and
   bounded backoff still need implementation.

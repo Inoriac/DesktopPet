@@ -91,6 +91,7 @@ private slots:
     void testMemoryIndexWorkerRetriesFailedSave();
     void testMemoryIndexWorkerDeleteSurvivesRestart();
     void testHnswRejectsMismatchedFiles();
+    void testHnswUpdatesLabelsAndRebuildsFromAuthoritativeVectors();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -1857,6 +1858,39 @@ void TestMemoryStrategy::testHnswRejectsMismatchedFiles() {
     QVERIFY(!restored.loadFromDisk());
     QVERIFY(!restored.isReady());
     QVERIFY(restored.search(QStringLiteral("alpha"), 2).isEmpty());
+}
+
+void TestMemoryStrategy::testHnswUpdatesLabelsAndRebuildsFromAuthoritativeVectors() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path(), HnswIndexParams{16, 200, 50, 0.30, 1});
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("alpha");
+    const auto stored = store.addEntry(entry);
+    QVERIFY(!stored.id.isEmpty());
+    MemoryIndexWorker worker(index);
+    QVERIFY(worker.processPending() >= 1);
+    const auto first = index.search(QStringLiteral("alpha"), 1);
+    QCOMPARE(first.size(), 1);
+    QVERIFY(index.upsert(stored.id, QStringLiteral("beta")));
+    QVERIFY(index.search(QStringLiteral("beta"), 1).first().memoryId == stored.id);
+    QVERIFY(!index.search(QStringLiteral("alpha"), 1).isEmpty());
+    QVERIFY(index.search(QStringLiteral("alpha"), 1).first().similarity <
+            index.search(QStringLiteral("beta"), 1).first().similarity);
+
+    QVERIFY(index.rebuildFromRepository());
+    QVERIFY(index.search(QStringLiteral("alpha"), 1).first().memoryId == stored.id);
+    QCOMPARE(index.activeCount(), 1);
+    QVERIFY(index.tombstoneCount() == 0);
+
+    for (int i = 0; i < 5; ++i) {
+        const QString id = QStringLiteral("capacity-%1").arg(i);
+        QVERIFY(index.upsert(id, QStringLiteral("capacity vector %1").arg(i)));
+    }
+    QCOMPARE(index.activeCount(), 6);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

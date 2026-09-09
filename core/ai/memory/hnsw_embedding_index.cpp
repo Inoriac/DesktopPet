@@ -17,6 +17,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstring>
 #include <limits>
 
 namespace {
@@ -77,10 +78,25 @@ qint64 HnswEmbeddingIndex::allocateLabel(const QString& memoryId, const QString&
     QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
     if (!db.isOpen()) return -1;
     QSqlQuery q(db);
-    q.prepare(QStringLiteral("SELECT label FROM memory_hnsw_labels WHERE memory_id=:id AND model=:model"));
+    q.prepare(QStringLiteral("SELECT label,content_hash FROM memory_hnsw_labels WHERE memory_id=:id AND model=:model"));
     q.bindValue(QStringLiteral(":id"), memoryId);
     q.bindValue(QStringLiteral(":model"), m_provider->modelName());
-    if (q.exec() && q.next()) return q.value(0).toLongLong();
+    if (q.exec() && q.next()) {
+        if (q.value(1).toString() == hash) return q.value(0).toLongLong();
+        QSqlQuery next(db);
+        next.prepare(QStringLiteral("SELECT COALESCE(MAX(label),-1)+1 FROM memory_hnsw_labels WHERE model=:model"));
+        next.bindValue(QStringLiteral(":model"), m_provider->modelName());
+        if (!next.exec() || !next.next()) return -1;
+        const qint64 label = next.value(0).toLongLong();
+        QSqlQuery update(db);
+        update.prepare(QStringLiteral("UPDATE memory_hnsw_labels SET label=:label,content_hash=:hash,status='Active',updated_at=:ts WHERE memory_id=:id AND model=:model"));
+        update.bindValue(QStringLiteral(":label"), label);
+        update.bindValue(QStringLiteral(":hash"), hash);
+        update.bindValue(QStringLiteral(":ts"), nowUtc());
+        update.bindValue(QStringLiteral(":id"), memoryId);
+        update.bindValue(QStringLiteral(":model"), m_provider->modelName());
+        return update.exec() ? label : -1;
+    }
     QSqlQuery insert(db);
     insert.prepare(QStringLiteral("INSERT INTO memory_hnsw_labels(memory_id,model,label,content_hash,status,created_at) "
                                   "VALUES(:id,:model,(SELECT COALESCE(MAX(label),-1)+1 FROM memory_hnsw_labels WHERE model=:model2),:hash,'Active',:ts)"));
@@ -124,6 +140,9 @@ bool HnswEmbeddingIndex::insertVectorLocked(const QString& memoryId, QVector<flo
     const qint64 label = allocateLabel(memoryId, hash);
     if (label < 0) return false;
     try {
+        if (m_index->getCurrentElementCount() >= m_index->getMaxElements()) {
+            m_index->resizeIndex(std::max<size_t>(m_index->getMaxElements() * 2, m_index->getCurrentElementCount() + 1));
+        }
         m_index->addPoint(vector.constData(), static_cast<hnswlib::labeltype>(label));
     } catch (...) { return false; }
     m_activeLabelByMemory.insert(memoryId, label);
@@ -307,13 +326,20 @@ bool HnswEmbeddingIndex::rebuildFromRepository(QString* errorMessage) {
     m_index->setEf(m_params.efSearch);
     m_activeLabelByMemory.clear(); m_memoryByLabel.clear(); m_hashByMemory.clear(); m_tombstones = 0;
     QSqlQuery q(db);
-    if (!q.exec(QStringLiteral("SELECT id,summary,content FROM memory_items WHERE status='active' AND privacy_level!='sensitive' AND partition!='hippocampus'"))) return false;
+    q.prepare(QStringLiteral(
+        "SELECT e.memory_id,e.dimension,e.vector_blob,e.content_hash "
+        "FROM memory_embeddings e JOIN memory_items i ON i.id=e.memory_id "
+        "WHERE e.model=:model AND i.status='active' AND i.privacy_level!='sensitive' "
+        "AND i.partition!='hippocampus'"));
+    q.bindValue(QStringLiteral(":model"), m_provider->modelName());
+    if (!q.exec()) return false;
     while (q.next()) {
-        const QString id = q.value(0).toString(); const QString text = q.value(1).toString() + QStringLiteral("\n") + q.value(2).toString();
-        const QVector<float> vector = m_provider->embed(text);
-        if (vector.isEmpty()) continue;
-        QVector<float> normalizedVector = vector;
-        if (!insertVectorLocked(id, normalizedVector, contentHash(text))) continue;
+        const int dimension = q.value(1).toInt();
+        const QByteArray blob = q.value(2).toByteArray();
+        if (dimension <= 0 || blob.size() != dimension * static_cast<int>(sizeof(float))) continue;
+        QVector<float> vector(dimension);
+        std::memcpy(vector.data(), blob.constData(), blob.size());
+        if (!insertVectorLocked(q.value(0).toString(), vector, q.value(3).toString())) continue;
     }
     locker.unlock();
     return saveToDisk(errorMessage);
