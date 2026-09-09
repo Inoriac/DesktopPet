@@ -371,7 +371,12 @@ bool MemoryStore::finalizeSleepChange(const QString& changeId,
 
 bool MemoryStore::removeEntryById(const QString& id) {
     if (!m_repository || !m_repository->isOpen() || id.isEmpty()) return false;
-    if (!m_repository->removeById(id)) return false;
+    if (!m_repository->beginTransaction()) return false;
+    if (!m_repository->removeById(id) || !enqueueIndexJob(id, QStringLiteral("delete")) ||
+        !m_repository->commitTransaction()) {
+        m_repository->rollbackTransaction();
+        return false;
+    }
     for (int i = 0; i < m_entries.size(); ++i) {
         if (m_entries[i].id == id) {
             m_entries.removeAt(i);
@@ -690,7 +695,12 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
         }
 
         if (m_repository && m_repository->isOpen()) {
-            if (!m_repository->update(stored)) {
+            if (!m_repository->beginTransaction()
+                || !m_repository->update(stored)
+                || !enqueueIndexJob(stored.id, stored.status == MemoryStatus::Active
+                    ? QStringLiteral("upsert") : QStringLiteral("delete"))
+                || !m_repository->commitTransaction()) {
+                m_repository->rollbackTransaction();
                 return false;
             }
         }
@@ -767,6 +777,11 @@ bool MemoryStore::reinforceEntries(const QStringList& ids) {
         updated.lastAccessedAt = accessedAt;
         updated.updatedAt = accessedAt;
         if (persistent && !m_repository->update(updated)) {
+            success = false;
+            break;
+        }
+        if (persistent && !enqueueIndexJob(updated.id, updated.status == MemoryStatus::Active
+                ? QStringLiteral("upsert") : QStringLiteral("delete"))) {
             success = false;
             break;
         }
@@ -913,11 +928,36 @@ bool MemoryStore::persistEntry(const MemoryEntry& entry) {
     return true;
 }
 
+bool MemoryStore::enqueueIndexJob(const QString& memoryId,
+                                   const QString& operation) {
+    if (!m_repository || !m_repository->isOpen()) return true;
+    QSqlDatabase db = QSqlDatabase::database(m_repository->connectionName(), false);
+    if (!db.isOpen()) return false;
+    QSqlQuery job(db);
+    job.prepare(QStringLiteral(
+        "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at,updated_at) "
+        "VALUES(:id,:memory,:operation,'','Pending',:created,:updated)"));
+    const QString now = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
+    job.bindValue(QStringLiteral(":id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+    job.bindValue(QStringLiteral(":memory"), memoryId);
+    job.bindValue(QStringLiteral(":operation"), operation);
+    job.bindValue(QStringLiteral(":created"), now);
+    job.bindValue(QStringLiteral(":updated"), now);
+    return job.exec();
+}
+
 bool MemoryStore::persistStatusUpdate(const QString& id,
                                       MemoryStatus status,
                                       const QJsonObject& payloadPatch) {
     if (m_repository && m_repository->isOpen()) {
-        return m_repository->updateStatus(id, status, payloadPatch);
+        if (!m_repository->beginTransaction()) return false;
+        if (!m_repository->updateStatus(id, status, payloadPatch)
+            || !enqueueIndexJob(id, status == MemoryStatus::Active
+                ? QStringLiteral("upsert") : QStringLiteral("delete"))
+            || !m_repository->commitTransaction()) {
+            m_repository->rollbackTransaction();
+            return false;
+        }
     }
     return true;
 }

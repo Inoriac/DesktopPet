@@ -47,9 +47,12 @@ as completion of design sections 4 and 5 or Phase 4.3.
   doubles when full.
 - Added tests for changed-content labels, authoritative rebuild and capacity
   growth. These pass together with the previous durability/recovery tests.
-- Outbox currently covers persistMutationBatch, not every repository update,
-  status transition or physical deletion. Model/content version checks and
-  bounded backoff still need implementation.
+- Outbox coverage now includes direct entry updates, status transitions,
+  reinforcement updates and physical deletion. Each path writes its index job
+  inside the same transaction/savepoint as the memory mutation. `MemoryStore`
+  remains the owner of this enqueue boundary.
+- MemoryStrategyTests now has 88 passing cases, including all HNSW, transaction,
+  Daydream rollback and outbox paths.
 - No production background scheduler or Daydream completion wiring yet.
 - GUI/provider thread ownership, eligibility filtering across all APIs, index
   generation/SQLite consistency and full crash-point replay remain unaccepted.

@@ -128,6 +128,7 @@ private:
     MemoryEntry normalizedEntry(const MemoryEntry& entry) const;
     bool persistEntry(const MemoryEntry& entry);
     bool persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
+    bool enqueueIndexJob(const QString& memoryId, const QString& operation);
 
     QString m_memoryFilePath = QStringLiteral("log/ai_memory.json");
     QString m_databasePath = QStringLiteral("runtime/memory/memory.db");
