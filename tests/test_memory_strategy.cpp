@@ -11,6 +11,7 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <filesystem>
+#include <limits>
 
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
@@ -92,6 +93,13 @@ private slots:
     void testMemoryIndexWorkerDeleteSurvivesRestart();
     void testHnswRejectsMismatchedFiles();
     void testHnswUpdatesLabelsAndRebuildsFromAuthoritativeVectors();
+    void testIndexWorkerAutomaticRecovery_data();
+    void testIndexWorkerAutomaticRecovery();
+    void testHnswRebuildFiltersInvalidRows();
+    void testHnswRebuildFailureIsRetryable_data();
+    void testHnswRebuildFailureIsRetryable();
+    void testIndexWorkerRecoveryFailureKeepsJobPending();
+    void testHnswReinsertAndInvalidVectors();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -1613,6 +1621,15 @@ public:
     }
 };
 
+class CountingEmbeddingProvider : public FakeEmbeddingProvider {
+public:
+    int calls = 0;
+    QVector<float> embed(const QString& text) override {
+        ++calls;
+        return FakeEmbeddingProvider::embed(text);
+    }
+};
+
 // SqliteEmbeddingIndex：upsert 写向量到 memory_embeddings，search 余弦 top-k，
 // remove 删行。复用 MemoryStore 同一 DB 连接。注入 retriever 后语义命中排名前列。
 void TestMemoryStrategy::testSqliteEmbeddingIndexSearch() {
@@ -1886,11 +1903,242 @@ void TestMemoryStrategy::testHnswUpdatesLabelsAndRebuildsFromAuthoritativeVector
     QCOMPARE(index.activeCount(), 1);
     QVERIFY(index.tombstoneCount() == 0);
 
-    for (int i = 0; i < 5; ++i) {
+    for (int i = 0; i < 40; ++i) {
         const QString id = QStringLiteral("capacity-%1").arg(i);
         QVERIFY(index.upsert(id, QStringLiteral("capacity vector %1").arg(i)));
     }
-    QCOMPARE(index.activeCount(), 6);
+    QCOMPARE(index.activeCount(), 41);
+}
+
+void TestMemoryStrategy::testIndexWorkerAutomaticRecovery_data() {
+    QTest::addColumn<QString>("damage");
+    QTest::addColumn<bool>("pending");
+    for (const auto& damage : {QStringLiteral("binary"), QStringLiteral("metadata"), QStringLiteral("labels")}) {
+        QTest::newRow(qPrintable(damage + "-empty-queue")) << damage << false;
+        QTest::newRow(qPrintable(damage + "-pending")) << damage << true;
+    }
+}
+
+void TestMemoryStrategy::testIndexWorkerAutomaticRecovery() {
+    QFETCH(QString, damage);
+    QFETCH(bool, pending);
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    CountingEmbeddingProvider provider;
+    HnswEmbeddingIndex initial(store.databaseConnectionName(), &provider, dir.path());
+    for (const QString& id : {QStringLiteral("alpha"), QStringLiteral("beta")}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.summary = id;
+        entry.type = MemoryType::Semantic;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    MemoryIndexWorker worker(initial);
+    QCOMPARE(worker.processPending(), 2);
+    if (damage == "binary") {
+        QFile binary(initial.indexFilePath());
+        QVERIFY(binary.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        QCOMPARE(binary.write("broken"), 6);
+    } else if (damage == "metadata") {
+        QVERIFY(QFile::remove(initial.metaFilePath()));
+    } else {
+        QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+        QVERIFY(query.exec(QStringLiteral("DELETE FROM memory_hnsw_labels")));
+    }
+    if (pending) {
+        MemoryEntry entry;
+        entry.id = QStringLiteral("gamma");
+        entry.type = MemoryType::Semantic;
+        entry.summary = entry.id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+        QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+        QVERIFY(query.exec(QStringLiteral("UPDATE memory_index_jobs SET status='Processing' WHERE memory_id='gamma'")));
+    }
+    provider.calls = 0;
+    HnswEmbeddingIndex recovered(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker restart(recovered);
+    QCOMPARE(restart.processPending(), pending ? 1 : 0);
+    QVERIFY(recovered.isReady());
+    QCOMPARE(recovered.activeCount(), pending ? 3 : 2);
+    QCOMPARE(provider.calls, pending ? 1 : 0);
+    HnswEmbeddingIndex reloaded(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(reloaded.loadFromDisk());
+    const auto hits = reloaded.searchVector(FakeEmbeddingProvider().embed(QStringLiteral("alpha")), 8);
+    QCOMPARE(hits.size(), pending ? 3 : 2);
+    QCOMPARE(hits.first().memoryId, QStringLiteral("alpha"));
+    QCOMPARE(restart.processPending(), 0);
+}
+
+void TestMemoryStrategy::testHnswRebuildFiltersInvalidRows() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    CountingEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    for (int i = 0; i < 13; ++i) {
+        MemoryEntry entry;
+        entry.id = QString::number(i);
+        entry.type = MemoryType::Semantic;
+        entry.summary = QStringLiteral("alpha %1").arg(i);
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(), 13);
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET privacy_level='sensitive' WHERE id='1'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET status='archived' WHERE id='2'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET partition='hippocampus' WHERE id='3'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET type='working' WHERE id='4'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_embeddings SET dimension=2,vector_blob=zeroblob(8) WHERE memory_id='5'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_embeddings SET vector_blob=zeroblob(64) WHERE memory_id='6'")));
+    QVector<float> nanVector(16, std::numeric_limits<float>::quiet_NaN());
+    query.prepare(QStringLiteral("UPDATE memory_embeddings SET vector_blob=:blob WHERE memory_id='7'"));
+    query.bindValue(QStringLiteral(":blob"), QByteArray(reinterpret_cast<const char*>(nanVector.constData()), 64));
+    QVERIFY(query.exec());
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_embeddings SET vector_blob=X'00' WHERE memory_id='8'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_embeddings SET model='other-model' WHERE memory_id='9'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET expires_at='2000-01-01T00:00:00Z' WHERE id='10'")));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_items SET type='short_term' WHERE id='11'")));
+    nanVector.fill(std::numeric_limits<float>::infinity());
+    query.prepare(QStringLiteral("UPDATE memory_embeddings SET vector_blob=:blob WHERE memory_id='12'"));
+    query.bindValue(QStringLiteral(":blob"), QByteArray(reinterpret_cast<const char*>(nanVector.constData()), 64));
+    QVERIFY(query.exec());
+    provider.calls = 0;
+    QVERIFY(index.rebuildFromRepository());
+    QCOMPARE(provider.calls, 0);
+    QCOMPARE(index.activeCount(), 1);
+    QCOMPARE(index.tombstoneCount(), 0);
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restored.loadFromDisk());
+    const auto hits = restored.searchVector(FakeEmbeddingProvider().embed(QStringLiteral("alpha")), 16);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().memoryId, QStringLiteral("0"));
+    QVERIFY(query.exec(QStringLiteral("UPDATE memory_index_jobs SET status='Pending' WHERE memory_id IN ('1','2','3','4','10','11')")));
+    MemoryIndexWorker replay(restored);
+    QCOMPARE(replay.processPending(), 6);
+    QCOMPARE(provider.calls, 0);
+    QCOMPARE(restored.activeCount(), 1);
+    QVERIFY(query.exec(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id='0'")));
+    QVERIFY(restored.rebuildFromRepository());
+    QCOMPARE(restored.activeCount(), 0);
+    HnswEmbeddingIndex empty(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(empty.loadFromDisk());
+    QCOMPARE(empty.activeCount(), 0);
+}
+
+void TestMemoryStrategy::testHnswRebuildFailureIsRetryable_data() {
+    QTest::addColumn<QString>("failure");
+    QTest::newRow("sql-read") << QStringLiteral("read");
+    QTest::newRow("sql-write") << QStringLiteral("write");
+    QTest::newRow("metadata-save") << QStringLiteral("save");
+}
+
+void TestMemoryStrategy::testHnswRebuildFailureIsRetryable() {
+    QFETCH(QString, failure);
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    CountingEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    for (const auto& id : {QStringLiteral("alpha"), QStringLiteral("beta")}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Semantic;
+        entry.summary = id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(), 2);
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id='beta'")));
+    if (failure == "read") {
+        QVERIFY(query.exec(QStringLiteral("ALTER TABLE memory_embeddings RENAME TO saved_embeddings")));
+    } else if (failure == "write") {
+        QVERIFY(query.exec(QStringLiteral("CREATE TEMP TRIGGER reject_label BEFORE UPDATE ON memory_hnsw_labels "
+                                          "WHEN NEW.status='Active' "
+                                          "BEGIN SELECT RAISE(ABORT, 'injected label failure'); END")));
+    } else {
+        QVERIFY(QFile::remove(index.metaFilePath()));
+        QVERIFY(QDir().mkdir(index.metaFilePath()));
+    }
+    QString error;
+    QVERIFY(!index.rebuildFromRepository(&error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(!index.isReady());
+    QCOMPARE(index.activeCount(), 0);
+    QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM memory_hnsw_labels WHERE status='Active'")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 2);
+    query.finish();
+    if (failure == "read") QVERIFY(query.exec(QStringLiteral("ALTER TABLE saved_embeddings RENAME TO memory_embeddings")));
+    else if (failure == "write") QVERIFY(query.exec(QStringLiteral("DROP TRIGGER reject_label")));
+    else QVERIFY(QDir().rmdir(index.metaFilePath()));
+    provider.calls = 0;
+    QVERIFY(index.rebuildFromRepository());
+    QCOMPARE(provider.calls, 0);
+    QCOMPARE(index.activeCount(), 1);
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restored.loadFromDisk());
+    QCOMPARE(restored.activeCount(), 1);
+}
+
+void TestMemoryStrategy::testIndexWorkerRecoveryFailureKeepsJobPending() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    CountingEmbeddingProvider provider;
+    HnswEmbeddingIndex initial(store.databaseConnectionName(), &provider, dir.path());
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("alpha");
+    entry.id = QStringLiteral("alpha");
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    MemoryIndexWorker worker(initial);
+    QCOMPARE(worker.processPending(), 1);
+    QVERIFY(QFile::remove(initial.metaFilePath()));
+    QVERIFY(QDir().mkdir(initial.metaFilePath()));
+    entry.id = QStringLiteral("beta");
+    entry.summary = entry.id;
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    HnswEmbeddingIndex recovered(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker restart(recovered);
+    QCOMPARE(restart.processPending(), 0);
+    QVERIFY(!recovered.isReady());
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral("SELECT status,attempt_count FROM memory_index_jobs WHERE memory_id='beta'")));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString(), QStringLiteral("Pending"));
+    QCOMPARE(query.value(1).toInt(), 1);
+    query.finish();
+    QVERIFY(QDir().rmdir(initial.metaFilePath()));
+    QCOMPARE(restart.processPending(), 1);
+    QCOMPARE(recovered.activeCount(), 2);
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restored.loadFromDisk());
+    QCOMPARE(restored.activeCount(), 2);
+}
+
+void TestMemoryStrategy::testHnswReinsertAndInvalidVectors() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(index.upsert(QStringLiteral("alpha"), QStringLiteral("alpha")));
+    QVERIFY(index.remove(QStringLiteral("alpha")));
+    QCOMPARE(index.tombstoneCount(), 1);
+    QVERIFY(index.upsert(QStringLiteral("alpha"), QStringLiteral("alpha")));
+    QCOMPARE(index.activeCount(), 1);
+    QCOMPARE(index.tombstoneCount(), 0);
+    QVERIFY(!index.upsertVector(QStringLiteral("wrong-dim"), {1, 0}, QStringLiteral("hash")));
+    QVERIFY(!index.upsertVector(QStringLiteral("zero"), QVector<float>(16, 0.0f), QStringLiteral("hash")));
+    QVERIFY(!index.upsertVector(QStringLiteral("nan"), QVector<float>(16, std::numeric_limits<float>::quiet_NaN()), QStringLiteral("hash")));
+    QCOMPARE(index.activeCount(), 1);
+    QVERIFY(index.saveToDisk());
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restored.loadFromDisk());
+    QCOMPARE(restored.activeCount(), 1);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

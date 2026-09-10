@@ -4,57 +4,59 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 
 ## Checkpoints
 
-- `10178e2`: initial HNSW wrapper, label table and outbox worker scaffold.
-- `d65aa65`: basic outbox consumption test.
-- `142e12e`: persist SQLite vectors and HNSW files before completing
-  a job; failed saves leave jobs retryable. Delete also removes stored vectors.
-  Binary and metadata files use QSaveFile individually; SHA-256 detects a torn
-  pair. A failed load clears readiness instead of exposing a partial index.
+- `10178e2`, `d65aa65`: initial HNSW wrapper, label table and outbox worker scaffold/tests.
+- `142e12e`: SQLite vectors and HNSW files persist before a job completes.
+  Binary and metadata use QSaveFile individually; SHA-256 detects a torn pair.
+- `1334859`: repository savepoints fix nested Daydream/outbox transactions.
+  The old transaction failures were not a macOS-specific SQLite limitation.
+- `5430715`: rebuild reads memory_embeddings without model inference;
+  content changes allocate a new label and capacity grows when full.
+- `efc34dc`: major MemoryStore update/status/reinforcement/delete paths enqueue jobs.
+
+## Automatic Recovery
+
+- Worker loads an unavailable index, then rebuilds from SQLite on load failure.
+  processPending also attempts recovery with an empty queue; limit<=0 does nothing.
+- Rebuild reactivates only eligible labels in a SQLite savepoint, retaining
+  numeric assignments for other rows. SQL failures abort instead of being
+  silently skipped. File save and label synchronization run under one write lock.
+- Failed rebuilds roll back label changes and clear the partial in-memory index.
+  A pending job remains retryable and no later jobs in that batch are consumed.
+- Rebuild filters Sensitive/non-active/Hippocampus/Working/ShortTerm/TaskShadow,
+  expired items, wrong-model or wrong-dimension rows, malformed blobs and
+  zero/non-finite vectors. Direct Worker consumption applies the same memory
+  eligibility checks. Invalid vector rows remain in SQLite for later repair.
+- Vector-level APIs reject invalid dimensions and zero/non-finite values.
+  Reinsertions of a deleted label use hnswlib's actual tombstone count.
 
 ## Verification
 
 - Desktop_Pet and memory_strategy_tests build successfully on macOS.
-- Six focused test methods pass: HNSW search/persistence, basic consumption,
-  durable completion/Processing replay, failed-save retry, durable deletion,
-  and mismatched/corrupt file rejection.
-- The durable-completion and failed-save tests both failed before this fix.
-- Existing SQLite embedding and entry-update tests pass.
-- The two transaction regressions are now resolved: nested BEGIN calls in
-  Daydream -> addEntry -> persistMutationBatch failed in SQLite. Repository
-  transaction scopes now use a savepoint stack, including inside external
-  QSqlDatabase transactions. Closing the repository clears scope bookkeeping.
-- New tests cover inner rollback/outer commit, outer rollback of entries,
-  relations, tags and outbox, injected outbox failures, external transactions,
-  and rollback/retry of an entire two-item Daydream batch.
+- MemoryStrategyTests reports 100 passes (QtTest totals include init/cleanup).
+- New data-driven tests cover binary corruption, missing metadata and missing
+  labels, each with and without pending work; SQL read/write failures; metadata
+  save failure; retry after failed recovery; invalid/filtered vectors; empty
+  rebuilt indexes; deleted-label reinsertion. Ten new cases failed before fixes.
+- Recovery tests count provider calls: existing vectors are rebuilt with zero
+  inference calls, while a new pending upsert generates its own vector.
+- Capacity test now inserts 40 extra nodes, exceeding the actual minimum of 16.
 - MemoryStrategyTests, SleepCycleTests, MemoryRecallTests,
   MemoryRecallPhase2Tests, MemoryRecallPhase3Tests and HybridGraphBuilderTests
-  all pass three consecutive CTest runs. Desktop_Pet builds successfully.
-  This verifies these six suites, not every project test target.
-- Two stale test fixtures were corrected: mentionCount=3 selects Semantic,
-  not Episodic; Phase 3 now initializes its schema via the real repository.
-  A staged-memory assertion now looks up the entry by ID instead of relying
-  on database row order.
+  pass three consecutive CTest runs. This is not every project test target.
 - No ONNX inference or ONNX tests were run.
 
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
-as completion of design sections 4 and 5 or Phase 4.3.
+or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 
-- Rebuild now reads eligible vectors from authoritative `memory_embeddings` rows
-  and does not re-embed `memory_items`; invalid blobs are skipped. Content hash
-  changes allocate a fresh label after tombstoning the old one. HNSW capacity
-  doubles when full.
-- Added tests for changed-content labels, authoritative rebuild and capacity
-  growth. These pass together with the previous durability/recovery tests.
-- Outbox coverage now includes direct entry updates, status transitions,
-  reinforcement updates and physical deletion. Each path writes its index job
-  inside the same transaction/savepoint as the memory mutation. `MemoryStore`
-  remains the owner of this enqueue boundary.
-- `efc34dc` contains this coverage and the full `MemoryStrategyTests` suite has
-  88 passing cases after the change.
-- No production background scheduler or Daydream completion wiring yet.
-- GUI/provider thread ownership, eligibility filtering across all APIs, index
-  generation/SQLite consistency and full crash-point replay remain unaccepted.
+- No production background scheduler or Daydream completion wiring yet. Worker
+  methods must still be called on a background thread with its own SQLite connection.
+- Outbox model/content version checks, stale-job ordering, bounded retry backoff,
+  and avoiding unnecessary jobs for non-semantic reinforcement remain pending.
+- Clear/import and direct repository mutation coverage still require auditing.
+- Full generation/SQLite consistency, every crash point, cross-thread provider
+  ownership and eligibility filtering across every recall API remain unaccepted.
+- Tombstone threshold detection exists; automatic idle-time compaction is not wired.
 - Recall@32, latency benchmarks, migration coverage and shadow retirement gates
-  have not been measured or enabled.
+  have not been measured or enabled. Invalid persisted vectors have no repair queue yet.

@@ -13,6 +13,11 @@ QString utcNow() { return QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
 
 MemoryIndexWorker::MemoryIndexWorker(HnswEmbeddingIndex& index) : m_index(index) {}
 
+bool MemoryIndexWorker::ensureReady() {
+    if (!m_index.provider() || m_index.provider()->dimension() <= 0) return false;
+    return m_index.isReady() || m_index.loadFromDisk() || m_index.rebuildFromRepository();
+}
+
 int MemoryIndexWorker::processPending(int limit) {
     if (limit <= 0) return 0;
     QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
@@ -24,25 +29,23 @@ int MemoryIndexWorker::processPending(int limit) {
     if (!q.exec()) return 0;
     QStringList ids;
     while (q.next()) ids.append(q.value(0).toString());
+    q.finish();
+    if (ids.isEmpty()) {
+        ensureReady();
+        return 0;
+    }
     int completed = 0;
-    for (const QString& id : ids) completed += processOne(id) ? 1 : 0;
+    for (const QString& id : ids) {
+        if (!processOne(id)) break;
+        ++completed;
+    }
     return completed;
 }
 
 bool MemoryIndexWorker::processOne(const QString& jobId) {
     QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
     if (!db.isOpen()) return false;
-    if (m_index.provider() && m_index.provider()->dimension() > 0) {
-        // A restarted consumer must preserve entries from earlier completed jobs.
-        if (!m_index.isReady() && !m_index.loadFromDisk()) {
-            QSqlQuery completed(db);
-            if (!completed.exec(QStringLiteral("SELECT 1 FROM memory_index_jobs WHERE status='Completed' LIMIT 1")))
-                return false;
-            if (completed.next()) return false; // Requires repository recovery before consumption.
-        }
-    } else {
-        return false;
-    }
+    if (!m_index.provider() || m_index.provider()->dimension() <= 0) return false;
     QSqlQuery claim(db);
     claim.prepare(QStringLiteral("UPDATE memory_index_jobs SET status='Processing', attempt_count=attempt_count+1, updated_at=:ts "
                                 "WHERE id=:id AND status IN ('Pending','Processing')"));
@@ -63,21 +66,29 @@ bool MemoryIndexWorker::processOne(const QString& jobId) {
         erase.bindValue(QStringLiteral(":id"), memoryId);
         return erase.exec();
     };
-    bool ok = false;
-    if (operation == QStringLiteral("delete")) {
+    bool ok = ensureReady();
+    if (ok && operation == QStringLiteral("delete")) {
         ok = remove();
-    } else if (operation == QStringLiteral("rebuild")) {
+    } else if (ok && operation == QStringLiteral("rebuild")) {
         ok = m_index.rebuildFromRepository();
-    } else if (operation == QStringLiteral("upsert")) {
+    } else if (ok && operation == QStringLiteral("upsert")) {
+        ok = false;
         QSqlQuery memory(db);
-        memory.prepare(QStringLiteral("SELECT summary,content,privacy_level,status,partition FROM memory_items WHERE id=:id"));
+        memory.prepare(QStringLiteral(
+            "SELECT summary,content,privacy_level,status,partition,type,"
+            "(expires_at IS NULL OR expires_at='' OR julianday(expires_at)>julianday('now')) "
+            "FROM memory_items WHERE id=:id"));
         memory.bindValue(QStringLiteral(":id"), memoryId);
         if (!memory.exec()) return false;
         if (memory.next()) {
             const QString privacy = memory.value(2).toString();
             const QString status = memory.value(3).toString();
             const QString partition = memory.value(4).toString();
-            if (privacy != QStringLiteral("sensitive") && status == QStringLiteral("active") && partition != QStringLiteral("hippocampus")) {
+            const QString type = memory.value(5).toString();
+            if ((privacy == QStringLiteral("public") || privacy == QStringLiteral("personal")) &&
+                status == QStringLiteral("active") && !partition.isEmpty() && partition != QStringLiteral("hippocampus") &&
+                type != QStringLiteral("working") && type != QStringLiteral("short_term") &&
+                type != QStringLiteral("task_shadow") && memory.value(6).toBool()) {
                 const QString text = memory.value(0).toString() + QStringLiteral("\n") + memory.value(1).toString();
                 const auto vector = m_index.provider()->embed(text);
                 double norm = 0.0;
@@ -101,6 +112,8 @@ bool MemoryIndexWorker::processOne(const QString& jobId) {
         } else {
             ok = remove();
         }
+    } else {
+        ok = false;
     }
 
     if (ok) ok = m_index.saveToDisk();

@@ -31,7 +31,7 @@ struct HnswIndexParams {
 // 角色边界：
 //   - SQLite 的 memory_items / memory_embeddings 永远是权威数据；本索引是可丢弃、
 //     可从向量表重建的派生结构。
-//   - label ↔ memoryId 稳定映射保存在 SQLite 表 memory_hnsw_labels（AUTOINCREMENT，
+//   - label ↔ memoryId 映射保存在 SQLite 表 memory_hnsw_labels（递增数值 label，
 //     避免字符串哈希碰撞）；内容语义变化 = 旧 label 标记删除 + 新 label 插入。
 //   - 距离用 InnerProduct + 入库前 L2 归一化 ⇒ 等价 cosine；similarity = 1 - distance。
 //
@@ -71,7 +71,8 @@ public:
     // 两个文件均成功替换后才发布新的 generation。
     bool saveToDisk(QString* errorMessage = nullptr);
     // 权威向量表全量重建：只纳入 Active、非 Sensitive、非 Hippocampus 分区的记忆；
-    // 清空并重写本 model 的 label 映射，消除全部墓碑。
+    // 重建在 savepoint 中同步本 model 的 Active label，保留历史 label 分配，消除墓碑。
+    // 失败撤销 label 写入并使内存索引不可用，调用方可重试。
     bool rebuildFromRepository(QString* errorMessage = nullptr);
 
     // ---- 状态观测 ----
@@ -94,12 +95,13 @@ private:
     bool ensureIndexAllocated(int dimension);
     bool insertVectorLocked(const QString& memoryId, QVector<float>& vector,
                             const QString& hash);
-    bool markDeletedLocked(const QString& memoryId);
+    bool saveToDiskLocked(QString* errorMessage);
+    void resetLocked();
     qint64 allocateLabel(const QString& memoryId, const QString& hash);
     bool updateLabelStatus(qint64 label, const QString& status);
     bool loadLabelMapsFromDatabase();
     QString modelFileToken() const;
-    static void normalize(QVector<float>& v);
+    static bool normalize(QVector<float>& v);
 
     QString m_connectionName;
     EmbeddingProvider* m_provider = nullptr;   // non-owning

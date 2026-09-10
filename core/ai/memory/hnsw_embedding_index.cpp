@@ -12,6 +12,8 @@
 #include <QSaveFile>
 #include <QTemporaryFile>
 #include <QSqlDatabase>
+#include <QSqlError>
+#include <QUuid>
 #include <QSqlQuery>
 #include <QVariant>
 
@@ -22,10 +24,6 @@
 
 namespace {
 QString nowUtc() { return QDateTime::currentDateTimeUtc().toString(Qt::ISODate); }
-QByteArray vectorBytes(const QVector<float>& v) {
-    return QByteArray(reinterpret_cast<const char*>(v.constData()),
-                      v.size() * static_cast<int>(sizeof(float)));
-}
 }
 
 HnswEmbeddingIndex::HnswEmbeddingIndex(QString connectionName,
@@ -43,12 +41,23 @@ QString HnswEmbeddingIndex::contentHash(const QString& text) {
     return QString::fromLatin1(QCryptographicHash::hash(text.toUtf8(), QCryptographicHash::Sha1).toHex());
 }
 
-void HnswEmbeddingIndex::normalize(QVector<float>& v) {
+bool HnswEmbeddingIndex::normalize(QVector<float>& v) {
     double norm = 0.0;
     for (float x : v) norm += static_cast<double>(x) * x;
+    if (!std::isfinite(norm) || norm <= 1e-12) return false;
     norm = std::sqrt(norm);
-    if (norm < 1e-12) return;
     for (float& x : v) x = static_cast<float>(x / norm);
+    return true;
+}
+
+void HnswEmbeddingIndex::resetLocked() {
+    m_index.reset();
+    m_space.reset();
+    m_dimension = 0;
+    m_activeLabelByMemory.clear();
+    m_memoryByLabel.clear();
+    m_hashByMemory.clear();
+    m_tombstones = 0;
 }
 
 QString HnswEmbeddingIndex::modelFileToken() const {
@@ -63,7 +72,8 @@ QString HnswEmbeddingIndex::metaFilePath() const { return indexFilePath() + QStr
 
 bool HnswEmbeddingIndex::ensureIndexAllocated(int dimension) {
     if (dimension <= 0) return false;
-    if (m_index && m_dimension == dimension) return true;
+    if (m_index) return m_dimension == dimension;
+    if (m_params.m <= 0 || m_params.efConstruction <= 0 || m_params.efSearch <= 0) return false;
     m_space = std::make_unique<hnswlib::InnerProductSpace>(dimension);
     m_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(
         m_space.get(), static_cast<size_t>(std::max(16, m_params.initialCapacity)),
@@ -81,7 +91,8 @@ qint64 HnswEmbeddingIndex::allocateLabel(const QString& memoryId, const QString&
     q.prepare(QStringLiteral("SELECT label,content_hash FROM memory_hnsw_labels WHERE memory_id=:id AND model=:model"));
     q.bindValue(QStringLiteral(":id"), memoryId);
     q.bindValue(QStringLiteral(":model"), m_provider->modelName());
-    if (q.exec() && q.next()) {
+    if (!q.exec()) return -1;
+    if (q.next()) {
         if (q.value(1).toString() == hash) return q.value(0).toLongLong();
         QSqlQuery next(db);
         next.prepare(QStringLiteral("SELECT COALESCE(MAX(label),-1)+1 FROM memory_hnsw_labels WHERE model=:model"));
@@ -122,17 +133,17 @@ bool HnswEmbeddingIndex::updateLabelStatus(qint64 label, const QString& status) 
     q.bindValue(QStringLiteral(":ts"), nowUtc());
     q.bindValue(QStringLiteral(":model"), m_provider->modelName());
     q.bindValue(QStringLiteral(":label"), label);
-    return q.exec();
+    return q.exec() && q.numRowsAffected() == 1;
 }
 
 bool HnswEmbeddingIndex::insertVectorLocked(const QString& memoryId, QVector<float>& vector, const QString& hash) {
-    normalize(vector);
-    if (vector.isEmpty() || !ensureIndexAllocated(vector.size())) return false;
+    if (!m_provider || memoryId.isEmpty() || vector.size() != m_provider->dimension() ||
+        !normalize(vector) || !ensureIndexAllocated(vector.size())) return false;
     auto old = m_activeLabelByMemory.find(memoryId);
     if (old != m_activeLabelByMemory.end()) {
         if (m_hashByMemory.value(memoryId) == hash) return true;
+        if (!updateLabelStatus(old.value(), QStringLiteral("Deleted"))) return false;
         m_index->markDelete(old.value());
-        updateLabelStatus(old.value(), QStringLiteral("Deleted"));
         ++m_tombstones;
         m_memoryByLabel.remove(old.value());
         m_activeLabelByMemory.erase(old);
@@ -145,10 +156,14 @@ bool HnswEmbeddingIndex::insertVectorLocked(const QString& memoryId, QVector<flo
         }
         m_index->addPoint(vector.constData(), static_cast<hnswlib::labeltype>(label));
     } catch (...) { return false; }
+    if (!updateLabelStatus(label, QStringLiteral("Active"))) {
+        resetLocked();
+        return false;
+    }
     m_activeLabelByMemory.insert(memoryId, label);
     m_memoryByLabel.insert(label, memoryId);
     m_hashByMemory.insert(memoryId, hash);
-    updateLabelStatus(label, QStringLiteral("Active"));
+    m_tombstones = static_cast<int>(m_index->getDeletedCount());
     return true;
 }
 
@@ -183,7 +198,7 @@ QList<EmbeddingSearchResult> HnswEmbeddingIndex::searchVector(const QVector<floa
     QList<EmbeddingSearchResult> out;
     if (limit <= 0) return out;
     QVector<float> query = input;
-    normalize(query);
+    if (!normalize(query)) return out;
     QReadLocker locker(&m_lock);
     if (!m_index || query.size() != m_dimension || query.isEmpty()) return out;
     const size_t count = std::min<size_t>(static_cast<size_t>(limit), m_activeLabelByMemory.size());
@@ -224,6 +239,10 @@ bool HnswEmbeddingIndex::loadLabelMapsFromDatabase() {
 
 bool HnswEmbeddingIndex::saveToDisk(QString* errorMessage) {
     QWriteLocker locker(&m_lock);
+    return saveToDiskLocked(errorMessage);
+}
+
+bool HnswEmbeddingIndex::saveToDiskLocked(QString* errorMessage) {
     if (!m_provider || m_provider->dimension() <= 0) return false;
     if (!m_index && !ensureIndexAllocated(m_provider->dimension())) return false;
     if (!QDir().mkpath(m_indexDirectory)) return false;
@@ -264,12 +283,7 @@ bool HnswEmbeddingIndex::saveToDisk(QString* errorMessage) {
 
 bool HnswEmbeddingIndex::loadFromDisk(QString* errorMessage) {
     QWriteLocker locker(&m_lock);
-    m_index.reset();
-    m_space.reset();
-    m_activeLabelByMemory.clear();
-    m_memoryByLabel.clear();
-    m_hashByMemory.clear();
-    m_tombstones = 0;
+    resetLocked();
     if (!m_provider || m_provider->dimension() <= 0) return false;
     QFile file(metaFilePath());
     if (!file.open(QIODevice::ReadOnly)) return false;
@@ -319,30 +333,64 @@ bool HnswEmbeddingIndex::loadFromDisk(QString* errorMessage) {
 
 bool HnswEmbeddingIndex::rebuildFromRepository(QString* errorMessage) {
     QWriteLocker locker(&m_lock);
+    resetLocked();
+    if (errorMessage) errorMessage->clear();
     QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
-    if (!db.isOpen() || !m_provider || m_provider->dimension() <= 0) return false;
-    if (!ensureIndexAllocated(m_provider->dimension())) return false;
-    m_index = std::make_unique<hnswlib::HierarchicalNSW<float>>(m_space.get(), static_cast<size_t>(std::max(16, m_params.initialCapacity)), m_params.m, m_params.efConstruction);
-    m_index->setEf(m_params.efSearch);
-    m_activeLabelByMemory.clear(); m_memoryByLabel.clear(); m_hashByMemory.clear(); m_tombstones = 0;
-    QSqlQuery q(db);
-    q.prepare(QStringLiteral(
-        "SELECT e.memory_id,e.dimension,e.vector_blob,e.content_hash "
-        "FROM memory_embeddings e JOIN memory_items i ON i.id=e.memory_id "
-        "WHERE e.model=:model AND i.status='active' AND i.privacy_level!='sensitive' "
-        "AND i.partition!='hippocampus'"));
-    q.bindValue(QStringLiteral(":model"), m_provider->modelName());
-    if (!q.exec()) return false;
-    while (q.next()) {
-        const int dimension = q.value(1).toInt();
-        const QByteArray blob = q.value(2).toByteArray();
-        if (dimension <= 0 || blob.size() != dimension * static_cast<int>(sizeof(float))) continue;
-        QVector<float> vector(dimension);
-        std::memcpy(vector.data(), blob.constData(), blob.size());
-        if (!insertVectorLocked(q.value(0).toString(), vector, q.value(3).toString())) continue;
+    bool inSavepoint = false;
+    const QString savepoint = QStringLiteral("hnsw_rebuild_") + QUuid::createUuid().toString(QUuid::Id128);
+    const auto fail = [&](const QString& message) {
+        if (inSavepoint) {
+            QSqlQuery rollback(db);
+            rollback.exec(QStringLiteral("ROLLBACK TO SAVEPOINT %1").arg(savepoint));
+            rollback.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
+        }
+        resetLocked();
+        if (errorMessage) *errorMessage = message;
+        return false;
+    };
+    if (!db.isOpen() || !m_provider || m_provider->dimension() <= 0)
+        return fail(QStringLiteral("rebuild database or provider unavailable"));
+    QSqlQuery transaction(db);
+    if (!transaction.exec(QStringLiteral("SAVEPOINT %1").arg(savepoint)))
+        return fail(QStringLiteral("cannot start rebuild savepoint"));
+    inSavepoint = true;
+    try {
+        if (!ensureIndexAllocated(m_provider->dimension()))
+            return fail(QStringLiteral("invalid index configuration"));
+        // Retain numeric assignments but reactivate only rows actually rebuilt.
+        QSqlQuery deactivate(db);
+        deactivate.prepare(QStringLiteral("UPDATE memory_hnsw_labels SET status='Deleted' WHERE model=:model"));
+        deactivate.bindValue(QStringLiteral(":model"), m_provider->modelName());
+        if (!deactivate.exec()) return fail(QStringLiteral("cannot synchronize index labels"));
+        QSqlQuery q(db);
+        q.prepare(QStringLiteral(
+            "SELECT e.memory_id,e.dimension,e.vector_blob,e.content_hash "
+            "FROM memory_embeddings e JOIN memory_items i ON i.id=e.memory_id "
+            "WHERE e.model=:model AND i.status='active' AND i.privacy_level IN ('public','personal') "
+            "AND i.partition!='hippocampus' AND i.type NOT IN ('working','short_term','task_shadow') "
+            "AND (i.expires_at IS NULL OR i.expires_at='' OR julianday(i.expires_at)>julianday('now'))"));
+        q.bindValue(QStringLiteral(":model"), m_provider->modelName());
+        if (!q.exec()) return fail(QStringLiteral("cannot read authoritative vectors"));
+        while (q.next()) {
+            const int dimension = q.value(1).toInt();
+            const QByteArray blob = q.value(2).toByteArray();
+            if (dimension != m_dimension || blob.size() != qint64(dimension) * sizeof(float)) continue;
+            QVector<float> vector(dimension);
+            std::memcpy(vector.data(), blob.constData(), blob.size());
+            if (!normalize(vector)) continue;
+            if (!insertVectorLocked(q.value(0).toString(), vector, q.value(3).toString()))
+                return fail(QStringLiteral("cannot insert rebuilt vector"));
+        }
+        if (q.lastError().isValid()) return fail(QStringLiteral("authoritative vector read failed"));
+        q.finish();
+        if (!saveToDiskLocked(errorMessage)) return fail(QStringLiteral("cannot persist rebuilt index"));
+        if (!transaction.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint)))
+            return fail(QStringLiteral("cannot commit rebuilt labels"));
+        inSavepoint = false;
+        return true;
+    } catch (const std::exception&) {
+        return fail(QStringLiteral("HNSW rebuild failed"));
     }
-    locker.unlock();
-    return saveToDisk(errorMessage);
 }
 
 bool HnswEmbeddingIndex::isReady() const { QReadLocker l(&m_lock); return m_index != nullptr; }

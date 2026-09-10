@@ -12,10 +12,12 @@ public:
     explicit MemoryIndexWorker(HnswEmbeddingIndex& index);
 
     // 最多处理 limit 条 Pending/Processing（崩溃恢复）任务，返回成功完成数。
+    // 无待处理任务时也尝试加载/恢复索引；limit<=0 不做任何工作。
     int processPending(int limit = 16);
     bool processOne(const QString& jobId);
 
 private:
+    bool ensureReady();
     HnswEmbeddingIndex& m_index;
 };
 
