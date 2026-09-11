@@ -9,6 +9,7 @@
 #include <QRandomGenerator>
 #include <QCoreApplication>
 #include <QDir>
+#include <QFileInfo>
 #include <QElapsedTimer>
 #include <QUuid>
 
@@ -22,6 +23,9 @@
 #include "runtime/agent_runtime_services.h"
 #include "event/event_ledger.h"
 #include "tools/environment_tools.h"
+#ifdef DESKTOP_PET_HAS_ORT
+#include "memory/onnx_embedding_provider.h"
+#endif
 
 namespace {
 
@@ -30,6 +34,24 @@ qint64 monotonicMilliseconds() {
     timer.start();
     return timer.msecsSinceReference();
 }
+
+#ifdef DESKTOP_PET_HAS_ORT
+// 与 main.cpp 同规则：在当前目录 / 可执行文件目录及其上两级找同时含 assets 与 config 的根。
+QString resolveAssetsDirectory() {
+    const QString appDir = QCoreApplication::applicationDirPath();
+    const QStringList candidates = {
+        QDir::currentPath(), appDir,
+        QDir(appDir).absoluteFilePath(QStringLiteral("..")),
+        QDir(appDir).absoluteFilePath(QStringLiteral("../..")),
+    };
+    for (const QString& candidate : candidates) {
+        const QDir directory(candidate);
+        if (directory.exists(QStringLiteral("assets")) && directory.exists(QStringLiteral("config")))
+            return directory.absoluteFilePath(QStringLiteral("assets"));
+    }
+    return QDir(appDir).absoluteFilePath(QStringLiteral("../assets"));
+}
+#endif
 
 } // namespace
 
@@ -91,6 +113,7 @@ Result<void, DomainError> AIBrain::initializeStorage(
     // 初始化类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
     m_hippocampusWorkingSet.setStore(&m_memoryStore);
     refreshActivationRecallIndexes(true);
+    initializeSemanticIndexService();
     m_chatPreparationEnvironment = std::make_unique<ChatPreparationEnvironment>();
     m_chatPreparationEnvironment->memoryDatabasePath = m_memoryStore.databasePath();
     m_chatPreparationEnvironment->identityBaseline = m_identityBaseline;
@@ -109,6 +132,32 @@ Result<void, DomainError> AIBrain::initializeStorage(
         }
     }
     return Result<void, DomainError>::success();
+}
+
+void AIBrain::initializeSemanticIndexService() {
+    m_semanticIndexService = std::make_unique<SemanticIndexService>(this);
+    std::unique_ptr<EmbeddingProvider> provider;
+#ifdef DESKTOP_PET_HAS_ORT
+    {
+        QString providerError;
+        if (auto* onnx = OnnxEmbeddingProvider::tryCreateFromAssets(resolveAssetsDirectory(), &providerError)) {
+            provider.reset(onnx);
+        } else {
+            qInfo() << "[AIBrain] embedding provider unavailable, semantic index disabled:" << providerError;
+        }
+    }
+#endif
+    // 与 MemoryStore 同线程共用连接；对话中（m_busy）跳过 tick。
+    m_semanticIndexService->setIdlePredicate([this]() { return !m_busy; });
+    const QString indexDir = QFileInfo(m_memoryStore.databasePath()).dir().absolutePath();
+    if (!m_semanticIndexService->start(std::move(provider),
+                                       m_memoryStore.databaseConnectionName(), indexDir)) {
+        return;
+    }
+    setEmbeddingIndex(m_semanticIndexService->index());
+    // Daydream 巩固落库后立即消化新产生的索引任务（Phase 4.3）。
+    connect(this, &AIBrain::daydreamFinished, m_semanticIndexService.get(),
+            [service = m_semanticIndexService.get()]() { service->kick(); });
 }
 
 Result<void, DomainError> AIBrain::startChatPreparationExecutor() {

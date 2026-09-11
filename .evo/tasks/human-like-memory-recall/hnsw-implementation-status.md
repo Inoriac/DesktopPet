@@ -45,6 +45,23 @@ Related design: design.md sections 4, 5, 14, 15, 16.
   pass three consecutive CTest runs. This is not every project test target.
 - No ONNX inference or ONNX tests were run.
 
+## Production Wiring (simplified)
+
+- `SemanticIndexService` (core/ai/memory/semantic_index_service.*) owns provider +
+  HnswEmbeddingIndex + MemoryIndexWorker + QTimer. AIBrain creates it in
+  `initializeStorage()`, injects `index()` via `setEmbeddingIndex`, and `kick()`s it
+  on `daydreamFinished` (Phase 4.3 hook). Idle predicate: `!m_busy`.
+- Deliberate simplification: the service runs on the MemoryStore thread (SQLite
+  connections are thread-bound) with small batches (4 jobs / 30 s tick, 200 ms
+  follow-up while backlog remains). No separate worker thread yet.
+- Compaction: when tombstone ratio >= 30% and idle, `rebuildFromRepository()`.
+- Provider: `OnnxEmbeddingProvider::tryCreateFromAssets(<root>/assets)` only when
+  `DESKTOP_PET_HAS_ORT`; Desktop_Pet now also compiles/links ORT when found.
+  Without ORT (macOS here) the service stays disabled and recall uses keywords.
+  Real end-to-end with ONNX still needs Windows verification.
+- hnswlib include dir is now global (`include_directories`) because ai_brain.cpp
+  pulls the service into every AGENT_RUNTIME_TEST_SUPPORT_SOURCES target.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -61,8 +78,8 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 - Added tests for stale command reconciliation, model isolation, mutation during
   embedding and persisted backoff. MemoryStrategyTests now has 104 passing cases.
 
-- No production background scheduler or Daydream completion wiring yet. Worker
-  methods must still be called on a background thread with its own SQLite connection.
+- Background scheduler is the simplified main-thread tick above; a dedicated
+  worker thread with its own SQLite connection remains future work.
   Producer-side jobs still begin with empty model/hash for backward compatibility;
   the worker fills these after successful processing.
 - Clear/import and direct repository mutation coverage still require auditing.

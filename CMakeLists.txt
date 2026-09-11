@@ -42,6 +42,9 @@ find_path(SODIUM_INCLUDE_DIR sodium.h)
 find_library(SODIUM_LIBRARY NAMES sodium libsodium)
 find_package(Qt6Keychain QUIET CONFIG)
 
+# hnswlib 为 header-only（third_party/hnswlib），hnsw_embedding_index.cpp 被多个目标引用，全局暴露头路径。
+include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/hnswlib)
+
 set(DESKTOP_PET_HAS_LIBSODIUM FALSE)
 if(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
     set(DESKTOP_PET_HAS_LIBSODIUM TRUE)
@@ -354,6 +357,8 @@ set(CORE_SOURCES
     core/ai/memory/hnsw_embedding_index.cpp
     core/ai/memory/memory_index_worker.h
     core/ai/memory/memory_index_worker.cpp
+    core/ai/memory/semantic_index_service.h
+    core/ai/memory/semantic_index_service.cpp
     core/ai/memory/model_downloader.h
     core/ai/memory/model_downloader.cpp
     core/ai/mcp/mcp_client.h
@@ -760,6 +765,12 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/memory/daydream_consolidator.cpp
     core/ai/memory/embedding_provider.h
     core/ai/memory/embedding_index.h
+    core/ai/memory/hnsw_embedding_index.h
+    core/ai/memory/hnsw_embedding_index.cpp
+    core/ai/memory/memory_index_worker.h
+    core/ai/memory/memory_index_worker.cpp
+    core/ai/memory/semantic_index_service.h
+    core/ai/memory/semantic_index_service.cpp
     core/ai/memory/partition_policy.h
     core/ai/scheduler/scheduled_task.h
     core/ai/scheduler/scheduled_task.cpp
@@ -1306,6 +1317,8 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/hnsw_embedding_index.cpp
         core/ai/memory/memory_index_worker.h
         core/ai/memory/memory_index_worker.cpp
+        core/ai/memory/semantic_index_service.h
+        core/ai/memory/semantic_index_service.cpp
         core/ai/memory/model_downloader.h
         core/ai/memory/model_downloader.cpp
         core/ai/memory/batch_selector.h
@@ -1536,6 +1549,17 @@ if(ORT_ROOT AND ORT_LIB)
         DESKTOP_PET_EMBEDDING_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets/embeddings")
     # 运行时让 binary 在同目录 / 相对 lib 找到动态库（mac 需要）
     set_target_properties(memory_strategy_tests PROPERTIES
+        BUILD_RPATH "${ORT_ROOT}/lib"
+        INSTALL_RPATH "@loader_path")
+    # 生产目标同样编入 ONNX provider：AIBrain 在 DESKTOP_PET_HAS_ORT 下尝试加载
+    # assets/embeddings 模型，失败则语义索引静默禁用（退关键词召回）。
+    target_sources(Desktop_Pet PRIVATE
+        core/ai/memory/onnx_embedding_provider.h
+        core/ai/memory/onnx_embedding_provider.cpp)
+    target_include_directories(Desktop_Pet PRIVATE ${ORT_ROOT}/include)
+    target_link_libraries(Desktop_Pet ${ORT_LIB})
+    target_compile_definitions(Desktop_Pet PRIVATE DESKTOP_PET_HAS_ORT)
+    set_target_properties(Desktop_Pet PROPERTIES
         BUILD_RPATH "${ORT_ROOT}/lib"
         INSTALL_RPATH "@loader_path")
 else()

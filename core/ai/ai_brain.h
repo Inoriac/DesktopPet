@@ -36,6 +36,7 @@
 #include "memory/memory_keyword_index.h"
 #include "memory/memory_cue_extractor.h"
 #include "memory/associative_activation_engine.h"
+#include "memory/semantic_index_service.h"
 #include "scheduler/daydream_trigger_policy.h"
 #include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
@@ -239,6 +240,8 @@ private:
     static QList<ModelRoleConfig> configuredModelRoles();
     // 类人激活式召回索引刷新（pre-phase4-roadmap #10）
     void refreshActivationRecallIndexes(bool force = false);
+    // 语义索引服务接线（HNSW + outbox）；无 provider 时静默禁用
+    void initializeSemanticIndexService();
 
 private:
     QString m_petName;
@@ -274,6 +277,8 @@ private:
     SkillStore m_skillStore;
     SkillMatcher m_skillMatcher;
     EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
+    // 语义索引生产接线（HNSW + outbox Worker）；无 embedding provider 时保持禁用
+    std::unique_ptr<SemanticIndexService> m_semanticIndexService;
 
     QTimer m_idleTriggerTimer;
     QTimer m_chatTriggerTimer;

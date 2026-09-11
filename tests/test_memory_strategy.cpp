@@ -25,6 +25,7 @@
 #include "memory/sqlite_embedding_index.h"
 #include "memory/hnsw_embedding_index.h"
 #include "memory/memory_index_worker.h"
+#include "memory/semantic_index_service.h"
 #include "memory/sqlite_memory_repository.h"
 #include "memory/model_downloader.h"
 #include "memory/daydream_consolidator.h"
@@ -104,6 +105,7 @@ private slots:
     void testIndexJobsRespectModelBinding();
     void testIndexJobsRejectChangesDuringEmbedding();
     void testIndexJobsPersistBackoff();
+    void testSemanticIndexServiceLifecycle();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2292,6 +2294,54 @@ void TestMemoryStrategy::testIndexJobsPersistBackoff() {
     QVERIFY(query.next());
     QCOMPARE(query.value(0).toInt(), 2);
     QVERIFY(query.value(1).toLongLong() >= QDateTime::currentMSecsSinceEpoch() + 8000);
+}
+
+// SemanticIndexService：无 provider 禁用；有 provider 时空闲 tick 小批量消费并可召回。
+void TestMemoryStrategy::testSemanticIndexServiceLifecycle() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+
+    SemanticIndexService disabled;
+    QVERIFY(!disabled.start(nullptr, store.databaseConnectionName(), dir.path()));
+    QVERIFY(!disabled.isEnabled());
+    QVERIFY(disabled.index() == nullptr);
+    QCOMPARE(disabled.runOnce(), 0);
+
+    for (const auto& id : {QStringLiteral("alpha"), QStringLiteral("beta"), QStringLiteral("gamma")}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Semantic;
+        entry.summary = id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+
+    SemanticIndexService service;
+    service.setBatchSize(2);
+    bool busy = true;
+    service.setIdlePredicate([&busy]() { return !busy; });
+    QVERIFY(service.start(std::make_unique<FakeEmbeddingProvider>(), store.databaseConnectionName(), dir.path()));
+    QVERIFY(service.isEnabled());
+    QVERIFY(service.index() != nullptr);
+    QCOMPARE(service.runOnce(), 0);           // 忙碌时跳过
+    busy = false;
+    QCOMPARE(service.runOnce(), 2);           // 小批量
+    QCOMPARE(service.runOnce(), 1);
+    QCOMPARE(service.runOnce(), 0);
+    QCOMPARE(service.processedTotal(), 3);
+    const auto hits = service.index()->search(QStringLiteral("alpha"), 1);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().memoryId, QStringLiteral("alpha"));
+
+    // kick() 走事件循环：新任务在 tick 后被消化。
+    MemoryEntry late;
+    late.id = QStringLiteral("delta");
+    late.type = MemoryType::Semantic;
+    late.summary = late.id;
+    QVERIFY(!store.addEntry(late).id.isEmpty());
+    service.kick();
+    QTRY_COMPARE(service.processedTotal(), 4);
+    QCOMPARE(service.hnswIndex()->activeCount(), 4);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.
