@@ -429,6 +429,27 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
     }
 
+    QSet<QString> indexJobColumns;
+    if (!query.exec(QStringLiteral("PRAGMA table_info(memory_index_jobs)"))) {
+        if (errorMessage) *errorMessage = query.lastError().text();
+        return false;
+    }
+    while (query.next()) indexJobColumns.insert(query.value(1).toString());
+    for (const auto& column : {QStringLiteral("next_attempt_at"), QStringLiteral("last_error")}) {
+        if (indexJobColumns.contains(column)) continue;
+        const QString definition = column == QLatin1String("next_attempt_at")
+            ? QStringLiteral("INTEGER NOT NULL DEFAULT 0") : QStringLiteral("TEXT");
+        if (!query.exec(QStringLiteral("ALTER TABLE memory_index_jobs ADD COLUMN %1 %2").arg(column, definition))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+    if (!query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_retry "
+                                   "ON memory_index_jobs(status,next_attempt_at)"))) {
+        if (errorMessage) *errorMessage = query.lastError().text();
+        return false;
+    }
+
     QSet<QString> memoryColumns;
     if (!query.exec(QStringLiteral("PRAGMA table_info(memory_items)"))) {
         if (errorMessage) *errorMessage = query.lastError().text();

@@ -50,10 +50,21 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 The earlier checklist overstated completion. Do not treat the scaffold commits
 or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 
+- Outbox jobs now bind to the provider model after processing and persist the
+  current content hash. A non-empty model mismatch is skipped without incrementing
+  attempts. Current memory eligibility and content hash are rechecked after
+  embedding, so stale upserts/deletes reconcile current state instead of applying
+  obsolete commands. Existing empty model/hash jobs remain backward compatible.
+- `next_attempt_at` and `last_error` were added through idempotent schema migration.
+  Failed jobs use bounded exponential backoff (8 seconds initially, capped at
+  10 minutes), and a failed job no longer prevents later jobs from running.
+- Added tests for stale command reconciliation, model isolation, mutation during
+  embedding and persisted backoff. MemoryStrategyTests now has 104 passing cases.
+
 - No production background scheduler or Daydream completion wiring yet. Worker
   methods must still be called on a background thread with its own SQLite connection.
-- Outbox model/content version checks, stale-job ordering, bounded retry backoff,
-  and avoiding unnecessary jobs for non-semantic reinforcement remain pending.
+  Producer-side jobs still begin with empty model/hash for backward compatibility;
+  the worker fills these after successful processing.
 - Clear/import and direct repository mutation coverage still require auditing.
 - Full generation/SQLite consistency, every crash point, cross-thread provider
   ownership and eligibility filtering across every recall API remain unaccepted.
