@@ -115,4 +115,16 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     const MemoryQuery& query,
     const QList<WorkingMemoryItem>& workingMemory = {});
 
+// Reuse a worker-owned store and derived indexes across requests.  The
+// database is refreshed by the owner on its own cadence; this entry point
+// keeps the chat hot path from rebuilding indexes for every message.
+WorkerRecallResult retrieveWithGraphPropagationForWorker(
+    MemoryStore& store,
+    ActiveMemoryPool& activePool,
+    HippocampusWorkingSet& workingSet,
+    const MemoryKeywordIndex& keywordIndex,
+    EmbeddingIndex* embeddingIndex,
+    const MemoryQuery& query,
+    const QList<WorkingMemoryItem>& workingMemory = {});
+
 #endif // DESKTOP_PET_MEMORY_RETRIEVER_H

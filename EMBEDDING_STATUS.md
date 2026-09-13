@@ -12,22 +12,24 @@
 
 ## 卡在哪(本机未解决,与代码无关,纯 macOS 限制)
 
-**ort dylib 加载被 macOS system policy 拦**(运行测试时 `dyld: library load disallowed by system policy`)。
+**ort dylib 加载被 macOS system policy 拦**(运行测试时 `dyld: library load disallowed by system policy`)；Windows 验证已完成。
 
 - 原因:微软发布的 `libonnxruntime` 是 adhoc/linker-signed,非 Apple 公证;从浏览器下载带 quarantine 标记,macOS 15 拒绝加载。
 - 我试过清 quarantine + 重签 dylib + 给 exe 加 entitlements 关 library-validation,**没调成,且中途把 dylib 文件名/软链搞乱过一次**(已从原始 tgz 恢复)。**别再 `rm -rf onnxruntime-osx-arm64-1.28.0` 整目录删**,真要补文件用 `tar xzf <pkg> <单文件路径>` 只补缺失的。
-- **结论:ort 真实推理的运行验证留到 Windows 主交付环境**——Windows 加载 `onnxruntime.dll` 无此签名问题。
+- Windows 主交付环境已使用官方 `onnxruntime-win-x64-1.28.0` SDK 完成真实推理验证：CMake 检测并链接 ORT，构建后自动部署 `onnxruntime.dll`。
+- `MemoryStrategyTests::testOnnxEmbeddingProviderLoadsAndEmbeds` 已通过，确认模型加载、512 维输出、L2 归一化及相似度阈值。
 
-## 你回去要弄(按优先级)
+## Windows 复验命令（可选）
 
-1. **Windows 上跑 `OnnxEmbeddingProvider` 单测**:`./tools/fetch_onnxruntime.sh win` 拉ort → 构建 → 跑 `memory_strategy_tests`。这能真正验证 int8 推理 + 我单测里的断言(维度512、norm≈1、相似文本余弦 > 不相关文本)。
-2. **若 Windows 单测过不了,重点怀疑三处**(我没运行验证过,逻辑自检但无输出佐证):
+1. 重新配置/构建后运行 `ctest --test-dir cmake-build-release-mingw_qt -R MemoryStrategyTests`。
+2. Python 图验证仍可用 `\.venv\Scripts\python.exe tools\validate_onnx_windows.py`；该脚本刻意不调用会触发部分 ONNX Python 构建原生崩溃的 `onnx.checker`。
+3. **若 Windows 单测过不了,重点怀疑三处**:
    - WordPiece 分词:中文按字切的是否正确(我用了 `isCjkChar` 按 unicode 区间判定);`##` 续接前缀逻辑。
    - onnxruntime 输入张量名是否真为 `input_ids/token_type_ids/attention_mask`(导出时 `dynamic_axes` 设的;若模型图里名字不同,`Run` 会抛异常 → `embed` 返回空)。
    - mean-pool 索引:`lastHidden` 是否真是 `[1,seq,dim]` 连续布局,`base[t*dim+d]` 对不对。
 3. **ort 目录当前被我搞在半恢复态**:`libonnxruntime.1.28.0.dylib` 已从原始 tgz 补回(软链正常解析)。但 gitignore 已排除整个 `third_party/onnxruntime/`,**不入库**,新环境用 `tools/fetch_onnxruntime.sh mac` 重新拉即可,别依赖我本机这份。
 4. **`assets/embeddings/model_quantized.onnx` 已在 gitignore 开例外,会随桌宠分发**(~57MB)。其余导出产物(vocab/tokenizer/meta)一起入库。
 
-## 体积/性能(供参考,实测待 Windows 跑)
+## 体积/性能(供参考)
 
-int8 ONNX ~57MB(比预估 24MB 大,因动态量化只量化 MatMul 权重,embedding 表是 Gather 未量化)。运行期常驻 ~60-120MB,单次嵌入 mac M 系几 ms、Windows 普通x64 10-30ms。LLM 是瓶颈,这点开销可忽略。
+int8 ONNX ~57MB(比预估 24MB 大,因动态量化只量化 MatMul 权重,embedding 表是 Gather 未量化)。运行期常驻 ~60-120MB,单次嵌入 Windows 普通 x64 约 10-30ms。LLM 是瓶颈,这点开销可忽略。

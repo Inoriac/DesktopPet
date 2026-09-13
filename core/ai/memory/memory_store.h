@@ -47,6 +47,12 @@ public:
     // Opens and loads SQLite only. Background workers must not import or mirror
     // the legacy JSON file owned by the GUI-side migration path.
     bool loadDatabaseOnly(QString* errorMessage = nullptr);
+    // Load a bounded, recency-ordered working set for latency-sensitive
+    // recall workers. This avoids materializing the complete memory table.
+    bool loadRecallWindow(int limit = 256, QString* errorMessage = nullptr);
+    QList<MemoryEntry> loadRecentFromDatabase(int limit,
+                                              const QString& partition = QString(),
+                                              bool activeOnly = false);
     bool refreshDatabaseOnly(QString* errorMessage = nullptr);
     bool save(QString* errorMessage = nullptr) const;
     bool importLegacyJson(const QString& jsonPath,

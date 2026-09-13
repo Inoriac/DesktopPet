@@ -7,6 +7,7 @@
 #include <QSet>
 #include <cmath>
 #include <cstring>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -214,9 +215,15 @@ bool OnnxEmbeddingProvider::load(const Config& cfg, QString* errorMessage)
         Ort::SessionOptions opts;
         opts.SetIntraOpNumThreads(cfg.intraOpThreads > 0 ? cfg.intraOpThreads : 1);
         opts.SetGraphOptimizationLevel(GraphOptimizationLevel::ORT_ENABLE_ALL);
-        // 路径转 UTF-8
-        const QByteArray mp = cfg.modelPath.toUtf8();
-        m_impl->session = Ort::Session(m_impl->env, mp.constData(), opts);
+#ifdef _WIN32
+        // Windows 的 ORTCHAR_T 是 wchar_t；传 UTF-8 char* 会导致模型路径
+        // 解析失败（尤其是包含非 ASCII 字符的工作区路径）。
+        const std::wstring modelPath = cfg.modelPath.toStdWString();
+        m_impl->session = Ort::Session(m_impl->env, modelPath.c_str(), opts);
+#else
+        const QByteArray modelPath = cfg.modelPath.toUtf8();
+        m_impl->session = Ort::Session(m_impl->env, modelPath.constData(), opts);
+#endif
     } catch (const Ort::Exception& e) {
         if (errorMessage) *errorMessage = QStringLiteral("onnx session: %1").arg(e.what());
         m_loaded = false;

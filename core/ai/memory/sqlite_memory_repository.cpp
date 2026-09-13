@@ -616,16 +616,9 @@ bool SQLiteMemoryRepository::updateStatus(const QString& id,
     return updateQuery.exec() && updateQuery.numRowsAffected() > 0;
 }
 
-QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
+QList<MemoryEntry> SQLiteMemoryRepository::loadQuery(QSqlQuery& query) {
     QList<MemoryEntry> entries;
     if (!isOpen()) return entries;
-
-    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
-    QSqlQuery query(db);
-
-    if (!query.exec(QStringLiteral("SELECT * FROM memory_items ORDER BY created_at ASC"))) {
-        return entries;
-    }
 
     while (query.next()) {
         MemoryEntry entry;
@@ -683,6 +676,33 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
     return entries;
 }
 
+
+QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
+    if (!isOpen()) return {};
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    if (!query.exec(QStringLiteral("SELECT * FROM memory_items ORDER BY created_at ASC"))) return {};
+    return loadQuery(query);
+}
+
+QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
+                                                      const QString& partition,
+                                                      bool activeOnly) {
+    if (!isOpen() || limit <= 0) return {};
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    QString sql = QStringLiteral("SELECT * FROM memory_items");
+    QStringList predicates;
+    if (!partition.trimmed().isEmpty()) predicates.append(QStringLiteral("partition = :partition"));
+    if (activeOnly) predicates.append(QStringLiteral("status = 'active'"));
+    if (!predicates.isEmpty()) sql += QStringLiteral(" WHERE ") + predicates.join(QStringLiteral(" AND "));
+    sql += QStringLiteral(" ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT :limit");
+    query.prepare(sql);
+    if (!partition.trimmed().isEmpty()) query.bindValue(QStringLiteral(":partition"), partition);
+    query.bindValue(QStringLiteral(":limit"), limit);
+    if (!query.exec()) return {};
+    return loadQuery(query);
+}
 bool SQLiteMemoryRepository::clear() {
     if (!isOpen()) return false;
 

@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <limits>
 #include "core/ai/memory/active_memory_pool.h"
 #include "core/ai/memory/hippocampus_working_set.h"
 #include "core/ai/memory/memory_store.h"
@@ -10,6 +11,7 @@ private slots:
     void testActiveMemoryPoolBasics();
     void testActiveMemoryPoolDecay();
     void testActiveMemoryPoolOfflineRecovery();
+    void testActiveMemoryPoolSnapshotBounds();
     void testHippocampusWorkingSetLoad();
     void testHippocampusWorkingSetScan();
 };
@@ -78,6 +80,56 @@ void TestMemoryRecall::testActiveMemoryPoolOfflineRecovery() {
     QVERIFY(restored.getActivation("mem2") > 0.9);
 }
 
+void TestMemoryRecall::testActiveMemoryPoolSnapshotBounds() {
+    ActiveMemoryPool pool;
+    pool.activate(QStringLiteral("negative"), -1.0, QStringLiteral("session"));
+    QVERIFY(!pool.contains(QStringLiteral("negative")));
+    pool.activate(QStringLiteral("nan-live"), std::numeric_limits<double>::quiet_NaN(),
+                 QStringLiteral("session"));
+    QVERIFY(!pool.contains(QStringLiteral("nan-live")));
+    pool.activate(QStringLiteral("keep"), 1.0, QStringLiteral("session"));
+
+    // A non-positive snapshot budget is an explicit request for no rows.
+    QVERIFY(pool.snapshot(0).isEmpty());
+    QVERIFY(pool.snapshot(-1).isEmpty());
+
+    QList<ActiveMemoryItem> malformed;
+    ActiveMemoryItem emptyId;
+    emptyId.activation = 1.0;
+    malformed.append(emptyId);
+    ActiveMemoryItem nanItem;
+    nanItem.memoryId = QStringLiteral("nan");
+    nanItem.activation = std::numeric_limits<double>::quiet_NaN();
+    malformed.append(nanItem);
+    ActiveMemoryItem oversized;
+    oversized.memoryId = QStringLiteral("oversized");
+    oversized.activation = 100.0;
+    malformed.append(oversized);
+
+    ActiveMemoryPool restored;
+    restored.restoreFromSnapshot(malformed, {}, {});
+    QVERIFY(!restored.contains(QString()));
+    QVERIFY(!restored.contains(QStringLiteral("nan")));
+    QVERIFY(restored.contains(QStringLiteral("oversized")));
+    QVERIFY(restored.getActivation(QStringLiteral("oversized")) <= 2.0);
+
+    // Restore must retain the fixed pool budget even when persisted state is
+    // larger than the live activation budget.
+    QList<ActiveMemoryItem> many;
+    for (int i = 0; i < ActiveMemoryPool::MAX_POOL_SIZE + 10; ++i) {
+        ActiveMemoryItem item;
+        item.memoryId = QStringLiteral("m%1").arg(i);
+        item.activation = 0.1 + i * 0.01;
+        item.source = QStringLiteral("session");
+        many.append(item);
+    }
+    ActiveMemoryPool bounded;
+    bounded.restoreFromSnapshot(many, {}, {});
+    QCOMPARE(bounded.activeItems().size(), ActiveMemoryPool::MAX_POOL_SIZE);
+    QVERIFY(!bounded.contains(QStringLiteral("m0")));
+    QVERIFY(bounded.contains(QStringLiteral("m%1").arg(ActiveMemoryPool::MAX_POOL_SIZE + 9)));
+}
+
 void TestMemoryRecall::testHippocampusWorkingSetLoad() {
     MemoryStore store;
     HippocampusWorkingSet workingSet(&store);
@@ -143,6 +195,9 @@ void TestMemoryRecall::testHippocampusWorkingSetScan() {
     store.addEntry(entry2);
     
     workingSet.refresh();
+
+    QVERIFY(workingSet.scan(QStringLiteral("weather"), {}, 0).isEmpty());
+    QVERIFY(workingSet.scan(QStringLiteral("weather"), {}, -1).isEmpty());
     
     // Text search
     QList<MemoryEntry> results = workingSet.scan("weather", {}, 10);

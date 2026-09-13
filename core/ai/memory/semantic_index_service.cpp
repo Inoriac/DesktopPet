@@ -50,8 +50,21 @@ int SemanticIndexService::runOnce() {
     if (!isEnabled()) return 0;
     if (m_idle && !m_idle()) return 0;
 
+    const int completed = m_worker->processPending(m_batchSize);
+    if (completed > 0) {
+        m_processedTotal += completed;
+        emit batchProcessed(completed);
+    }
+
     // 墓碑比例达阈值：空闲期整体重建（权威向量表，不重新推理）。
-    if (m_index->isReady() && m_index->needsCompaction() && m_index->activeCount() > 0) {
+    // Rebuild even when every active vector has been deleted.  In that case
+    // activeCount()==0 while tombstoneRatio()==1.0; retaining the old guard
+    // left an all-tombstone index permanently fragmented and prevented the
+    // next insertion from reclaiming the deleted labels.
+    // Defer compaction until a quiet tick.  A batch that just processed delete
+    // jobs must remain observable as tombstones and should not immediately
+    // rebuild in the same tick.
+    if (completed == 0 && m_index->isReady() && m_index->needsCompaction()) {
         QString error;
         if (m_index->rebuildFromRepository(&error)) {
             ++m_rebuildCount;
@@ -61,11 +74,6 @@ int SemanticIndexService::runOnce() {
         }
     }
 
-    const int completed = m_worker->processPending(m_batchSize);
-    if (completed > 0) {
-        m_processedTotal += completed;
-        emit batchProcessed(completed);
-    }
     return completed;
 }
 

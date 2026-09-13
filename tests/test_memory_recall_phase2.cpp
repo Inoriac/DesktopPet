@@ -17,6 +17,7 @@ private slots:
     void testKeywordIndexLookup();
     void testACTRBaseActivation();
     void testACTRCueMatch();
+    void testACTRSemanticCueAffectsRanking();
     void testACTRFullRanking();
     void testActivatedRetrievalIntegration();
 };
@@ -120,6 +121,27 @@ void TestMemoryRecallPhase2::testACTRCueMatch() {
     
     QVERIFY(cueMatch > 0.0);
     QVERIFY(cueMatch <= 1.0);
+}
+
+void TestMemoryRecallPhase2::testACTRSemanticCueAffectsRanking() {
+    ACTRRanker ranker;
+    MemoryCue cue;
+
+    CandidateMemory lexical;
+    lexical.entry.id = "lexical";
+    lexical.entry.strength = 0.5;
+    lexical.entry.summary = "unrelated entry";
+
+    CandidateMemory semantic;
+    semantic.entry.id = "semantic";
+    semantic.entry.strength = 0.5;
+    semantic.entry.summary = "unrelated entry";
+    semantic.semanticCue = 0.9;
+
+    const QList<CandidateMemory> ranked = ranker.rank({lexical, semantic}, cue);
+    QCOMPARE(ranked.size(), 2);
+    QCOMPARE(ranked.first().entry.id, QStringLiteral("semantic"));
+    QVERIFY(ranked.first().cueMatch > ranked.last().cueMatch);
 }
 
 void TestMemoryRecallPhase2::testACTRFullRanking() {

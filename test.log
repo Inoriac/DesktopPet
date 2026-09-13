@@ -1,0 +1,63 @@
+********* Start testing of TestMemoryStrategy *********
+Config: Using QtTest library 6.5.3, Qt 6.5.3 (x86_64-little_endian-llp64 shared (dynamic) release build; by GCC 11.2.0), windows 11
+PASS   : TestMemoryStrategy::initTestCase()
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: checking directory path "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/plugins/sqldrivers" ...
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: checking directory path "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers" ...
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: looking at "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlite.dll"
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.loader: Found metadata in lib E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlite.dll, metadata=
+{
+    "IID": "org.qt-project.Qt.QSqlDriverFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "QSQLITE"
+        ]
+    },
+    "archlevel": 2,
+    "className": "QSQLiteDriverPlugin",
+    "debug": false,
+    "version": 394496
+}
+
+
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: Got keys from plugin meta data QList("QSQLITE")
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: looking at "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlodbc.dll"
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.loader: Found metadata in lib E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlodbc.dll, metadata=
+{
+    "IID": "org.qt-project.Qt.QSqlDriverFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "QODBC"
+        ]
+    },
+    "archlevel": 2,
+    "className": "QODBCDriverPlugin",
+    "debug": false,
+    "version": 394496
+}
+
+
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: Got keys from plugin meta data QList("QODBC")
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: looking at "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlpsql.dll"
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.loader: Found metadata in lib E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlpsql.dll, metadata=
+{
+    "IID": "org.qt-project.Qt.QSqlDriverFactoryInterface",
+    "MetaData": {
+        "Keys": [
+            "QPSQL"
+        ]
+    },
+    "archlevel": 2,
+    "className": "QPSQLDriverPlugin",
+    "debug": false,
+    "version": 394496
+}
+
+
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.plugin.factoryloader: Got keys from plugin meta data QList("QPSQL")
+QDEBUG : TestMemoryStrategy::testSemanticIndexServiceLifecycle() qt.core.library: "E:/Funny-Projects/Desktop-Pet/cmake-build-release-mingw_qt/sqldrivers/qsqlite.dll" loaded library
+QINFO  : TestMemoryStrategy::testSemanticIndexServiceLifecycle() [SemanticIndex] disabled: no embedding provider
+QINFO  : TestMemoryStrategy::testSemanticIndexServiceLifecycle() [SemanticIndex] enabled: model= "fake-16d" dim= 16 dir= "C:/Users/Huang_cj/AppData/Local/Temp/memory_strategy_tests-cwEsYN"
+PASS   : TestMemoryStrategy::testSemanticIndexServiceLifecycle()
+PASS   : TestMemoryStrategy::cleanupTestCase()
+Totals: 3 passed, 0 failed, 0 skipped, 0 blacklisted, 182ms
+********* Finished testing of TestMemoryStrategy *********

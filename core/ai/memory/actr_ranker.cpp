@@ -36,6 +36,15 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
         
         // C_i: cue match（semantic 通道 Phase 2 暂缺，只有词法/标签）
         candidate.cueMatch = computeCueMatch(candidate.entry, cue);
+        // Embedding channels provide the semantic part of C_i.  Keep the
+        // public entry-only helper for callers without semantic candidates,
+        // while folding the similarity into the same fixed [0,1] bound here.
+        if (candidate.semanticCue > 0.0) {
+            candidate.cueMatch = clamp01(
+                candidate.cueMatch
+                + m_semanticCueCoeff * clamp01(candidate.semanticCue)
+                    / (m_semanticCueCoeff + m_lexicalCueCoeff));
+        }
         
         // R_i: runtime activation（已由调用方从 ActiveMemoryPool 填入，
         //      pool 内上限 2.0，这里归一化到 [0,1]）
@@ -115,8 +124,8 @@ double ACTRRanker::computeCueMatch(const MemoryEntry& entry,
         }
     }
     
-    // 语义线索：Phase 2 无 HNSW，恒 0；Phase 3+ 由调用方通过
-    // CandidateMemory 预填后在此合并（TODO）
+    // Entry-only callers have no embedding similarity; rank() folds the
+    // candidate-provided semanticCue into this lexical baseline.
     const double semanticCue = 0.0;
     
     // C_i = 2.0*semantic + 1.2*lexical，固定上界 3.2 归一化

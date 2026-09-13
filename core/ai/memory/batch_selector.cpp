@@ -314,8 +314,23 @@ bool BatchSelector::sameCausalChain(const MemoryEntry& a,
     const QString toolA = a.payload.value(QStringLiteral("tool")).toString();
     const QString toolB = b.payload.value(QStringLiteral("tool")).toString();
     if (!toolA.isEmpty() && toolA == toolB) return true;
-    
-    // TODO: 检查图谱中的 CreatedTask / DerivedFrom 边
+
+    // Structural graph edges carry causal relationships even when entries are
+    // far apart in time and have no shared lexical/session cues.  Check both
+    // directions because DerivedFrom is commonly stored child -> source while
+    // CreatedTask may be stored source -> task.
+    if (m_relationGraph) {
+        const MemoryRelationType causalTypes[] = {
+            MemoryRelationType::CreatedTask,
+            MemoryRelationType::DerivedFrom,
+        };
+        for (const MemoryRelationType type : causalTypes) {
+            if (m_relationGraph->hasRelation(a.id, b.id, type)
+                || m_relationGraph->hasRelation(b.id, a.id, type)) {
+                return true;
+            }
+        }
+    }
     
     return false;
 }

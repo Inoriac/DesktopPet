@@ -13,6 +13,7 @@
 #include <QSqlQuery>
 #include <QUuid>
 
+#include <algorithm>
 #include <utility>
 
 #include "memory_repository.h"
@@ -417,6 +418,38 @@ bool MemoryStore::loadDatabaseOnly(QString* errorMessage) {
     if (!openDatabase(errorMessage)) return false;
     m_entries = m_repository->loadAll();
     return true;
+}
+
+bool MemoryStore::loadRecallWindow(int limit, QString* errorMessage) {
+    if (!openDatabase(errorMessage)) return false;
+    const int boundedLimit = std::clamp(limit, 1, 4096);
+    // Keep the hot recent window bounded, while reserving a small explicit
+    // budget for older Hippocampus inbox items that may await consolidation.
+    QList<MemoryEntry> recentEntries = m_repository->loadRecent(boundedLimit, QString(), true);
+    const int hippocampusBudget = std::min(64, boundedLimit);
+    const QList<MemoryEntry> hippocampusEntries = m_repository->loadRecent(
+        hippocampusBudget, QStringLiteral("hippocampus"), true);
+    QSet<QString> seen;
+    m_entries.clear();
+    m_entries.reserve(recentEntries.size() + hippocampusEntries.size());
+    for (const MemoryEntry& entry : recentEntries) {
+        if (seen.contains(entry.id)) continue;
+        seen.insert(entry.id);
+        m_entries.append(entry);
+    }
+    for (const MemoryEntry& entry : hippocampusEntries) {
+        if (seen.contains(entry.id)) continue;
+        seen.insert(entry.id);
+        m_entries.append(entry);
+    }
+    return true;
+}
+
+QList<MemoryEntry> MemoryStore::loadRecentFromDatabase(int limit,
+                                                       const QString& partition,
+                                                       bool activeOnly) {
+    if (!m_repository || !m_repository->isOpen() || limit <= 0) return {};
+    return m_repository->loadRecent(std::clamp(limit, 1, 4096), partition, activeOnly);
 }
 
 bool MemoryStore::refreshDatabaseOnly(QString* errorMessage) {

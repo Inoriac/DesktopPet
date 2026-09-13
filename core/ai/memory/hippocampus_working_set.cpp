@@ -25,14 +25,26 @@ bool HippocampusWorkingSet::refresh() {
     if (!m_store) return false;
     
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    QList<MemoryEntry> candidates;
-    
-    // Load all Hippocampus partition entries
-    for (const MemoryEntry& entry : m_store->all()) {
-        if (entry.partition != QLatin1String("hippocampus")) continue;
-        if (entry.status != MemoryStatus::Active) continue;
-        
-        candidates.append(entry);
+    // Read only the bounded, newest Hippocampus inbox rows from SQLite. The
+    // worker and long-running recall paths must not rescan the full history.
+    QList<MemoryEntry> candidates = m_store->loadRecentFromDatabase(
+        m_capacity, QStringLiteral("hippocampus"), true);
+    if (candidates.isEmpty()) {
+        // Preserve behavior for stores backed by an in-memory repository (or
+        // before the SQLite database has been opened).  An empty SQL result is
+        // also safe to fall back to: the in-memory list is filtered to the
+        // same partition/status and is empty for a truly empty database.
+        for (const MemoryEntry& entry : m_store->all()) {
+            if (entry.partition != QLatin1String("hippocampus")) continue;
+            if (entry.status != MemoryStatus::Active) continue;
+            candidates.append(entry);
+        }
+    } else {
+        candidates.erase(std::remove_if(candidates.begin(), candidates.end(),
+                                        [](const MemoryEntry& entry) {
+                                            return entry.status != MemoryStatus::Active;
+                                        }),
+                         candidates.end());
     }
     
     m_totalPendingCount = candidates.size();
@@ -55,6 +67,7 @@ bool HippocampusWorkingSet::refresh() {
 QList<MemoryEntry> HippocampusWorkingSet::scan(const QString& queryText,
                                                 const QStringList& requiredTags,
                                                 int limit) const {
+    if (limit <= 0) return {};
     const QString normalizedQuery = queryText.trimmed().toLower();
     QList<MemoryEntry> results;
     

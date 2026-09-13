@@ -5,6 +5,8 @@
 
 #include <QSqlDatabase>
 
+class QSqlQuery;
+
 class SQLiteMemoryRepository : public MemoryRepository {
 public:
     SQLiteMemoryRepository();
@@ -21,6 +23,9 @@ public:
                       MemoryStatus status,
                       const QJsonObject& payloadPatch = {}) override;
     QList<MemoryEntry> loadAll() override;
+    QList<MemoryEntry> loadRecent(int limit,
+                                  const QString& partition = QString(),
+                                  bool activeOnly = false) override;
     bool clear() override;
     bool removeById(const QString& id) override;
 
@@ -30,6 +35,7 @@ public:
 
 private:
     bool initSchema(QString* errorMessage = nullptr);
+    QList<MemoryEntry> loadQuery(QSqlQuery& query);
     bool insertTags(const QString& memoryId, const QStringList& tags);
     bool insertEvidence(const QString& memoryId, const QStringList& evidence);
     bool deleteTags(const QString& memoryId);

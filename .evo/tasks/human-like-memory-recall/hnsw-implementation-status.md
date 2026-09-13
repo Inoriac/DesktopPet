@@ -43,7 +43,16 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - MemoryStrategyTests, SleepCycleTests, MemoryRecallTests,
   MemoryRecallPhase2Tests, MemoryRecallPhase3Tests and HybridGraphBuilderTests
   pass three consecutive CTest runs. This is not every project test target.
-- No ONNX inference or ONNX tests were run.
+- Windows Python validation now passes with the bundled `.venv` (`onnxruntime 1.20.1`):
+  the quantized graph loads on `CPUExecutionProvider`, has the expected three
+  `int64` inputs and `[batch, seq, 512]` hidden output, and produces normalized
+  vectors with the semantic smoke-test thresholds. The reproducible command is
+  `\.venv\Scripts\python.exe tools\validate_onnx_windows.py`.
+- Native Windows C++ ONNX validation is now complete with the official
+  `onnxruntime-win-x64-1.28.0` SDK unpacked under `third_party/onnxruntime`.
+  `MemoryStrategyTests::testOnnxEmbeddingProviderLoadsAndEmbeds` passes with
+  the 512-dimensional normalized output and semantic similarity assertions.
+  CMake detects the SDK and deploys `onnxruntime.dll` beside the executables.
 
 ## Production Wiring (simplified)
 
@@ -57,8 +66,8 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - Compaction: when tombstone ratio >= 30% and idle, `rebuildFromRepository()`.
 - Provider: `OnnxEmbeddingProvider::tryCreateFromAssets(<root>/assets)` only when
   `DESKTOP_PET_HAS_ORT`; Desktop_Pet now also compiles/links ORT when found.
-  Without ORT (macOS here) the service stays disabled and recall uses keywords.
-  Real end-to-end with ONNX still needs Windows verification.
+  Without ORT the service stays disabled and recall uses keywords. Windows
+  runtime loading and native embedding inference are verified in the test suite.
 - hnswlib include dir is now global (`include_directories`) because ai_brain.cpp
   pulls the service into every AGENT_RUNTIME_TEST_SUPPORT_SOURCES target.
 
@@ -76,7 +85,10 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   Failed jobs use bounded exponential backoff (8 seconds initially, capped at
   10 minutes), and a failed job no longer prevents later jobs from running.
 - Added tests for stale command reconciliation, model isolation, mutation during
-  embedding and persisted backoff. MemoryStrategyTests now has 104 passing cases.
+  embedding, persisted backoff, and all-tombstone compaction. MemoryStrategyTests
+  now has 106 passing cases. Embedding similarities now contribute to ACT-R
+  semantic cue scoring, and batch selection follows CreatedTask/DerivedFrom
+  causal edges in both directions.
 
 - Background scheduler is the simplified main-thread tick above; a dedicated
   worker thread with its own SQLite connection remains future work.
@@ -85,6 +97,8 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 - Clear/import and direct repository mutation coverage still require auditing.
 - Full generation/SQLite consistency, every crash point, cross-thread provider
   ownership and eligibility filtering across every recall API remain unaccepted.
-- Tombstone threshold detection exists; automatic idle-time compaction is not wired.
+- Tombstone threshold detection and automatic idle-time compaction are wired in
+  `SemanticIndexService`; compaction runs during an idle tick after pending
+  index jobs drain, including the all-tombstone (`activeCount()==0`) case.
 - Recall@32, latency benchmarks, migration coverage and shadow retirement gates
   have not been measured or enabled. Invalid persisted vectors have no repair queue yet.

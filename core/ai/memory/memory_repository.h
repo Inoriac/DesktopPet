@@ -4,6 +4,8 @@
 #include <QList>
 #include <QString>
 
+#include <algorithm>
+
 #include "memory_types.h"
 
 class MemoryRepository {
@@ -21,6 +23,24 @@ public:
                               MemoryStatus status,
                               const QJsonObject& payloadPatch = {}) = 0;
     virtual QList<MemoryEntry> loadAll() = 0;
+
+    // Bounded reads for latency-sensitive recall paths. Implementations should
+    // apply the limit in the database query; the default preserves compatibility
+    // for small in-memory repositories.
+    virtual QList<MemoryEntry> loadRecent(int limit,
+                                          const QString& partition = QString(),
+                                          bool activeOnly = false) {
+        QList<MemoryEntry> entries = loadAll();
+        if (activeOnly) {
+            entries.erase(std::remove_if(entries.begin(), entries.end(),
+                                         [](const MemoryEntry& entry) {
+                                             return entry.status != MemoryStatus::Active;
+                                         }),
+                          entries.end());
+        }
+        if (limit > 0 && entries.size() > limit) entries = entries.mid(0, limit);
+        return entries;
+    }
     virtual bool clear() = 0;
 
     // 物理删除单条记忆及其连带子表（tags/evidence/relations/embeddings/access_log）。

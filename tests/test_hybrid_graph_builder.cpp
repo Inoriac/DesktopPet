@@ -1,8 +1,10 @@
 #include <QtTest>
 #include <QJsonObject>
+#include <QSet>
 #include <QTemporaryDir>
 
 #include "ai/memory/daydream_relation_reviewer.h"
+#include "ai/memory/batch_selector.h"
 #include "ai/memory/hybrid_graph_builder.h"
 #include "ai/memory/memory_relation_graph.h"
 #include "ai/memory/memory_store.h"
@@ -53,6 +55,7 @@ private slots:
     void testValidateRelationProposalRejectsInvalid();
     void testGenerateCandidatesCapAndOrdering();
     void testApplyProposalsValidatedAndModelProvenance();
+    void testBatchSelectorUsesCausalGraphEdges();
 
 private:
     QTemporaryDir m_dir;
@@ -372,6 +375,57 @@ void TestHybridGraphBuilder::testApplyProposalsValidatedAndModelProvenance() {
             QVERIFY(relation.structural());  // 模型确认的冲突边为结构性
         }
     }
+}
+
+void TestHybridGraphBuilder::testBatchSelectorUsesCausalGraphEdges() {
+    setupStore();
+
+    // Entries are deliberately separated by more than the temporal/session
+    // windows and have no lexical overlap.  The structural edge is the only
+    // cue that should place them in the same consolidation batch.
+    MemoryEntry source = makeEntry(QStringLiteral("cause"));
+    source.partition = QStringLiteral("hippocampus");
+    source.type = MemoryType::Working;
+    source.createdAt = QDateTime::currentDateTimeUtc().addSecs(-3 * 3600);
+    source.content = QStringLiteral("独立的源事件");
+    source.summary = source.content;
+
+    MemoryEntry derived = makeEntry(QStringLiteral("effect"));
+    derived.partition = QStringLiteral("hippocampus");
+    derived.type = MemoryType::Working;
+    derived.createdAt = QDateTime::currentDateTimeUtc().addSecs(-2 * 3600);
+    derived.content = QStringLiteral("完全不同的后续结果");
+    derived.summary = derived.content;
+
+    QVERIFY(!m_store.addEntry(source).id.isEmpty());
+    QVERIFY(!m_store.addEntry(derived).id.isEmpty());
+
+    MemoryRelation relation;
+    relation.id = QStringLiteral("cause-effect");
+    // DerivedFrom is conventionally stored child -> source, opposite to the
+    // direction in which the selector walks from its anchor.
+    relation.fromMemoryId = derived.id;
+    relation.toMemoryId = source.id;
+    relation.type = MemoryRelationType::DerivedFrom;
+    relation.weight = 1.0;
+    relation.confidence = 1.0;
+    QVERIFY(m_store.relationGraph().addRelation(relation));
+
+    BatchSelectionPolicy policy;
+    policy.minAnchors = 1;
+    policy.maxAnchors = 1;
+    policy.clusterMaxSize = 8;
+    policy.batchMaxSize = 2;
+    BatchSelector selector(m_store, &m_store.relationGraph(), policy);
+
+    QList<MemoryEntry> anchors;
+    const QList<MemoryEntry> batch = selector.selectBatch(2, &anchors);
+    QCOMPARE(anchors.size(), 1);
+    QCOMPARE(batch.size(), 2);
+    QSet<QString> ids;
+    for (const MemoryEntry& entry : batch) ids.insert(entry.id);
+    QVERIFY(ids.contains(source.id));
+    QVERIFY(ids.contains(derived.id));
 }
 
 void TestHybridGraphBuilder::testEnforceAssociativeEdgeCap() {

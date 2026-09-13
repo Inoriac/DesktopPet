@@ -12,6 +12,10 @@
 #include "partition_policy.h"
 #include "working_memory_cache.h"
 #include "embedding_index.h"
+#include "active_memory_pool.h"
+#include "hippocampus_working_set.h"
+#include "memory_keyword_index.h"
+#include "associative_activation_engine.h"
 
 namespace {
 
@@ -515,6 +519,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
     // candidateId -> channels
     QHash<QString, QStringList> seedChannels;
     QHash<QString, double> seedRuntimeActivation;
+    QHash<QString, double> seedSemanticCue;
 
     // 通道 1：近期激活池（最多 12 条）
     if (channels.activePool) {
@@ -547,6 +552,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
             if (!seedChannels[hit.memoryId].contains(QLatin1String("embedding"))) {
                 seedChannels[hit.memoryId].append(QStringLiteral("embedding"));
             }
+            seedSemanticCue[hit.memoryId] = std::max(seedSemanticCue.value(hit.memoryId, 0.0), hit.similarity);
         }
     }
 
@@ -572,6 +578,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         candidate.entry = *entry;
         candidate.sourceChannels = it.value();
         candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
+        candidate.semanticCue = seedSemanticCue.value(it.key(), 0.0);
         candidates.append(candidate);
     }
 
@@ -652,6 +659,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     // ---- 阶段 2：多路种子采集（同 Phase 2）----
     QHash<QString, QStringList> seedChannels;
     QHash<QString, double> seedRuntimeActivation;
+    QHash<QString, double> seedSemanticCue;
 
     // 通道 1: 激活池
     if (channels.activePool) {
@@ -684,6 +692,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
             if (!seedChannels[hit.memoryId].contains(QLatin1String("embedding"))) {
                 seedChannels[hit.memoryId].append(QStringLiteral("embedding"));
             }
+            seedSemanticCue[hit.memoryId] = std::max(seedSemanticCue.value(hit.memoryId, 0.0), hit.similarity);
         }
     }
 
@@ -752,6 +761,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         candidate.entry = *entry;
         candidate.sourceChannels = it.value();
         candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
+        candidate.semanticCue = seedSemanticCue.value(it.key(), 0.0);
         candidate.graphActivation = graphActivations.value(it.key(), 0.0);
         candidates.append(candidate);
     }
@@ -812,6 +822,41 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
 // ========== Standalone Worker Helper ==========
 
 WorkerRecallResult retrieveWithGraphPropagationForWorker(
+    MemoryStore& store,
+    ActiveMemoryPool& activePool,
+    HippocampusWorkingSet& workingSet,
+    const MemoryKeywordIndex& keywordIndex,
+    EmbeddingIndex* embeddingIndex,
+    const MemoryQuery& query,
+    const QList<WorkingMemoryItem>& workingMemory) {
+    WorkerRecallResult result;
+    AssociativeActivationEngine graphEngine;
+    ActivationChannels channels;
+    channels.activePool = &activePool;
+    channels.workingSet = &workingSet;
+    channels.keywordIndex = &keywordIndex;
+    channels.embeddingIndex = embeddingIndex;
+    channels.graphPropagation = &graphEngine;
+
+    MemoryCueExtractor cueExtractor;
+    MemoryRetriever retriever;
+    const QList<RetrievedMemory> memories = retriever.retrieveWithGraphPropagation(
+        store, query, channels, &cueExtractor, /*skipReinforcement=*/true);
+    result.memories = memories;
+    for (const RetrievedMemory& memory : memories) {
+        if (!memory.entry.id.startsWith(QLatin1String("wm:"))
+            && !memory.fromGraphExpansion) {
+            result.reinforcementIds.append(memory.entry.id);
+        }
+        activePool.activate(memory.entry.id,
+                            qBound(0.05, memory.score / 3.0, 1.0),
+                            QStringLiteral("session"));
+    }
+    Q_UNUSED(workingMemory);
+    return result;
+}
+
+WorkerRecallResult retrieveWithGraphPropagationForWorker(
     const QString& databasePath,
     const MemoryQuery& query,
     const QList<WorkingMemoryItem>& workingMemory) {
@@ -822,7 +867,10 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     MemoryStore store;
     store.setDatabasePath(databasePath);
     QString loadError;
-    if (!store.loadDatabaseOnly(&loadError)) {
+    // Chat preparation is a latency-sensitive worker. Load only a bounded
+    // recency window (plus a small Hippocampus inbox budget) instead of
+    // materializing every historical row on each request.
+    if (!store.loadRecallWindow(/*limit=*/256, &loadError)) {
         // Failed to load — return empty result
         return result;
     }
@@ -840,31 +888,7 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     // For now, use nullptr (skip embedding channel in Worker)
     EmbeddingIndex* embeddingIndex = nullptr;
     
-    AssociativeActivationEngine graphEngine;
-    // Graph engine is configured with default params (2 hops, 64 candidates)
-    // relationGraph and tagGraph are passed to propagate() method, not constructor
-    
-    ActivationChannels channels;
-    channels.activePool = &activePool;
-    channels.workingSet = &workingSet;
-    channels.keywordIndex = &keywordIndex;
-    channels.embeddingIndex = embeddingIndex;
-    channels.graphPropagation = &graphEngine;
-    
-    // 3. Perform recall with graph propagation (skip reinforcement)
-    MemoryCueExtractor cueExtractor;
-    MemoryRetriever retriever;
-    const QList<RetrievedMemory> memories = retriever.retrieveWithGraphPropagation(
-        store, query, channels, &cueExtractor, /*skipReinforcement=*/true);
-    
-    // 4. Collect reinforcement IDs (Worker will apply them on main thread)
-    result.memories = memories;
-    for (const RetrievedMemory& memory : memories) {
-        if (!memory.entry.id.startsWith(QLatin1String("wm:"))
-            && !memory.fromGraphExpansion) {
-            result.reinforcementIds.append(memory.entry.id);
-        }
-    }
-    
-    return result;
+    return retrieveWithGraphPropagationForWorker(
+        store, activePool, workingSet, keywordIndex, embeddingIndex,
+        query, workingMemory);
 }

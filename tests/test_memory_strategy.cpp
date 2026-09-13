@@ -122,6 +122,7 @@ private slots:
     void testDaydreamDrainDiscardsLowValue();
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
+    void testRepositoryBoundedRecentRead();
     void testDaydreamDrainUpgradesViaPersistedMentionCount();
     void testDaydreamFallbackUpgradesHighImportance();
     void testDaydreamFallbackRoutesPreferenceKeyword();
@@ -2342,6 +2343,25 @@ void TestMemoryStrategy::testSemanticIndexServiceLifecycle() {
     service.kick();
     QTRY_COMPARE(service.processedTotal(), 4);
     QCOMPARE(service.hnswIndex()->activeCount(), 4);
+
+    // Compaction must also run when the last active vectors are deleted.
+    // This exercises the all-tombstone case (activeCount()==0) that used to
+    // be skipped by SemanticIndexService::runOnce().
+    const int rebuildsBeforeDeletes = service.rebuildCount();
+    for (const auto& id : {QStringLiteral("alpha"), QStringLiteral("beta"),
+                           QStringLiteral("gamma"), QStringLiteral("delta")}) {
+        QVERIFY(service.hnswIndex()->remove(id));
+    }
+    // Remove authoritative vectors as a deleted memory would, so compaction
+    // does not reinsert them from SQLite.
+    QSqlQuery clearVectors(QSqlDatabase::database(store.databaseConnectionName()));
+    QVERIFY(clearVectors.exec(QStringLiteral("DELETE FROM memory_embeddings")));
+    QCOMPARE(service.hnswIndex()->activeCount(), 0);
+    QCOMPARE(service.hnswIndex()->tombstoneCount(), 4);
+    QVERIFY(service.hnswIndex()->needsCompaction());
+    QCOMPARE(service.runOnce(), 0); // idle compaction, no pending jobs
+    QCOMPARE(service.rebuildCount(), rebuildsBeforeDeletes + 1);
+    QCOMPARE(service.hnswIndex()->tombstoneCount(), 0);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.
@@ -3526,6 +3546,45 @@ void TestMemoryStrategy::testDaydreamTriggerPolicyUsesRuntimeConfig() {
     QVERIFY(policy.shouldTrigger(60, false, 120000, 240000, true, 0));
     QCOMPARE(policy.requiredGapMs(true), qint64(240000));
     QCOMPARE(policy.nextTickMs(-1), 5000);
+}
+
+void TestMemoryStrategy::testRepositoryBoundedRecentRead() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    SQLiteMemoryRepository repository;
+    QString error;
+    QVERIFY(repository.open(directory.filePath(QStringLiteral("memory.db")), &error));
+
+    for (int i = 0; i < 5; ++i) {
+        MemoryEntry entry;
+        entry.id = QStringLiteral("bounded-%1").arg(i);
+        entry.type = MemoryType::Semantic;
+        entry.status = MemoryStatus::Active;
+        entry.partition = QStringLiteral("semantic");
+        entry.key = entry.id;
+        entry.summary = QStringLiteral("entry %1").arg(i);
+        entry.content = entry.summary;
+        entry.createdAt = QDateTime::currentDateTimeUtc().addSecs(i);
+        entry.updatedAt = entry.createdAt;
+        QVERIFY(repository.insert(entry));
+    }
+    MemoryEntry hippocampus;
+    hippocampus.id = QStringLiteral("hippo");
+    hippocampus.type = MemoryType::ShortTerm;
+    hippocampus.status = MemoryStatus::Active;
+    hippocampus.partition = QStringLiteral("hippocampus");
+    hippocampus.key = QStringLiteral("hippo");
+    hippocampus.summary = QStringLiteral("pending");
+    hippocampus.content = hippocampus.summary;
+    QVERIFY(repository.insert(hippocampus));
+
+    const QList<MemoryEntry> recent = repository.loadRecent(2);
+    QCOMPARE(recent.size(), 2);
+    QCOMPARE(recent.at(0).id, QStringLiteral("bounded-4"));
+    QCOMPARE(recent.at(1).id, QStringLiteral("bounded-3"));
+    const QList<MemoryEntry> inbox = repository.loadRecent(8, QStringLiteral("hippocampus"));
+    QCOMPARE(inbox.size(), 1);
+    QCOMPARE(inbox.first().id, QStringLiteral("hippo"));
 }
 
 #ifdef DESKTOP_PET_HAS_ORT

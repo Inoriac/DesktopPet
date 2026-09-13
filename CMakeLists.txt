@@ -1386,6 +1386,8 @@ add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
 add_desktop_pet_cpp_test(hybrid_graph_builder_tests HybridGraphBuilderTests
     SOURCES
         tests/test_hybrid_graph_builder.cpp
+        core/ai/memory/batch_selector.h
+        core/ai/memory/batch_selector.cpp
         core/ai/memory/memory_types.h
         core/ai/memory/hybrid_graph_builder.h
         core/ai/memory/hybrid_graph_builder.cpp
@@ -1517,7 +1519,11 @@ add_desktop_pet_cpp_test(memory_recall_phase3_tests MemoryRecallPhase3Tests
 set(ORT_ROOT "")
 set(ORT_LIB "")
 if(DESKTOP_PET_ENABLE_ONNX_RUNTIME)
-    file(GLOB _ort_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/onnxruntime-*")
+    # 支持官方 ZIP 解压后的子目录，以及直接整理到 third_party/onnxruntime
+    # 的平铺目录（include/ + lib/）。
+    set(_ort_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime")
+    file(GLOB _ort_nested_dirs "${CMAKE_CURRENT_SOURCE_DIR}/third_party/onnxruntime/onnxruntime-*")
+    list(APPEND _ort_dirs ${_ort_nested_dirs})
     foreach(d ${_ort_dirs})
         if(EXISTS "${d}/include/onnxruntime_cxx_api.h")
             set(ORT_ROOT "${d}")
@@ -1537,7 +1543,9 @@ if(DESKTOP_PET_ENABLE_ONNX_RUNTIME)
     endif()
 endif()
 if(ORT_ROOT AND ORT_LIB)
-    set(ORT_FOUND TRUE CACHE BOOL "onnxruntime available")
+    set(ORT_FOUND TRUE CACHE BOOL "onnxruntime available" FORCE)
+    set(ORT_ROOT "${ORT_ROOT}" CACHE PATH "onnxruntime root" FORCE)
+    set(ORT_LIB "${ORT_LIB}" CACHE FILEPATH "onnxruntime library" FORCE)
     message(STATUS "onnxruntime found: root=${ORT_ROOT} lib=${ORT_LIB}")
     target_sources(memory_strategy_tests PRIVATE
         core/ai/memory/onnx_embedding_provider.h
@@ -1551,6 +1559,18 @@ if(ORT_ROOT AND ORT_LIB)
     set_target_properties(memory_strategy_tests PROPERTIES
         BUILD_RPATH "${ORT_ROOT}/lib"
         INSTALL_RPATH "@loader_path")
+    if(WIN32)
+        # 官方 Windows 包把 import library 放在 lib、运行时 DLL 放在 bin；
+        # 兼容旧包将 DLL 放在 lib 的布局。
+        file(GLOB ORT_RUNTIME_DLLS
+            "${ORT_ROOT}/bin/*.dll"
+            "${ORT_ROOT}/lib/*.dll")
+        if(ORT_RUNTIME_DLLS)
+            add_custom_command(TARGET memory_strategy_tests POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:memory_strategy_tests>)
+        endif()
+    endif()
     # 生产目标同样编入 ONNX provider：AIBrain 在 DESKTOP_PET_HAS_ORT 下尝试加载
     # assets/embeddings 模型，失败则语义索引静默禁用（退关键词召回）。
     target_sources(Desktop_Pet PRIVATE
@@ -1562,8 +1582,15 @@ if(ORT_ROOT AND ORT_LIB)
     set_target_properties(Desktop_Pet PROPERTIES
         BUILD_RPATH "${ORT_ROOT}/lib"
         INSTALL_RPATH "@loader_path")
+    if(WIN32)
+        if(ORT_RUNTIME_DLLS)
+            add_custom_command(TARGET Desktop_Pet POST_BUILD
+                COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                    ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:Desktop_Pet>)
+        endif()
+    endif()
 else()
-    set(ORT_FOUND FALSE CACHE BOOL "onnxruntime available")
+    set(ORT_FOUND FALSE CACHE BOOL "onnxruntime available" FORCE)
     message(STATUS "onnxruntime NOT found — OnnxEmbeddingProvider skipped (Noop fallback). "
                    "Run tools/fetch_onnxruntime.sh to enable.")
     # 不加 onnx_embedding_provider.cpp，但保留头以供 Desktop_Pet 在 ort 可用时引用

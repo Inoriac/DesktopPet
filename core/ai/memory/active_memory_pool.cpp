@@ -18,7 +18,11 @@ void ActiveMemoryPool::activate(const QString& memoryId,
                                  double activation,
                                  const QString& source,
                                  const QString& contextId) {
-    if (memoryId.isEmpty()) return;
+    if (memoryId.trimmed().isEmpty() || !std::isfinite(activation)
+        || activation <= 0.0) {
+        return;
+    }
+    activation = std::min(activation, 2.0);
     
     const QDateTime now = QDateTime::currentDateTimeUtc();
     
@@ -128,6 +132,7 @@ void ActiveMemoryPool::clear() {
 }
 
 QList<ActiveMemoryItem> ActiveMemoryPool::snapshot(int maxCount) const {
+    if (maxCount <= 0) return {};
     QList<ActiveMemoryItem> items = activeItems();
     if (items.size() > maxCount) {
         items = items.mid(0, maxCount);
@@ -138,12 +143,40 @@ QList<ActiveMemoryItem> ActiveMemoryPool::snapshot(int maxCount) const {
 void ActiveMemoryPool::restoreFromSnapshot(const QList<ActiveMemoryItem>& items,
                                             const QDateTime& savedAt,
                                             const QDateTime& now) {
+    // Snapshots are untrusted persisted state.  Ignore malformed rows and
+    // enforce the same bounds as live activation so a corrupt snapshot cannot
+    // grow the pool beyond its fixed budget.
+    auto insertRestored = [this](const ActiveMemoryItem& item, double activation) {
+        if (item.memoryId.trimmed().isEmpty()) return;
+        if (!std::isfinite(activation) || activation < ACTIVATION_THRESHOLD) return;
+        ActiveMemoryItem restored = item;
+        restored.activation = std::min(activation, 2.0);
+        if (restored.source.trimmed().isEmpty()) {
+            restored.source = QStringLiteral("unknown");
+        }
+        const auto existing = m_pool.constFind(restored.memoryId);
+        if (existing != m_pool.constEnd() && existing->activation >= restored.activation) {
+            return;
+        }
+        m_pool.insert(restored.memoryId, restored);
+        while (m_pool.size() > MAX_POOL_SIZE) {
+            QString minKey;
+            double minActivation = std::numeric_limits<double>::max();
+            for (auto it = m_pool.constBegin(); it != m_pool.constEnd(); ++it) {
+                if (it->activation < minActivation) {
+                    minActivation = it->activation;
+                    minKey = it.key();
+                }
+            }
+            if (minKey.isEmpty()) break;
+            m_pool.remove(minKey);
+        }
+    };
+
     if (!savedAt.isValid() || !now.isValid() || savedAt >= now) {
         // Invalid timestamps or negative time delta - skip decay
         for (const ActiveMemoryItem& item : items) {
-            if (item.activation >= ACTIVATION_THRESHOLD) {
-                m_pool.insert(item.memoryId, item);
-            }
+            insertRestored(item, item.activation);
         }
         return;
     }
@@ -161,11 +194,7 @@ void ActiveMemoryPool::restoreFromSnapshot(const QList<ActiveMemoryItem>& items,
         const double decayFactor = computeDecay(offlineMinutes, halfLife);
         const double restoredActivation = item.activation * decayFactor;
         
-        if (restoredActivation >= ACTIVATION_THRESHOLD) {
-            ActiveMemoryItem restored = item;
-            restored.activation = restoredActivation;
-            m_pool.insert(restored.memoryId, restored);
-        }
+        insertRestored(item, restoredActivation);
     }
 }
 
