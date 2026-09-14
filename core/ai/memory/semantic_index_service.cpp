@@ -39,6 +39,10 @@ void SemanticIndexService::stop() {
 
 EmbeddingIndex* SemanticIndexService::index() const { return m_index.get(); }
 
+IndexCoverageStats SemanticIndexService::coverageStats(int scanLimit) const {
+    return m_worker ? m_worker->coverageStats(scanLimit) : IndexCoverageStats{};
+}
+
 void SemanticIndexService::setInterval(int ms) { m_timer.setInterval(ms > 0 ? ms : 1000); }
 
 void SemanticIndexService::kick() {
@@ -49,6 +53,9 @@ void SemanticIndexService::kick() {
 int SemanticIndexService::runOnce() {
     if (!isEnabled()) return 0;
     if (m_idle && !m_idle()) return 0;
+
+    const int queued = m_worker->enqueueBackfillJobs(m_batchSize);
+    if (queued > 0) m_queuedBackfillTotal += queued;
 
     const int completed = m_worker->processPending(m_batchSize);
     if (completed > 0) {

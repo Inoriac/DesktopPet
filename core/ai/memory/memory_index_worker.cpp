@@ -5,6 +5,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QUuid>
 #include <QVariant>
 #include <cmath>
 #include <cstring>
@@ -16,6 +17,19 @@ qint64 retryDelayMs(int attempt) {
     const int exponent = qBound(3, attempt + 2, 16);
     return qMin<qint64>(600000, qint64(1) << exponent) * 1000;
 }
+
+QString eligibleMemorySql(const QString& selectClause,
+                          const QString& suffix = QString()) {
+    return selectClause + QStringLiteral(
+        " FROM memory_items m "
+        "WHERE (m.privacy_level='public' OR m.privacy_level='personal') "
+        "AND m.status='active' "
+        "AND m.partition IS NOT NULL AND m.partition<>'' "
+        "AND m.partition NOT IN ('hippocampus','working','short_term') "
+        "AND m.type NOT IN ('working','short_term','task_shadow') "
+        "AND (m.expires_at IS NULL OR m.expires_at='' OR julianday(m.expires_at)>julianday('now')) ")
+        + suffix;
+}
 }
 
 MemoryIndexWorker::MemoryIndexWorker(HnswEmbeddingIndex& index) : m_index(index) {}
@@ -23,6 +37,86 @@ MemoryIndexWorker::MemoryIndexWorker(HnswEmbeddingIndex& index) : m_index(index)
 bool MemoryIndexWorker::ensureReady() {
     if (!m_index.provider() || m_index.provider()->dimension() <= 0) return false;
     return m_index.isReady() || m_index.loadFromDisk() || m_index.rebuildFromRepository();
+}
+
+int MemoryIndexWorker::enqueueBackfillJobs(int limit) {
+    if (limit <= 0 || !m_index.provider() || m_index.provider()->dimension() <= 0) return 0;
+    QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
+    if (!db.isOpen()) return 0;
+
+    QSqlQuery candidates(db);
+    candidates.prepare(eligibleMemorySql(QStringLiteral(
+        "SELECT m.id,m.summary,m.content"), QStringLiteral(
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM memory_embeddings e WHERE e.memory_id=m.id AND e.model=:model"
+        ") "
+        "ORDER BY COALESCE(m.updated_at,m.created_at) DESC, m.id DESC LIMIT :limit")));
+    candidates.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+    candidates.bindValue(QStringLiteral(":limit"), limit);
+    if (!candidates.exec()) return 0;
+
+    int queued = 0;
+    while (candidates.next()) {
+        const QString memoryId = candidates.value(0).toString();
+        const QString text = candidates.value(1).toString() + QStringLiteral("\n") + candidates.value(2).toString();
+        const QString hash = HnswEmbeddingIndex::contentHash(text);
+
+        QSqlQuery existing(db);
+        existing.prepare(QStringLiteral(
+            "SELECT 1 FROM memory_index_jobs "
+            "WHERE memory_id=:id AND status IN ('Pending','Processing') "
+            "AND (model='' OR model=:model) LIMIT 1"));
+        existing.bindValue(QStringLiteral(":id"), memoryId);
+        existing.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+        if (existing.exec() && existing.next()) continue;
+
+        QSqlQuery insert(db);
+        insert.prepare(QStringLiteral(
+            "INSERT INTO memory_index_jobs(id,memory_id,operation,model,content_hash,status,created_at,updated_at,next_attempt_at,last_error) "
+            "VALUES(:job,:memory,'upsert',:model,:hash,'Pending',:created,:updated,0,'')"));
+        const QString now = utcNow();
+        insert.bindValue(QStringLiteral(":job"), QUuid::createUuid().toString(QUuid::WithoutBraces));
+        insert.bindValue(QStringLiteral(":memory"), memoryId);
+        insert.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+        insert.bindValue(QStringLiteral(":hash"), hash);
+        insert.bindValue(QStringLiteral(":created"), now);
+        insert.bindValue(QStringLiteral(":updated"), now);
+        if (insert.exec()) ++queued;
+    }
+    return queued;
+}
+
+IndexCoverageStats MemoryIndexWorker::coverageStats(int scanLimit) const {
+    IndexCoverageStats stats;
+    if (!m_index.provider() || m_index.provider()->dimension() <= 0 || scanLimit <= 0) return stats;
+    QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
+    if (!db.isOpen()) return stats;
+
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT m.id,m.summary,m.content,e.content_hash,"
+        "EXISTS(SELECT 1 FROM memory_index_jobs j WHERE j.memory_id=m.id AND j.status IN ('Pending','Processing') "
+        "AND (j.model='' OR j.model=:model2)) "
+        "FROM memory_items m "
+        "LEFT JOIN memory_embeddings e ON e.memory_id=m.id AND e.model=:model "
+        "WHERE (m.privacy_level='public' OR m.privacy_level='personal') "
+        "AND m.status='active' "
+        "AND m.partition IS NOT NULL AND m.partition<>'' "
+        "AND m.partition NOT IN ('hippocampus','working','short_term') "
+        "AND m.type NOT IN ('working','short_term','task_shadow') "
+        "AND (m.expires_at IS NULL OR m.expires_at='' OR julianday(m.expires_at)>julianday('now')) "
+        "ORDER BY COALESCE(m.updated_at,m.created_at) DESC, m.id DESC LIMIT :limit"));
+    query.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+    query.bindValue(QStringLiteral(":model2"), m_index.provider()->modelName());
+    query.bindValue(QStringLiteral(":limit"), scanLimit);
+    if (!query.exec()) return stats;
+    while (query.next()) {
+        ++stats.eligible;
+        const QString text = query.value(1).toString() + QStringLiteral("\n") + query.value(2).toString();
+        if (query.value(3).toString() == HnswEmbeddingIndex::contentHash(text)) ++stats.indexed;
+        if (query.value(4).toBool()) ++stats.pending;
+    }
+    return stats;
 }
 
 int MemoryIndexWorker::processPending(int limit) {

@@ -3,6 +3,7 @@
 
 #include "embedding_index.h"
 #include "embedding_provider.h"
+#include "memory_index_worker.h"
 
 #include <QObject>
 #include <QString>
@@ -12,7 +13,6 @@
 #include <memory>
 
 class HnswEmbeddingIndex;
-class MemoryIndexWorker;
 
 // 语义索引的生产接线（设计 §5 的简化落地）：
 //   持有 EmbeddingProvider + HnswEmbeddingIndex + MemoryIndexWorker，用 QTimer 在
@@ -50,6 +50,8 @@ public:
     int runOnce();
 
     int processedTotal() const { return m_processedTotal; }
+    int queuedBackfillTotal() const { return m_queuedBackfillTotal; }
+    IndexCoverageStats coverageStats(int scanLimit = 4096) const;
     int rebuildCount() const { return m_rebuildCount; }
 
 signals:
@@ -66,6 +68,7 @@ private:
     QTimer m_timer;
     int m_batchSize = 4;
     int m_processedTotal = 0;
+    int m_queuedBackfillTotal = 0;
     int m_rebuildCount = 0;
 };
 

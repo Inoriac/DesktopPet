@@ -3,6 +3,13 @@
 
 #include <QString>
 
+struct IndexCoverageStats {
+    int eligible = 0;
+    int indexed = 0;
+    int pending = 0;
+    double ratio() const { return eligible > 0 ? static_cast<double>(indexed) / eligible : 1.0; }
+};
+
 class HnswEmbeddingIndex;
 
 // 串行消费 memory_index_jobs outbox。实例应只由一个后台线程调用；不创建线程，
@@ -15,6 +22,11 @@ public:
     // 无待处理任务时也尝试加载/恢复索引；limit<=0 不做任何工作。
     int processPending(int limit = 16);
     bool processOne(const QString& jobId);
+
+    // Queue bounded backfill jobs for legacy eligible memories that do not yet
+    // have an embedding row for the current provider model. Returns enqueued jobs.
+    int enqueueBackfillJobs(int limit = 16);
+    IndexCoverageStats coverageStats(int scanLimit = 4096) const;
 
 private:
     bool ensureReady();

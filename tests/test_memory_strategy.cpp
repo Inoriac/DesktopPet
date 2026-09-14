@@ -107,6 +107,7 @@ private slots:
     void testIndexJobsPersistBackoff();
     void testSemanticIndexServiceLifecycle();
     void testActiveMemoryPoolPersistsAcrossRestart();
+    void testSemanticIndexServiceBackfillsLegacyMemories();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2352,11 +2353,13 @@ void TestMemoryStrategy::testSemanticIndexServiceLifecycle() {
     for (const auto& id : {QStringLiteral("alpha"), QStringLiteral("beta"),
                            QStringLiteral("gamma"), QStringLiteral("delta")}) {
         QVERIFY(service.hnswIndex()->remove(id));
+        QVERIFY(store.updateStatusById(id, MemoryStatus::Deleted));
     }
-    // Remove authoritative vectors as a deleted memory would, so compaction
-    // does not reinsert them from SQLite.
+    // Remove authoritative vectors/jobs as a deleted memory would, so compaction
+    // does not reinsert them from SQLite and no pending delete job is consumed.
     QSqlQuery clearVectors(QSqlDatabase::database(store.databaseConnectionName()));
     QVERIFY(clearVectors.exec(QStringLiteral("DELETE FROM memory_embeddings")));
+    QVERIFY(clearVectors.exec(QStringLiteral("DELETE FROM memory_index_jobs")));
     QCOMPARE(service.hnswIndex()->activeCount(), 0);
     QCOMPARE(service.hnswIndex()->tombstoneCount(), 4);
     QVERIFY(service.hnswIndex()->needsCompaction());
@@ -2404,6 +2407,42 @@ void TestMemoryStrategy::testActiveMemoryPoolPersistsAcrossRestart() {
         QVERIFY(restored.getActivation(QStringLiteral("active-keep")) < 0.60);
         QVERIFY(restored.getActivation(QStringLiteral("active-keep")) > 0.40);
     }
+}
+
+void TestMemoryStrategy::testSemanticIndexServiceBackfillsLegacyMemories() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    for (const QString& id : {QStringLiteral("legacy-a"), QStringLiteral("legacy-b"), QStringLiteral("legacy-c")}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Semantic;
+        entry.summary = id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    QSqlQuery cleanup(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(cleanup.exec(QStringLiteral("DELETE FROM memory_index_jobs")));
+    QVERIFY(cleanup.exec(QStringLiteral("DELETE FROM memory_embeddings")));
+
+    SemanticIndexService service;
+    service.setBatchSize(2);
+    QVERIFY(service.start(std::make_unique<FakeEmbeddingProvider>(), store.databaseConnectionName(), dir.path()));
+    IndexCoverageStats initial = service.coverageStats();
+    QCOMPARE(initial.eligible, 3);
+    QCOMPARE(initial.indexed, 0);
+    QCOMPARE(initial.pending, 0);
+
+    QCOMPARE(service.runOnce(), 2);
+    QCOMPARE(service.queuedBackfillTotal(), 2);
+    IndexCoverageStats partial = service.coverageStats();
+    QCOMPARE(partial.eligible, 3);
+    QCOMPARE(partial.indexed, 2);
+
+    QCOMPARE(service.runOnce(), 1);
+    QCOMPARE(service.coverageStats().indexed, 3);
+    QCOMPARE(service.hnswIndex()->activeCount(), 3);
+    QCOMPARE(service.index()->search(QStringLiteral("legacy-a"), 1).first().memoryId,
+             QStringLiteral("legacy-a"));
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

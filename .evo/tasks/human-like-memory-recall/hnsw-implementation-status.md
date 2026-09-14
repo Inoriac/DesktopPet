@@ -103,6 +103,19 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - `MemoryStrategyTests::testActiveMemoryPoolPersistsAcrossRestart` covers save,
   restart/load, one-hour session half-life decay and deleted-memory filtering.
 
+## Legacy Backfill / Coverage
+
+- `MemoryIndexWorker::enqueueBackfillJobs()` now queues bounded upsert jobs for
+  eligible legacy long-term memories that lack an embedding row for the current
+  provider model. It skips existing Pending/Processing jobs and does not enqueue
+  rows that already have current-model vectors.
+- `MemoryIndexWorker::coverageStats()` reports eligible/indexed/pending counts
+  over a bounded diagnostic scan. `SemanticIndexService::runOnce()` calls the
+  backfill enqueuer before normal consumption, so startup idle ticks gradually
+  index old databases without blocking startup.
+- `MemoryStrategyTests::testSemanticIndexServiceBackfillsLegacyMemories` covers
+  a legacy database with Active long-term rows but no outbox/embedding state.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -133,6 +146,7 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   `SemanticIndexService`; compaction runs during an idle tick after pending
   index jobs drain, including the all-tombstone (`activeCount()==0`) case.
 - Synthetic Recall@32 and latency benchmark harness exists (`memory_hnsw_benchmark`),
-  with initial macOS baselines recorded above. Real-data/provider-backed gates,
-  migration coverage and shadow retirement gates have not been measured or enabled.
-  Invalid persisted vectors have no repair queue yet.
+  with initial macOS baselines recorded above. Bounded legacy backfill and coverage
+  counters are implemented for missing current-model vectors. Real-data/provider-backed
+  gates, clear/import auditing and shadow retirement gates have not been measured
+  or enabled. Invalid persisted vectors have no repair queue yet.
