@@ -132,6 +132,28 @@ Related design: design.md sections 4, 5, 14, 15, 16.
   covers the 6-day false case, 7-day true case, coverage regression and failure
   regression.
 
+## Repair and Coverage Hardening (design §§4, 5, 14)
+
+- Backfill inspects a bounded batch using an ID cursor. Pending jobs are excluded
+  before LIMIT; foreign-model jobs are excluded before the consumer's LIMIT.
+  Missing/stale vectors, dimension/blob mismatches, zero/non-finite vectors and
+  missing/inactive labels enter the existing retryable outbox. Label loss is
+  repaired before consumption; existing retry deadlines are preserved.
+- Coverage validates vector shape/norm, current content hash and Active label.
+  `valid` distinguishes SQL failure; `complete` distinguishes a partial scan.
+  Incomplete/failed scans cannot pass retirement (the diagnostic cap is 4096).
+  Larger databases require a future complete incremental coverage audit.
+- Load/recovery failures persist unhealthy samples even after successful repair.
+  Daily samples preserve worst coverage and failure errors. Retirement also
+  checks current ready/coverage/pending state. This is still an observational
+  gate, not proof of shadow result equivalence or permission to remove fallback.
+- Regression: four tests first reproduced bad-vector coverage, backfill starvation,
+  foreign-model starvation and SQL-failure false health; all pass after fixes.
+  Additional checks cover partial coverage and corruption recovery health.
+  Desktop_Pet builds and seven related CTest suites pass without ONNX.
+- Retry delay now correctly caps milliseconds at 600000 (previous code applied
+  the cap before converting seconds to milliseconds).
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -166,4 +188,4 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   counters are implemented for missing current-model vectors. Shadow retirement
   gate state/decision logic is implemented but not wired to disable legacy recall
   paths. Real-data/provider-backed gates and clear/import auditing have not been
-  measured or enabled. Invalid persisted vectors have no repair queue yet.
+  measured or enabled. Invalid persisted vectors now use the repair queue above.

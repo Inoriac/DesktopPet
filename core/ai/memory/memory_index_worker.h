@@ -8,7 +8,9 @@ struct IndexCoverageStats {
     int eligible = 0;
     int indexed = 0;
     int pending = 0;
-    double ratio() const { return eligible > 0 ? static_cast<double>(indexed) / eligible : 1.0; }
+    bool valid = false;
+    bool complete = false;
+    double ratio() const { return valid && complete ? (eligible > 0 ? static_cast<double>(indexed) / eligible : 1.0) : 0.0; }
 };
 
 struct IndexRetirementGateStatus {
@@ -32,8 +34,9 @@ public:
     int processPending(int limit = 16);
     bool processOne(const QString& jobId);
 
-    // Queue bounded backfill jobs for legacy eligible memories that do not yet
-    // have an embedding row for the current provider model. Returns enqueued jobs.
+    // Inspect at most limit eligible rows per call, using an ID cursor across
+    // ticks. Missing, stale, malformed vectors and missing labels enter the
+    // existing retryable outbox. Already pending jobs are excluded before LIMIT.
     int enqueueBackfillJobs(int limit = 16);
     IndexCoverageStats coverageStats(int scanLimit = 4096) const;
     bool recordHealthSample(bool healthy,
@@ -46,6 +49,7 @@ public:
 private:
     bool ensureReady();
     HnswEmbeddingIndex& m_index;
+    QString m_backfillCursor;
 };
 
 #endif // DESKTOP_PET_MEMORY_INDEX_WORKER_H

@@ -109,6 +109,11 @@ private slots:
     void testActiveMemoryPoolPersistsAcrossRestart();
     void testSemanticIndexServiceBackfillsLegacyMemories();
     void testIndexRetirementGateRequiresCoverageAndHealthyDays();
+    void testIndexBackfillRepairsInvalidVectors();
+    void testIndexBackfillMakesProgressPastPendingJobs();
+    void testIndexWorkerSkipsForeignModelBeforeBatchLimit();
+    void testIndexHealthRejectsUnreadableCoverage();
+    void testIndexRecoveryKeepsDayUnhealthy();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2481,6 +2486,137 @@ void TestMemoryStrategy::testIndexRetirementGateRequiresCoverageAndHealthyDays()
 
     QVERIFY(worker.recordHealthSample(false, QStringLiteral("simulated corruption"), today.addDays(2)));
     QVERIFY(!worker.retirementGateStatus(7, 0.95, today.addDays(2)).canRetireLegacyScan);
+}
+
+void TestMemoryStrategy::testIndexBackfillRepairsInvalidVectors() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    for (int i = 0; i < 7; ++i) {
+        MemoryEntry entry;
+        entry.id = QStringLiteral("repair-%1").arg(i);
+        entry.type = MemoryType::Semantic;
+        entry.summary = entry.id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(16), 7);
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("UPDATE memory_embeddings SET dimension=99 WHERE memory_id='repair-0'")));
+    QVERIFY(q.exec(QStringLiteral("UPDATE memory_embeddings SET vector_blob=x'01' WHERE memory_id='repair-1'")));
+    QVERIFY(q.exec(QStringLiteral("UPDATE memory_embeddings SET vector_blob=zeroblob(64) WHERE memory_id='repair-2'")));
+    QVERIFY(q.exec(QStringLiteral("UPDATE memory_embeddings SET content_hash='obsolete' WHERE memory_id='repair-3'")));
+    QVector<float> invalid(16, std::numeric_limits<float>::quiet_NaN());
+    q.prepare(QStringLiteral("UPDATE memory_embeddings SET vector_blob=:blob WHERE memory_id='repair-4'"));
+    q.bindValue(QStringLiteral(":blob"), QByteArray(reinterpret_cast<const char*>(invalid.constData()), 64));
+    QVERIFY(q.exec());
+    QVERIFY(q.exec(QStringLiteral("DELETE FROM memory_hnsw_labels WHERE memory_id='repair-5'")));
+    QCOMPARE(worker.coverageStats().indexed, 1);
+    int repaired = 0;
+    for (int round = 0; round < 10; ++round) {
+        worker.enqueueBackfillJobs(2);
+        repaired += worker.processPending(2);
+    }
+    QCOMPARE(repaired, 6);
+    QCOMPARE(worker.coverageStats().indexed, 7);
+    const auto partial = worker.coverageStats(2);
+    QVERIFY(partial.valid);
+    QVERIFY(!partial.complete);
+    QCOMPARE(partial.ratio(), 0.0);
+    HnswEmbeddingIndex restored(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restored.loadFromDisk());
+    QCOMPARE(restored.activeCount(), 7);
+}
+
+void TestMemoryStrategy::testIndexBackfillMakesProgressPastPendingJobs() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    for (int i = 0; i < 5; ++i) {
+        MemoryEntry entry;
+        entry.id = QStringLiteral("backfill-%1").arg(i);
+        entry.type = MemoryType::Semantic;
+        entry.summary = entry.id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("DELETE FROM memory_index_jobs")));
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    int queued = 0;
+    for (int i = 0; i < 5; ++i) queued += worker.enqueueBackfillJobs(2);
+    QCOMPARE(queued, 5); // No consumption: Pending rows must not starve later rows.
+    QCOMPARE(worker.enqueueBackfillJobs(2), 0);
+}
+
+void TestMemoryStrategy::testIndexWorkerSkipsForeignModelBeforeBatchLimit() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("model queue alpha");
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral(
+        "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at) "
+        "VALUES('foreign','missing','upsert','other-model','Pending','2000-01-01')")));
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(1), 1);
+    QVERIFY(q.exec(QStringLiteral("SELECT attempt_count FROM memory_index_jobs WHERE id='foreign'")));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(), 0);
+}
+
+void TestMemoryStrategy::testIndexHealthRejectsUnreadableCoverage() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    worker.processPending();
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("ALTER TABLE memory_embeddings RENAME TO unavailable_embeddings")));
+    const QDate day(2026, 9, 14);
+    QVERIFY(worker.recordHealthSample(true, {}, day));
+    QVERIFY(!worker.retirementGateStatus(1, 0.95, day).canRetireLegacyScan);
+}
+
+void TestMemoryStrategy::testIndexRecoveryKeepsDayUnhealthy() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("recovery health alpha");
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex original(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker first(original);
+    QCOMPARE(first.processPending(), 1);
+    QVERIFY(first.recordHealthSample(true));
+    QVERIFY(first.retirementGateStatus(1).canRetireLegacyScan);
+    QFile damaged(original.indexFilePath());
+    QVERIFY(damaged.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    damaged.write("broken");
+    damaged.close();
+    HnswEmbeddingIndex restarted(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(restarted);
+    QCOMPARE(worker.processPending(), 0);
+    QVERIFY(restarted.isReady());
+    QVERIFY(worker.recordHealthSample(true));
+    QVERIFY(!worker.retirementGateStatus(1).canRetireLegacyScan);
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("SELECT failure_count,last_error FROM memory_index_health_daily")));
+    QVERIFY(q.next());
+    QVERIFY(q.value(0).toInt() > 0);
+    QVERIFY(!q.value(1).toString().isEmpty());
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.
