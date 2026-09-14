@@ -71,6 +71,26 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - hnswlib include dir is now global (`include_directories`) because ai_brain.cpp
   pulls the service into every AGENT_RUNTIME_TEST_SUPPORT_SOURCES target.
 
+## Recall@32 / Latency Benchmark
+
+- Added manual target `memory_hnsw_benchmark` (not registered in CTest) for
+  synthetic vector regression. It builds 10,000 512-dimensional normalized
+  vectors by default, compares HNSW Top-32 against exact cosine search, and
+  prints compact JSON. Environment overrides:
+  `DESKTOP_PET_HNSW_BENCH_COUNT`, `DESKTOP_PET_HNSW_BENCH_DIM`,
+  `DESKTOP_PET_HNSW_BENCH_QUERIES`, `DESKTOP_PET_HNSW_BENCH_TOPK`,
+  `DESKTOP_PET_HNSW_BENCH_M`, `DESKTOP_PET_HNSW_BENCH_EF_CONSTRUCTION`,
+  `DESKTOP_PET_HNSW_BENCH_EF_SEARCH`, `DESKTOP_PET_HNSW_BENCH_SEED`.
+- macOS synthetic baseline (no ONNX):
+  - default M=16/efConstruction=200/efSearch=50: Recall@32 mean 0.6841,
+    HNSW P95 2.94 ms, exact P95 76.5 ms, mean speedup 28.3x.
+  - efSearch=200: Recall@32 mean 0.8334, HNSW P95 8.29 ms,
+    exact P95 77.4 ms, mean speedup 9.47x.
+- The synthetic random 512D corpus has very small margins among non-top1
+  neighbors, so these values are regression baselines, not final product gates.
+  A production gate still needs real/provider-backed samples and shadow Top-K
+  comparison.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -100,5 +120,7 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 - Tombstone threshold detection and automatic idle-time compaction are wired in
   `SemanticIndexService`; compaction runs during an idle tick after pending
   index jobs drain, including the all-tombstone (`activeCount()==0`) case.
-- Recall@32, latency benchmarks, migration coverage and shadow retirement gates
-  have not been measured or enabled. Invalid persisted vectors have no repair queue yet.
+- Synthetic Recall@32 and latency benchmark harness exists (`memory_hnsw_benchmark`),
+  with initial macOS baselines recorded above. Real-data/provider-backed gates,
+  migration coverage and shadow retirement gates have not been measured or enabled.
+  Invalid persisted vectors have no repair queue yet.

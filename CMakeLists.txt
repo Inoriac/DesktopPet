@@ -1348,6 +1348,41 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
     APPLE_CORE_GRAPHICS
 )
 
+# ---- HNSW Recall@K / latency benchmark (manual target, not registered in CTest) ----
+add_executable(memory_hnsw_benchmark
+    tests/benchmark_memory_hnsw.cpp
+    core/ai/memory/memory_types.h
+    core/ai/memory/memory_store.h
+    core/ai/memory/memory_store.cpp
+    core/ai/memory/memory_repository.h
+    core/ai/memory/sqlite_memory_repository.h
+    core/ai/memory/sqlite_memory_repository.cpp
+    core/ai/memory/memory_json_codec.h
+    core/ai/memory/memory_json_codec.cpp
+    core/ai/memory/memory_relation.h
+    core/ai/memory/memory_relation_graph.h
+    core/ai/memory/memory_relation_graph.cpp
+    core/ai/memory/tag_cooccurrence_graph.h
+    core/ai/memory/tag_cooccurrence_graph.cpp
+    core/ai/memory/embedding_provider.h
+    core/ai/memory/embedding_index.h
+    core/ai/memory/partition_policy.h
+    core/ai/memory/hnsw_embedding_index.h
+    core/ai/memory/hnsw_embedding_index.cpp
+)
+target_include_directories(memory_hnsw_benchmark PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/core
+    ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+)
+target_link_libraries(memory_hnsw_benchmark
+    Qt::Core
+    Qt::Sql
+)
+if(APPLE)
+    target_link_libraries(memory_hnsw_benchmark "-framework CoreGraphics")
+endif()
+
 # ---- 类人激活式召回（Phase 1/2 基础组件）测试 ----
 add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
     SOURCES
