@@ -26,6 +26,9 @@ public:
     QList<MemoryEntry> loadRecent(int limit,
                                   const QString& partition = QString(),
                                   bool activeOnly = false) override;
+    bool saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
+                                  const QDateTime& savedAt) override;
+    ActiveMemorySnapshot loadActiveMemorySnapshot(int limit = ActiveMemoryPool::MAX_POOL_SIZE) override;
     bool clear() override;
     bool removeById(const QString& id) override;
 

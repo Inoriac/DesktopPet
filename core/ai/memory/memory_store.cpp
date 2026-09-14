@@ -452,6 +452,17 @@ QList<MemoryEntry> MemoryStore::loadRecentFromDatabase(int limit,
     return m_repository->loadRecent(std::clamp(limit, 1, 4096), partition, activeOnly);
 }
 
+bool MemoryStore::saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
+                                           const QDateTime& savedAt) {
+    if (!m_repository || !m_repository->isOpen()) return false;
+    return m_repository->saveActiveMemorySnapshot(items, savedAt);
+}
+
+ActiveMemorySnapshot MemoryStore::loadActiveMemorySnapshot(int limit) {
+    if (!m_repository || !m_repository->isOpen()) return {};
+    return m_repository->loadActiveMemorySnapshot(limit);
+}
+
 bool MemoryStore::refreshDatabaseOnly(QString* errorMessage) {
     if (!openDatabase(errorMessage)) return false;
     m_entries = m_repository->loadAll();

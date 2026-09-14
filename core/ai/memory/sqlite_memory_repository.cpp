@@ -11,6 +11,8 @@
 #include <QSet>
 #include <QUuid>
 
+#include <cmath>
+
 #include "partition_policy.h"
 
 namespace {
@@ -288,6 +290,19 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         ),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_hnsw_labels_model_status "
                        "ON memory_hnsw_labels(model, status)"),
+
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS active_memory_snapshot ("
+            "  memory_id TEXT PRIMARY KEY,"
+            "  activation REAL NOT NULL,"
+            "  source TEXT NOT NULL,"
+            "  context_id TEXT,"
+            "  last_activated_at TEXT NOT NULL,"
+            "  saved_at TEXT NOT NULL"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_active_memory_snapshot_saved_at "
+                       "ON active_memory_snapshot(saved_at)"),
 
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS sleep_staged_change ("
@@ -703,6 +718,66 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
     if (!query.exec()) return {};
     return loadQuery(query);
 }
+
+bool SQLiteMemoryRepository::saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
+                                                      const QDateTime& savedAt) {
+    if (!isOpen() || !savedAt.isValid()) return false;
+    if (!beginTransaction()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    bool ok = query.exec(QStringLiteral("DELETE FROM active_memory_snapshot"));
+    if (ok) {
+        query.prepare(QStringLiteral(
+            "INSERT INTO active_memory_snapshot(memory_id,activation,source,context_id,last_activated_at,saved_at) "
+            "VALUES(:id,:activation,:source,:context,:last,:saved)"));
+        for (const ActiveMemoryItem& item : items) {
+            if (item.memoryId.trimmed().isEmpty() || !std::isfinite(item.activation)
+                || item.activation < ActiveMemoryPool::ACTIVATION_THRESHOLD) {
+                continue;
+            }
+            query.bindValue(QStringLiteral(":id"), item.memoryId);
+            query.bindValue(QStringLiteral(":activation"), item.activation);
+            query.bindValue(QStringLiteral(":source"), item.source.trimmed().isEmpty()
+                ? QStringLiteral("unknown") : item.source);
+            query.bindValue(QStringLiteral(":context"), item.contextId);
+            query.bindValue(QStringLiteral(":last"), dateTimeToString(item.lastActivatedAt.isValid()
+                ? item.lastActivatedAt : savedAt));
+            query.bindValue(QStringLiteral(":saved"), dateTimeToString(savedAt));
+            if (!query.exec()) { ok = false; break; }
+        }
+    }
+    if (ok) return commitTransaction();
+    rollbackTransaction();
+    return false;
+}
+
+ActiveMemorySnapshot SQLiteMemoryRepository::loadActiveMemorySnapshot(int limit) {
+    ActiveMemorySnapshot snapshot;
+    if (!isOpen() || limit <= 0) return snapshot;
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName);
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT s.memory_id,s.activation,s.source,s.context_id,s.last_activated_at,s.saved_at "
+        "FROM active_memory_snapshot s "
+        "JOIN memory_items m ON m.id=s.memory_id "
+        "WHERE m.status='active' "
+        "ORDER BY s.activation DESC LIMIT :limit"));
+    query.bindValue(QStringLiteral(":limit"), std::min(limit, ActiveMemoryPool::MAX_POOL_SIZE));
+    if (!query.exec()) return snapshot;
+    while (query.next()) {
+        ActiveMemoryItem item;
+        item.memoryId = query.value(0).toString();
+        item.activation = query.value(1).toDouble();
+        item.source = query.value(2).toString();
+        item.contextId = query.value(3).toString();
+        item.lastActivatedAt = dateTimeFromString(query.value(4).toString());
+        const QDateTime savedAt = dateTimeFromString(query.value(5).toString());
+        if (!snapshot.savedAt.isValid() || savedAt > snapshot.savedAt) snapshot.savedAt = savedAt;
+        snapshot.items.append(item);
+    }
+    return snapshot;
+}
+
 bool SQLiteMemoryRepository::clear() {
     if (!isOpen()) return false;
 
@@ -725,6 +800,9 @@ bool SQLiteMemoryRepository::clear() {
         QStringLiteral("memory_relations"),
         QStringLiteral("memory_access_log"),
         QStringLiteral("memory_embeddings"),
+        QStringLiteral("memory_hnsw_labels"),
+        QStringLiteral("active_memory_snapshot"),
+        QStringLiteral("memory_index_jobs"),
         QStringLiteral("memory_items")
     };
     for (const QString& table : tables) {
@@ -755,6 +833,8 @@ bool SQLiteMemoryRepository::removeById(const QString& id) {
     if (!execDelete(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM active_memory_snapshot WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM memory_hnsw_labels WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral(
             "DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"), true)) return false;
     return execDelete(QStringLiteral("DELETE FROM memory_items WHERE id = :id"));

@@ -112,6 +112,12 @@ Result<void, DomainError> AIBrain::initializeStorage(
     m_storageInitialized = true;
     // 初始化类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
     m_hippocampusWorkingSet.setStore(&m_memoryStore);
+    const ActiveMemorySnapshot activeSnapshot = m_memoryStore.loadActiveMemorySnapshot();
+    if (!activeSnapshot.isEmpty()) {
+        m_activeMemoryPool.restoreFromSnapshot(activeSnapshot.items, activeSnapshot.savedAt,
+                                               QDateTime::currentDateTimeUtc());
+        m_memoryStore.saveActiveMemorySnapshot(m_activeMemoryPool.snapshot());
+    }
     refreshActivationRecallIndexes(true);
     initializeSemanticIndexService();
     m_chatPreparationEnvironment = std::make_unique<ChatPreparationEnvironment>();

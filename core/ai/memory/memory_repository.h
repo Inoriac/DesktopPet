@@ -7,6 +7,7 @@
 #include <algorithm>
 
 #include "memory_types.h"
+#include "active_memory_pool.h"
 
 class MemoryRepository {
 public:
@@ -42,6 +43,17 @@ public:
         return entries;
     }
     virtual bool clear() = 0;
+
+    virtual bool saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
+                                          const QDateTime& savedAt) {
+        (void)items;
+        (void)savedAt;
+        return false;
+    }
+    virtual ActiveMemorySnapshot loadActiveMemorySnapshot(int limit = ActiveMemoryPool::MAX_POOL_SIZE) {
+        (void)limit;
+        return {};
+    }
 
     // 物理删除单条记忆及其连带子表（tags/evidence/relations/embeddings/access_log）。
     // 供 Daydream 清空 Hippocampus 源条目用。同一事务内执行可随 ROLLBACK 撤销。

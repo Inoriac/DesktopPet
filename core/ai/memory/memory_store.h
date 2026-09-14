@@ -11,6 +11,7 @@
 #include "memory_types.h"
 #include "memory_relation_graph.h"
 #include "tag_cooccurrence_graph.h"
+#include "active_memory_pool.h"
 
 class MemoryRepository;
 
@@ -89,6 +90,9 @@ public:
     bool removeEntryById(const QString& id);
 
     QList<MemoryEntry> all() const { return m_entries; }
+    bool saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
+                                  const QDateTime& savedAt = QDateTime::currentDateTimeUtc());
+    ActiveMemorySnapshot loadActiveMemorySnapshot(int limit = ActiveMemoryPool::MAX_POOL_SIZE);
     QList<MemoryEntry> recent(MemoryType type, int limit) const;
     QList<MemoryEntry> findByTag(const QString& tag, int limit = 20) const;
     QStringList summaryForContext(int limit = 8) const;

@@ -13,6 +13,12 @@ struct ActiveMemoryItem {
     QString contextId;
 };
 
+struct ActiveMemorySnapshot {
+    QList<ActiveMemoryItem> items;
+    QDateTime savedAt;
+    bool isEmpty() const { return items.isEmpty(); }
+};
+
 class ActiveMemoryPool {
 public:
     static constexpr int MAX_POOL_SIZE = 50;

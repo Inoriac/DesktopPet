@@ -106,6 +106,7 @@ private slots:
     void testIndexJobsRejectChangesDuringEmbedding();
     void testIndexJobsPersistBackoff();
     void testSemanticIndexServiceLifecycle();
+    void testActiveMemoryPoolPersistsAcrossRestart();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2362,6 +2363,47 @@ void TestMemoryStrategy::testSemanticIndexServiceLifecycle() {
     QCOMPARE(service.runOnce(), 0); // idle compaction, no pending jobs
     QCOMPARE(service.rebuildCount(), rebuildsBeforeDeletes + 1);
     QCOMPARE(service.hnswIndex()->tombstoneCount(), 0);
+}
+
+void TestMemoryStrategy::testActiveMemoryPoolPersistsAcrossRestart() {
+    QTemporaryDir dir;
+    const QString savedAtText = QDateTime::currentDateTimeUtc().addSecs(-3600).toString(Qt::ISODateWithMs);
+    {
+        MemoryStore store;
+        setupStoreWithDb(store, dir);
+        MemoryEntry keep;
+        keep.id = QStringLiteral("active-keep");
+        keep.type = MemoryType::Semantic;
+        keep.summary = QStringLiteral("kept active memory");
+        QVERIFY(!store.addEntry(keep).id.isEmpty());
+        MemoryEntry deleted;
+        deleted.id = QStringLiteral("active-deleted");
+        deleted.type = MemoryType::Semantic;
+        deleted.summary = QStringLiteral("deleted active memory");
+        QVERIFY(!store.addEntry(deleted).id.isEmpty());
+
+        ActiveMemoryPool pool;
+        pool.activate(keep.id, 1.0, QStringLiteral("session"));
+        pool.activate(deleted.id, 1.5, QStringLiteral("goal"));
+        QVERIFY(store.saveActiveMemorySnapshot(pool.snapshot(), QDateTime::fromString(savedAtText, Qt::ISODateWithMs)));
+        QVERIFY(store.updateStatusById(deleted.id, MemoryStatus::Deleted));
+    }
+    {
+        MemoryStore restarted;
+        restarted.setStoragePath(dir.filePath(QStringLiteral("memory.json")));
+        restarted.setDatabasePath(dir.filePath(QStringLiteral("memory.db")));
+        QVERIFY(restarted.loadDatabaseOnly());
+        const ActiveMemorySnapshot snapshot = restarted.loadActiveMemorySnapshot();
+        QCOMPARE(snapshot.items.size(), 1);
+        QCOMPARE(snapshot.items.first().memoryId, QStringLiteral("active-keep"));
+
+        ActiveMemoryPool restored;
+        restored.restoreFromSnapshot(snapshot.items, snapshot.savedAt, QDateTime::currentDateTimeUtc());
+        QVERIFY(restored.contains(QStringLiteral("active-keep")));
+        QVERIFY(!restored.contains(QStringLiteral("active-deleted")));
+        QVERIFY(restored.getActivation(QStringLiteral("active-keep")) < 0.60);
+        QVERIFY(restored.getActivation(QStringLiteral("active-keep")) > 0.40);
+    }
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

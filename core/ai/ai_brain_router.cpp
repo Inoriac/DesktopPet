@@ -417,6 +417,9 @@ QStringList AIBrain::retrieveMemoryHints(const QString& reason,
                                     qBound(0.1, memory.score / 3.0, 1.0),
                                     QStringLiteral("session"));
     }
+    if (!memories.isEmpty()) {
+        m_memoryStore.saveActiveMemorySnapshot(m_activeMemoryPool.snapshot());
+    }
     return m_memoryRetriever.formatForContext(memories);
 }
 

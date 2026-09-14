@@ -91,6 +91,18 @@ Related design: design.md sections 4, 5, 14, 15, 16.
   A production gate still needs real/provider-backed samples and shadow Top-K
   comparison.
 
+## Active Memory Pool Persistence
+
+- Added SQLite-backed `active_memory_snapshot` persistence. AIBrain restores the
+  active pool during `initializeStorage()`, applies offline decay through the
+  existing `restoreFromSnapshot()` policy, and writes the decayed snapshot back.
+- Prompt recall activations are saved after successful retrieval, preserving the
+  current active pool across process restarts. Snapshot loading joins
+  `memory_items` and only restores still-active memories, so deleted/expired rows
+  do not re-enter the activation pool.
+- `MemoryStrategyTests::testActiveMemoryPoolPersistsAcrossRestart` covers save,
+  restart/load, one-hour session half-life decay and deleted-memory filtering.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
