@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <QElapsedTimer>
 #include <QFileInfo>
+#include <QDir>
 #include <QMetaObject>
 #include <QPointer>
 #include <QRegularExpression>
@@ -27,6 +28,10 @@
 #include "ai/memory/active_memory_pool.h"
 #include "ai/memory/sqlite_memory_repository.h"
 #include "ai/runtime/runtime_types.h"
+#include "ai/memory/semantic_index_service.h"
+#ifdef DESKTOP_PET_HAS_ORT
+#include "ai/memory/onnx_embedding_provider.h"
+#endif
 
 namespace {
 
@@ -176,22 +181,51 @@ public:
             }
         }
 
-        // Keep a read-only MemoryStore and its derived indexes alive for the
+        // Keep a worker-owned MemoryStore and its derived indexes alive for the
         // lifetime of the worker.  Rebuilding the keyword index on every chat
         // preparation caused an O(N) scan of the complete database on the hot
-        // path.  The cache is refreshed only when SQLite's files change.
+        // path.  SQLite data_version invalidates the cache after external commits.
         refreshRecallCache(true);
+        if (m_recallStore) {
+            std::unique_ptr<EmbeddingProvider> provider;
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+            if (m_environment.embeddingProviderFactory)
+                provider = m_environment.embeddingProviderFactory();
+#endif
+#ifdef DESKTOP_PET_HAS_ORT
+            if (!provider && !m_environment.embeddingAssetsDirectory.isEmpty()) {
+                QString error;
+                provider.reset(OnnxEmbeddingProvider::tryCreateFromAssets(
+                    m_environment.embeddingAssetsDirectory, &error));
+                if (!provider) qWarning() << "[Recall] embedding unavailable:" << error;
+            }
+#endif
+            if (provider) {
+                m_semanticService = std::make_unique<SemanticIndexService>();
+                m_semanticService->start(std::move(provider), m_recallStore->databaseConnectionName(),
+                    QFileInfo(m_environment.memoryDatabasePath).absolutePath());
+                notifyLifecycle(QStringLiteral("semantic.open"));
+                m_semanticService->runOnce();
+            }
+        }
+    }
+
+    void kickMemoryMaintenance() {
+        if (m_semanticService) m_semanticService->kick();
     }
 
     void shutdown() {
         // Release the cached SQLite connection while still on the worker
         // thread.  Qt requires each QSqlDatabase connection to be destroyed
         // from the thread that created it.
+        if (m_semanticService) {
+            m_semanticService.reset();
+            notifyLifecycle(QStringLiteral("semantic.close"));
+        }
         m_recallWorkingSet.setStore(nullptr);
         m_recallStore.reset();
         m_recallKeywordIndex.rebuild({});
-        m_recallDatabaseStamp = {};
-        m_recallDatabaseSize = 0;
+        m_recallDatabaseVersion = -1;
         if (m_memoryRepository) {
             m_memoryRepository->close();
             notifyLifecycle(QStringLiteral("memory.close"));
@@ -309,7 +343,7 @@ public:
             
             // Phase 3: Use graph propagation recall through the worker-local
             // cache.  The cache owns a dedicated SQLite connection and is only
-            // refreshed when the database timestamp changes.
+            // refreshed when SQLite reports an external commit.
             const WorkerRecallResult recallResult = recallWithCache(
                 memoryQueryFor(request), request.workingMemory);
             notifyLifecycle(QStringLiteral("memory.load"));
@@ -336,6 +370,13 @@ public:
                         "敏感记忆未经确认不得主动暴露。\n");
             }
             
+            for (const RetrievedMemory& memory : memories) {
+                m_recallActivePool.activate(memory.entry.id,
+                    qBound(0.05, memory.score / 3.0, 1.0), QStringLiteral("session"));
+            }
+            if (m_recallStore && !m_recallStore->saveActiveMemorySnapshot(m_recallActivePool.snapshot()))
+                qWarning() << "[Recall] failed to save activation snapshot";
+
             // Collect reinforcement IDs (already filtered by helper)
             result.reinforcementIds = recallResult.reinforcementIds;
             
@@ -375,44 +416,13 @@ private:
         if (!m_recallStore) return result;
         return retrieveWithGraphPropagationForWorker(
             *m_recallStore, m_recallActivePool, m_recallWorkingSet,
-            m_recallKeywordIndex, nullptr, query, workingMemory);
-    }
-
-    QDateTime recallDatabaseStamp() const {
-        QDateTime stamp;
-        const QStringList paths = {
-            m_environment.memoryDatabasePath,
-            m_environment.memoryDatabasePath + QStringLiteral("-wal"),
-            m_environment.memoryDatabasePath + QStringLiteral("-shm")};
-        for (const QString& path : paths) {
-            const QFileInfo info(path);
-            if (!info.exists()) continue;
-            const QDateTime modified = info.lastModified();
-            if (!stamp.isValid() || modified > stamp) stamp = modified;
-        }
-        return stamp;
-    }
-
-    qint64 recallDatabaseSize() const {
-        qint64 size = 0;
-        const QStringList paths = {
-            m_environment.memoryDatabasePath,
-            m_environment.memoryDatabasePath + QStringLiteral("-wal"),
-            m_environment.memoryDatabasePath + QStringLiteral("-shm")};
-        for (const QString& path : paths) {
-            const QFileInfo info(path);
-            if (info.exists()) size += info.size();
-        }
-        return size;
+            m_recallKeywordIndex, m_semanticService ? m_semanticService->index() : nullptr,
+            query, workingMemory);
     }
 
     void refreshRecallCache(bool force) {
-        const QDateTime stamp = recallDatabaseStamp();
-        const qint64 size = recallDatabaseSize();
-        if (!force && m_recallStore && stamp.isValid()
-            && stamp == m_recallDatabaseStamp && size == m_recallDatabaseSize) {
-            return;
-        }
+        const qint64 version = m_recallStore ? m_recallStore->databaseVersion() : -1;
+        if (!force && version >= 0 && version == m_recallDatabaseVersion) return;
 
         if (!m_recallStore) {
             m_recallStore = std::make_unique<MemoryStore>();
@@ -420,8 +430,7 @@ private:
             QString error;
             if (!m_recallStore->loadRecallWindow(/*limit=*/256, &error)) {
                 m_recallStore.reset();
-                m_recallDatabaseStamp = stamp;
-                m_recallDatabaseSize = size;
+                m_recallDatabaseVersion = -1;
                 return;
             }
             m_recallWorkingSet.setStore(m_recallStore.get());
@@ -435,11 +444,15 @@ private:
 
         m_recallKeywordIndex.rebuild(m_recallStore->all());
         m_recallWorkingSet.refresh();
-        // Capture the post-load version.  Opening a previously missing
-        // database creates the SQLite files, so the pre-load stamp can be
-        // invalid and would otherwise force an unnecessary second reload.
-        m_recallDatabaseStamp = recallDatabaseStamp();
-        m_recallDatabaseSize = recallDatabaseSize();
+        const auto snapshot = m_recallStore->loadActiveMemorySnapshot();
+        // Replace, do not merge: clear/privacy changes must drop cached items,
+        // and restored offline decay needs a fresh live-decay baseline.
+        m_recallActivePool = ActiveMemoryPool{};
+        m_recallActivePool.restoreFromSnapshot(snapshot.items, snapshot.savedAt,
+                                               QDateTime::currentDateTimeUtc());
+        // Save the version observed BEFORE reading, so a concurrent commit during
+        // refresh forces another refresh next request rather than being missed.
+        m_recallDatabaseVersion = version;
     }
 
     bool isCancelled(quint64 expectedEpoch) const {
@@ -492,8 +505,8 @@ private:
     MemoryKeywordIndex m_recallKeywordIndex;
     HippocampusWorkingSet m_recallWorkingSet;
     ActiveMemoryPool m_recallActivePool;
-    QDateTime m_recallDatabaseStamp;
-    qint64 m_recallDatabaseSize = 0;
+    std::unique_ptr<SemanticIndexService> m_semanticService;
+    qint64 m_recallDatabaseVersion = -1;
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     std::shared_ptr<std::atomic<int>> m_testPreparationDelayMs;
     std::function<void(const QString&, quintptr)> m_lifecycleProbe;
@@ -554,7 +567,7 @@ Result<void, DomainError> ChatPreparationExecutor::start(
     }
     const bool initialized = QMetaObject::invokeMethod(
         m_worker, [worker = m_worker]() { worker->initialize(); },
-        Qt::BlockingQueuedConnection);
+        Qt::QueuedConnection);
     if (!initialized) {
         shutdownAndWait();
         return Result<void, DomainError>::failure(domainError(
@@ -613,6 +626,13 @@ void ChatPreparationExecutor::submit(ChatPreparationRequest request) {
                 Qt::QueuedConnection);
         },
         Qt::QueuedConnection);
+}
+
+void ChatPreparationExecutor::kickMemoryMaintenance() {
+    if (!m_accepting || !m_worker || m_stopping) return;
+    QMetaObject::invokeMethod(m_worker, [worker = m_worker]() {
+        worker->kickMemoryMaintenance();
+    }, Qt::QueuedConnection);
 }
 
 void ChatPreparationExecutor::stop() {

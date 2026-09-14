@@ -31,18 +31,11 @@
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
-#include "memory/active_memory_pool.h"
-#include "memory/hippocampus_working_set.h"
-#include "memory/memory_keyword_index.h"
-#include "memory/memory_cue_extractor.h"
-#include "memory/associative_activation_engine.h"
-#include "memory/semantic_index_service.h"
 #include "scheduler/daydream_trigger_policy.h"
 #include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
 #include "model/model_router.h"
 
-class EmbeddingIndex; // 语义检索索引，可选注入；为空时 retrieve 走关键词路径
 class AgentScheduler;  // Daydream 距待办判定用，可选注入
 class AgentRuntimeServices;
 class ChatPreparationExecutor;
@@ -118,11 +111,6 @@ public:
     SkillStore* skillStore() { return &m_skillStore; }
     const SkillStore* skillStore() const { return &m_skillStore; }
 
-    // 注入语义检索索引（绑定 SqliteEmbeddingIndex+OnnxEmbeddingProvider）。
-    // non-owning；为 nullptr 时 retrieve 回退纯关键词打分。生命周期需长于本对象。
-    void setEmbeddingIndex(EmbeddingIndex* idx) { m_embeddingIndex = idx; }
-    EmbeddingIndex* embeddingIndex() const { return m_embeddingIndex; }
-
 signals:
     void thinkingStarted(const QString& reason);
     void thinkingFinished(bool success, const QString& errorMessage);
@@ -195,12 +183,10 @@ private:
                                 const QString& sessionId);
     std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
     void annotateMemoryEntry(MemoryEntry& entry) const;
+    // Legacy persona-only helper; production recall runs in ChatPreparationExecutor.
     QList<ChatMessage> buildBaseMessages(const QString& reason,
                                          const QString& triggerTag,
                                          const QString& sessionId = QString());
-    QStringList retrieveMemoryHints(const QString& reason,
-                                    const QString& triggerTag,
-                                    int limit = 8);
     void appendToMemory(const ChatMessage& message);
     bool appendRuntimeEvent(const QString& type,
                             const QString& sessionId,
@@ -238,10 +224,6 @@ private:
     void scheduleIdleRetryIfBusyFailure(const QString& toolName,
                                         const QString& toolPayload);
     static QList<ModelRoleConfig> configuredModelRoles();
-    // 类人激活式召回索引刷新（pre-phase4-roadmap #10）
-    void refreshActivationRecallIndexes(bool force = false);
-    // 语义索引服务接线（HNSW + outbox）；无 provider 时静默禁用
-    void initializeSemanticIndexService();
 
 private:
     QString m_petName;
@@ -265,20 +247,9 @@ private:
     MemoryStore m_memoryStore;
     MemoryExtractor m_memoryExtractor;
     MemoryPolicy m_memoryPolicy;
-    MemoryRetriever m_memoryRetriever;
     WorkingMemoryCache m_workingMemoryCache;
-    // 类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
-    ActiveMemoryPool m_activeMemoryPool;
-    HippocampusWorkingSet m_hippocampusWorkingSet;
-    MemoryKeywordIndex m_memoryKeywordIndex;
-    MemoryCueExtractor m_memoryCueExtractor;
-    AssociativeActivationEngine m_associativeEngine;
-    QDateTime m_recallIndexRefreshedAt;
     SkillStore m_skillStore;
     SkillMatcher m_skillMatcher;
-    EmbeddingIndex* m_embeddingIndex = nullptr; // non-owning，可选
-    // 语义索引生产接线（HNSW + outbox Worker）；无 embedding provider 时保持禁用
-    std::unique_ptr<SemanticIndexService> m_semanticIndexService;
 
     QTimer m_idleTriggerTimer;
     QTimer m_chatTriggerTimer;

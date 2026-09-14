@@ -14,15 +14,9 @@
 
 class HnswEmbeddingIndex;
 
-// 语义索引的生产接线（设计 §5 的简化落地）：
-//   持有 EmbeddingProvider + HnswEmbeddingIndex + MemoryIndexWorker，用 QTimer 在
-//   空闲 tick 里小批量消费 memory_index_jobs；Daydream 完成后 kick() 立即追加一轮。
-//
-// 线程模型（刻意简化）：与 MemoryStore 同线程（QSqlDatabase 连接线程绑定），每 tick
-// 只处理 batchSize 条任务（bge-small 单次推理毫秒级），且 idlePredicate 为假时跳过，
-// 因此不会阻塞 UI。若后续需要独立线程，只需把本对象和一条独立连接移过去。
-//
-// provider 为空或 dimension()<=0 时服务保持禁用：index() 返回 nullptr，召回退回关键词路径。
+// Worker-owned semantic index maintenance. Construct/start/stop on the same
+// background thread as the dedicated SQLite connection and provider. QTimer
+// serializes maintenance with that worker's recall requests; no GUI work.
 class SemanticIndexService : public QObject {
     Q_OBJECT
 public:

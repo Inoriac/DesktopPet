@@ -86,7 +86,7 @@ public:
     bool updateTaskShadowStatus(const QString& linkedTaskId,
                                 MemoryStatus status,
                                 const QJsonObject& payloadPatch = {});
-    // 物理删除单条（含子表）。事务内调用可随 ROLLBACK 撤销。Daydream 清空 inbox 用。
+    // 显式物理删除单条（含子表）。事务内调用可随 ROLLBACK 撤销；Daydream 使用状态归档。
     bool removeEntryById(const QString& id);
 
     QList<MemoryEntry> all() const { return m_entries; }
@@ -130,6 +130,10 @@ public:
     bool finalizeSleepChange(const QString& changeId,
                              const QString& payloadHash);
 
+    // Authoritative point read for bounded recall candidates, including old HNSW hits.
+    std::optional<MemoryEntry> readForRecall(const QString& id) const;
+    qint64 databaseVersion() const;
+    bool databaseIsOpen() const;
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;
 

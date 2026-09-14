@@ -29,11 +29,8 @@ bool HippocampusWorkingSet::refresh() {
     // worker and long-running recall paths must not rescan the full history.
     QList<MemoryEntry> candidates = m_store->loadRecentFromDatabase(
         m_capacity, QStringLiteral("hippocampus"), true);
-    if (candidates.isEmpty()) {
-        // Preserve behavior for stores backed by an in-memory repository (or
-        // before the SQLite database has been opened).  An empty SQL result is
-        // also safe to fall back to: the in-memory list is filtered to the
-        // same partition/status and is empty for a truly empty database.
+    if (!m_store->databaseIsOpen()) {
+        // An unopened in-memory store has no SQLite rows to query.
         for (const MemoryEntry& entry : m_store->all()) {
             if (entry.partition != QLatin1String("hippocampus")) continue;
             if (entry.status != MemoryStatus::Active) continue;

@@ -570,7 +570,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
     // ---- 阶段 3：合并、过滤、构建候选 ----
     QList<CandidateMemory> candidates;
     for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
-        const MemoryEntry* entry = store.findById(it.key());
+        const auto entry = store.readForRecall(it.key());
         if (!entry) continue;
         if (!passesFilters(*entry, query)) continue;
 
@@ -707,6 +707,28 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         }
     }
 
+    // Validate seeds against SQLite before any propagation. A stale HNSW label
+    // must not turn an archived/private source into a bridge to other memories.
+    QList<QString> validSeeds;
+    for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
+        const auto entry = store.readForRecall(it.key());
+        if (entry && passesFilters(*entry, query)) validSeeds.append(it.key());
+    }
+    std::sort(validSeeds.begin(), validSeeds.end(), [&](const QString& a, const QString& b) {
+        // Preserve the existing multi-channel priority before imposing the
+        // propagation budget; semantic-only hits must not crowd it out.
+        if (seedChannels.value(a).size() != seedChannels.value(b).size())
+            return seedChannels.value(a).size() > seedChannels.value(b).size();
+        const double left = seedRuntimeActivation.value(a) + seedSemanticCue.value(a);
+        const double right = seedRuntimeActivation.value(b) + seedSemanticCue.value(b);
+        return left == right ? a < b : left > right;
+    });
+    const QSet<QString> retained(validSeeds.cbegin(), validSeeds.cbegin() + qMin(kSeedBudget, int(validSeeds.size())));
+    for (auto it = seedChannels.begin(); it != seedChannels.end();) {
+        if (!retained.contains(it.key())) it = seedChannels.erase(it);
+        else ++it;
+    }
+
     // ---- 阶段 3：图谱激活传播（Phase 3 新增）----
     QHash<QString, double> graphActivations;
     QHash<QString, QStringList> graphPaths;
@@ -753,7 +775,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     // ---- 阶段 4：合并、过滤、构建候选 ----
     QList<CandidateMemory> candidates;
     for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
-        const MemoryEntry* entry = store.findById(it.key());
+        const auto entry = store.readForRecall(it.key());
         if (!entry) continue;
         if (!passesFilters(*entry, query)) continue;
 
@@ -848,9 +870,6 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
             && !memory.fromGraphExpansion) {
             result.reinforcementIds.append(memory.entry.id);
         }
-        activePool.activate(memory.entry.id,
-                            qBound(0.05, memory.score / 3.0, 1.0),
-                            QStringLiteral("session"));
     }
     Q_UNUSED(workingMemory);
     return result;

@@ -31,6 +31,14 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 
 ## Verification
 
+- 2026-09-14 Windows / Qt 6.5.3 / MinGW / native ORT 1.28.0: Desktop_Pet
+  and all nine related test targets build. Final CTest run passes 9/9 suites
+  (18.50 s): MemoryStrategyTests, ChatPreparationExecutorTests, MemoryRecallTests,
+  MemoryRecallPhase2Tests, MemoryRecallPhase3Tests, HybridGraphBuilderTests,
+  SleepCycleTests, IdentityStateTests and StreamingDialogueTests. This includes
+  the real ONNX chat path, clear/reimport activation regression and multi-channel
+  seed-budget priority; it is a scoped regression run, not full-project CTest.
+- Reproduce: `ctest --test-dir cmake-build-release-mingw_qt -R "^(MemoryStrategyTests|ChatPreparationExecutorTests|MemoryRecallTests|MemoryRecallPhase2Tests|MemoryRecallPhase3Tests|HybridGraphBuilderTests|SleepCycleTests|IdentityStateTests|StreamingDialogueTests)$" --output-on-failure`.
 - Desktop_Pet and memory_strategy_tests build successfully on macOS.
 - MemoryStrategyTests reports 100 passes (QtTest totals include init/cleanup).
 - New data-driven tests cover binary corruption, missing metadata and missing
@@ -56,20 +64,22 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 
 ## Production Wiring (simplified)
 
-- `SemanticIndexService` (core/ai/memory/semantic_index_service.*) owns provider +
-  HnswEmbeddingIndex + MemoryIndexWorker + QTimer. AIBrain creates it in
-  `initializeStorage()`, injects `index()` via `setEmbeddingIndex`, and `kick()`s it
-  on `daydreamFinished` (Phase 4.3 hook). Idle predicate: `!m_busy`.
-- Deliberate simplification: the service runs on the MemoryStore thread (SQLite
-  connections are thread-bound) with small batches (4 jobs / 30 s tick, 200 ms
-  follow-up while backlog remains). No separate worker thread yet.
+- `ChatPreparationExecutor::Worker` owns `SemanticIndexService`, its ONNX
+  provider, HnswEmbeddingIndex, MemoryIndexWorker and SQLite connection. The
+  actual chat recall passes this index into graph/ACT-R retrieval. AIBrain
+  supplies the assets path and queues a maintenance kick on `daydreamFinished`.
+- Model loading, inference, index recovery and maintenance all run on the chat
+  Worker thread. Startup initialization is queued, keeping the GUI responsive.
+  Maintenance and recall serialize on that event loop (4 jobs / 30 s tick,
+  200 ms follow-up while backlog remains). A long rebuild can still delay chat
+  preparation; maintenance does not run concurrently with a recall.
 - Compaction: when tombstone ratio >= 30% and idle, `rebuildFromRepository()`.
 - Provider: `OnnxEmbeddingProvider::tryCreateFromAssets(<root>/assets)` only when
   `DESKTOP_PET_HAS_ORT`; Desktop_Pet now also compiles/links ORT when found.
   Without ORT the service stays disabled and recall uses keywords. Windows
   runtime loading and native embedding inference are verified in the test suite.
-- hnswlib include dir is now global (`include_directories`) because ai_brain.cpp
-  pulls the service into every AGENT_RUNTIME_TEST_SUPPORT_SOURCES target.
+- hnswlib include dir is global (`include_directories`) because the chat Worker
+  pulls the service into AGENT_RUNTIME_TEST_SUPPORT_SOURCES targets.
 
 ## Recall@32 / Latency Benchmark
 
@@ -93,15 +103,39 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 
 ## Active Memory Pool Persistence
 
-- Added SQLite-backed `active_memory_snapshot` persistence. AIBrain restores the
-  active pool during `initializeStorage()`, applies offline decay through the
-  existing `restoreFromSnapshot()` policy, and writes the decayed snapshot back.
-- Prompt recall activations are saved after successful retrieval, preserving the
-  current active pool across process restarts. Snapshot loading joins
-  `memory_items` and only restores still-active memories, so deleted/expired rows
-  do not re-enter the activation pool.
+- The chat Worker is the sole owner of the production activation pool. It
+  restores `memory_activation_snapshots` with offline decay on cache refresh,
+  then saves the pool after selecting and forget-filtering prompt memories.
+  The previous unused AIBrain pool and synchronous GUI recall are removed.
+- Snapshot reads and writes join `memory_items` and filter inactive, sensitive,
+  deleted and expired memories. Cache invalidation uses SQLite `data_version`,
+  so external commits (including WAL commits) refresh the bounded working set.
 - `MemoryStrategyTests::testActiveMemoryPoolPersistsAcrossRestart` covers save,
   restart/load, one-hour session half-life decay and deleted-memory filtering.
+- `ChatPreparationExecutorTests::activePoolSurvivesWorkerRestartAndClear` covers
+  activation through actual prompt preparation, restart retrieval outside the
+  recent window, clearing both live recall and persisted activation, and importing
+  the same ID without restoring its cleared activation. Snapshot refresh replaces
+  the live pool and its decay baseline rather than merging stale cached entries.
+
+## Recall Reads and Daydream Evidence (Windows, 2026-09-14)
+
+- Semantic/activation/graph candidates hydrate through SQLite primary-key reads,
+  including rows outside the 256-row recent window. Authoritative eligibility is
+  checked before seed propagation and final ranking. Seed/graph budgets bound
+  candidate counts; expression indexes cover recent/inbox ordering and evidence
+  lookup. An empty SQL inbox no longer falls back to stale in-memory rows.
+- Daydream retains source content, tags and evidence: successful consolidation
+  marks the source `Consolidated`, discard marks it `Archived`. Result-to-source
+  `DerivedFrom` edges and consolidation metadata preserve provenance. Result,
+  source status, relation and outbox writes share the existing transaction.
+  Archived sources are excluded from normal recall and subsequent Daydream
+  batches; explicit user delete/clear remains physical.
+- Native ONNX is enabled for the chat executor integration target as well as
+  Desktop_Pet and memory_strategy_tests. Regression cases cover old-memory
+  paraphrase recall with the real model, stale sensitive/deleted index hits,
+  Worker-owned provider construction/use/destruction, nonblocking initialization,
+  indexed SQL reads and archive-failure transaction rollback.
 
 ## Legacy Backfill / Coverage
 
@@ -187,14 +221,15 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   semantic cue scoring, and batch selection follows CreatedTask/DerivedFrom
   causal edges in both directions.
 
-- Background scheduler is the simplified main-thread tick above; a dedicated
-  worker thread with its own SQLite connection remains future work.
-  Producer-side jobs still begin with empty model/hash for backward compatibility;
+- Background scheduling now runs on the chat Worker with its own SQLite
+  connection (see Production Wiring); a separately scheduled maintenance thread
+  is not required for GUI isolation. Producer-side jobs still begin with empty model/hash for backward compatibility;
   the worker fills these after successful processing.
 - Clear/import through MemoryStore are covered above. Arbitrary direct repository
   updates still require a wider audit; callers must retain outbox synchronization.
-- Full generation/SQLite consistency, every crash point, cross-thread provider
-  ownership and eligibility filtering across every recall API remain unaccepted.
+- Full generation/SQLite consistency, every crash point and eligibility filtering
+  across every legacy recall API remain unaccepted. Production provider ownership
+  is now confined to the chat Worker and covered by lifecycle tests.
 - Tombstone threshold detection and automatic idle-time compaction are wired in
   `SemanticIndexService`; compaction runs during an idle tick after pending
   index jobs drain, including the all-tombstone (`activeCount()==0`) case.

@@ -23,6 +23,7 @@ public:
     Result<void, DomainError> start(const ChatPreparationEnvironment& environment);
     void submit(ChatPreparationRequest request);
     void stop();
+    void kickMemoryMaintenance();
 
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     void setTestPreparationDelayMs(int delayMs);

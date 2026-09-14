@@ -759,12 +759,30 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
                                     const Decision& decision,
                                     Stats* stats,
                                     MemoryEntry* resultingEntry) {
+    // Retain immutable source content and causal evidence in the same transaction
+    // as the result and its outbox job. Only explicit user deletion removes it.
+    const auto archiveSource = [&](const QString& resultId) {
+        QJsonObject metadata;
+        metadata.insert(QStringLiteral("consolidation_action"),
+                        resultId.isEmpty() ? QStringLiteral("discard") : QStringLiteral("consolidate"));
+        metadata.insert(QStringLiteral("consolidated_at"), QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        if (!resultId.isEmpty()) metadata.insert(QStringLiteral("consolidated_into"), resultId);
+        if (!m_store.updateStatusById(source.id,
+                resultId.isEmpty() ? MemoryStatus::Archived : MemoryStatus::Consolidated, metadata)) return false;
+        if (resultId.isEmpty()) return true;
+        MemoryRelation derived;
+        derived.fromMemoryId = resultId;
+        derived.toMemoryId = source.id;
+        derived.type = MemoryRelationType::DerivedFrom;
+        derived.provenance = RelationProvenance::Rule;
+        return m_store.relationGraph().addOrReinforceRelation(derived);
+    };
     switch (decision.action) {
     case Action::Preserve:
         ++stats->preserved;
         return true;
     case Action::Discard:
-        if (!m_store.removeEntryById(source.id)) return false;
+        if (!archiveSource(QString())) return false;
         ++stats->discarded;
         return true;
     case Action::Create:
@@ -772,7 +790,7 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
         const MemoryEntry created = m_store.addEntry(makeLongTermEntry(source, decision));
         if (created.id.isEmpty()
             || !m_store.tagCooccurrenceGraph().recordTags(created.tags)
-            || !m_store.removeEntryById(source.id)) {
+            || !archiveSource(created.id)) {
             return false;
         }
         if (resultingEntry) *resultingEntry = created;
@@ -801,7 +819,7 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
         if (!updated.sourceMemoryIds.contains(source.id)) updated.sourceMemoryIds.append(source.id);
         if (!m_store.updateEntryById(updated)
             || !m_store.tagCooccurrenceGraph().recordTags(updated.tags)
-            || !m_store.removeEntryById(source.id)) {
+            || !archiveSource(updated.id)) {
             return false;
         }
         if (resultingEntry) *resultingEntry = updated;

@@ -411,6 +411,21 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
     }
 
+    // Match the ORDER BY expression as well as both recall filter shapes.
+    // LIMIT alone only bounds materialization, not SQLite's scan/sort work.
+    for (const QString& sql : {
+             QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_evidence_owner "
+                            "ON memory_evidence(memory_id, created_at)"),
+             QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_recall_recent "
+                            "ON memory_items(status, COALESCE(updated_at, created_at) DESC, id DESC)"),
+             QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_recall_inbox "
+                            "ON memory_items(partition, status, COALESCE(updated_at, created_at) DESC, id DESC)")}) {
+        if (!query.exec(sql)) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
     // 迁移（Phase 4.2 设计 §10）：为既有库补关系表新列（来源/支持次数/时间戳）。
     // 存量边回填：provenance='legacy'，support_count=1，updated_at=created_at。
     {
@@ -704,6 +719,16 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
     return loadQuery(query);
 }
 
+std::optional<MemoryEntry> SQLiteMemoryRepository::loadById(const QString& id) {
+    if (!isOpen() || id.isEmpty()) return std::nullopt;
+    QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
+    query.prepare(QStringLiteral("SELECT * FROM memory_items WHERE id=:id"));
+    query.bindValue(QStringLiteral(":id"), id);
+    if (!query.exec()) return std::nullopt;
+    const auto entries = loadQuery(query);
+    return entries.isEmpty() ? std::nullopt : std::optional<MemoryEntry>(entries.first());
+}
+
 QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
                                                       const QString& partition,
                                                       bool activeOnly) {
@@ -733,7 +758,9 @@ bool SQLiteMemoryRepository::saveActiveMemorySnapshot(const QList<ActiveMemoryIt
     if (ok) {
         query.prepare(QStringLiteral(
             "INSERT INTO memory_activation_snapshots(memory_id,activation,source,context_id,last_activated_at,saved_at) "
-            "VALUES(:id,:activation,:source,:context,:last,:saved)"));
+            "SELECT :id,:activation,:source,:context,:last,:saved FROM memory_items "
+            "WHERE id=:id AND status='active' AND privacy_level!='sensitive' "
+            "AND (expires_at IS NULL OR expires_at='' OR julianday(expires_at)>julianday(:saved))"));
         for (const ActiveMemoryItem& item : items) {
             if (item.memoryId.trimmed().isEmpty() || !std::isfinite(item.activation)
                 || item.activation < ActiveMemoryPool::ACTIVATION_THRESHOLD) {
@@ -764,9 +791,11 @@ ActiveMemorySnapshot SQLiteMemoryRepository::loadActiveMemorySnapshot(int limit)
         "SELECT s.memory_id,s.activation,s.source,s.context_id,s.last_activated_at,s.saved_at "
         "FROM memory_activation_snapshots s "
         "JOIN memory_items m ON m.id=s.memory_id "
-        "WHERE m.status='active' "
+        "WHERE m.status='active' AND m.privacy_level!='sensitive' "
+        "AND (m.expires_at IS NULL OR m.expires_at='' OR julianday(m.expires_at)>julianday(:now)) "
         "ORDER BY s.activation DESC LIMIT :limit"));
     query.bindValue(QStringLiteral(":limit"), std::min(limit, ActiveMemoryPool::MAX_POOL_SIZE));
+    query.bindValue(QStringLiteral(":now"), dateTimeToString(QDateTime::currentDateTimeUtc()));
     if (!query.exec()) return snapshot;
     while (query.next()) {
         ActiveMemoryItem item;

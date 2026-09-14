@@ -8,8 +8,9 @@
 - ✅ Phase 1（40db6ee）：ActiveMemoryPool、HippocampusWorkingSet、SQLite schema 扩展
 - ✅ Phase 2（bc4fe3b）：MemoryCueExtractor、MemoryKeywordIndex、ACTRRanker、retrieveActivated()
 - ✅ Phase 3（5c81f91 + eca5f46）：AssociativeActivationEngine（两跳传播 + 人格化探索）、retrieveWithGraphPropagation()
-- 测试：27 个召回相关单元测试全部通过（Phase1 7 + Phase2 9 + Phase3 11，此外 memory_strategy_tests 有 7 个与 Daydream commit 相关的预存失败，与召回改造无关）
-- ✅ AIBrain 侧已接入生产（retrieveMemoryHints）；⏳ ChatPreparationExecutor 仍用快照式召回（后台线程，不阻塞 GUI，Phase 4 迁移）
+- 历史阶段验收：27 个召回相关单元测试通过（Phase1 7 + Phase2 9 + Phase3 11）；当时的 Daydream 事务失败已修复，见文末。当前验证与剩余边界以 `hnsw-implementation-status.md` 为准。
+- ✅ ChatPreparationExecutor 已接入生产图谱/ACT-R + HNSW/ONNX 召回，统一拥有激活池并持久化；移除 AIBrain 中未被实际聊天使用的同步召回及重复状态（2026-09-14）。
+- ✅ ONNX 模型加载、推理和索引维护均位于聊天 Worker；旧记忆按主键从 SQLite 补取，不受近期窗口限制。Daydream 保留来源并归档，不再物理删除巩固源条目。
 - ⏳ macOS 无 ONNX：embedding 通道以 Noop 优雅退化，词法/激活/图谱三路可用
 
 ---
@@ -140,7 +141,7 @@ CREATE TABLE diary_fragments (
 | 7 | 片段收集器（空闲窗口写便签） | 中 | #6 | ⭐⭐⭐ |
 | 8 | 夜间缝合改造 + 补写流程 | 中 | #6 #7 | ⭐⭐⭐ |
 | 9 | SleepTimePredictor 作息学习 | 中 | #2 | ⭐⭐（观察反馈后再做）|
-| 10 | ~~新召回入口接入生产~~ | ✅/⏳ | ✅ | **AIBrain 侧已完成**（retrieveMemoryHints → retrieveWithGraphPropagation + 60s 惰性索引刷新 + 会话激活回写）；ChatPreparationExecutor 侧因独立线程/独立连接需要重构方法签名，留给 Phase 4 与快照契约一起做 |
+| 10 | ~~新召回入口接入生产~~ | ✅ | ✅ | **已完成**：ChatPreparationExecutor 独立线程/连接持有 HNSW + ONNX、激活池恢复/回写；SQLite data_version 刷新有界缓存，候选按主键补取，GUI 不再重建召回索引 |
 
 完成 #2-#8 与 #10 后进入 Phase 4（Daydream 批次选择优化、混合建图、HNSW 自动更新）。
 
@@ -152,4 +153,4 @@ CREATE TABLE diary_fragments (
   内层失败只撤销内层，外层回滚同时撤销记忆、标签/关系和 outbox 写入。
 - 两项事务回归、新增 Daydream/outbox 故障回滚测试已通过；记忆策略、Sleep Cycle、
   Phase 1/2/3 召回和混合建图六个测试套件连续三轮全部通过（macOS，无 ONNX）。
-  Windows 仍需在交付环境回归，但不再将该故障归因于 macOS/WAL。
+  Windows 原生 ONNX 与 Worker 聊天召回已有集成验证；当前回归范围见 HNSW 实现状态文档，不再将事务故障归因于 macOS/WAL。

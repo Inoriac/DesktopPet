@@ -28,7 +28,8 @@ enum class MemoryStatus {
     Superseded,
     Cancelled,
     Deleted,
-    Expired
+    Expired,
+    Consolidated
 };
 
 enum class PrivacyLevel {
@@ -80,6 +81,8 @@ inline QString memoryStatusToString(MemoryStatus status) {
     switch (status) {
     case MemoryStatus::Active:
         return "active";
+    case MemoryStatus::Consolidated:
+        return "consolidated";
     case MemoryStatus::Archived:
         return "archived";
     case MemoryStatus::Superseded:
@@ -95,6 +98,7 @@ inline QString memoryStatusToString(MemoryStatus status) {
 }
 
 inline MemoryStatus memoryStatusFromString(const QString& value) {
+    if (value == "consolidated") return MemoryStatus::Consolidated;
     if (value == "archived") return MemoryStatus::Archived;
     if (value == "superseded") return MemoryStatus::Superseded;
     if (value == "cancelled") return MemoryStatus::Cancelled;

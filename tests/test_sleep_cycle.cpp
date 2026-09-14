@@ -661,7 +661,8 @@ void SleepCycleTests::runNextDaydreamBatch_whenModelDecisionIsRequired_shouldReq
              QList<QString>{QString::number(
                  static_cast<int>(ModelRole::Daydream))});
     QCOMPARE(finished.count(), 1);
-    QVERIFY(!brain.memoryStore()->findById(source.id));
+    QVERIFY(brain.memoryStore()->findById(source.id));
+    QCOMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Archived);
 }
 
 void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldUseBoundedHardcodedFallback() {
@@ -687,9 +688,10 @@ void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldUseBound
     QCOMPARE(finished.count(), 1);
     const QJsonObject summary = finished.first().first().toJsonObject();
     QCOMPARE(summary.value(QStringLiteral("fallbackBatches")).toInt(), 1);
-    QVERIFY(!brain.memoryStore()->findById(source.id));
-    QCOMPARE(brain.memoryStore()->all().size(), 1);
-    QVERIFY(brain.memoryStore()->all().first().partition
+    QVERIFY(brain.memoryStore()->findById(source.id));
+    QCOMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Consolidated);
+    QCOMPARE(brain.memoryStore()->all().size(), 2);
+    QVERIFY(brain.memoryStore()->loadRecentFromDatabase(1, QString(), true).first().partition
             != QLatin1String("hippocampus"));
 }
 
@@ -758,7 +760,8 @@ void SleepCycleTests::finalizeSession_whenLegacySecondPrecisionChangeSetIsLoaded
     const auto finalized = adapter.finalizeSession(sessionId);
 
     QVERIFY(finalized.isOk());
-    QVERIFY(!fixture.memory.findById(source.id));
+    QVERIFY(fixture.memory.findById(source.id));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(adapter.preparedChangeCount(sessionId), 0);
 }
 
@@ -1130,9 +1133,10 @@ void SleepCycleTests::tryStart_whenAllParticipantsPrepared_shouldPersistCommitTh
     QCOMPARE(session.value()->decision, SleepDecision::Commit);
     QCOMPARE(session.value()->state, SleepSessionState::Completed);
     QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
-    QVERIFY(!fixture.memory.findById(source.id));
-    QCOMPARE(fixture.memory.all().size(), 1);
-    QVERIFY(fixture.memory.all().first().partition != QLatin1String("hippocampus"));
+    QVERIFY(fixture.memory.findById(source.id));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
+    QCOMPARE(fixture.memory.all().size(), 2);
+    QVERIFY(fixture.memory.loadRecentFromDatabase(1, QString(), true).first().partition != QLatin1String("hippocampus"));
 }
 
 void SleepCycleTests::tryStart_whenRestartFindsCommittedSession_shouldIdempotentlyFinishFinalize() {
@@ -1153,7 +1157,8 @@ void SleepCycleTests::tryStart_whenRestartFindsCommittedSession_shouldIdempotent
     QVERIFY(coordinator.recoverIncomplete().isOk());
     const auto session = fixture.sleepSessions.find(sessionId);
     QCOMPARE(session.value()->state, SleepSessionState::Completed);
-    QVERIFY(!fixture.memory.findById(source.id));
+    QVERIFY(fixture.memory.findById(source.id));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
 }
 
@@ -1197,7 +1202,8 @@ void SleepCycleTests::cancel_whenDecisionCommitted_shouldKeepCommitAndFinishFina
     const auto session = fixture.sleepSessions.find(sessionId);
     QCOMPARE(session.value()->decision, SleepDecision::Commit);
     QCOMPARE(session.value()->state, SleepSessionState::Completed);
-    QVERIFY(!fixture.memory.findById(source.id));
+    QVERIFY(fixture.memory.findById(source.id));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
 }
 
@@ -1222,7 +1228,8 @@ void SleepCycleTests::recoverIncomplete_whenCommittedSessionExists_shouldFinaliz
     QVERIFY(published);
     QCOMPARE(fixture.sleepSessions.find(sessionId).value()->state,
              SleepSessionState::Completed);
-    QVERIFY(!fixture.memory.findById(source.id));
+    QVERIFY(fixture.memory.findById(source.id));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
 
     const QString missingStageSession = QStringLiteral("recover-missing-stage");

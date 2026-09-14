@@ -13,6 +13,7 @@
 #include "core/ai/memory/memory_retriever.h"
 #include "core/ai/memory/active_memory_pool.h"
 #include "core/ai/memory/memory_keyword_index.h"
+#include "core/ai/memory/embedding_index.h"
 
 class TestMemoryRecallPhase3 : public QObject {
     Q_OBJECT
@@ -35,6 +36,7 @@ private slots:
     void testExplorationRateBounds();
     void testPersonalityModulation();
     void testGraphRetrievalIntegration();
+    void testSeedBudgetPreservesMultiChannelMatch();
 };
 
 namespace {
@@ -61,6 +63,54 @@ MemoryRelation makeRelation(const QString& id,
     return rel;
 }
 
+}
+
+void TestMemoryRecallPhase3::testSeedBudgetPreservesMultiChannelMatch() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath(QStringLiteral("seeds.db")));
+    QVERIFY(store.loadDatabaseOnly());
+    class FixedIndex final : public EmbeddingIndex {
+    public:
+        QList<EmbeddingSearchResult> hits;
+        bool upsert(const QString&, const QString&) override { return false; }
+        bool remove(const QString&) override { return false; }
+        QList<EmbeddingSearchResult> search(const QString&, int limit) override { return hits.mid(0, limit); }
+    } index;
+    for (int i = 0; i < 20; ++i) {
+        MemoryEntry entry;
+        entry.type = MemoryType::Semantic;
+        entry.key = QStringLiteral("distractor-%1").arg(i);
+        entry.summary = QStringLiteral("unrelated event %1").arg(i);
+        const auto saved = store.addEntry(entry);
+        QVERIFY(!saved.id.isEmpty());
+        index.hits.append({saved.id, 0.9});
+    }
+    MemoryEntry target;
+    target.type = MemoryType::Semantic;
+    target.key = QStringLiteral("needle");
+    target.summary = QStringLiteral("needle");
+    target = store.addEntry(target);
+    QVERIFY(!target.id.isEmpty());
+    index.hits.append({target.id, 0.2});
+    MemoryKeywordIndex keywords;
+    keywords.rebuild(store.all());
+    ActivationChannels channels;
+    channels.keywordIndex = &keywords;
+    channels.embeddingIndex = &index;
+    MemoryQuery query;
+    query.text = QStringLiteral("needle");
+    query.limit = 16;
+    const auto results = MemoryRetriever().retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    bool found = false;
+    for (const auto& result : results) {
+        if (result.entry.id != target.id) continue;
+        found = true;
+        QVERIFY(result.sourceChannels.contains(QStringLiteral("keyword")));
+        QVERIFY(result.sourceChannels.contains(QStringLiteral("embedding")));
+    }
+    QVERIFY(found);
 }
 
 void TestMemoryRecallPhase3::initTestCase() {

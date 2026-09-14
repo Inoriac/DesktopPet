@@ -5,6 +5,7 @@
 #include <QString>
 
 #include <algorithm>
+#include <optional>
 
 #include "memory_types.h"
 #include "active_memory_pool.h"
@@ -24,6 +25,7 @@ public:
                               MemoryStatus status,
                               const QJsonObject& payloadPatch = {}) = 0;
     virtual QList<MemoryEntry> loadAll() = 0;
+    virtual std::optional<MemoryEntry> loadById(const QString& id) = 0;
 
     // Bounded reads for latency-sensitive recall paths. Implementations should
     // apply the limit in the database query; the default preserves compatibility
@@ -56,7 +58,7 @@ public:
     }
 
     // 物理删除单条记忆及其连带子表（tags/evidence/relations/embeddings/access_log）。
-    // 供 Daydream 清空 Hippocampus 源条目用。同一事务内执行可随 ROLLBACK 撤销。
+    // 供显式删除使用；Daydream 保留源条目。同一事务内执行可随 ROLLBACK 撤销。
     virtual bool removeById(const QString& id) = 0;
 
     // 事务原子性，供 Daydream 整 session ROLLBACK 用。底层走同一命名连接的

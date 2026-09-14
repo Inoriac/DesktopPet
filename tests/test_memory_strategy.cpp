@@ -135,6 +135,8 @@ private slots:
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
     void testRepositoryBoundedRecentRead();
+    void testRecallUsesIndexedSqlAndFreshPointReads();
+    void testDaydreamArchiveFailureRollsBackEvidence();
     void testDaydreamDrainUpgradesViaPersistedMentionCount();
     void testDaydreamFallbackUpgradesHighImportance();
     void testDaydreamFallbackRoutesPreferenceKeyword();
@@ -1541,6 +1543,7 @@ void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCrea
         QVERIFY(database.open());
         QSqlQuery query(database);
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_items_partition")));
+        QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_recall_inbox")));
         QVERIFY(query.exec(QStringLiteral(
             "ALTER TABLE memory_items DROP COLUMN partition")));
         QVERIFY(query.exec(QStringLiteral("PRAGMA user_version=0")));
@@ -3016,7 +3019,16 @@ void TestMemoryStrategy::testTransactionRollbackRevertsTagCooccurrence() {
 }
 
 // Daydream 第③步：硬编码降级巩固回路。mentionCount>=2 的 Hippocampus 条目应升级为
-// Episodic 长期记忆并清空源；低价值条目应被丢弃清空 inbox；其他分区条目不受影响。
+// Episodic 长期记忆并归档源；低价值条目归档移出活跃 inbox；其他分区条目不受影响。
+namespace {
+QList<MemoryEntry> activeEntries(const MemoryStore& store) {
+    QList<MemoryEntry> result;
+    for (const auto& entry : store.all())
+        if (entry.status == MemoryStatus::Active) result.append(entry);
+    return result;
+}
+}
+
 void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
@@ -3047,14 +3059,21 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     QVERIFY(store.load());
     bool hippocampusEmpty = true;
     int episodicCount = 0;
-    for (const MemoryEntry& e : store.all()) {
+    for (const MemoryEntry& e : activeEntries(store)) {
         if (e.partition == QLatin1String("hippocampus")) hippocampusEmpty = false;
         if (e.type == MemoryType::Episodic) ++episodicCount;
     }
     QVERIFY(hippocampusEmpty);
     QCOMPARE(episodicCount, 1);
-    QVERIFY(!store.findById(hotId)); // 源条目已物理删除
-    QCOMPARE(store.all().first().sourceMemoryIds, QStringList{hotId});
+    QVERIFY(store.findById(hotId));
+    QCOMPARE(store.findById(hotId)->status, MemoryStatus::Consolidated);
+    QCOMPARE(store.findById(hotId)->content, hot.content);
+    QCOMPARE(store.all().size(), 2);
+    QVERIFY(store.relationGraph().hasRelation(activeEntries(store).first().id,
+        hotId, MemoryRelationType::DerivedFrom));
+    QCOMPARE(consolidator.pendingCount(), 0);
+    QCOMPARE(consolidator.runHardcodedDrain().scanned, 0);
+    QCOMPARE(activeEntries(store).first().sourceMemoryIds, QStringList{hotId});
 }
 
 void TestMemoryStrategy::testDaydreamOutboxFailureRollsBackBatch() {
@@ -3084,7 +3103,7 @@ void TestMemoryStrategy::testDaydreamOutboxFailureRollsBackBatch() {
     QVERIFY(!failed.committed);
     QVERIFY(failed.failed > 0);
     QVERIFY(store.loadDatabaseOnly());
-    QCOMPARE(store.all().size(), 2);
+    QCOMPARE(activeEntries(store).size(), 2);
     for (const auto& source : snapshot.items) QVERIFY(store.findById(source.id));
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(QStringLiteral("alpha"), QStringLiteral("beta")), 0);
     QVERIFY(query.exec(QStringLiteral("SELECT COUNT(*) FROM memory_index_jobs")));
@@ -3099,8 +3118,8 @@ void TestMemoryStrategy::testDaydreamOutboxFailureRollsBackBatch() {
     const auto retried = consolidator.applyDecisions(snapshot, decisions);
     QVERIFY(retried.committed);
     QCOMPARE(retried.upgraded, 2);
-    QCOMPARE(store.all().size(), 2);
-    for (const auto& entry : store.all()) QCOMPARE(entry.type, MemoryType::Episodic);
+    QCOMPARE(activeEntries(store).size(), 2);
+    for (const auto& entry : activeEntries(store)) QCOMPARE(entry.type, MemoryType::Episodic);
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(QStringLiteral("alpha"), QStringLiteral("beta")), 2);
 }
 
@@ -3132,7 +3151,7 @@ void TestMemoryStrategy::testDaydreamUpdatesTagCooccurrenceGraph() {
         QStringLiteral(" qt "), QStringLiteral("C++")), 1);
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
         QStringLiteral("daydream_inbox"), QStringLiteral("qt")), 0);
-    QVERIFY(!store.all().first().tags.contains(
+    QVERIFY(!activeEntries(store).first().tags.contains(
         QStringLiteral("daydream_inbox"), Qt::CaseInsensitive));
 }
 
@@ -3178,7 +3197,10 @@ void TestMemoryStrategy::testDaydreamUpdateRecordsTagCooccurrence() {
     QCOMPARE(stats.updated, 1);
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
         QStringLiteral("qt"), QStringLiteral("c++")), 1);
-    QVERIFY(!store.findById(storedSource.id));
+    QVERIFY(store.findById(storedSource.id));
+    QCOMPARE(store.findById(storedSource.id)->status, MemoryStatus::Consolidated);
+    QCOMPARE(store.findById(storedSource.id)->content, storedSource.content);
+    QVERIFY(store.relationGraph().hasRelation(target.id, storedSource.id, MemoryRelationType::DerivedFrom));
 }
 
 void TestMemoryStrategy::testDaydreamTagCooccurrenceAccumulates() {
@@ -3238,8 +3260,11 @@ void TestMemoryStrategy::testDaydreamDrainDiscardsLowValue() {
     QCOMPARE(stats.discarded, 1);
 
     QVERIFY(store.load());
-    QCOMPARE(store.all().size(), 0);
-    QVERIFY(!store.findById(id));
+    QCOMPARE(activeEntries(store).size(), 0);
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().first().status, MemoryStatus::Archived);
+    QVERIFY(store.findById(id));
+    QCOMPARE(store.findById(id)->content, chitchat.content);
 }
 
 void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
@@ -3260,7 +3285,7 @@ void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
     junk.importance = 0.1;
     store.addEntry(junk);
     QVERIFY(store.load());
-    const int totalBefore = store.all().size();
+    const int totalBefore = activeEntries(store).size();
 
     DaydreamConsolidator consolidator(store);
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
@@ -3269,10 +3294,10 @@ void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
     QCOMPARE(stats.discarded, 1);
 
     QVERIFY(store.load());
-    // Semantic 那条仍在；Hippocampus 那条被删 → 总数减 1。
-    QCOMPARE(store.all().size(), totalBefore - 1);
+    // Semantic 那条仍活跃；Hippocampus 那条归档 → 活跃总数减 1。
+    QCOMPARE(activeEntries(store).size(), totalBefore - 1);
     bool semanticKept = false;
-    for (const MemoryEntry& e : store.all()) {
+    for (const MemoryEntry& e : activeEntries(store)) {
         if (e.type == MemoryType::Semantic && e.key == QStringLiteral("fact")) semanticKept = true;
     }
     QVERIFY(semanticKept);
@@ -3312,9 +3337,9 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
     QVERIFY(store.updateEntryById(impression));
     QVERIFY(store.load());
 
-    QCOMPARE(store.all().size(), 1);
-    QCOMPARE(store.all().first().mentionCount, 2); // recurrence 信号已持久化
-    QCOMPARE(store.all().first().partition, QStringLiteral("hippocampus"));
+    QCOMPARE(activeEntries(store).size(), 1);
+    QCOMPARE(activeEntries(store).first().mentionCount, 2); // recurrence 信号已持久化
+    QCOMPARE(activeEntries(store).first().partition, QStringLiteral("hippocampus"));
 
     DaydreamConsolidator consolidator(store);
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
@@ -3324,8 +3349,8 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
     QCOMPARE(stats.discarded, 0);
 
     QVERIFY(store.load());
-    QCOMPARE(store.all().size(), 1);
-    const MemoryEntry upgraded = store.all().first();
+    QCOMPARE(activeEntries(store).size(), 1);
+    const MemoryEntry upgraded = activeEntries(store).first();
     QCOMPARE(upgraded.type, MemoryType::Episodic);
     QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal); // review finding #3
     QCOMPARE(upgraded.source, QStringLiteral("daydream"));
@@ -3354,8 +3379,8 @@ void TestMemoryStrategy::testDaydreamFallbackUpgradesHighImportance() {
     QCOMPARE(stats.discarded, 0);
 
     QVERIFY(store.load());
-    QCOMPARE(store.all().size(), 1);
-    const MemoryEntry upgraded = store.all().first();
+    QCOMPARE(activeEntries(store).size(), 1);
+    const MemoryEntry upgraded = activeEntries(store).first();
     QVERIFY(upgraded.partition != QLatin1String("hippocampus"));
     QCOMPARE(upgraded.type, MemoryType::Episodic); // 无关键词命中 → 默认 Episodic
 }
@@ -3382,8 +3407,8 @@ void TestMemoryStrategy::testDaydreamFallbackRoutesPreferenceKeyword() {
     QCOMPARE(stats.discarded, 0);
 
     QVERIFY(store.load());
-    QCOMPARE(store.all().size(), 1);
-    const MemoryEntry upgraded = store.all().first();
+    QCOMPARE(activeEntries(store).size(), 1);
+    const MemoryEntry upgraded = activeEntries(store).first();
     QCOMPARE(upgraded.type, MemoryType::Preference); // 「喜欢」→ 路由为偏好
     QCOMPARE(upgraded.partition, QStringLiteral("preference"));
 }
@@ -3406,7 +3431,7 @@ void TestMemoryStrategy::testDaydreamFallbackDeduplicatesBatch() {
         const MemoryEntry stored = store.addEntry(impression);
         QVERIFY(!stored.id.isEmpty());
     }
-    QCOMPARE(store.all().size(), 3);
+    QCOMPARE(activeEntries(store).size(), 3);
 
     DaydreamConsolidator consolidator(store);
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
@@ -3416,7 +3441,7 @@ void TestMemoryStrategy::testDaydreamFallbackDeduplicatesBatch() {
     QCOMPARE(stats.discarded, 2);
 
     QVERIFY(store.load());
-    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(activeEntries(store).size(), 1);
 }
 
 void TestMemoryStrategy::testDaydreamDiscardsLegacyAssistantInbox() {
@@ -3436,12 +3461,12 @@ void TestMemoryStrategy::testDaydreamDiscardsLegacyAssistantInbox() {
     QVERIFY(!store.addEntry(legacy).id.isEmpty());
 
     DaydreamConsolidator consolidator(store);
-    QVERIFY(!DaydreamConsolidator::requiresModelDecision(store.all().first()));
+    QVERIFY(!DaydreamConsolidator::requiresModelDecision(activeEntries(store).first()));
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
     QCOMPARE(stats.upgraded, 0);
     QCOMPARE(stats.discarded, 1);
-    QCOMPARE(store.all().size(), 0);
+    QCOMPARE(activeEntries(store).size(), 0);
 }
 
 void TestMemoryStrategy::testDaydreamSessionLimitLeavesRemainder() {
@@ -3930,6 +3955,63 @@ void TestMemoryStrategy::testDaydreamTriggerPolicyUsesRuntimeConfig() {
     QVERIFY(policy.shouldTrigger(60, false, 120000, 240000, true, 0));
     QCOMPARE(policy.requiredGapMs(true), qint64(240000));
     QCOMPARE(policy.nextTickMs(-1), 5000);
+}
+
+void TestMemoryStrategy::testRecallUsesIndexedSqlAndFreshPointReads() {
+    QTemporaryDir directory;
+    MemoryStore writer;
+    setupStoreWithDb(writer, directory);
+    const auto old = writer.add(MemoryType::Preference, QStringLiteral("old"), QStringLiteral("remember me"));
+    MemoryStore reader;
+    reader.setDatabasePath(writer.databasePath());
+    QVERIFY(reader.loadRecallWindow(1));
+    QVERIFY(reader.readForRecall(old.id));
+    const auto version = reader.databaseVersion();
+    QVERIFY(writer.updateStatusById(old.id, MemoryStatus::Consolidated));
+    QVERIFY(reader.databaseVersion() != version);
+    QCOMPARE(reader.readForRecall(old.id)->status, MemoryStatus::Consolidated);
+    QVERIFY(writer.removeEntryById(old.id));
+    QVERIFY(!reader.readForRecall(old.id));
+
+    QSqlQuery query(QSqlDatabase::database(reader.databaseConnectionName(), false));
+    for (const QString& predicate : {QStringLiteral("status='active'"),
+             QStringLiteral("partition='hippocampus' AND status='active'")}) {
+        QVERIFY(query.exec(QStringLiteral("EXPLAIN QUERY PLAN SELECT * FROM memory_items WHERE ")
+            + predicate + QStringLiteral(" ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT 256")));
+        QString plan;
+        while (query.next()) plan += query.value(3).toString();
+        QVERIFY2(plan.contains(QStringLiteral("idx_memory_recall_")), qPrintable(plan));
+        QVERIFY2(!plan.contains(QStringLiteral("TEMP B-TREE")), qPrintable(plan));
+    }
+}
+
+void TestMemoryStrategy::testDaydreamArchiveFailureRollsBackEvidence() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryEntry source;
+    source.type = MemoryType::ShortTerm;
+    source.key = QStringLiteral("archive-rollback");
+    source.summary = QStringLiteral("original evidence");
+    source.content = source.summary;
+    source.mentionCount = 3;
+    source = store.addEntry(source);
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    const auto decisions = DaydreamConsolidator::hardcodedDecisions(snapshot.items);
+    QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(query.exec(QStringLiteral("CREATE TEMP TRIGGER fail_archive BEFORE UPDATE ON memory_items "
+        "WHEN NEW.status='consolidated' BEGIN SELECT RAISE(ABORT, 'archive failed'); END")));
+    QVERIFY(!consolidator.applyDecisions(snapshot, decisions).committed);
+    QVERIFY(store.loadDatabaseOnly());
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.findById(source.id)->status, MemoryStatus::Active);
+    QCOMPARE(store.findById(source.id)->content, source.content);
+    QVERIFY(store.relationGraph().all().isEmpty());
+    QVERIFY(query.exec(QStringLiteral("DROP TRIGGER fail_archive")));
+    QVERIFY(consolidator.applyDecisions(snapshot, decisions).committed);
+    QCOMPARE(store.findById(source.id)->status, MemoryStatus::Consolidated);
+    QCOMPARE(store.all().size(), 2);
 }
 
 void TestMemoryStrategy::testRepositoryBoundedRecentRead() {

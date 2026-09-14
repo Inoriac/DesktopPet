@@ -255,6 +255,7 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
         const QList<MemoryRelation> neighbors = relationGraph.neighborsOf(current.memoryId);
         
         for (const MemoryRelation& edge : neighbors) {
+            if (results.size() >= m_maxCandidates) break;
             // Determine target node (could be from or to)
             const QString targetId = (edge.fromMemoryId == current.memoryId)
                 ? edge.toMemoryId

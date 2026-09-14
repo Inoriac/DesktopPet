@@ -6,6 +6,14 @@
 #include <QTemporaryDir>
 #include <QThread>
 #include <QUuid>
+#include <QTimer>
+#include <QSqlQuery>
+#include <QSqlDatabase>
+#include "ai/memory/hnsw_embedding_index.h"
+#include "ai/memory/memory_index_worker.h"
+#ifdef DESKTOP_PET_HAS_ORT
+#include "ai/memory/onnx_embedding_provider.h"
+#endif
 
 #include <optional>
 #include <atomic>
@@ -65,7 +73,7 @@ bool prepareOnce(ChatPreparationExecutor& executor,
                  ChatPreparationRequest request,
                  ChatPreparationResult* output) {
     bool received = false;
-    QObject::connect(&executor, &ChatPreparationExecutor::prepared, &executor,
+    const auto connection = QObject::connect(&executor, &ChatPreparationExecutor::prepared, &executor,
                      [&received, output](ChatPreparationResult result) {
                          *output = std::move(result);
                          received = true;
@@ -77,7 +85,40 @@ bool prepareOnce(ChatPreparationExecutor& executor,
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QTest::qWait(1);
     }
+    QObject::disconnect(connection);
     return received;
+}
+
+class WorkerTestProvider final : public EmbeddingProvider {
+public:
+    explicit WorkerTestProvider(std::shared_ptr<std::atomic_bool> wrongThread = {},
+                                quintptr guiThread = 0)
+        : m_wrongThread(std::move(wrongThread)), m_guiThread(guiThread) {}
+    ~WorkerTestProvider() override { checkThread(); }
+    QString modelName() const override { return QStringLiteral("worker-recall-test"); }
+    int dimension() const override { return 3; }
+    QVector<float> embed(const QString&) override { checkThread(); return {1.0f, 0.0f, 0.0f}; }
+private:
+    void checkThread() const {
+        if (m_wrongThread && reinterpret_cast<quintptr>(QThread::currentThreadId()) == m_guiThread)
+            m_wrongThread->store(true);
+    }
+    std::shared_ptr<std::atomic_bool> m_wrongThread;
+    quintptr m_guiThread;
+};
+
+bool fillRecentWindow(MemoryStore& store) {
+    for (int i = 0; i < 300; ++i) {
+        MemoryEntry recent;
+        recent.type = MemoryType::ShortTerm;
+        recent.id = QStringLiteral("recent-%1").arg(i);
+        recent.key = recent.id;
+        recent.summary = QStringLiteral("recent unrelated event %1").arg(i);
+        recent.createdAt = QDateTime::currentDateTimeUtc();
+        recent.updatedAt = recent.createdAt;
+        if (store.addEntry(recent).id.isEmpty()) return false;
+    }
+    return true;
 }
 
 } // namespace
@@ -86,6 +127,12 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void semanticRecallFindsOldMemoryAndRejectsStalePrivateHits();
+    void activePoolSurvivesWorkerRestartAndClear();
+    void slowProviderInitializationDoesNotBlockGui();
+#ifdef DESKTOP_PET_HAS_ORT
+    void nativeOnnxRecallRunsThroughChatWorker();
+#endif
     void start_whenEnvironmentIsValid_shouldCreateWorkerOwnedResources();
     void start_whenDatabasePathsAreInvalid_shouldReturnControlledFailure();
     void submit_whenContextIsValid_shouldReturnMessagesAndReinforcementIds();
@@ -553,6 +600,142 @@ retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation()
     QCOMPARE(unchanged->accessCount, 0);
     QVERIFY(!unchanged->lastAccessedAt.isValid());
 }
+
+void ChatPreparationExecutorTests::semanticRecallFindsOldMemoryAndRejectsStalePrivateHits() {
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto old = matchingMemory();
+    old.createdAt = QDateTime::currentDateTimeUtc().addDays(-100);
+    old.updatedAt = old.createdAt;
+    old = store.addEntry(old);
+    QVERIFY(!old.id.isEmpty());
+    QVERIFY(fillRecentWindow(store));
+    // Persist a long-term vector before starting the background owner.
+    WorkerTestProvider seedProvider;
+    {
+        HnswEmbeddingIndex index(store.databaseConnectionName(), &seedProvider, directory.path());
+        QVERIFY(index.upsert(old.id, old.summary));
+        QVERIFY(index.saveToDisk());
+    }
+    ChatPreparationEnvironment configured = environment;
+    configured.embeddingProviderFactory = [] { return std::make_unique<WorkerTestProvider>(); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(configured).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("different wording")), &result));
+    QVERIFY(result.reinforcementIds.contains(old.id));
+    QVERIFY(result.messages.last().content.contains(old.summary));
+
+    // A live stale HNSW hit and cached activation must not expose changed data.
+    old.privacyLevel = PrivacyLevel::Sensitive;
+    QVERIFY(store.updateEntryById(old));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("different wording")), &result));
+    QVERIFY(!result.reinforcementIds.contains(old.id));
+    QVERIFY(!result.messages.last().content.contains(old.summary));
+    QVERIFY(store.removeEntryById(old.id));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("different wording")), &result));
+    QVERIFY(!result.reinforcementIds.contains(old.id));
+}
+
+void ChatPreparationExecutorTests::activePoolSurvivesWorkerRestartAndClear() {
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    const auto old = store.addEntry(matchingMemory());
+    {
+        ChatPreparationExecutor executor;
+        QVERIFY(executor.start(environment).isOk());
+        ChatPreparationResult result;
+        QVERIFY(prepareOnce(executor, requestFor(), &result));
+        QVERIFY(result.reinforcementIds.contains(old.id));
+    }
+    const auto saved = store.loadActiveMemorySnapshot();
+    QCOMPARE(saved.items.size(), 1);
+    QCOMPARE(saved.items.first().memoryId, old.id);
+    QVERIFY(fillRecentWindow(store));
+    ChatPreparationExecutor restarted;
+    QVERIFY(restarted.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(result.reinforcementIds.contains(old.id));
+    store.clear();
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(result.reinforcementIds.isEmpty());
+    QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
+    // Importing the same ID after clear must not resurrect its old activation.
+    QVERIFY(!store.addEntry(old).id.isEmpty());
+    QVERIFY(fillRecentWindow(store));
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(!result.reinforcementIds.contains(old.id));
+    QVERIFY(!result.messages.last().content.contains(old.summary));
+}
+
+void ChatPreparationExecutorTests::slowProviderInitializationDoesNotBlockGui() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    QVERIFY(!store.addEntry(matchingMemory()).id.isEmpty());
+    auto released = std::make_shared<std::atomic_bool>(false);
+    auto wrongThread = std::make_shared<std::atomic_bool>(false);
+    const auto gui = reinterpret_cast<quintptr>(QThread::currentThreadId());
+    environment.embeddingProviderFactory = [released, wrongThread, gui] {
+        if (reinterpret_cast<quintptr>(QThread::currentThreadId()) == gui) wrongThread->store(true);
+        QElapsedTimer timeout;
+        timeout.start();
+        while (!released->load() && timeout.elapsed() < 2000) QThread::msleep(1);
+        return std::make_unique<WorkerTestProvider>(wrongThread, gui);
+    };
+    {
+        ChatPreparationExecutor executor;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        QVERIFY(executor.start(environment).isOk());
+        QVERIFY2(elapsed.elapsed() < 500, "start blocked on provider initialization");
+        QTimer::singleShot(0, [released] { released->store(true); });
+        ChatPreparationResult result;
+        QVERIFY(prepareOnce(executor, requestFor(), &result));
+        QVERIFY(result.reinforcementIds.contains(QStringLiteral("memory-jazz")));
+    }
+    QVERIFY(released->load());
+    QVERIFY(!wrongThread->load());
+}
+
+#ifdef DESKTOP_PET_HAS_ORT
+void ChatPreparationExecutorTests::nativeOnnxRecallRunsThroughChatWorker() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    environment.embeddingAssetsDirectory = QDir(QStringLiteral(DESKTOP_PET_EMBEDDING_ASSETS)).absoluteFilePath(QStringLiteral(".."));
+    QVERIFY(QFileInfo::exists(QDir(environment.embeddingAssetsDirectory).filePath(QStringLiteral("embeddings/model_quantized.onnx"))));
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto old = matchingMemory();
+    old.createdAt = QDateTime::currentDateTimeUtc().addDays(-100);
+    old.updatedAt = old.createdAt;
+    old = store.addEntry(old);
+    QVERIFY(!old.id.isEmpty());
+    QVERIFY(fillRecentWindow(store));
+    QSqlQuery prioritize(QSqlDatabase::database(store.databaseConnectionName(), false));
+    prioritize.prepare(QStringLiteral("UPDATE memory_index_jobs SET created_at='2000-01-01T00:00:00Z' WHERE memory_id=:id"));
+    prioritize.bindValue(QStringLiteral(":id"), old.id);
+    QVERIFY(prioritize.exec());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    // The old preference is absent from both recency windows and the fresh pool.
+    // Maintenance and query embedding must both run in the worker for this to hit.
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("我爱听即兴演奏的音乐")), &result));
+    QVERIFY(result.reinforcementIds.contains(old.id));
+    QVERIFY(result.messages.last().content.contains(old.summary));
+}
+#endif
 
 QTEST_MAIN(ChatPreparationExecutorTests)
 #include "test_chat_preparation_executor.moc"

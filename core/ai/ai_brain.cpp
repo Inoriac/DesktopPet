@@ -23,9 +23,6 @@
 #include "runtime/agent_runtime_services.h"
 #include "event/event_ledger.h"
 #include "tools/environment_tools.h"
-#ifdef DESKTOP_PET_HAS_ORT
-#include "memory/onnx_embedding_provider.h"
-#endif
 
 namespace {
 
@@ -35,7 +32,6 @@ qint64 monotonicMilliseconds() {
     return timer.msecsSinceReference();
 }
 
-#ifdef DESKTOP_PET_HAS_ORT
 // 与 main.cpp 同规则：在当前目录 / 可执行文件目录及其上两级找同时含 assets 与 config 的根。
 QString resolveAssetsDirectory() {
     const QString appDir = QCoreApplication::applicationDirPath();
@@ -51,7 +47,6 @@ QString resolveAssetsDirectory() {
     }
     return QDir(appDir).absoluteFilePath(QStringLiteral("../assets"));
 }
-#endif
 
 } // namespace
 
@@ -71,6 +66,8 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     m_chatPreparationExecutor = std::make_unique<ChatPreparationExecutor>();
     connect(m_chatPreparationExecutor.get(), &ChatPreparationExecutor::prepared,
             this, &AIBrain::continuePreparedThink);
+    connect(this, &AIBrain::daydreamFinished, m_chatPreparationExecutor.get(),
+            [executor = m_chatPreparationExecutor.get()] { executor->kickMemoryMaintenance(); });
     m_chatSideEffectQueue = std::make_unique<ChatSideEffectQueue>();
     connect(m_chatSideEffectQueue.get(), &ChatSideEffectQueue::barrierCommitted,
             this, &AIBrain::handleSideEffectBarrier);
@@ -110,18 +107,9 @@ Result<void, DomainError> AIBrain::initializeStorage(
             domainError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"), errorMessage));
     }
     m_storageInitialized = true;
-    // 初始化类人激活式召回通道（Phase 1-3，pre-phase4-roadmap #10）
-    m_hippocampusWorkingSet.setStore(&m_memoryStore);
-    const ActiveMemorySnapshot activeSnapshot = m_memoryStore.loadActiveMemorySnapshot();
-    if (!activeSnapshot.isEmpty()) {
-        m_activeMemoryPool.restoreFromSnapshot(activeSnapshot.items, activeSnapshot.savedAt,
-                                               QDateTime::currentDateTimeUtc());
-        m_memoryStore.saveActiveMemorySnapshot(m_activeMemoryPool.snapshot());
-    }
-    refreshActivationRecallIndexes(true);
-    initializeSemanticIndexService();
     m_chatPreparationEnvironment = std::make_unique<ChatPreparationEnvironment>();
     m_chatPreparationEnvironment->memoryDatabasePath = m_memoryStore.databasePath();
+    m_chatPreparationEnvironment->embeddingAssetsDirectory = resolveAssetsDirectory();
     m_chatPreparationEnvironment->identityBaseline = m_identityBaseline;
     m_chatPreparationEnvironment->personalityPolicy = m_personalityPolicy;
     m_chatPreparationEnvironment->promptTemplate = m_promptTemplate;
@@ -138,32 +126,6 @@ Result<void, DomainError> AIBrain::initializeStorage(
         }
     }
     return Result<void, DomainError>::success();
-}
-
-void AIBrain::initializeSemanticIndexService() {
-    m_semanticIndexService = std::make_unique<SemanticIndexService>(this);
-    std::unique_ptr<EmbeddingProvider> provider;
-#ifdef DESKTOP_PET_HAS_ORT
-    {
-        QString providerError;
-        if (auto* onnx = OnnxEmbeddingProvider::tryCreateFromAssets(resolveAssetsDirectory(), &providerError)) {
-            provider.reset(onnx);
-        } else {
-            qInfo() << "[AIBrain] embedding provider unavailable, semantic index disabled:" << providerError;
-        }
-    }
-#endif
-    // 与 MemoryStore 同线程共用连接；对话中（m_busy）跳过 tick。
-    m_semanticIndexService->setIdlePredicate([this]() { return !m_busy; });
-    const QString indexDir = QFileInfo(m_memoryStore.databasePath()).dir().absolutePath();
-    if (!m_semanticIndexService->start(std::move(provider),
-                                       m_memoryStore.databaseConnectionName(), indexDir)) {
-        return;
-    }
-    setEmbeddingIndex(m_semanticIndexService->index());
-    // Daydream 巩固落库后立即消化新产生的索引任务（Phase 4.3）。
-    connect(this, &AIBrain::daydreamFinished, m_semanticIndexService.get(),
-            [service = m_semanticIndexService.get()]() { service->kick(); });
 }
 
 Result<void, DomainError> AIBrain::startChatPreparationExecutor() {
@@ -879,19 +841,4 @@ void AIBrain::annotateMemoryEntry(MemoryEntry& entry) const {
     entry.emotion = snapshot->active;
     entry.emotionIntensity = std::clamp(snapshot->intensity, 0.0, 1.0);
     entry.emotionConfidence = std::clamp(snapshot->confidence, 0.0, 1.0);
-}
-
-// 类人激活式召回索引刷新（pre-phase4-roadmap #10）。
-// 惰性策略：60s 缓存窗口；工作集/倒排索引/已知标签全量重建（内存操作，
-// 典型规模下毫秒级；大库优化方向：增量 upsert 钩子）。
-void AIBrain::refreshActivationRecallIndexes(bool force) {
-    const QDateTime now = QDateTime::currentDateTimeUtc();
-    if (!force && m_recallIndexRefreshedAt.isValid()
-        && m_recallIndexRefreshedAt.secsTo(now) < 60) {
-        return;
-    }
-    m_recallIndexRefreshedAt = now;
-    m_hippocampusWorkingSet.refresh();
-    m_memoryKeywordIndex.rebuild(m_memoryStore.all());
-    m_memoryCueExtractor.setKnownTags(m_memoryKeywordIndex.knownTags());
 }

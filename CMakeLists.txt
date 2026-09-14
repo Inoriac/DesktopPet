@@ -1606,7 +1606,21 @@ if(ORT_ROOT AND ORT_LIB)
                     ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:memory_strategy_tests>)
         endif()
     endif()
-    # 生产目标同样编入 ONNX provider：AIBrain 在 DESKTOP_PET_HAS_ORT 下尝试加载
+    # Exercise the actual background chat path with native ONNX as well.
+    target_sources(chat_preparation_executor_tests PRIVATE
+        core/ai/memory/onnx_embedding_provider.cpp)
+    target_include_directories(chat_preparation_executor_tests PRIVATE ${ORT_ROOT}/include)
+    target_link_libraries(chat_preparation_executor_tests ${ORT_LIB})
+    target_compile_definitions(chat_preparation_executor_tests PRIVATE
+        DESKTOP_PET_HAS_ORT
+        DESKTOP_PET_EMBEDDING_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets/embeddings")
+    set_target_properties(chat_preparation_executor_tests PROPERTIES BUILD_RPATH "${ORT_ROOT}/lib")
+    if(WIN32 AND ORT_RUNTIME_DLLS)
+        add_custom_command(TARGET chat_preparation_executor_tests POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:chat_preparation_executor_tests>)
+    endif()
+    # 生产目标同样编入 ONNX provider：聊天 Worker 在 DESKTOP_PET_HAS_ORT 下尝试加载
     # assets/embeddings 模型，失败则语义索引静默禁用（退关键词召回）。
     target_sources(Desktop_Pet PRIVATE
         core/ai/memory/onnx_embedding_provider.h

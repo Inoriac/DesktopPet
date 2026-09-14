@@ -343,12 +343,6 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
         allowedActionsForTrigger(triggerTag),
         legacyEmotion
     );
-    const QStringList memoryHints = retrieveMemoryHints(reason, triggerTag);
-    if (!memoryHints.isEmpty()) {
-        contextMessage.content += "\n相关记忆：\n" + memoryHints.join("\n");
-        contextMessage.content += "\n约束：不要编造未保存的历史；查询提醒时优先调用 schedule_list 获取真实任务状态；敏感记忆未经确认不得主动暴露。\n";
-    }
-
     const QList<MatchedSkill> matchedSkills = m_skillMatcher.match(m_skillStore, reason, 2);
     if (!matchedSkills.isEmpty()) {
         const QStringList skillHints = m_skillMatcher.formatForContext(matchedSkills);
@@ -358,69 +352,6 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
     messages.append(contextMessage);
 
     return messages;
-}
-
-QStringList AIBrain::retrieveMemoryHints(const QString& reason,
-                                         const QString& triggerTag,
-                                         int limit) {
-    // Retrieval is read-only with respect to consolidation. Expired cache items
-    // are skipped by the retriever and Daydream owns persistent inbox draining.
-    MemoryQuery query;
-    query.text = reason;
-    query.limit = limit;
-    query.includeSensitive = false;
-    query.includeInactive = false;
-    if (const std::optional<EmotionSnapshot> emotion = currentEmotionSnapshot(); emotion.has_value()) {
-        query.currentEmotion = emotion->active;
-        query.currentEmotionIntensity = emotion->intensity;
-    }
-
-    if (triggerTag == "user_request" || triggerTag == "manual") {
-        query.preferredTypes = {
-            MemoryType::Preference,
-            MemoryType::Semantic,
-            MemoryType::Procedural,
-            MemoryType::TaskShadow,
-            MemoryType::Core,
-            MemoryType::Relationship,
-            MemoryType::Episodic
-        };
-    } else if (triggerTag == "proactive_chat") {
-        query.preferredTypes = {
-            MemoryType::Preference,
-            MemoryType::Relationship,
-            MemoryType::Core
-        };
-    } else {
-        query.preferredTypes = {
-            MemoryType::Preference,
-            MemoryType::Core
-        };
-        query.limit = qMin(limit, 4);
-    }
-
-    // 类人激活式召回（Phase 1-3，pre-phase4-roadmap #10）：
-    // 多路种子（激活池/工作集/关键词/embedding）+ 图谱传播 + ACT-R 精排，
-    // 不再全量扫描 MemoryStore::all()。各通道缺失时自动跳过（优雅退化）。
-    refreshActivationRecallIndexes(false);
-    ActivationChannels channels;
-    channels.activePool = &m_activeMemoryPool;
-    channels.workingSet = &m_hippocampusWorkingSet;
-    channels.keywordIndex = &m_memoryKeywordIndex;
-    channels.embeddingIndex = m_embeddingIndex;
-    channels.graphPropagation = &m_associativeEngine;
-    const QList<RetrievedMemory> memories = m_memoryRetriever.retrieveWithGraphPropagation(
-        m_memoryStore, query, channels, &m_memoryCueExtractor);
-    // 进入 Prompt 的记忆保持在“脑海中”（设计 §8：会话来源，半衰期 60min）
-    for (const RetrievedMemory& memory : memories) {
-        m_activeMemoryPool.activate(memory.entry.id,
-                                    qBound(0.1, memory.score / 3.0, 1.0),
-                                    QStringLiteral("session"));
-    }
-    if (!memories.isEmpty()) {
-        m_memoryStore.saveActiveMemorySnapshot(m_activeMemoryPool.snapshot());
-    }
-    return m_memoryRetriever.formatForContext(memories);
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {

@@ -23,6 +23,7 @@ public:
                       MemoryStatus status,
                       const QJsonObject& payloadPatch = {}) override;
     QList<MemoryEntry> loadAll() override;
+    std::optional<MemoryEntry> loadById(const QString& id) override;
     QList<MemoryEntry> loadRecent(int limit,
                                   const QString& partition = QString(),
                                   bool activeOnly = false) override;

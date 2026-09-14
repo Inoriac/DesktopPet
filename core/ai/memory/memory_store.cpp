@@ -1006,6 +1006,23 @@ bool MemoryStore::persistStatusUpdate(const QString& id,
     return true;
 }
 
+bool MemoryStore::databaseIsOpen() const {
+    return m_repository && m_repository->isOpen();
+}
+
+qint64 MemoryStore::databaseVersion() const {
+    if (!databaseIsOpen()) return -1;
+    QSqlQuery query(QSqlDatabase::database(databaseConnectionName(), false));
+    if (!query.exec(QStringLiteral("PRAGMA data_version")) || !query.next()) return -1;
+    return query.value(0).toLongLong();
+}
+
+std::optional<MemoryEntry> MemoryStore::readForRecall(const QString& id) const {
+    if (databaseIsOpen()) return m_repository->loadById(id);
+    const auto* entry = findById(id);
+    return entry ? std::optional<MemoryEntry>(*entry) : std::nullopt;
+}
+
 MemoryEntry* MemoryStore::findById(const QString& id) {
     for (MemoryEntry& entry : m_entries) {
         if (entry.id == id) return &entry;

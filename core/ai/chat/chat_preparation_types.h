@@ -7,6 +7,9 @@
 #include <QtGlobal>
 
 #include <optional>
+#include <functional>
+#include <memory>
+#include "ai/memory/embedding_provider.h"
 
 #include "ai/domain/domain_result.h"
 #include "ai/identity/identity_baseline.h"
@@ -22,6 +25,11 @@ struct ChatPreparationEnvironment {
     QString profileId;
     QString runtimeDatabasePath;
     QString memoryDatabasePath;
+    QString embeddingAssetsDirectory;
+#ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
+    // Called on the worker thread, never on the submitting thread.
+    std::function<std::unique_ptr<EmbeddingProvider>()> embeddingProviderFactory;
+#endif
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy personalityPolicy;
     PromptTemplate promptTemplate;
