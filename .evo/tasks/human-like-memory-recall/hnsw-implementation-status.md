@@ -154,6 +154,20 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - Retry delay now correctly caps milliseconds at 600000 (previous code applied
   the cap before converting seconds to milliseconds).
 
+## Clear / Import Synchronization (design §§5, 14)
+
+- Physical deletion retains stable HNSW label assignments until the consumer
+  marks them deleted. This fixes failed deletion in a still-running index.
+- Repository clear atomically removes memory/vector/snapshot/health state and
+  replaces pending work with model-specific deletes for Active labels. Labels
+  remain allocated, preventing reuse while live or on-disk HNSW holds them.
+- Legacy JSON import inserts its index jobs in the same transaction as memories.
+  Outbox failure rolls back import. Clear also rolls back if delete jobs fail.
+- Tests cover live physical deletion, clear/import/reinsert, clear replay after
+  restart, and outbox failure rollback. Desktop_Pet and seven suites pass.
+  Deletion is asynchronous: consumers must run before raw HNSW search reflects
+  clear; normal recall must continue checking authoritative memory eligibility.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -177,7 +191,8 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   worker thread with its own SQLite connection remains future work.
   Producer-side jobs still begin with empty model/hash for backward compatibility;
   the worker fills these after successful processing.
-- Clear/import and direct repository mutation coverage still require auditing.
+- Clear/import through MemoryStore are covered above. Arbitrary direct repository
+  updates still require a wider audit; callers must retain outbox synchronization.
 - Full generation/SQLite consistency, every crash point, cross-thread provider
   ownership and eligibility filtering across every recall API remain unaccepted.
 - Tombstone threshold detection and automatic idle-time compaction are wired in
@@ -187,5 +202,5 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   with initial macOS baselines recorded above. Bounded legacy backfill and coverage
   counters are implemented for missing current-model vectors. Shadow retirement
   gate state/decision logic is implemented but not wired to disable legacy recall
-  paths. Real-data/provider-backed gates and clear/import auditing have not been
-  measured or enabled. Invalid persisted vectors now use the repair queue above.
+  paths. Real-data/provider-backed gates and actual shadow Top-K comparison remain
+  unaccepted. Invalid persisted vectors now use the repair queue above.

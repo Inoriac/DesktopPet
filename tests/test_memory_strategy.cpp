@@ -114,6 +114,10 @@ private slots:
     void testIndexWorkerSkipsForeignModelBeforeBatchLimit();
     void testIndexHealthRejectsUnreadableCoverage();
     void testIndexRecoveryKeepsDayUnhealthy();
+    void testIndexTracksPhysicalDeleteAndClearImport();
+    void testLegacyImportRollsBackWhenOutboxFails();
+    void testClearIndexJobsReplayAfterRestart();
+    void testClearRollsBackWhenIndexJobsFail();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2617,6 +2621,131 @@ void TestMemoryStrategy::testIndexRecoveryKeepsDayUnhealthy() {
     QVERIFY(q.next());
     QVERIFY(q.value(0).toInt() > 0);
     QVERIFY(!q.value(1).toString().isEmpty());
+}
+
+void TestMemoryStrategy::testIndexTracksPhysicalDeleteAndClearImport() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    MemoryEntry old;
+    old.id = QStringLiteral("old-indexed");
+    old.type = MemoryType::Semantic;
+    old.summary = QStringLiteral("alpha");
+    QVERIFY(!store.addEntry(old).id.isEmpty());
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(), 1);
+    QVERIFY(store.removeEntryById(old.id));
+    QCOMPARE(worker.processPending(), 1);
+    QVERIFY(index.search(QStringLiteral("alpha"), 4).isEmpty());
+
+    QVERIFY(!store.addEntry(old).id.isEmpty());
+    QCOMPARE(worker.processPending(), 1);
+    store.clear();
+    QVERIFY(store.all().isEmpty());
+    QVERIFY(worker.processPending() >= 1);
+    QVERIFY(index.search(QStringLiteral("alpha"), 4).isEmpty());
+
+    MemoryEntry imported;
+    imported.id = QStringLiteral("imported-new");
+    imported.type = MemoryType::Semantic;
+    imported.summary = QStringLiteral("beta");
+    imported.status = MemoryStatus::Active;
+    imported.privacyLevel = PrivacyLevel::Public;
+    QFile file(dir.filePath(QStringLiteral("import.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QJsonDocument(QJsonArray{imported.toJson()}).toJson());
+    file.close();
+    QVERIFY(store.importLegacyJson(file.fileName()));
+    QCOMPARE(worker.processPending(), 1); // Import itself must enqueue, no backfill tick needed.
+    const auto results = index.search(QStringLiteral("beta"), 4);
+    QCOMPARE(results.size(), 1);
+    QCOMPARE(results.first().memoryId, imported.id);
+    HnswEmbeddingIndex restarted(store.databaseConnectionName(), &provider, dir.path());
+    QVERIFY(restarted.loadFromDisk());
+    QCOMPARE(restarted.activeCount(), 1);
+}
+
+void TestMemoryStrategy::testLegacyImportRollsBackWhenOutboxFails() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    MemoryEntry imported;
+    imported.id = QStringLiteral("import-fail");
+    imported.type = MemoryType::Semantic;
+    imported.summary = QStringLiteral("alpha");
+    QFile file(dir.filePath(QStringLiteral("import-fail.json")));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(QJsonDocument(QJsonArray{imported.toJson()}).toJson());
+    file.close();
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("CREATE TRIGGER reject_import_job BEFORE INSERT ON memory_index_jobs "
+        "BEGIN SELECT RAISE(ABORT,'outbox unavailable'); END")));
+    QVERIFY(!store.importLegacyJson(file.fileName()));
+    QVERIFY(store.all().isEmpty());
+    QVERIFY(q.exec(QStringLiteral("SELECT COUNT(*) FROM memory_items")));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(), 0);
+    q.finish();
+    QVERIFY(q.exec(QStringLiteral("DROP TRIGGER reject_import_job")));
+    QVERIFY(store.importLegacyJson(file.fileName()));
+    QCOMPARE(store.all().size(), 1);
+}
+
+void TestMemoryStrategy::testClearIndexJobsReplayAfterRestart() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    FakeEmbeddingProvider provider;
+    {
+        HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+        MemoryIndexWorker worker(index);
+        MemoryEntry entry;
+        entry.id = QStringLiteral("clear-old");
+        entry.type = MemoryType::Semantic;
+        entry.summary = QStringLiteral("alpha");
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+        QCOMPARE(worker.processPending(), 1);
+        store.clear();
+        QVERIFY(store.all().isEmpty());
+        // No consumption before index destruction.
+    }
+    MemoryEntry added;
+    added.id = QStringLiteral("clear-new");
+    added.type = MemoryType::Semantic;
+    added.summary = QStringLiteral("beta");
+    QVERIFY(!store.addEntry(added).id.isEmpty());
+    HnswEmbeddingIndex restarted(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker replay(restarted);
+    QCOMPARE(replay.processPending(), 2);
+    const auto hits = restarted.search(QStringLiteral("alpha"), 4);
+    QCOMPARE(hits.size(), 1);
+    QCOMPARE(hits.first().memoryId, added.id);
+    QCOMPARE(replay.processPending(), 0);
+}
+
+void TestMemoryStrategy::testClearRollsBackWhenIndexJobsFail() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = QStringLiteral("clear failure alpha");
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(), 1);
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(q.exec(QStringLiteral("CREATE TRIGGER reject_clear_job BEFORE INSERT ON memory_index_jobs "
+        "BEGIN SELECT RAISE(ABORT,'outbox unavailable'); END")));
+    store.clear();
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(worker.coverageStats().indexed, 1);
+    QVERIFY(q.exec(QStringLiteral("SELECT COUNT(*) FROM memory_items")));
+    QVERIFY(q.next());
+    QCOMPARE(q.value(0).toInt(), 1);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

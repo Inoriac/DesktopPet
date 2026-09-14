@@ -515,9 +515,9 @@ bool MemoryStore::importLegacyJson(const QString& jsonPath, QString* errorMessag
         return false;
     }
     for (const MemoryEntry& entry : entries) {
-        if (!m_repository->insert(entry)) {
+        if (!m_repository->insert(entry) || !enqueueIndexJob(entry.id, QStringLiteral("upsert"))) {
             m_repository->rollbackTransaction();
-            if (errorMessage) *errorMessage = QStringLiteral("failed to import legacy memory entry");
+            if (errorMessage) *errorMessage = QStringLiteral("failed to import legacy memory entry or index job");
             return false;
         }
     }

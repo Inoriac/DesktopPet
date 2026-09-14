@@ -804,7 +804,8 @@ bool SQLiteMemoryRepository::clear() {
         QStringLiteral("memory_relations"),
         QStringLiteral("memory_access_log"),
         QStringLiteral("memory_embeddings"),
-        QStringLiteral("memory_hnsw_labels"),
+        // Keep numeric assignments until workers consume deletion jobs. Reusing
+        // labels while a live HNSW still holds them can overwrite other memories.
         QStringLiteral("memory_index_health_daily"),
         QStringLiteral("memory_activation_snapshots"),
         QStringLiteral("memory_index_jobs"),
@@ -815,6 +816,15 @@ bool SQLiteMemoryRepository::clear() {
             rollback();
             return false;
         }
+    }
+    // Each existing model gets durable deletion work, including when the
+    // application exits before the next semantic-index tick.
+    if (!query.exec(QStringLiteral(
+        "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at) "
+        "SELECT lower(hex(randomblob(16))),memory_id,'delete',model,'Pending',"
+        "strftime('%Y-%m-%dT%H:%M:%fZ','now') FROM memory_hnsw_labels WHERE status='Active'"))) {
+        rollback();
+        return false;
     }
     return query.exec(QStringLiteral("RELEASE SAVEPOINT %1").arg(savepoint));
 }
@@ -839,7 +849,7 @@ bool SQLiteMemoryRepository::removeById(const QString& id) {
     if (!execDelete(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_activation_snapshots WHERE memory_id = :id"))) return false;
-    if (!execDelete(QStringLiteral("DELETE FROM memory_hnsw_labels WHERE memory_id = :id"))) return false;
+    // HNSW labels remain allocated until the outbox consumer marks them deleted.
     if (!execDelete(QStringLiteral(
             "DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"), true)) return false;
     return execDelete(QStringLiteral("DELETE FROM memory_items WHERE id = :id"));
