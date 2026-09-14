@@ -1,6 +1,7 @@
 #ifndef DESKTOP_PET_MEMORY_INDEX_WORKER_H
 #define DESKTOP_PET_MEMORY_INDEX_WORKER_H
 
+#include <QDate>
 #include <QString>
 
 struct IndexCoverageStats {
@@ -8,6 +9,14 @@ struct IndexCoverageStats {
     int indexed = 0;
     int pending = 0;
     double ratio() const { return eligible > 0 ? static_cast<double>(indexed) / eligible : 1.0; }
+};
+
+struct IndexRetirementGateStatus {
+    bool canRetireLegacyScan = false;
+    int healthyDays = 0;
+    int requiredDays = 7;
+    double minimumCoverage = 0.95;
+    double worstCoverage = 0.0;
 };
 
 class HnswEmbeddingIndex;
@@ -27,6 +36,12 @@ public:
     // have an embedding row for the current provider model. Returns enqueued jobs.
     int enqueueBackfillJobs(int limit = 16);
     IndexCoverageStats coverageStats(int scanLimit = 4096) const;
+    bool recordHealthSample(bool healthy,
+                            const QString& error = QString(),
+                            const QDate& day = QDate::currentDate());
+    IndexRetirementGateStatus retirementGateStatus(int requiredDays = 7,
+                                                   double minimumCoverage = 0.95,
+                                                   const QDate& today = QDate::currentDate()) const;
 
 private:
     bool ensureReady();

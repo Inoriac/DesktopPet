@@ -108,6 +108,7 @@ private slots:
     void testSemanticIndexServiceLifecycle();
     void testActiveMemoryPoolPersistsAcrossRestart();
     void testSemanticIndexServiceBackfillsLegacyMemories();
+    void testIndexRetirementGateRequiresCoverageAndHealthyDays();
     void testModelDownloaderLocalMirror();
     void testTransactionRollbackRevertsWrites();
     void testTransactionCommitRetainsWrites();
@@ -2443,6 +2444,43 @@ void TestMemoryStrategy::testSemanticIndexServiceBackfillsLegacyMemories() {
     QCOMPARE(service.hnswIndex()->activeCount(), 3);
     QCOMPARE(service.index()->search(QStringLiteral("legacy-a"), 1).first().memoryId,
              QStringLiteral("legacy-a"));
+}
+
+void TestMemoryStrategy::testIndexRetirementGateRequiresCoverageAndHealthyDays() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    for (const QString& id : {QStringLiteral("gate-a"), QStringLiteral("gate-b")}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Semantic;
+        entry.summary = id;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    FakeEmbeddingProvider provider;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, dir.path());
+    MemoryIndexWorker worker(index);
+    QCOMPARE(worker.processPending(8), 2);
+    QCOMPARE(worker.coverageStats().eligible, 2);
+    QCOMPARE(worker.coverageStats().indexed, 2);
+
+    const QDate today(2026, 9, 14);
+    for (int offset = 6; offset >= 1; --offset) {
+        QVERIFY(worker.recordHealthSample(true, {}, today.addDays(-offset)));
+    }
+    QVERIFY(!worker.retirementGateStatus(7, 0.95, today).canRetireLegacyScan);
+    QVERIFY(worker.recordHealthSample(true, {}, today));
+    IndexRetirementGateStatus ready = worker.retirementGateStatus(7, 0.95, today);
+    QVERIFY(ready.canRetireLegacyScan);
+    QCOMPARE(ready.healthyDays, 7);
+
+    QSqlQuery dropOne(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(dropOne.exec(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id='gate-b'")));
+    QVERIFY(worker.recordHealthSample(true, {}, today.addDays(1)));
+    QVERIFY(!worker.retirementGateStatus(7, 0.95, today.addDays(1)).canRetireLegacyScan);
+
+    QVERIFY(worker.recordHealthSample(false, QStringLiteral("simulated corruption"), today.addDays(2)));
+    QVERIFY(!worker.retirementGateStatus(7, 0.95, today.addDays(2)).canRetireLegacyScan);
 }
 
 // 模型下载器：用本地 file:// 镜像验证下载/跳过/sha 校验，不依赖外网 HF.

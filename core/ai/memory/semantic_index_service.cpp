@@ -77,10 +77,12 @@ int SemanticIndexService::runOnce() {
             ++m_rebuildCount;
             emit indexRebuilt();
         } else {
+            m_worker->recordHealthSample(false, error);
             qWarning() << "[SemanticIndex] compaction rebuild failed:" << error;
         }
     }
 
+    m_worker->recordHealthSample(true);
     return completed;
 }
 

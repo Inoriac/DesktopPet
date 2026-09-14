@@ -116,6 +116,22 @@ Related design: design.md sections 4, 5, 14, 15, 16.
 - `MemoryStrategyTests::testSemanticIndexServiceBackfillsLegacyMemories` covers
   a legacy database with Active long-term rows but no outbox/embedding state.
 
+## Shadow Retirement Gate
+
+- Added `memory_index_health_daily` and `MemoryIndexWorker::recordHealthSample()`
+  to persist daily model-specific coverage/health samples.
+- `MemoryIndexWorker::retirementGateStatus()` implements the design gate:
+  legacy full-scan retirement is allowed only when the requested window has all
+  required days present, every day is healthy, and the worst daily coverage is
+  at least the configured threshold (default 7 days, 95%). A failure sample keeps
+  that day unhealthy even if a later same-day sample succeeds.
+- `SemanticIndexService::runOnce()` records healthy samples after normal idle
+  maintenance and records unhealthy samples on compaction rebuild failure. The
+  gate is observability-only for now; it does not remove legacy paths.
+- `MemoryStrategyTests::testIndexRetirementGateRequiresCoverageAndHealthyDays`
+  covers the 6-day false case, 7-day true case, coverage regression and failure
+  regression.
+
 ## Remaining Acceptance Gaps
 
 The earlier checklist overstated completion. Do not treat the scaffold commits
@@ -147,6 +163,7 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   index jobs drain, including the all-tombstone (`activeCount()==0`) case.
 - Synthetic Recall@32 and latency benchmark harness exists (`memory_hnsw_benchmark`),
   with initial macOS baselines recorded above. Bounded legacy backfill and coverage
-  counters are implemented for missing current-model vectors. Real-data/provider-backed
-  gates, clear/import auditing and shadow retirement gates have not been measured
-  or enabled. Invalid persisted vectors have no repair queue yet.
+  counters are implemented for missing current-model vectors. Shadow retirement
+  gate state/decision logic is implemented but not wired to disable legacy recall
+  paths. Real-data/provider-backed gates and clear/import auditing have not been
+  measured or enabled. Invalid persisted vectors have no repair queue yet.

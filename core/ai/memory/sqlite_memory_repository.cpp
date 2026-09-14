@@ -292,19 +292,6 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
                        "ON memory_hnsw_labels(model, status)"),
 
         QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS active_memory_snapshot ("
-            "  memory_id TEXT PRIMARY KEY,"
-            "  activation REAL NOT NULL,"
-            "  source TEXT NOT NULL,"
-            "  context_id TEXT,"
-            "  last_activated_at TEXT NOT NULL,"
-            "  saved_at TEXT NOT NULL"
-            ")"
-        ),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_active_memory_snapshot_saved_at "
-                       "ON active_memory_snapshot(saved_at)"),
-
-        QStringLiteral(
             "CREATE TABLE IF NOT EXISTS sleep_staged_change ("
             "  session_id TEXT NOT NULL,"
             "  change_id TEXT NOT NULL,"
@@ -341,6 +328,23 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
                        "ON memory_index_jobs(status, created_at)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_memory "
                        "ON memory_index_jobs(memory_id)"),
+
+        QStringLiteral(
+            "CREATE TABLE IF NOT EXISTS memory_index_health_daily ("
+            "  model TEXT NOT NULL,"
+            "  day TEXT NOT NULL,"
+            "  eligible_count INTEGER NOT NULL DEFAULT 0,"
+            "  indexed_count INTEGER NOT NULL DEFAULT 0,"
+            "  pending_count INTEGER NOT NULL DEFAULT 0,"
+            "  healthy INTEGER NOT NULL DEFAULT 0,"
+            "  failure_count INTEGER NOT NULL DEFAULT 0,"
+            "  last_error TEXT,"
+            "  updated_at TEXT NOT NULL,"
+            "  PRIMARY KEY(model, day)"
+            ")"
+        ),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_health_daily_model_day "
+                       "ON memory_index_health_daily(model, day)"),
 
         QStringLiteral(
             "CREATE TABLE IF NOT EXISTS memory_activation_snapshots ("
@@ -725,10 +729,10 @@ bool SQLiteMemoryRepository::saveActiveMemorySnapshot(const QList<ActiveMemoryIt
     if (!beginTransaction()) return false;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
-    bool ok = query.exec(QStringLiteral("DELETE FROM active_memory_snapshot"));
+    bool ok = query.exec(QStringLiteral("DELETE FROM memory_activation_snapshots"));
     if (ok) {
         query.prepare(QStringLiteral(
-            "INSERT INTO active_memory_snapshot(memory_id,activation,source,context_id,last_activated_at,saved_at) "
+            "INSERT INTO memory_activation_snapshots(memory_id,activation,source,context_id,last_activated_at,saved_at) "
             "VALUES(:id,:activation,:source,:context,:last,:saved)"));
         for (const ActiveMemoryItem& item : items) {
             if (item.memoryId.trimmed().isEmpty() || !std::isfinite(item.activation)
@@ -758,7 +762,7 @@ ActiveMemorySnapshot SQLiteMemoryRepository::loadActiveMemorySnapshot(int limit)
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
         "SELECT s.memory_id,s.activation,s.source,s.context_id,s.last_activated_at,s.saved_at "
-        "FROM active_memory_snapshot s "
+        "FROM memory_activation_snapshots s "
         "JOIN memory_items m ON m.id=s.memory_id "
         "WHERE m.status='active' "
         "ORDER BY s.activation DESC LIMIT :limit"));
@@ -801,7 +805,8 @@ bool SQLiteMemoryRepository::clear() {
         QStringLiteral("memory_access_log"),
         QStringLiteral("memory_embeddings"),
         QStringLiteral("memory_hnsw_labels"),
-        QStringLiteral("active_memory_snapshot"),
+        QStringLiteral("memory_index_health_daily"),
+        QStringLiteral("memory_activation_snapshots"),
         QStringLiteral("memory_index_jobs"),
         QStringLiteral("memory_items")
     };
@@ -833,7 +838,7 @@ bool SQLiteMemoryRepository::removeById(const QString& id) {
     if (!execDelete(QStringLiteral("DELETE FROM memory_evidence WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_access_log WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_embeddings WHERE memory_id = :id"))) return false;
-    if (!execDelete(QStringLiteral("DELETE FROM active_memory_snapshot WHERE memory_id = :id"))) return false;
+    if (!execDelete(QStringLiteral("DELETE FROM memory_activation_snapshots WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral("DELETE FROM memory_hnsw_labels WHERE memory_id = :id"))) return false;
     if (!execDelete(QStringLiteral(
             "DELETE FROM memory_relations WHERE from_memory_id = :id OR to_memory_id = :id2"), true)) return false;

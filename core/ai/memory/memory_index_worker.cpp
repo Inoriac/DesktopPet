@@ -5,6 +5,7 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QUuid>
 #include <QVariant>
 #include <cmath>
@@ -117,6 +118,73 @@ IndexCoverageStats MemoryIndexWorker::coverageStats(int scanLimit) const {
         if (query.value(4).toBool()) ++stats.pending;
     }
     return stats;
+}
+
+bool MemoryIndexWorker::recordHealthSample(bool healthy,
+                                           const QString& error,
+                                           const QDate& day) {
+    if (!m_index.provider() || !day.isValid()) return false;
+    QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
+    if (!db.isOpen()) return false;
+    const IndexCoverageStats stats = coverageStats();
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "INSERT INTO memory_index_health_daily(model,day,eligible_count,indexed_count,pending_count,healthy,failure_count,last_error,updated_at) "
+        "VALUES(:model,:day,:eligible,:indexed,:pending,:healthy,:failure,:error,:updated) "
+        "ON CONFLICT(model,day) DO UPDATE SET "
+        "eligible_count=excluded.eligible_count,indexed_count=excluded.indexed_count,"
+        "pending_count=excluded.pending_count,"
+        "healthy=CASE WHEN memory_index_health_daily.healthy=1 AND excluded.healthy=1 THEN 1 ELSE 0 END,"
+        "failure_count=memory_index_health_daily.failure_count+excluded.failure_count,"
+        "last_error=excluded.last_error,updated_at=excluded.updated_at"));
+    query.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+    query.bindValue(QStringLiteral(":day"), day.toString(Qt::ISODate));
+    query.bindValue(QStringLiteral(":eligible"), stats.eligible);
+    query.bindValue(QStringLiteral(":indexed"), stats.indexed);
+    query.bindValue(QStringLiteral(":pending"), stats.pending);
+    query.bindValue(QStringLiteral(":healthy"), healthy ? 1 : 0);
+    query.bindValue(QStringLiteral(":failure"), healthy ? 0 : 1);
+    query.bindValue(QStringLiteral(":error"), error.left(512));
+    query.bindValue(QStringLiteral(":updated"), utcNow());
+    return query.exec();
+}
+
+IndexRetirementGateStatus MemoryIndexWorker::retirementGateStatus(int requiredDays,
+                                                                  double minimumCoverage,
+                                                                  const QDate& today) const {
+    IndexRetirementGateStatus status;
+    status.requiredDays = std::max(1, requiredDays);
+    status.minimumCoverage = minimumCoverage;
+    status.worstCoverage = 1.0;
+    if (!m_index.provider() || !today.isValid()) return status;
+    QSqlDatabase db = QSqlDatabase::database(m_index.connectionName(), false);
+    if (!db.isOpen()) return status;
+
+    QSqlQuery query(db);
+    query.prepare(QStringLiteral(
+        "SELECT day,eligible_count,indexed_count,healthy FROM memory_index_health_daily "
+        "WHERE model=:model AND day>=:start AND day<=:end ORDER BY day DESC"));
+    query.bindValue(QStringLiteral(":model"), m_index.provider()->modelName());
+    query.bindValue(QStringLiteral(":start"), today.addDays(1 - status.requiredDays).toString(Qt::ISODate));
+    query.bindValue(QStringLiteral(":end"), today.toString(Qt::ISODate));
+    if (!query.exec()) return status;
+
+    QSet<QString> days;
+    while (query.next()) {
+        const QString dayKey = query.value(0).toString();
+        if (days.contains(dayKey)) continue;
+        days.insert(dayKey);
+        const int eligible = query.value(1).toInt();
+        const int indexed = query.value(2).toInt();
+        const double coverage = eligible > 0 ? static_cast<double>(indexed) / eligible : 1.0;
+        status.worstCoverage = std::min(status.worstCoverage, coverage);
+        if (query.value(3).toInt() == 1 && coverage >= minimumCoverage) ++status.healthyDays;
+    }
+    if (days.size() < status.requiredDays) status.worstCoverage = 0.0;
+    status.canRetireLegacyScan = days.size() >= status.requiredDays
+        && status.healthyDays >= status.requiredDays
+        && status.worstCoverage >= minimumCoverage;
+    return status;
 }
 
 int MemoryIndexWorker::processPending(int limit) {
