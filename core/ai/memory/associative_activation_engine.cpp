@@ -122,12 +122,12 @@ bool AssociativeActivationEngine::shouldExplore(double explorationRate) const {
     return rand < explorationRate;
 }
 
-QString AssociativeActivationEngine::sampleExploratory(
+int AssociativeActivationEngine::sampleExploratory(
     const QList<FrontierNode>& frontier,
     double temperature) const {
     
     if (frontier.isEmpty()) {
-        return QString();
+        return -1;
     }
     
     // Softmax sampling (design §12)
@@ -150,12 +150,12 @@ QString AssociativeActivationEngine::sampleExploratory(
     for (int i = 0; i < frontier.size(); ++i) {
         cumulative += weights[i] / sumExp;
         if (rand <= cumulative) {
-            return frontier[i].memoryId;
+            return i;
         }
     }
     
     // Fallback to last (should not reach here)
-    return frontier.last().memoryId;
+    return frontier.size() - 1;
 }
 
 QList<PropagatedMemory> AssociativeActivationEngine::propagate(
@@ -178,7 +178,8 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
     
     // Priority queue for frontier (max-heap by activation)
     auto cmp = [](const FrontierNode& a, const FrontierNode& b) {
-        return a.activation < b.activation;
+        if (a.activation != b.activation) return a.activation < b.activation;
+        return a.path > b.path;
     };
     std::priority_queue<FrontierNode, std::vector<FrontierNode>, decltype(cmp)> frontier(cmp);
     
@@ -192,18 +193,12 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
         frontier.push(node);
     }
     
-    // Visited set to prevent loops
-    QSet<QString> visited;
-    for (auto it = seedActivations.constBegin(); it != seedActivations.constEnd(); ++it) {
-        visited.insert(it.key());
-    }
-    
     // Personality-based exploration
     const double explorationRate = computeExplorationRate(m_personality.openness);
     const double temperature = computeTemperature(m_personality.openness);
     
     // Two-hop propagation with budget
-    while (!frontier.empty() && results.size() < m_maxCandidates) {
+    while (!frontier.empty()) {
         // Decide: exploit (highest activation) or explore (Softmax sample)
         FrontierNode current;
         const bool isExploratoryStep = shouldExplore(explorationRate);
@@ -217,15 +212,17 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
                 tempQueue.pop();
             }
             
-            const QString sampledId = sampleExploratory(frontierList, temperature);
+            const int sampledIndex = sampleExploratory(frontierList, temperature);
             
             // Find and remove sampled node
             std::priority_queue<FrontierNode, std::vector<FrontierNode>, decltype(cmp)> newFrontier(cmp);
             bool found = false;
+            int index = 0;
             while (!frontier.empty()) {
                 FrontierNode node = frontier.top();
                 frontier.pop();
-                if (!found && node.memoryId == sampledId) {
+                // Distinguish different paths to the same memory.
+                if (index++ == sampledIndex) {
                     current = node;
                     found = true;
                 } else {
@@ -246,6 +243,11 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
             frontier.pop();
         }
         
+        if (isExploratoryStep && current.hop > 0) {
+            results[current.memoryId].isExploratory = true;
+            current.isExploratory = true;
+        }
+
         // Stop if hop limit reached
         if (current.hop >= m_maxHops) {
             continue;
@@ -255,17 +257,20 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
         const QList<MemoryRelation> neighbors = relationGraph.neighborsOf(current.memoryId);
         
         for (const MemoryRelation& edge : neighbors) {
-            if (results.size() >= m_maxCandidates) break;
+
             // Determine target node (could be from or to)
             const QString targetId = (edge.fromMemoryId == current.memoryId)
                 ? edge.toMemoryId
                 : edge.fromMemoryId;
             
-            // Skip if already visited (loop prevention)
-            if (visited.contains(targetId)) {
+            // Reject cycles on this path, not independent converging paths.
+            // Seeds keep their supplied activation rather than receiving feedback.
+            if (current.path.contains(targetId) || seedActivations.contains(targetId)) {
                 continue;
             }
             
+            if (!results.contains(targetId) && results.size() >= m_maxCandidates) continue;
+
             // Compute relation type factor
             const double relationFactor = computeRelationTypeFactor(edge.type, m_personality);
             
@@ -290,29 +295,31 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
                 continue;
             }
             
-            // Add to results or accumulate
-            const double newActivation = results.contains(targetId)
-                ? qMin(1.0, results[targetId].activation + delta)  // Cap at 1.0
-                : delta;
-            
-            PropagatedMemory mem;
+            const bool existing = results.contains(targetId);
+            PropagatedMemory& mem = results[targetId];
             mem.memoryId = targetId;
-            mem.activation = newActivation;
-            mem.propagationPath = current.path;
-            mem.propagationPath.append(targetId);
-            mem.hopCount = current.hop + 1;
-            mem.isExploratory = isExploratoryStep;
-            
-            results[targetId] = mem;
-            visited.insert(targetId);
-            
-            // Add to frontier for further propagation
+            mem.activation = qMin(1.0, mem.activation + delta);
+            // Keep the shortest explanation, independent of arrival order.
+            QStringList path = current.path;
+            path.append(targetId);
+            if (!existing || path.size() < mem.propagationPath.size()
+                || (path.size() == mem.propagationPath.size() && path < mem.propagationPath)) {
+                mem.propagationPath = path;
+                mem.hopCount = current.hop + 1;
+            }
+            mem.isExploratory = mem.isExploratory || current.isExploratory || isExploratoryStep;
+
+            // Propagate this path's delta, never the accumulated total: otherwise
+            // earlier paths would be counted again each time another arrives.
             FrontierNode nextNode;
             nextNode.memoryId = targetId;
-            nextNode.activation = newActivation;
-            nextNode.path = mem.propagationPath;
-            nextNode.hop = mem.hopCount;
-            frontier.push(nextNode);
+            nextNode.activation = delta;
+            nextNode.path = path;
+            nextNode.hop = current.hop + 1;
+            nextNode.isExploratory = current.isExploratory || isExploratoryStep;
+            // Terminal paths already contributed; do not queue them for an
+            // expansion that cannot run (especially on dense converging graphs).
+            if (nextNode.hop < m_maxHops) frontier.push(nextNode);
         }
     }
     
@@ -320,7 +327,8 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
     QList<PropagatedMemory> resultList = results.values();
     std::sort(resultList.begin(), resultList.end(),
         [](const PropagatedMemory& a, const PropagatedMemory& b) {
-            return a.activation > b.activation;
+            if (a.activation != b.activation) return a.activation > b.activation;
+            return a.memoryId < b.memoryId;
         });
     
     // Limit to max candidates

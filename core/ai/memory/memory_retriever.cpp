@@ -582,21 +582,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         candidates.append(candidate);
     }
 
-    // 多通道命中优先，超出种子预算时按通道数截断
-    if (candidates.size() > kSeedBudget) {
-        std::sort(candidates.begin(), candidates.end(),
-            [](const CandidateMemory& a, const CandidateMemory& b) {
-                if (a.sourceChannels.size() != b.sourceChannels.size()) {
-                    return a.sourceChannels.size() > b.sourceChannels.size();
-                }
-                return a.runtimeActivation > b.runtimeActivation;
-            });
-        while (candidates.size() > kSeedBudget) candidates.removeLast();
-    }
-
     // ---- 阶段 4：ACT-R 精排 ----
     ACTRRanker ranker;
-    const QList<CandidateMemory> ranked = ranker.rank(candidates, cue);
+    const QList<CandidateMemory> ranked = ranker.select(candidates, cue, limit);
 
     // ---- 阶段 5：输出与强化（只强化最终进入结果的记忆）----
     QList<RetrievedMemory> result;
@@ -732,6 +720,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     // ---- 阶段 3：图谱激活传播（Phase 3 新增）----
     QHash<QString, double> graphActivations;
     QHash<QString, QStringList> graphPaths;
+    QSet<QString> exploratoryIds;
 
     if (channels.graphPropagation) {
         // Build seed activation map from Phase 2 seeds
@@ -755,6 +744,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         for (const PropagatedMemory& prop : propagated) {
             graphActivations[prop.memoryId] = prop.activation;
             graphPaths[prop.memoryId] = prop.propagationPath;
+            if (prop.isExploratory) exploratoryIds.insert(prop.memoryId);
 
             // Add to seed channels if not already present
             if (!seedChannels.contains(prop.memoryId)) {
@@ -785,25 +775,13 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
         candidate.semanticCue = seedSemanticCue.value(it.key(), 0.0);
         candidate.graphActivation = graphActivations.value(it.key(), 0.0);
+        candidate.isExploratory = exploratoryIds.contains(it.key());
         candidates.append(candidate);
-    }
-
-    // 多通道命中优先
-    if (candidates.size() > kSeedBudget) {
-        std::sort(candidates.begin(), candidates.end(),
-            [](const CandidateMemory& a, const CandidateMemory& b) {
-                if (a.sourceChannels.size() != b.sourceChannels.size()) {
-                    return a.sourceChannels.size() > b.sourceChannels.size();
-                }
-                return (a.runtimeActivation + a.graphActivation) > 
-                       (b.runtimeActivation + b.graphActivation);
-            });
-        while (candidates.size() > kSeedBudget) candidates.removeLast();
     }
 
     // ---- 阶段 5：ACT-R 精排（含 G_i 图谱分量）----
     ACTRRanker ranker;
-    const QList<CandidateMemory> ranked = ranker.rank(candidates, cue);
+    const QList<CandidateMemory> ranked = ranker.select(candidates, cue, limit);
 
     // ---- 阶段 6：输出与强化 ----
     QList<RetrievedMemory> result;
@@ -821,6 +799,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         memory.runtimeActivation = candidate.runtimeActivation;
         memory.emotionBoost = candidate.emotionBoost;
         
+        memory.isExploratory = candidate.isExploratory;
+        memory.fromGraphExpansion = !retained.contains(candidate.entry.id);
+
         // Add graph propagation path if available
         if (graphPaths.contains(candidate.entry.id)) {
             const QStringList& path = graphPaths[candidate.entry.id];

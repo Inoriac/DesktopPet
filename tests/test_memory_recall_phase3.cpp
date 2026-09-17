@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <cmath>
 #include <QDir>
 #include <QFile>
 #include <QSqlDatabase>
@@ -37,6 +38,10 @@ private slots:
     void testPersonalityModulation();
     void testGraphRetrievalIntegration();
     void testSeedBudgetPreservesMultiChannelMatch();
+    void testFullCandidatePoolReachesRanker();
+    void testExplorationSelectionBudget();
+    void testExplorationReachesRetrievalOutput();
+    void testConvergingPathsAccumulateAtCapacity();
 };
 
 namespace {
@@ -111,6 +116,198 @@ void TestMemoryRecallPhase3::testSeedBudgetPreservesMultiChannelMatch() {
         QVERIFY(result.sourceChannels.contains(QStringLiteral("embedding")));
     }
     QVERIFY(found);
+}
+
+void TestMemoryRecallPhase3::testFullCandidatePoolReachesRanker() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("full-pool.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    ActiveMemoryPool pool;
+    QStringList seedIds;
+    for (int i = 0; i < 4; ++i) {
+        MemoryEntry seed;
+        seed.type = MemoryType::Semantic;
+        seed.key = QString("seed-%1").arg(i);
+        seed = store.addEntry(seed);
+        pool.activate(seed.id, 2.0, "session");
+        seedIds.append(seed.id);
+    }
+    QString winner;
+    for (int i = 0; i < 60; ++i) {
+        MemoryEntry entry;
+        entry.type = MemoryType::Semantic;
+        entry.key = QString("neighbor-%1").arg(i);
+        entry.strength = i == 59 ? 1.0 : 0.0;
+        entry.importance = i == 59 ? 1.0 : 0.0;
+        entry = store.addEntry(entry);
+        QVERIFY(!entry.id.isEmpty());
+        if (i == 59) winner = entry.id;
+        QVERIFY(store.relationGraph().addRelation(makeRelation(
+            QString("edge-%1").arg(i), seedIds.at(i / 15), entry.id,
+            MemoryRelationType::Related, i == 59 ? 0.1 : 1.0)));
+    }
+    AssociativeActivationEngine engine;
+    engine.setMinPropagationDelta(0.0);
+    engine.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.activePool = &pool;
+    channels.graphPropagation = &engine;
+    MemoryQuery query;
+    query.limit = 64;
+    MemoryRetriever retriever;
+    const auto all = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(all.size(), 64);
+    class FixedIndex final : public EmbeddingIndex {
+    public:
+        QList<EmbeddingSearchResult> hits;
+        bool upsert(const QString&, const QString&) override { return false; }
+        bool remove(const QString&) override { return false; }
+        QList<EmbeddingSearchResult> search(const QString&, int limit) override { return hits.mid(0, limit); }
+    } index;
+    for (const auto& item : all) index.hits.append({item.entry.id, 0.8});
+    ActivationChannels semanticOnly;
+    semanticOnly.embeddingIndex = &index;
+    MemoryQuery semanticQuery;
+    semanticQuery.text = "query";
+    semanticQuery.limit = 64;
+    QCOMPARE(retriever.retrieveActivated(store, semanticQuery, semanticOnly).size(), 32);
+    query.limit = 8;
+    const auto top = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(top.size(), 8);
+    bool found = false;
+    for (const auto& item : top) if (item.entry.id == winner) found = true;
+    QVERIFY2(found, "Low graph activation but strong ACT-R evidence must survive to ranking");
+}
+
+void TestMemoryRecallPhase3::testExplorationSelectionBudget() {
+    QList<CandidateMemory> candidates;
+    for (int i = 0; i < 12; ++i) {
+        CandidateMemory candidate;
+        candidate.entry.id = QString::number(i);
+        candidate.runtimeActivation = 2.0;
+        candidates.append(candidate);
+    }
+    for (int i = 0; i < 3; ++i) {
+        CandidateMemory candidate;
+        candidate.entry.id = QString("explore-%1").arg(i);
+        candidate.isExploratory = true;
+        candidate.graphActivation = 0.01 * (i + 1);
+        candidates.append(candidate);
+    }
+    ACTRRanker ranker;
+    for (int limit : {1, 4, 8}) {
+        const auto selected = ranker.select(candidates, {}, limit);
+        QCOMPARE(selected.size(), limit);
+        int exploratory = 0;
+        for (const auto& candidate : selected) exploratory += candidate.isExploratory;
+        QCOMPARE(exploratory, 1);
+        QCOMPARE(selected.last().entry.id, QString("explore-2"));
+        for (int i = 1; i < selected.size() - 1; ++i)
+            QVERIFY(selected[i-1].finalScore >= selected[i].finalScore);
+    }
+    // Even when exploration dominates scores, it cannot occupy multiple slots.
+    for (auto& candidate : candidates)
+        if (candidate.isExploratory) candidate.runtimeActivation = 20.0;
+    const auto high = ranker.select(candidates, {}, 8);
+    QCOMPARE(high.size(), 8);
+    int count = 0;
+    for (const auto& candidate : high) count += candidate.isExploratory;
+    QCOMPARE(count, 1);
+    candidates = candidates.mid(0, 12);
+    QCOMPARE(ranker.select(candidates, {}, 8).size(), 8);
+    QVERIFY(ranker.select(candidates, {}, 0).isEmpty());
+}
+
+void TestMemoryRecallPhase3::testExplorationReachesRetrievalOutput() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("exploration.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    ActiveMemoryPool pool;
+    QString seedId;
+    for (int i = 0; i < 12; ++i) {
+        MemoryEntry seed;
+        seed.type = MemoryType::Semantic;
+        seed.key = QString("seed-%1").arg(i);
+        seed = store.addEntry(seed);
+        pool.activate(seed.id, 2.0, "session");
+        seedId = seed.id;
+    }
+    MemoryEntry target;
+    target.type = MemoryType::Semantic;
+    target.key = "exploration-target";
+    target = store.addEntry(target);
+    QVERIFY(store.relationGraph().addRelation(makeRelation(
+        "explore-edge", seedId, target.id, MemoryRelationType::Related)));
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.activePool = &pool;
+    channels.graphPropagation = &engine;
+    MemoryRetriever retriever;
+    MemoryQuery query;
+    const auto stable = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    for (const auto& item : stable) QVERIFY(item.entry.id != target.id);
+    engine.setRandomSource(fixedRandomSource(0.05));
+    const auto explored = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(explored.size(), 8);
+    QCOMPARE(explored.last().entry.id, target.id);
+    QVERIFY(explored.last().isExploratory);
+    QVERIFY(explored.last().fromGraphExpansion);
+    QVERIFY(explored.last().sourceChannels.contains("graph_exploratory"));
+    target.privacyLevel = PrivacyLevel::Sensitive;
+    QVERIFY(store.updateEntryById(target));
+    const auto filtered = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(filtered.size(), 8);
+    for (const auto& item : filtered) QVERIFY(item.entry.id != target.id);
+}
+
+void TestMemoryRecallPhase3::testConvergingPathsAccumulateAtCapacity() {
+    MemoryRelationGraph graph;
+    graph.setConnectionName("phase3_test_conn");
+    QSqlQuery query(QSqlDatabase::database("phase3_test_conn"));
+    QVERIFY(query.exec("DELETE FROM memory_relations"));
+    QVERIFY(graph.addRelation(makeRelation("a", "seed", "left", MemoryRelationType::DerivedFrom)));
+    QVERIFY(graph.addRelation(makeRelation("b", "seed", "right", MemoryRelationType::DerivedFrom)));
+    QVERIFY(graph.addRelation(makeRelation("c", "left", "target", MemoryRelationType::DerivedFrom)));
+    QVERIFY(graph.addRelation(makeRelation("d", "right", "target", MemoryRelationType::DerivedFrom)));
+    AssociativeActivationEngine engine;
+    engine.setMaxCandidates(4);
+    engine.setRandomSource(fixedRandomSource(0.99));
+    const double first = (1.0 / (1.0 + std::exp(-1.0))) * 0.55 / std::sqrt(2.0);
+    const double second = (1.0 / (1.0 + std::exp(-first))) * 0.55 * 0.55 / std::sqrt(2.0);
+    const auto result = engine.propagate({{"seed", 1.0}}, graph);
+    QCOMPARE(result.size(), 4);
+    bool found = false;
+    for (const auto& item : result) {
+        if (item.memoryId == "seed") QCOMPARE(item.activation, 1.0);
+        if (item.memoryId != "target") continue;
+        found = true;
+        QVERIFY(std::abs(item.activation - 2.0 * second) < 1e-9);
+        QCOMPARE(item.hopCount, 2);
+        QCOMPARE(item.propagationPath.size(), 3);
+    }
+    QVERIFY(found);
+    // Convergence before the final hop must forward each path only once.
+    QVERIFY(query.exec("DELETE FROM memory_relations"));
+    QVERIFY(graph.addRelation(makeRelation("e", "seed-a", "mid", MemoryRelationType::DerivedFrom)));
+    QVERIFY(graph.addRelation(makeRelation("f", "seed-b", "mid", MemoryRelationType::DerivedFrom)));
+    QVERIFY(graph.addRelation(makeRelation("g", "mid", "leaf", MemoryRelationType::DerivedFrom)));
+    const double firstA = (1.0 / (1.0 + std::exp(-1.0))) * 0.55;
+    const double firstB = (1.0 / (1.0 + std::exp(-0.4))) * 0.55;
+    const double expectedLeaf = (1.0 / (1.0 + std::exp(-firstA))
+        + 1.0 / (1.0 + std::exp(-firstB))) * 0.55 * 0.55 / std::sqrt(3.0);
+    const auto merged = engine.propagate({{"seed-a", 1.0}, {"seed-b", 0.4}}, graph);
+    QCOMPARE(merged.size(), 4);
+    bool leafFound = false;
+    for (const auto& item : merged) {
+        if (item.memoryId == "mid") QVERIFY(std::abs(item.activation - firstA - firstB) < 1e-9);
+        if (item.memoryId != "leaf") continue;
+        leafFound = true;
+        QVERIFY(std::abs(item.activation - expectedLeaf) < 1e-9);
+    }
+    QVERIFY(leafFound);
 }
 
 void TestMemoryRecallPhase3::initTestCase() {

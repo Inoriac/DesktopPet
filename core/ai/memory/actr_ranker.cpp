@@ -69,10 +69,28 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
             if (std::abs(a.finalScore - b.finalScore) > 0.0001) {
                 return a.finalScore > b.finalScore;
             }
-            return a.entry.updatedAt > b.entry.updatedAt;
+            if (a.entry.updatedAt != b.entry.updatedAt)
+                return a.entry.updatedAt > b.entry.updatedAt;
+            return a.entry.id < b.entry.id;
         });
     
     return ranked;
+}
+
+QList<CandidateMemory> ACTRRanker::select(const QList<CandidateMemory>& candidates,
+                                         const MemoryCue& cue, int limit) const {
+    if (limit <= 0) return {};
+    const auto ranked = rank(candidates, cue);
+    QList<CandidateMemory> selected;
+    const auto exploration = std::find_if(ranked.cbegin(), ranked.cend(),
+        [](const CandidateMemory& candidate) { return candidate.isExploratory; });
+    const int stableSlots = limit - (exploration != ranked.cend() ? 1 : 0);
+    for (const auto& candidate : ranked) {
+        if (selected.size() >= stableSlots) break;
+        if (!candidate.isExploratory) selected.append(candidate);
+    }
+    if (exploration != ranked.cend()) selected.append(*exploration);
+    return selected;
 }
 
 double ACTRRanker::computeBaseActivation(const MemoryEntry& entry,

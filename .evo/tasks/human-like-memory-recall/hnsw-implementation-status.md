@@ -239,3 +239,28 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
   gate state/decision logic is implemented but not wired to disable legacy recall
   paths. Real-data/provider-backed gates and actual shadow Top-K comparison remain
   unaccepted. Invalid persisted vectors now use the repair queue above.
+
+## ACT-R / Exploration Review Fixes (2026-09-17)
+
+- The 16-seed budget applies before graph expansion only. All eligible graph
+  candidates (up to 64) reach ACT-R scoring; the post-expansion channel-count
+  truncation is removed. Phase 2 also scores its entire bounded channel union.
+- `ACTRRanker::select` scores first, selects deterministic stable results, and
+  reserves one slot for the best scored eligible exploratory candidate when one
+  exists. At most one exploratory result is returned, including the smaller
+  four-item proactive budget. Without exploration all slots remain stable.
+- Exploration flags survive propagation, candidate construction and final
+  `RetrievedMemory` output. Privacy/status filtering precedes selection. Graph-only
+  results are explicitly marked as expansions for the existing reinforcement policy.
+- Propagation uses path-local cycle prevention instead of global first-arrival
+  exclusion. Independent path deltas add (capped at 1); each path forwards only
+  its own delta, never the aggregate. Seeds do not receive cyclic feedback.
+  Reaching the candidate cap prevents new IDs, but does not stop contributions
+  to admitted IDs. Explanations retain a deterministic shortest path.
+- Regression cases cover all 64 candidates, a low-graph/high-ACT-R candidate,
+  Phase 2's 32 semantic hits, one exploratory slot at limits 1/4/8, small-graph
+  output changes, sensitive exploration rejection, diamond convergence at full
+  capacity, and convergence before the final hop without double counting.
+- Validation: Windows native ORT build of Desktop_Pet and all affected test
+  targets succeeds. The nine-suite scoped CTest regression passes 9/9 (27.50 s),
+  including ChatPreparationExecutorTests with real ONNX. `git diff --check` passes.

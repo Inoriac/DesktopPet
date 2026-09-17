@@ -64,6 +64,7 @@ private:
         double activation;
         QStringList path;
         int hop;
+        bool isExploratory = false;
         
         bool operator<(const FrontierNode& other) const {
             return activation < other.activation;  // Max-heap
@@ -84,7 +85,7 @@ private:
     double computeExplorationRate(double openness) const;
     double computeTemperature(double openness) const;
     bool shouldExplore(double explorationRate) const;
-    QString sampleExploratory(const QList<FrontierNode>& frontier,
+    int sampleExploratory(const QList<FrontierNode>& frontier,
                              double temperature) const;
     
     // Default parameters (design §11/§12)

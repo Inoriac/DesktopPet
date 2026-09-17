@@ -43,6 +43,10 @@ public:
     QList<CandidateMemory> rank(const QList<CandidateMemory>& candidates,
                                 const MemoryCue& cue) const;
     
+    // Score every candidate, then reserve at most one slot for exploration.
+    QList<CandidateMemory> select(const QList<CandidateMemory>& candidates,
+                                 const MemoryCue& cue, int limit = 8) const;
+
     // Compute individual components (for testing/observability)
     double computeBaseActivation(const MemoryEntry& entry,
                                  const QDateTime& now) const;
