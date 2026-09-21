@@ -40,6 +40,8 @@ struct RetrievedMemory {
     QStringList sourceChannels;       // 候选来源：active_pool/hippocampus/keyword/embedding
     double baseActivation = 0.0;
     double cueMatch = 0.0;
+    double lexicalCue = 0.0;
+    double tagCue = 0.0;
     double runtimeActivation = 0.0;
     double emotionBoost = 0.0;
 };

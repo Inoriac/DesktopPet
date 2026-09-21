@@ -68,6 +68,10 @@ HNSW 文件无法参与 SQLite 事务，因此 Worker 合并一批任务后先�
 
 `MemoryCueExtractor` 只做本地计算：规范化用户文本，提取拉丁词元、中文二元/三元片段、已知标签和实体，并读取当前会话主题、未完成目标、情绪快照及 `PersonaProjection::behaviorParameters`。查询文本只计算一次 Embedding，然后交给 HNSW。在线召回禁止为线索提取调用大模型。
 
+2026-09-21 标签/词法修订：token 仅表示文本证据，不自动成为标签。标签使用完整短语词典直接匹配规范化输入（NFKC、大小写折叠、空白合并），不受 n-gram 长度限制。拉丁标签检查词边界；重叠标签优先保留较长的完整概念，同一标签重复出现只计一次。查询、正文倒排和精排共享同一套二元/三元及词元分析。第一版仅合并规范化后相同的标签，保留原文，不自动推断跨语言别名、同义词或概念上下位关系。
+
+生产 Worker 的文本倒排仍覆盖有界近期窗口；完整标签词典与标签倒排覆盖全库有效长期记忆。`memory_tags.normalized_tag` 保留可索引的规范化键，旧库自动回填，显示标签不改写。标签变更与记忆写入同事务提交；标签/可见性版本号用于失效缓存，普通访问强化保留未变化的标签索引。命中查询再次过滤敏感、非活跃、Hippocampus 与过期项。词典刷新读取标签元数据，不加载全库记忆正文。
+
 关键词和标签使用增量维护的倒排索引；其中标签继续落在现有 `memory_tags`，中文短语索引是可重建的派生结构。默认候选预算为：近期激活池最多 12 条、Hippocampus 工作集扫描最多产生 8 条、HNSW 最多 32 条、关键词/标签最多 12 条；去重和隐私/状态过滤后保留最多 16 个初始种子。某一路不足时不强行填满，也不通过扩大到长期全库补齐。
 
 ### 7. 激活模型与访问强化
@@ -85,13 +89,15 @@ B_i = 1.0 * strength
     + 1.0 * importance
     + ln(1 + sum((1 + accessAgeHours)^-0.5))
 
-C_i = 2.0 * semanticCue + 1.2 * lexicalOrTagCue
+C_i = 2.0 * semanticCue + 1.2 * max(lexicalCue, tagCue)
 R_i = runtimeActivation
 E_i = emotionMatch * currentIntensity * memoryEmotionConfidence
 G_i = graphPropagation
 ```
 
 五个顶层系数分别对应 `baseLevelWeight=1.0`、`cueMatchWeight=1.0`、`runtimeWeight=1.5`、`emotionWeight=0.3` 和 `graphWeight=0.6`。基础激活与当前线索贡献均衡，运行时工作记忆具有明显优势；情绪只作调节，图传播由于已在边和跳数上衰减，不再作为主导分量。`B_i`、`C_i`、`R_i`、`E_i` 和 `G_i` 进入顶层加权前均使用固定边界归一化到 `[0,1]`；禁止按当轮候选集做 min-max 归一化，避免同一记忆的分数因竞争者变化而漂移。
+
+`lexicalCue` 仅匹配 key/summary/content/scope，不拼入标签。按查询字符覆盖归并重叠 n-gram，每个位置最多贡献一次；权重由当前词法索引的文档频率计算 `1 + ln((N+1)/(df+1))`，常见词的影响相对较低。`tagCue` 为输入识别出的完整标签中，该记忆命中的去重比例。两者取较强值，避免同一概念同时通过正文片段、完整标签重复加分；`sourceChannels` 保留 `keyword` 与 `tag` 来源，种子粗排将二者视为同一类相关证据，不能用堆标签增加通道数优势。`lexicalCue` 和 `tagCue` 单独保存在返回结果中便于观测。
 
 所有 cue 值归一化到 `[0,1]`；`semanticCueCoeff=2.0`、`lexicalOrTagCueCoeff=1.2`。cosine 相似度默认从 `cosineSimilarityThreshold=0.50` 开始线性映射到 `[0,1]`，低于阈值不作为语义种子。访问历史只为最多 64 个候选批量读取最近 32 次记录，并以现有 `strength`、`importance` 和累计 `accessCount` 吸收更早历史。`importanceCoeff=1.0`，与 strength 同等计入基础激活；`accessDecayExponent=-0.5`，保持 ACT-R 常用的幂律衰减。`memory_access_log` 增加 `(memory_id, created_at)` 索引。
 

@@ -1,4 +1,8 @@
 #include <QtTest>
+#include <QTemporaryDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include "core/ai/memory/recall_text.h"
 #include "core/ai/memory/working_memory_cache.h"
 #include "core/ai/memory/memory_cue_extractor.h"
 #include "core/ai/memory/memory_keyword_index.h"
@@ -12,6 +16,10 @@ class TestMemoryRecallPhase2 : public QObject {
     Q_OBJECT
 
 private slots:
+    void testWholeTagMatchingAndBoundaries();
+    void testTextAndTagEvidenceStaySeparate();
+    void testLexicalIdfAndSharedTokenization();
+    void testGlobalTagMigrationAndEligibility();
     void testMemoryCueExtractor();
     void testKeywordIndexBasics();
     void testKeywordIndexLookup();
@@ -21,6 +29,146 @@ private slots:
     void testACTRFullRanking();
     void testActivatedRetrievalIntegration();
 };
+
+void TestMemoryRecallPhase2::testWholeTagMatchingAndBoundaries() {
+    MemoryCueExtractor extractor;
+    extractor.setKnownTags({QStringLiteral("人工智能研究"), QStringLiteral("智能"),
+        QStringLiteral("研究"), QStringLiteral("机器学习"), QStringLiteral("学习"),
+        QStringLiteral("Ｃ＋＋"), QStringLiteral("Machine   Learning"), QStringLiteral("art")});
+    const auto cue = extractor.extractFromQuery(QStringLiteral(
+        "人工智能研究、机器学习和 C++，machine learning；party cart"));
+    QCOMPARE(cue.knownTags.size(), 4);
+    QVERIFY(cue.knownTags.contains(QStringLiteral("人工智能研究")));
+    QVERIFY(cue.knownTags.contains(QStringLiteral("机器学习")));
+    QVERIFY(cue.knownTags.contains(QStringLiteral("c++")));
+    QVERIFY(cue.knownTags.contains(QStringLiteral("machine learning")));
+    QVERIFY(!cue.knownTags.contains(QStringLiteral("智能")));
+    QVERIFY(!cue.knownTags.contains(QStringLiteral("art")));
+    QCOMPARE(extractor.extractFromQuery(QStringLiteral("ART" )).knownTags, QStringList{"art"});
+    QCOMPARE(extractor.extractFromQuery(QStringLiteral("机器学习，机器学习" )).knownTags.size(), 1);
+    extractor.setKnownTags({});
+    QVERIFY(extractor.extractFromQuery(QStringLiteral("人工智能研究" )).knownTags.isEmpty());
+}
+
+void TestMemoryRecallPhase2::testTextAndTagEvidenceStaySeparate() {
+    MemoryCueExtractor extractor;
+    extractor.setKnownTags({QStringLiteral("机器学习")});
+    const auto cue = extractor.extractFromQuery(QStringLiteral("机器学习"));
+    CandidateMemory tagOnly;
+    tagOnly.entry.id = "tag";
+    tagOnly.entry.tags = {QStringLiteral("机器学习"), QStringLiteral("机器学习 ")};
+    CandidateMemory textOnly;
+    textOnly.entry.id = "text";
+    textOnly.entry.summary = QStringLiteral("机器学习");
+    CandidateMemory both = textOnly;
+    both.entry.id = "both";
+    both.entry.tags = tagOnly.entry.tags;
+    const auto ranked = ACTRRanker().rank({tagOnly, textOnly, both}, cue);
+    QCOMPARE(ranked.size(), 3);
+    for (const auto& item : ranked) {
+        QCOMPARE(item.cueMatch, ranked.first().cueMatch);
+        if (item.entry.id == "tag") { QCOMPARE(item.lexicalCue, 0.0); QCOMPARE(item.tagCue, 1.0); }
+        if (item.entry.id == "text") { QCOMPARE(item.lexicalCue, 1.0); QCOMPARE(item.tagCue, 0.0); }
+    }
+    // A token fragment inside a long label is not either kind of evidence.
+    auto fragment = extractor.extractFromQuery(QStringLiteral("机器"));
+    QCOMPARE(ACTRRanker().computeCueMatch(tagOnly.entry, fragment), 0.0);
+    auto duplicateCue = cue;
+    duplicateCue.tokens.append(cue.tokens);
+    duplicateCue.knownTags.append(cue.knownTags);
+    QCOMPARE(ACTRRanker().computeCueMatch(both.entry, duplicateCue), ranked.first().cueMatch);
+    // Overlapping bigrams/trigrams cover the same text instead of stacking.
+    auto bigrams = cue;
+    bigrams.tokens = {QStringLiteral("机器"), QStringLiteral("器学"), QStringLiteral("学习")};
+    QCOMPARE(ACTRRanker().computeCueMatch(textOnly.entry, bigrams), ranked.first().cueMatch);
+}
+
+void TestMemoryRecallPhase2::testLexicalIdfAndSharedTokenization() {
+    MemoryKeywordIndex index;
+    for (int i = 0; i < 10; ++i) {
+        MemoryEntry entry;
+        entry.id = QStringLiteral("doc-%1").arg(i);
+        entry.type = MemoryType::Semantic;
+        entry.summary = i == 9 ? QStringLiteral("quasar 人工智能研究") : QStringLiteral("today weather");
+        index.upsert(entry);
+    }
+    auto cue = index.extractCue(QStringLiteral("today quasar"));
+    QVERIFY(cue.tokenWeights.value("quasar") > cue.tokenWeights.value("today"));
+    const auto hits = index.lookup(cue, 12);
+    QCOMPARE(hits.first().memoryId, QStringLiteral("doc-9"));
+    QCOMPARE(index.lookup({QStringLiteral("人工智")}, {}, 1).first(), QStringLiteral("doc-9"));
+    QVERIFY(index.lookup({QStringLiteral("day")}, {}, 12).isEmpty());
+}
+
+void TestMemoryRecallPhase2::testGlobalTagMigrationAndEligibility() {
+    QTemporaryDir directory;
+    const auto path = directory.filePath("legacy.db");
+    QString id;
+    {
+        MemoryStore legacy;
+        legacy.setDatabasePath(path);
+        QVERIFY(legacy.loadDatabaseOnly());
+        MemoryEntry entry;
+        entry.type = MemoryType::Semantic;
+        entry.summary = "opaque evidence";
+        entry.tags = {QStringLiteral("Ｍａｃｈｉｎｅ   Learning"), QStringLiteral("人工智能研究")};
+        id = legacy.addEntry(entry).id;
+        QVERIFY(!id.isEmpty());
+        QSqlQuery query(QSqlDatabase::database(legacy.databaseConnectionName(), false));
+        QVERIFY(query.exec("DROP INDEX idx_memory_tags_normalized"));
+        QVERIFY(query.exec("ALTER TABLE memory_tags DROP COLUMN normalized_tag"));
+    }
+    MemoryStore store;
+    store.setDatabasePath(path);
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryKeywordIndex index; // No recent-window documents: tags must come from SQLite.
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(index.knownTags().contains("machine learning"));
+    auto cue = index.extractCue("machine learning");
+    QCOMPARE(index.lookup(cue).first().memoryId, id);
+    QCOMPARE(index.lookup(cue).first().lexicalScore, 0.0);
+    QVERIFY(store.findById(id)->tags.contains(QStringLiteral("Ｍａｃｈｉｎｅ   Learning")));
+    QSqlQuery revision(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(revision.exec("SELECT revision FROM memory_tag_catalog_state"));
+    QVERIFY(revision.next());
+    const auto before = revision.value(0).toLongLong();
+    revision.finish();
+    store.reinforceEntries({id});
+    QVERIFY(revision.exec("SELECT revision FROM memory_tag_catalog_state"));
+    QVERIFY(revision.next());
+    QCOMPARE(revision.value(0).toLongLong(), before);
+    revision.finish();
+    // DB eligibility must override a dictionary cached before the mutation.
+    QVERIFY(store.updateStatusById(id, MemoryStatus::Archived));
+    QVERIFY(index.lookup(cue).isEmpty());
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(!index.knownTags().contains("machine learning"));
+    QVERIFY(store.updateStatusById(id, MemoryStatus::Active));
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(index.knownTags().contains("machine learning"));
+    auto changed = *store.findById(id);
+    changed.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-1);
+    QVERIFY(store.updateEntryById(changed));
+    QVERIFY(index.lookup(cue).isEmpty());
+    changed.expiresAt = {};
+    changed.privacyLevel = PrivacyLevel::Sensitive;
+    QVERIFY(store.updateEntryById(changed));
+    QVERIFY(index.lookup(cue).isEmpty());
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(!index.knownTags().contains("machine learning"));
+    changed.privacyLevel = PrivacyLevel::Personal;
+    QVERIFY(store.updateEntryById(changed));
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(index.knownTags().contains("machine learning"));
+    QVERIFY(store.removeEntryById(id));
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QVERIFY(index.knownTags().isEmpty());
+    QSqlQuery plan(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(plan.exec("EXPLAIN QUERY PLAN SELECT memory_id FROM memory_tags WHERE normalized_tag='machine learning'"));
+    QString details;
+    while (plan.next()) details += plan.value(3).toString();
+    QVERIFY2(details.contains("idx_memory_tags_normalized"), qPrintable(details));
+}
 
 void TestMemoryRecallPhase2::testMemoryCueExtractor() {
     MemoryCueExtractor extractor;

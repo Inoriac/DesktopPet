@@ -1,17 +1,13 @@
 #include "memory_cue_extractor.h"
-
-#include <QRegularExpression>
+#include "recall_text.h"
 
 MemoryCueExtractor::MemoryCueExtractor() = default;
 
 MemoryCue MemoryCueExtractor::extractFromQuery(const QString& queryText) const {
     MemoryCue cue;
-    
-    cue.normalizedQuery = normalize(queryText);
-    cue.tokens = tokenize(cue.normalizedQuery);
-    cue.knownTags = matchKnownTags(cue.tokens);
-    
-    // Enrich with session context
+    cue.normalizedQuery = RecallText::normalize(queryText);
+    cue.tokens = RecallText::tokens(cue.normalizedQuery);
+    cue.knownTags = matchKnownTags(cue.normalizedQuery);
     cue.sessionTopic = m_sessionTopic;
     cue.activeGoals = m_activeGoals;
     cue.currentEmotion = m_currentEmotion;
@@ -19,122 +15,69 @@ MemoryCue MemoryCueExtractor::extractFromQuery(const QString& queryText) const {
     cue.openness = m_openness;
     cue.sociability = m_sociability;
     cue.initiative = m_initiative;
-    
     return cue;
 }
-
-void MemoryCueExtractor::setSessionContext(const QString& topic,
-                                            const QStringList& goals) {
+void MemoryCueExtractor::setSessionContext(const QString& topic, const QStringList& goals) {
     m_sessionTopic = topic;
     m_activeGoals = goals;
 }
-
 void MemoryCueExtractor::setEmotionContext(EmotionType emotion, double intensity) {
     m_currentEmotion = emotion;
     m_emotionIntensity = qBound(0.0, intensity, 1.0);
 }
-
-void MemoryCueExtractor::setPersonalityParameters(double openness,
-                                                   double sociability,
-                                                   double initiative) {
+void MemoryCueExtractor::setPersonalityParameters(double openness, double sociability, double initiative) {
     m_openness = qBound(0.0, openness, 1.0);
     m_sociability = qBound(0.0, sociability, 1.0);
     m_initiative = qBound(0.0, initiative, 1.0);
 }
-
 void MemoryCueExtractor::setKnownTags(const QSet<QString>& tags) {
-    m_knownTags = tags;
-}
-
-QString MemoryCueExtractor::normalize(const QString& text) const {
-    QString normalized = text.trimmed().toLower();
-    // Collapse whitespace
-    normalized.replace(QRegularExpression(QStringLiteral("\\s+")), QStringLiteral(" "));
-    return normalized;
-}
-
-QStringList MemoryCueExtractor::tokenize(const QString& text) const {
-    QStringList tokens;
-    
-    // Latin words
-    tokens.append(extractLatinWords(text));
-    
-    // CJK bigrams (primary for Chinese)
-    tokens.append(extractCJKNGrams(text, 2));
-    
-    // CJK trigrams (for longer phrases)
-    tokens.append(extractCJKNGrams(text, 3));
-    
-    // Deduplicate
-    QSet<QString> seen;
-    QStringList unique;
-    for (const QString& token : tokens) {
-        if (!seen.contains(token)) {
-            seen.insert(token);
-            unique.append(token);
-        }
+    QSet<QString> normalized;
+    for (const auto& tag : tags) {
+        const auto key = RecallText::normalize(tag);
+        if (!key.isEmpty()) normalized.insert(key);
     }
-    
-    return unique;
-}
-
-QStringList MemoryCueExtractor::extractLatinWords(const QString& text) const {
-    QStringList words;
-    static const QRegularExpression latinWordRe(QStringLiteral("[a-z0-9]+"));
-    
-    QRegularExpressionMatchIterator it = latinWordRe.globalMatch(text);
-    while (it.hasNext()) {
-        QRegularExpressionMatch match = it.next();
-        const QString word = match.captured(0);
-        if (word.length() >= 2) {  // Skip single chars
-            words.append(word);
-        }
-    }
-    
-    return words;
-}
-
-QStringList MemoryCueExtractor::extractCJKNGrams(const QString& text, int n) const {
-    QStringList ngrams;
-    
-    // Extract CJK character sequences
-    QString cjkBuffer;
-    for (const QChar& ch : text) {
-        const ushort code = ch.unicode();
-        // CJK Unified Ideographs range (basic)
-        const bool isCJK = (code >= 0x4E00 && code <= 0x9FFF);
-        
-        if (isCJK) {
-            cjkBuffer.append(ch);
-        } else {
-            // Process accumulated buffer
-            if (cjkBuffer.length() >= n) {
-                for (int i = 0; i + n <= cjkBuffer.length(); ++i) {
-                    ngrams.append(cjkBuffer.mid(i, n));
-                }
+    if (normalized == m_knownTags) return;
+    m_knownTags = normalized;
+    m_tagTrie = {TagNode{}};
+    for (const auto& tag : normalized) {
+        int node = 0;
+        for (QChar ch : tag) {
+            int child = m_tagTrie[node].children.value(ch, -1);
+            if (child < 0) {
+                child = m_tagTrie.size();
+                m_tagTrie[node].children.insert(ch, child);
+                m_tagTrie.append(TagNode{});
             }
-            cjkBuffer.clear();
+            node = child;
         }
+        m_tagTrie[node].tag = tag;
     }
-    
-    // Process final buffer
-    if (cjkBuffer.length() >= n) {
-        for (int i = 0; i + n <= cjkBuffer.length(); ++i) {
-            ngrams.append(cjkBuffer.mid(i, n));
-        }
-    }
-    
-    return ngrams;
 }
-
-QStringList MemoryCueExtractor::matchKnownTags(const QStringList& tokens) const {
-    QStringList matched;
-    
-    for (const QString& token : tokens) {
-        if (m_knownTags.contains(token)) {
-            matched.append(token);
+QStringList MemoryCueExtractor::matchKnownTags(const QString& query) const {
+    QList<RecallText::Span> matches;
+    for (int start = 0; start < query.size(); ++start) {
+        int node = 0;
+        for (int end = start; end < query.size(); ++end) {
+            node = m_tagTrie[node].children.value(query.at(end), -1);
+            if (node < 0) break;
+            const auto& tag = m_tagTrie[node].tag;
+            if (!tag.isEmpty() && RecallText::boundaries(query, start, end - start + 1))
+                matches.append({tag, start, end - start + 1});
         }
     }
-    
-    return matched;
+    // Longest non-overlapping concepts win; repeated mentions count once.
+    std::sort(matches.begin(), matches.end(), [](const auto& a, const auto& b) {
+        return a.length != b.length ? a.length > b.length : a.start < b.start;
+    });
+    QVector<bool> covered(query.size(), false);
+    QStringList result;
+    for (const auto& match : matches) {
+        bool overlap = false;
+        for (int i = match.start; i < match.start + match.length; ++i) overlap |= covered[i];
+        if (overlap) continue;
+        for (int i = match.start; i < match.start + match.length; ++i) covered[i] = true;
+        if (!result.contains(match.token)) result.append(match.token);
+        if (result.size() >= 32) break;
+    }
+    return result;
 }

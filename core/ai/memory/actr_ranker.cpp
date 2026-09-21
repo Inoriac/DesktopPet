@@ -1,4 +1,5 @@
 #include "actr_ranker.h"
+#include "recall_text.h"
 
 #include <algorithm>
 #include <cmath>
@@ -34,8 +35,15 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
         // B_i: base-level activation（固定边界归一化，禁止按当轮候选集 min-max）
         candidate.baseActivation = computeBaseActivation(candidate.entry, now);
         
-        // C_i: cue match（semantic 通道 Phase 2 暂缺，只有词法/标签）
-        candidate.cueMatch = computeCueMatch(candidate.entry, cue);
+        // C_i: independent text/concept evidence, with no duplicate credit.
+        const auto terms = RecallText::tokens(candidate.entry.key + QLatin1Char(' ')
+            + candidate.entry.summary + QLatin1Char(' ') + candidate.entry.content
+            + QLatin1Char(' ') + candidate.entry.scope);
+        candidate.lexicalCue = RecallText::lexicalCoverage(cue.normalizedQuery, cue.tokens,
+            QSet<QString>(terms.cbegin(), terms.cend()), cue.tokenWeights);
+        candidate.tagCue = RecallText::tagCoverage(cue.knownTags, candidate.entry.tags);
+        candidate.cueMatch = m_lexicalCueCoeff * std::max(candidate.lexicalCue, candidate.tagCue)
+            / (m_semanticCueCoeff + m_lexicalCueCoeff);
         // Embedding channels provide the semantic part of C_i.  Keep the
         // public entry-only helper for callers without semantic candidates,
         // while folding the similarity into the same fixed [0,1] bound here.
@@ -119,37 +127,13 @@ double ACTRRanker::computeBaseActivation(const MemoryEntry& entry,
 
 double ACTRRanker::computeCueMatch(const MemoryEntry& entry,
                                    const MemoryCue& cue) const {
-    // 词法线索：cue tokens 命中率
-    double lexicalCue = 0.0;
-    if (!cue.tokens.isEmpty()) {
-        const QString searchText = (entry.key + QLatin1Char(' ')
-                                   + entry.summary + QLatin1Char(' ')
-                                   + entry.content + QLatin1Char(' ')
-                                   + entry.tags.join(QLatin1Char(' '))).toLower();
-        int hits = 0;
-        for (const QString& token : cue.tokens) {
-            if (searchText.contains(token)) ++hits;
-        }
-        lexicalCue = static_cast<double>(hits) / cue.tokens.size();
-    }
-    
-    // 标签直接命中提升词法线索（封顶 1.0）
-    if (!cue.knownTags.isEmpty()) {
-        for (const QString& tag : cue.knownTags) {
-            if (entry.tags.contains(tag, Qt::CaseInsensitive)) {
-                lexicalCue = std::min(1.0, lexicalCue + 0.3);
-            }
-        }
-    }
-    
-    // Entry-only callers have no embedding similarity; rank() folds the
-    // candidate-provided semanticCue into this lexical baseline.
-    const double semanticCue = 0.0;
-    
-    // C_i = 2.0*semantic + 1.2*lexical，固定上界 3.2 归一化
-    const double raw = m_semanticCueCoeff * semanticCue
-                     + m_lexicalCueCoeff * lexicalCue;
-    return clamp01(raw / (m_semanticCueCoeff + m_lexicalCueCoeff));
+    const auto tokens = RecallText::tokens(entry.key + QLatin1Char(' ') + entry.summary
+        + QLatin1Char(' ') + entry.content + QLatin1Char(' ') + entry.scope);
+    const double lexical = RecallText::lexicalCoverage(cue.normalizedQuery, cue.tokens,
+        QSet<QString>(tokens.cbegin(), tokens.cend()), cue.tokenWeights);
+    const double tag = RecallText::tagCoverage(cue.knownTags, entry.tags);
+    // Correlated text/tag evidence competes for one bounded contribution.
+    return m_lexicalCueCoeff * std::max(lexical, tag) / (m_semanticCueCoeff + m_lexicalCueCoeff);
 }
 
 double ACTRRanker::computeEmotionBoost(const MemoryEntry& entry,

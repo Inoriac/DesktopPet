@@ -443,6 +443,11 @@ private:
         }
 
         m_recallKeywordIndex.rebuild(m_recallStore->all());
+        if (!m_recallKeywordIndex.refreshGlobalTags(m_recallStore->databaseConnectionName())) {
+            qWarning() << "[Recall] global tag catalog unavailable; will retry";
+            m_recallDatabaseVersion = -1;
+            return;
+        }
         m_recallWorkingSet.refresh();
         const auto snapshot = m_recallStore->loadActiveMemorySnapshot();
         // Replace, do not merge: clear/privacy changes must drop cached items,

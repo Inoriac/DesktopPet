@@ -1544,6 +1544,8 @@ void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCrea
         QSqlQuery query(database);
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_items_partition")));
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_recall_inbox")));
+        QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_eligibility")));
+        QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_replace")));
         QVERIFY(query.exec(QStringLiteral(
             "ALTER TABLE memory_items DROP COLUMN partition")));
         QVERIFY(query.exec(QStringLiteral("PRAGMA user_version=0")));

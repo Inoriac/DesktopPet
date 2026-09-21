@@ -13,6 +13,8 @@ struct CandidateMemory {
     MemoryEntry entry;
     double baseActivation = 0.0;      // B_i: strength + importance + access history
     double cueMatch = 0.0;            // C_i: semantic + lexical/tag cues
+    double lexicalCue = 0.0;          // Text-only span coverage
+    double tagCue = 0.0;              // Whole concept matches
     double semanticCue = 0.0;         // cosine similarity supplied by embedding channel
     double runtimeActivation = 0.0;   // R_i: from ActiveMemoryPool
     double emotionBoost = 0.0;        // E_i: emotion match

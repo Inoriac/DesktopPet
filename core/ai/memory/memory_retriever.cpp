@@ -512,6 +512,11 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         MemoryCueExtractor fallbackExtractor;
         cue = fallbackExtractor.extractFromQuery(query.text);
     }
+    if (channels.keywordIndex) {
+        const auto indexedCue = channels.keywordIndex->extractCue(query.text);
+        cue.knownTags = indexedCue.knownTags;
+        cue.tokenWeights = indexedCue.tokenWeights;
+    }
     cue.currentEmotion = query.currentEmotion;
     cue.emotionIntensity = query.currentEmotionIntensity;
 
@@ -556,14 +561,12 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         }
     }
 
-    // 通道 4：关键词/标签倒排索引（最多 12 条）
+    // 通道 4：词法和完整概念匹配共享 12 条预算，但保留各自证据。
     if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
-        const QList<QString> keywordHits = channels.keywordIndex->lookup(
-            cue.tokens, cue.knownTags, kKeywordBudget);
-        for (const QString& memId : keywordHits) {
-            if (!seedChannels[memId].contains(QLatin1String("keyword"))) {
-                seedChannels[memId].append(QStringLiteral("keyword"));
-            }
+        const auto hits = channels.keywordIndex->lookup(cue, kKeywordBudget);
+        for (const auto& hit : hits) {
+            if (hit.lexicalScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("keyword"));
+            if (hit.tagScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("tag"));
         }
     }
 
@@ -599,6 +602,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         memory.sourceChannels = candidate.sourceChannels;
         memory.baseActivation = candidate.baseActivation;
         memory.cueMatch = candidate.cueMatch;
+        memory.lexicalCue = candidate.lexicalCue;
+        memory.tagCue = candidate.tagCue;
         memory.runtimeActivation = candidate.runtimeActivation;
         memory.emotionBoost = candidate.emotionBoost;
         result.append(memory);
@@ -641,6 +646,11 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         MemoryCueExtractor fallbackExtractor;
         cue = fallbackExtractor.extractFromQuery(query.text);
     }
+    if (channels.keywordIndex) {
+        const auto indexedCue = channels.keywordIndex->extractCue(query.text);
+        cue.knownTags = indexedCue.knownTags;
+        cue.tokenWeights = indexedCue.tokenWeights;
+    }
     cue.currentEmotion = query.currentEmotion;
     cue.emotionIntensity = query.currentEmotionIntensity;
 
@@ -648,6 +658,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     QHash<QString, QStringList> seedChannels;
     QHash<QString, double> seedRuntimeActivation;
     QHash<QString, double> seedSemanticCue;
+
+    QHash<QString, double> seedTextCue;
 
     // 通道 1: 激活池
     if (channels.activePool) {
@@ -684,14 +696,13 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         }
     }
 
-    // 通道 4: 关键词倒排
+    // 通道 4: 独立记录词法/概念证据，合并分数不重复累计。
     if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
-        const QList<QString> keywordHits = channels.keywordIndex->lookup(
-            cue.tokens, cue.knownTags, kKeywordBudget);
-        for (const QString& memId : keywordHits) {
-            if (!seedChannels[memId].contains(QLatin1String("keyword"))) {
-                seedChannels[memId].append(QStringLiteral("keyword"));
-            }
+        const auto hits = channels.keywordIndex->lookup(cue, kKeywordBudget);
+        for (const auto& hit : hits) {
+            if (hit.lexicalScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("keyword"));
+            if (hit.tagScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("tag"));
+            seedTextCue[hit.memoryId] = std::max(hit.lexicalScore, hit.tagScore);
         }
     }
 
@@ -705,10 +716,14 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     std::sort(validSeeds.begin(), validSeeds.end(), [&](const QString& a, const QString& b) {
         // Preserve the existing multi-channel priority before imposing the
         // propagation budget; semantic-only hits must not crowd it out.
-        if (seedChannels.value(a).size() != seedChannels.value(b).size())
-            return seedChannels.value(a).size() > seedChannels.value(b).size();
-        const double left = seedRuntimeActivation.value(a) + seedSemanticCue.value(a);
-        const double right = seedRuntimeActivation.value(b) + seedSemanticCue.value(b);
+        const auto evidenceCount = [&](const QString& id) {
+            const auto channels = seedChannels.value(id);
+            return channels.size() - (channels.contains(QStringLiteral("tag"))
+                && channels.contains(QStringLiteral("keyword")) ? 1 : 0);
+        };
+        if (evidenceCount(a) != evidenceCount(b)) return evidenceCount(a) > evidenceCount(b);
+        const double left = seedRuntimeActivation.value(a) + seedSemanticCue.value(a) + seedTextCue.value(a);
+        const double right = seedRuntimeActivation.value(b) + seedSemanticCue.value(b) + seedTextCue.value(b);
         return left == right ? a < b : left > right;
     });
     const QSet<QString> retained(validSeeds.cbegin(), validSeeds.cbegin() + qMin(kSeedBudget, int(validSeeds.size())));
@@ -796,6 +811,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         memory.sourceChannels = candidate.sourceChannels;
         memory.baseActivation = candidate.baseActivation;
         memory.cueMatch = candidate.cueMatch;
+        memory.lexicalCue = candidate.lexicalCue;
+        memory.tagCue = candidate.tagCue;
         memory.runtimeActivation = candidate.runtimeActivation;
         memory.emotionBoost = candidate.emotionBoost;
         
@@ -882,10 +899,10 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     workingSet.refresh();  // Load hippocampus entries
     
     MemoryKeywordIndex keywordIndex;
-    keywordIndex.rebuild(store.all());  // Build postings from all entries
+    keywordIndex.rebuild(store.all());  // Bounded recent-window text postings.
+    keywordIndex.refreshGlobalTags(store.databaseConnectionName());
     
-    // EmbeddingIndex: use Noop on macOS (no ONNX), or SQLite if available
-    // For now, use nullptr (skip embedding channel in Worker)
+    // This one-shot helper has no semantic service; the persistent chat Worker does.
     EmbeddingIndex* embeddingIndex = nullptr;
     
     return retrieveWithGraphPropagationForWorker(

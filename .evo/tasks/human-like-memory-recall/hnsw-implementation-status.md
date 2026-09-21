@@ -264,3 +264,34 @@ or automatic recovery tests as completion of design sections 4/5 or Phase 4.3.
 - Validation: Windows native ORT build of Desktop_Pet and all affected test
   targets succeeds. The nine-suite scoped CTest regression passes 9/9 (27.50 s),
   including ChatPreparationExecutorTests with real ONNX. `git diff --check` passes.
+
+## Whole Tags and Separate Lexical Evidence (2026-09-21)
+
+- Production recall now uses the keyword index's cached whole-tag trie. It matches
+  complete phrases of any length, checks Latin word boundaries, normalizes width,
+  case and whitespace, and suppresses overlapping shorter labels. Tokens no longer
+  determine which labels can be recognized. Query and document tokenization agree.
+- `memory_tags.normalized_tag` and its covering index support tag-only retrieval
+  across the entire eligible long-term history, including memories outside the
+  recent working window. Migration backfills old rows and preserves display tags.
+  Writes/import/delete remain transactional through the existing repository.
+- The Worker caches the full tag vocabulary; a transactional catalog revision
+  invalidates it on tag/eligibility changes. Ordinary reinforcement avoids rewriting
+  unchanged tags. Lookup rechecks privacy/status/expiry in SQLite, and final recall
+  still hydrates authoritative rows. Catalog refresh reads metadata, not all bodies.
+- Lexical IDF is estimated from the bounded text index. Scoring merges overlapping
+  query spans, excludes tags from document text, and uses max(text, tag) so duplicate
+  evidence does not stack. Matched tags are normalized/deduplicated; returned
+  memories expose lexical/tag scores and distinct keyword/tag source channels.
+- Regression coverage includes long Chinese and multiword Latin tags, C++/width
+  normalization, nested labels and word boundaries, token/tag separation, redundant
+  fragments, rare/common terms, migration and index use, revision stability during
+  reinforcement, privacy restoration, expiry, tag edits, archive and clear. The real
+  chat Worker recalls a 100-day-old tag-only memory behind 300 recent records with
+  no embedding provider enabled.
+- Deliberate scope: no online LLM extraction or automatic semantic alias merging.
+  Full-history free-text search, global corpus IDF/BM25 and reviewed concept aliases
+  remain separate follow-up work; whole-tag recall itself covers full history.
+- Validation: Windows Desktop_Pet and the nine related test targets build;
+  final CTest regression passes 9/9 suites (17.22 s), including native ONNX chat
+  recall and the new no-embedding tag-only Worker case. `git diff --check` passes.

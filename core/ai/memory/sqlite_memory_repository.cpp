@@ -14,6 +14,7 @@
 #include <cmath>
 
 #include "partition_policy.h"
+#include "recall_text.h"
 
 namespace {
 
@@ -411,6 +412,76 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
     }
 
+    // Preserve display tags and add a normalized, indexed key for full-history
+    // concept recall. Existing databases are backfilled without rewriting tags.
+    {
+        bool hasNormalizedTag = false;
+        if (!query.exec(QStringLiteral("PRAGMA table_info(memory_tags)"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        while (query.next()) hasNormalizedTag |= query.value(1).toString() == QLatin1String("normalized_tag");
+        query.finish();
+        if (!hasNormalizedTag && !query.exec(QStringLiteral(
+                "ALTER TABLE memory_tags ADD COLUMN normalized_tag TEXT"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        if (!query.exec(QStringLiteral("SELECT DISTINCT tag FROM memory_tags WHERE normalized_tag IS NULL"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        QStringList legacyTags;
+        while (query.next()) legacyTags.append(query.value(0).toString());
+        query.finish();
+        QSqlQuery update(db);
+        update.prepare(QStringLiteral("UPDATE memory_tags SET normalized_tag=:normalized "
+                                      "WHERE tag=:tag AND normalized_tag IS NULL"));
+        for (const auto& tag : legacyTags) {
+            update.bindValue(QStringLiteral(":normalized"), RecallText::normalize(tag));
+            update.bindValue(QStringLiteral(":tag"), tag);
+            if (!update.exec()) {
+                if (errorMessage) *errorMessage = update.lastError().text();
+                return false;
+            }
+        }
+        if (!query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_tags_normalized "
+                                       "ON memory_tags(normalized_tag, memory_id)"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
+    // A cheap revision invalidates the dictionary only for tag/eligibility
+    // changes, not for activation snapshots, index health or access-log writes.
+    for (const QString& sql : {
+            QStringLiteral("CREATE TABLE IF NOT EXISTS memory_tag_catalog_state ("
+                           "singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL)"),
+            QStringLiteral("INSERT OR IGNORE INTO memory_tag_catalog_state VALUES(1,0)"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_insert AFTER INSERT ON memory_tags "
+                           "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_delete AFTER DELETE ON memory_tags "
+                           "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_update AFTER UPDATE ON memory_tags "
+                           "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END"),
+            // Repository updates use INSERT OR REPLACE, so inspect the old row
+            // before replacement as well as handling ordinary SQL UPDATE.
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_replace BEFORE INSERT ON memory_items "
+                           "WHEN EXISTS(SELECT 1 FROM memory_items old WHERE old.id=NEW.id AND "
+                           "(old.status IS NOT NEW.status OR old.privacy_level IS NOT NEW.privacy_level "
+                           "OR old.partition IS NOT NEW.partition OR old.expires_at IS NOT NEW.expires_at)) "
+                           "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END"),
+            QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_eligibility "
+                           "AFTER UPDATE OF status,privacy_level,partition,expires_at ON memory_items "
+                           "WHEN OLD.status IS NOT NEW.status OR OLD.privacy_level IS NOT NEW.privacy_level "
+                           "OR OLD.partition IS NOT NEW.partition OR OLD.expires_at IS NOT NEW.expires_at "
+                           "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END")}) {
+        if (!query.exec(sql)) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
     // Match the ORDER BY expression as well as both recall filter shapes.
     // LIMIT alone only bounds materialization, not SQLite's scan/sort work.
     for (const QString& sql : {
@@ -595,8 +666,17 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
         return false;
     }
 
-    if (!deleteTags(entry.id)
-        || !insertTags(entry.id, entry.tags)
+    // Access reinforcement updates the parent row but usually leaves its tags
+    // unchanged. Preserve those postings and the catalog revision in that case.
+    QSqlQuery currentTags(db);
+    currentTags.prepare(QStringLiteral("SELECT tag FROM memory_tags WHERE memory_id=:id"));
+    currentTags.bindValue(QStringLiteral(":id"), entry.id);
+    if (!currentTags.exec()) { rollback(); return false; }
+    QSet<QString> previousTags, nextTags;
+    while (currentTags.next()) previousTags.insert(currentTags.value(0).toString());
+    currentTags.finish();
+    for (const auto& tag : entry.tags) if (!tag.trimmed().isEmpty()) nextTags.insert(tag);
+    if ((previousTags != nextTags && (!deleteTags(entry.id) || !insertTags(entry.id, entry.tags)))
         || !deleteEvidence(entry.id)
         || !insertEvidence(entry.id, entry.evidence)) {
         rollback();
@@ -890,13 +970,14 @@ bool SQLiteMemoryRepository::insertTags(const QString& memoryId, const QStringLi
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
     query.prepare(QStringLiteral(
-        "INSERT OR IGNORE INTO memory_tags (memory_id, tag) VALUES (:memory_id, :tag)"
+        "INSERT OR IGNORE INTO memory_tags (memory_id, tag, normalized_tag) VALUES (:memory_id, :tag, :normalized)"
     ));
 
     for (const QString& tag : tags) {
         if (tag.trimmed().isEmpty()) continue;
         query.bindValue(QStringLiteral(":memory_id"), memoryId);
         query.bindValue(QStringLiteral(":tag"), tag);
+        query.bindValue(QStringLiteral(":normalized"), RecallText::normalize(tag));
         if (!query.exec()) return false;
     }
     return true;

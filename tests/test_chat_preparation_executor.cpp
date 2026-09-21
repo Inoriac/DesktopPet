@@ -127,6 +127,7 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void wholeTagRecallFindsOldMemoryWithoutEmbeddings();
     void semanticRecallFindsOldMemoryAndRejectsStalePrivateHits();
     void activePoolSurvivesWorkerRestartAndClear();
     void slowProviderInitializationDoesNotBlockGui();
@@ -599,6 +600,45 @@ retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation()
     QVERIFY(unchanged);
     QCOMPARE(unchanged->accessCount, 0);
     QVERIFY(!unchanged->lastAccessedAt.isValid());
+}
+
+void ChatPreparationExecutorTests::wholeTagRecallFindsOldMemoryWithoutEmbeddings() {
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory); // No embedding model/provider.
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto old = matchingMemory();
+    old.summary = QStringLiteral("那次讨论留下的独特记录");
+    old.content = old.summary;
+    old.tags = {QStringLiteral("人工智能研究")};
+    old.createdAt = QDateTime::currentDateTimeUtc().addDays(-100);
+    old.updatedAt = old.createdAt;
+    old = store.addEntry(old);
+    QVERIFY(fillRecentWindow(store));
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("人工智能研究")), &result));
+    QVERIFY(result.messages.last().content.contains(old.summary));
+    QVERIFY(result.reinforcementIds.contains(old.id));
+    old.privacyLevel = PrivacyLevel::Sensitive;
+    QVERIFY(store.updateEntryById(old));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("人工智能研究")), &result));
+    QVERIFY(!result.messages.last().content.contains(old.summary));
+    old.privacyLevel = PrivacyLevel::Personal;
+    old.tags = {QStringLiteral("分布式数据库系统")};
+    QVERIFY(store.updateEntryById(old));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("人工智能研究")), &result));
+    QVERIFY(!result.messages.last().content.contains(old.summary));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("分布式数据库系统")), &result));
+    QVERIFY(result.messages.last().content.contains(old.summary));
+    QVERIFY(store.updateStatusById(old.id, MemoryStatus::Consolidated));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("分布式数据库系统")), &result));
+    QVERIFY(!result.messages.last().content.contains(old.summary));
+    store.clear();
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("分布式数据库系统")), &result));
+    QVERIFY(result.reinforcementIds.isEmpty());
 }
 
 void ChatPreparationExecutorTests::semanticRecallFindsOldMemoryAndRejectsStalePrivateHits() {

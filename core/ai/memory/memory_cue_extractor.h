@@ -4,6 +4,8 @@
 #include <QString>
 #include <QStringList>
 #include <QSet>
+#include <QHash>
+#include <QVector>
 
 #include "emotion/emotion_types.h"
 
@@ -11,6 +13,7 @@ struct MemoryCue {
     QString normalizedQuery;
     QStringList tokens;           // Latin words + CJK bigrams/trigrams
     QStringList knownTags;        // Extracted known tags
+    QHash<QString, double> tokenWeights; // Lexical IDF, separate from concept matches
     QStringList entities;         // Extracted entities (future)
     
     // Context from current session
@@ -41,11 +44,9 @@ public:
     void setKnownTags(const QSet<QString>& tags);
     
 private:
-    QString normalize(const QString& text) const;
-    QStringList tokenize(const QString& text) const;
-    QStringList extractLatinWords(const QString& text) const;
-    QStringList extractCJKNGrams(const QString& text, int n = 2) const;
-    QStringList matchKnownTags(const QStringList& tokens) const;
+    QStringList matchKnownTags(const QString& normalizedQuery) const;
+    struct TagNode { QHash<QChar, int> children; QString tag; };
+    QVector<TagNode> m_tagTrie{TagNode{}};
     
     // Context state
     QString m_sessionTopic;
