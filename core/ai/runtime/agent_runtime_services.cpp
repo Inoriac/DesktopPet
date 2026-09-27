@@ -31,7 +31,13 @@
 #include "ai/reflection/sqlite_private_psyche_repository.h"
 #include "runtime_ui_bridge.h"
 
-AgentRuntimeServices::AgentRuntimeServices() = default;
+AgentRuntimeServices::AgentRuntimeServices() {
+    m_identityTimer.setInterval(60000);
+    QObject::connect(&m_identityTimer, &QTimer::timeout, &m_identityTimer, [this]() {
+        const auto result = processIdentityEvents();
+        if (!result.isOk()) qWarning() << "[Identity] deferred growth update:" << result.error().code;
+    });
+}
 
 AgentRuntimeServices::~AgentRuntimeServices() {
     stop();
@@ -121,6 +127,8 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
                 m_identityRepository.get(),
                 m_emotionStateProvider);
             report.capabilities.profileGrowth = true;
+            m_identityTimer.start();
+            QTimer::singleShot(0, &m_identityTimer, [this]() { processIdentityEvents(); });
         } else {
             report.diagnostics.append(identityOpened.error().message);
             m_identityRepository.reset();
@@ -232,6 +240,9 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
             }
         }
         if (!report.capabilities.sleepCycle) {
+            if (m_diaryFragmentService) m_diaryFragmentService->stop();
+            if (m_diaryService) m_diaryService->setFragmentService(nullptr);
+            m_diaryFragmentService.reset();
             m_sleepCycleCoordinator.reset();
             m_daydreamSleepAdapter.reset();
             m_diaryService.reset();
@@ -350,6 +361,8 @@ Result<EventReadAuthorization, DomainError> AgentRuntimeServices::authorizationF
 }
 
 void AgentRuntimeServices::reflectOnCompletedSession(const QString& sessionId) {
+    const auto growth = processIdentityEvents();
+    if (!growth.isOk()) qWarning() << "[Identity] deferred growth update:" << growth.error().code;
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     if (m_reflectionProbeForTests) m_reflectionProbeForTests(sessionId);
 #endif
@@ -422,10 +435,14 @@ void AgentRuntimeServices::cancelSleepForUserInteraction() {
 }
 
 void AgentRuntimeServices::stop() {
+    m_identityTimer.stop();
     if (!m_started && !m_eventSchemas && !m_eventRepository) return;
     if (m_ownerDiaryServer) m_ownerDiaryServer->stop();
     m_ownerDiaryServer.reset();
     m_ownerDiaryFacade.reset();
+    if (m_diaryFragmentService) m_diaryFragmentService->stop();
+    if (m_diaryService) m_diaryService->setFragmentService(nullptr);
+    m_diaryFragmentService.reset();
     if (m_sleepCycleCoordinator) m_sleepCycleCoordinator->stop();
     if (m_reflectionCancellation) m_reflectionCancellation->cancel();
     m_sleepCycleCoordinator.reset();

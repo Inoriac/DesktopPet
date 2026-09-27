@@ -84,8 +84,10 @@ void PetWindow::setupAiBrain() {
         std::move(uiCallbacks), player, animationManager);
     runtimeServices = std::make_unique<AgentRuntimeServices>();
     agentScheduler = std::make_unique<AgentScheduler>(this);
-    if (!agentScheduler->load()) {
-        qWarning() << "[AgentScheduler] failed to load persisted tasks";
+    QString schedulerError;
+    if (!agentScheduler->configureProfileStorage(profileMigration.appDataRoot,
+            profileMigration.profileId, profileMigration.registeredProfileIds, &schedulerError)) {
+        qWarning() << "[AgentScheduler]" << schedulerError;
     }
 
     ConfigManager& config = ConfigManager::instance();
@@ -152,16 +154,17 @@ void PetWindow::setupAiBrain() {
         }, Qt::QueuedConnection);
     }));
     aiToolRegistry->registerTool(std::make_unique<SetProactiveModeTool>([this](const QString& mode, int quietMinutes) {
-        Q_UNUSED(quietMinutes)
-        const QString text = mode == "focus"
-            ? QStringLiteral("好，我会安静一点。")
+        const QString text = mode == "focus" || mode == "quiet"
+            ? (quietMinutes > 0 ? QStringLiteral("好，接下来 %1 分钟我会安静陪着你。").arg(quietMinutes)
+                                : QStringLiteral("好，我会安静陪着你，需要我时叫我。"))
             : QStringLiteral("主动模式已切换为 %1。").arg(mode);
         QMetaObject::invokeMethod(this, [this, text]() {
             showBubbleMessage(text, 3000);
             speakPetReply(text, QStringLiteral("toolBubble"));
         }, Qt::QueuedConnection);
-    }));
+    }, aiBrain->proactiveStatePath()));
     MemoryStore* memoryStore = aiBrain->memoryStore();
+    connectSchedulerMemory(*agentScheduler, *memoryStore);
     aiToolRegistry->registerTool(std::make_unique<MemoryOrganizeTool>(memoryStore));
     SkillStore* skillStore = aiBrain->skillStore();
     aiToolRegistry->registerTool(std::make_unique<SkillCreateTool>(skillStore));
@@ -226,6 +229,10 @@ void PetWindow::setupAiBrain() {
             petController->recordTaskOutcome(id, false);
         }
     });
+    connect(agentScheduler.get(), &AgentScheduler::taskPartiallySucceeded, this,
+            [](const QString& id, const QString& detail) {
+                qWarning() << "[AgentScheduler] reminder delivered with optional action failure:" << id << detail;
+            });
     agentScheduler->start();
 
     aiBrain->setPetName(modelName);
@@ -309,7 +316,14 @@ void PetWindow::teardownAiRuntime() {
 
 void PetWindow::onManualDaydreamRequested() {
     if (!runtimeServices || !runtimeServices->sleepCycleCoordinator()) {
-        showBubbleMessage(QStringLiteral("记忆整理功能未就绪"), 3000);
+        if (!aiBrain) {
+            showBubbleMessage(QStringLiteral("记忆整理功能未就绪"), 3000);
+            return;
+        }
+        const auto result = aiBrain->requestManualDaydream();
+        showBubbleMessage(!result.isOk() ? result.error().message
+            : result.value() ? QStringLiteral("开始整理记忆...")
+                             : QStringLiteral("这次记忆整理已完成，目前没有待处理的记忆。"), 3000);
         return;
     }
 

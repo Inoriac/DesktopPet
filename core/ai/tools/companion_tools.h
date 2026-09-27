@@ -14,10 +14,12 @@
 
 class CompanionProactiveState {
 public:
-    static QString mode();
-    static QDateTime updatedAt();
+    static QString mode(const QString& path = {}, const QDateTime& now = QDateTime::currentDateTimeUtc());
+    static QDateTime updatedAt(const QString& path = {});
     static QStringList supportedModes();
-    static bool setMode(const QString& mode, QString* errorMessage = nullptr);
+    static bool setMode(const QString& mode, QString* errorMessage = nullptr,
+                        int quietMinutes = 0, const QString& path = {},
+                        const QDateTime& now = QDateTime::currentDateTimeUtc());
 };
 
 class ShowChatBubbleTool : public AITool {
@@ -52,7 +54,7 @@ class SetProactiveModeTool : public AITool {
 public:
     using Callback = std::function<void(const QString& mode, int quietMinutes)>;
 
-    explicit SetProactiveModeTool(Callback callback = {});
+    explicit SetProactiveModeTool(Callback callback = {}, QString statePath = {});
 
     QJsonObject parameterSchema() const override;
     bool validate(const QJsonObject& params) const override;
@@ -60,6 +62,7 @@ public:
 
 private:
     Callback m_callback;
+    QString m_statePath;
 };
 
 #endif // DESKTOP_PET_COMPANION_TOOLS_H

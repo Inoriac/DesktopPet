@@ -88,18 +88,41 @@ MemoryEntry taskShadowMemoryEntry(const ScheduledTask& task, const QJsonObject& 
     return entry;
 }
 
-bool saveMemoryStore(MemoryStore* memoryStore) {
-    if (!memoryStore) {
-        return false;
-    }
+} // namespace
 
-    QString error;
-    if (!memoryStore->save(&error)) {
-        qWarning() << "[ScheduleTools] Failed to save memory store:" << error;
-        return false;
-    }
-    return true;
-}
+void connectSchedulerMemory(AgentScheduler& scheduler, MemoryStore& memoryStore) {
+    scheduler.setStateSink([&memoryStore](const QJsonObject& state) {
+        if (!memoryStore.refreshDatabaseOnly()) return false;
+        const auto task = ScheduledTask::fromJson(state);
+        const QString status = state.value("status").toString();
+        MemoryEntry updated = taskShadowMemoryEntry(task, {});
+        for (const auto& entry : memoryStore.all()) {
+            if (entry.type == MemoryType::TaskShadow
+                && entry.payload.value("linked_task_id").toString() == task.id) {
+                updated = entry;
+                break;
+            }
+        }
+        if (updated.status == MemoryStatus::Deleted) return true; // Explicitly forgotten data stays forgotten.
+        updated.status = status == "completed" ? MemoryStatus::Archived
+            : status == "cancelled" ? MemoryStatus::Cancelled : MemoryStatus::Active;
+        updated.value = taskSummary(task);
+        updated.payload["next_trigger_at"] = dateTimeText(task.nextTriggerAt);
+        updated.payload["last_triggered_at"] = dateTimeText(task.lastTriggeredAt);
+        updated.payload["task_status"] = status;
+        updated.payload["last_outcome"] = state.value("outcome");
+        updated.summary = status == "completed" ? QStringLiteral("已完成提醒：%1").arg(task.title)
+            : status == "cancelled" ? QStringLiteral("已取消提醒：%1").arg(task.title)
+            : QStringLiteral("待提醒「%1」：%2；下次时间 %3").arg(task.title, task.message, dateTimeText(task.nextTriggerAt));
+        updated.content = updated.summary;
+        updated.updatedAt = task.updatedAt;
+        if (updated.id.isEmpty()) {
+            updated = memoryStore.addEntry(updated);
+            if (updated.id.isEmpty()) return false;
+        } else if (!memoryStore.updateEntryById(updated)) return false;
+        QString error;
+        return memoryStore.save(&error);
+    });
 }
 
 ScheduleCreateTool::ScheduleCreateTool(AgentScheduler* scheduler, MemoryStore* memoryStore)
@@ -162,11 +185,7 @@ ToolResult ScheduleCreateTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error.isEmpty() ? QString("创建任务失败") : error);
     }
 
-    bool memoryRecorded = false;
-    if (m_memoryStore) {
-        m_memoryStore->addEntry(taskShadowMemoryEntry(task, params));
-        memoryRecorded = saveMemoryStore(m_memoryStore);
-    }
+    const bool memoryRecorded = m_memoryStore && m_scheduler->synchronizeState();
 
     QJsonObject result;
     result["task"] = taskSummary(task);
@@ -247,12 +266,7 @@ ToolResult ScheduleCancelTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error);
     }
 
-    QJsonObject memoryPatch;
-    memoryPatch["cancelled_at"] = dateTimeText(QDateTime::currentDateTimeUtc());
-    memoryPatch["last_user_action"] = "cancelled";
-    const bool memoryUpdated = m_memoryStore
-        && m_memoryStore->updateTaskShadowStatus(id, MemoryStatus::Cancelled, memoryPatch)
-        && saveMemoryStore(m_memoryStore);
+    const bool memoryUpdated = m_memoryStore && m_scheduler->synchronizeState();
 
     QJsonObject result;
     result["cancelled"] = true;
@@ -298,13 +312,7 @@ ToolResult ScheduleSnoozeTool::execute(const QJsonObject& params) {
         return ToolResult::fail(error);
     }
 
-    QJsonObject memoryPatch;
-    memoryPatch["last_snoozed_at"] = dateTimeText(QDateTime::currentDateTimeUtc());
-    memoryPatch["last_snooze_minutes"] = minutes;
-    memoryPatch["last_user_action"] = "snoozed";
-    const bool memoryUpdated = m_memoryStore
-        && m_memoryStore->updateTaskShadowStatus(id, MemoryStatus::Active, memoryPatch)
-        && saveMemoryStore(m_memoryStore);
+    const bool memoryUpdated = m_memoryStore && m_scheduler->synchronizeState();
 
     QJsonObject result;
     result["snoozed"] = true;

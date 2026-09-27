@@ -7,6 +7,8 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
+#include <QLockFile>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -26,8 +28,8 @@ QString stateFilePath() {
     return QDir(configDir).filePath("agent_proactive_state.json");
 }
 
-QJsonObject readState() {
-    QFile file(stateFilePath());
+QJsonObject readState(const QString& path) {
+    QFile file(path.isEmpty() ? stateFilePath() : path);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         return {};
     }
@@ -36,8 +38,8 @@ QJsonObject readState() {
     return doc.isObject() ? doc.object() : QJsonObject{};
 }
 
-bool writeState(const QJsonObject& state) {
-    QSaveFile file(stateFilePath());
+bool writeState(const QJsonObject& state, const QString& path) {
+    QSaveFile file(path);
     if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
         return false;
     }
@@ -70,12 +72,17 @@ QString clippedText(const QString& text, int maxLength) {
 }
 }
 
-QString CompanionProactiveState::mode() {
-    return readState().value("mode").toString("normal");
+QString CompanionProactiveState::mode(const QString& path, const QDateTime& now) {
+    const auto state = readState(path);
+    const auto until = QDateTime::fromString(state.value("quiet_until").toString(), Qt::ISODate);
+    const QString value = until.isValid() && now >= until
+        ? state.value("resume_mode").toString("normal")
+        : state.value("mode").toString("normal");
+    return supportedModes().contains(value) ? value : QStringLiteral("normal");
 }
 
-QDateTime CompanionProactiveState::updatedAt() {
-    const QString value = readState().value("updated_at").toString();
+QDateTime CompanionProactiveState::updatedAt(const QString& path) {
+    const QString value = readState(path).value("updated_at").toString();
     const QDateTime parsed = QDateTime::fromString(value, Qt::ISODate);
     return parsed.isValid() ? parsed : QDateTime{};
 }
@@ -84,7 +91,9 @@ QStringList CompanionProactiveState::supportedModes() {
     return {"quiet", "normal", "lively", "focus"};
 }
 
-bool CompanionProactiveState::setMode(const QString& mode, QString* errorMessage) {
+bool CompanionProactiveState::setMode(const QString& mode, QString* errorMessage,
+                                     int quietMinutes, const QString& path,
+                                     const QDateTime& now) {
     const QString normalized = normalizeMode(mode);
     if (!supportedModes().contains(normalized)) {
         if (errorMessage) {
@@ -93,11 +102,29 @@ bool CompanionProactiveState::setMode(const QString& mode, QString* errorMessage
         return false;
     }
 
-    QJsonObject state = readState();
+    const QString target = path.isEmpty() ? stateFilePath() : path;
+    if (!QDir().mkpath(QFileInfo(target).absolutePath())) {
+        if (errorMessage) *errorMessage = QStringLiteral("主动模式目录不可写");
+        return false;
+    }
+    QLockFile lock(target + QStringLiteral(".lock"));
+    if (!lock.tryLock(0)) {
+        if (errorMessage) *errorMessage = QStringLiteral("主动模式正在更新，请稍后重试");
+        return false;
+    }
+    QJsonObject state = readState(target);
+    const QString previous = CompanionProactiveState::mode(target, now);
+    const QString resume = state.value("resume_mode").toString(previous);
     state["mode"] = normalized;
-    state["updated_at"] = QDateTime::currentDateTime().toString(Qt::ISODate);
+    state["updated_at"] = now.toUTC().toString(Qt::ISODate);
+    state.remove("quiet_until");
+    state.remove("resume_mode");
+    if (quietMinutes > 0 && (normalized == "quiet" || normalized == "focus")) {
+        state["quiet_until"] = now.addSecs(qint64(qBound(1, quietMinutes, 10080)) * 60).toUTC().toString(Qt::ISODate);
+        state["resume_mode"] = resume;
+    }
 
-    if (!writeState(state)) {
+    if (!writeState(state, target)) {
         if (errorMessage) {
             *errorMessage = "主动模式保存失败";
         }
@@ -215,12 +242,12 @@ ToolResult NotifyUserTool::execute(const QJsonObject& params) {
     return ToolResult::ok(result);
 }
 
-SetProactiveModeTool::SetProactiveModeTool(Callback callback)
+SetProactiveModeTool::SetProactiveModeTool(Callback callback, QString statePath)
     : AITool(
           "set_proactive_mode",
           "设置桌宠主动程度。支持 quiet(安静)、normal(普通)、lively(活泼)、focus(专注/勿扰)。该设置会轻量持久化。",
           ToolCategory::Action)
-    , m_callback(std::move(callback)) {}
+    , m_callback(std::move(callback)), m_statePath(std::move(statePath)) {}
 
 QJsonObject SetProactiveModeTool::parameterSchema() const {
     QJsonObject schema;
@@ -240,7 +267,7 @@ QJsonObject SetProactiveModeTool::parameterSchema() const {
 
     QJsonObject quietMinutes;
     quietMinutes["type"] = "integer";
-    quietMinutes["description"] = "可选：临时安静分钟数，第一版仅返回该值，调度器后续可消费";
+    quietMinutes["description"] = "quiet/focus 的临时生效分钟数，最多 10080；到期恢复之前模式，0 表示持续生效";
     quietMinutes["default"] = 0;
     properties["quiet_minutes"] = quietMinutes;
 
@@ -261,11 +288,11 @@ bool SetProactiveModeTool::validate(const QJsonObject& params) const {
 ToolResult SetProactiveModeTool::execute(const QJsonObject& params) {
     const QString mode = normalizeMode(params.value("mode").toString());
     QString errorMessage;
-    if (!CompanionProactiveState::setMode(mode, &errorMessage)) {
+    const int quietMinutes = qBound(0, params.value("quiet_minutes").toInt(0), 10080);
+    if (!CompanionProactiveState::setMode(mode, &errorMessage, quietMinutes, m_statePath)) {
         return ToolResult::fail(errorMessage);
     }
 
-    const int quietMinutes = qMax(0, params.value("quiet_minutes").toInt(0));
     if (m_callback) {
         m_callback(mode, quietMinutes);
     }
@@ -273,6 +300,6 @@ ToolResult SetProactiveModeTool::execute(const QJsonObject& params) {
     QJsonObject result;
     result["mode"] = mode;
     result["quiet_minutes"] = quietMinutes;
-    result["updated_at"] = CompanionProactiveState::updatedAt().toString(Qt::ISODate);
+    result["updated_at"] = CompanionProactiveState::updatedAt(m_statePath).toString(Qt::ISODate);
     return ToolResult::ok(result);
 }

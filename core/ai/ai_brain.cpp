@@ -21,6 +21,8 @@
 #include "configLoader/config_manager.h"
 #include "chat/chat_preparation_executor.h"
 #include "runtime/agent_runtime_services.h"
+#include "tools/companion_tools.h"
+#include <QFileInfo>
 #include "event/event_ledger.h"
 #include "identity/persona_projector.h"
 #include "tools/environment_tools.h"
@@ -102,6 +104,8 @@ Result<void, DomainError> AIBrain::initializeStorage(
     }
     m_memoryStore.setDatabasePath(config.databasePath);
     m_memoryStore.setStoragePath(config.jsonPath);
+    m_proactiveStatePath = QDir(QFileInfo(config.databasePath).absolutePath())
+        .filePath(QStringLiteral("proactive_state.json"));
     QString errorMessage;
     if (!m_memoryStore.load(&errorMessage)) {
         return Result<void, DomainError>::failure(
@@ -345,11 +349,18 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
             traits.insert(it.key(), it.value());
         }
     }
-    return calculateProactiveChatTiming(baseIntervalMs, traits,
-                                        currentEmotionSnapshot(), m_unansweredProactiveChats);
+    auto timing = calculateProactiveChatTiming(baseIntervalMs, traits,
+                                               currentEmotionSnapshot(), m_unansweredProactiveChats);
+    const QString mode = CompanionProactiveState::mode(m_proactiveStatePath);
+    const double factor = mode == QLatin1String("lively") ? 0.8 : 1.0;
+    timing.intervalMs = qMax(60000, int(timing.intervalMs * factor));
+    timing.cooldownMs = qMax(60000, int(timing.cooldownMs * factor));
+    return timing;
 }
 
 bool AIBrain::canStartProactiveChat() const {
+    const QString mode = CompanionProactiveState::mode(m_proactiveStatePath);
+    if (mode == QLatin1String("quiet") || mode == QLatin1String("focus")) return false;
     return m_enabled && m_storageInitialized && !m_busy && !m_daydreamRunning
         && (!m_conversationCooldown.isValid()
             || m_conversationCooldown.elapsed() >= (m_cooldownAfterProactive

@@ -9,6 +9,7 @@
 #include "ai/scheduler/agent_scheduler.h"
 
 class MemoryStore;
+void connectSchedulerMemory(AgentScheduler& scheduler, MemoryStore& memoryStore);
 
 class ScheduleCreateTool : public AITool {
 public:

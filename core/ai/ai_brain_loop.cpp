@@ -503,6 +503,20 @@ void AIBrain::checkDaydreamTrigger() {
     armDaydreamTimer();
 }
 
+Result<bool, DomainError> AIBrain::requestManualDaydream() {
+    if (!m_running || !m_enabled || !m_storageInitialized || m_busy
+        || m_daydreamRunning || m_externalSleepCoordinatorEnabled || !m_daydreamConfig.enabled) {
+        return Result<bool, DomainError>::failure(domainError(
+            QStringLiteral("DAYDREAM_UNAVAILABLE"), QStringLiteral("当前正在处理其他任务或记忆整理已关闭")));
+    }
+    m_manualDaydream = true;
+    runDaydreamSession();
+    const bool started = m_daydreamRunning;
+    // An empty or synchronously completed batch needs no further manual session.
+    if (!started) m_manualDaydream = false;
+    return Result<bool, DomainError>::success(started);
+}
+
 void AIBrain::runDaydreamSession() {
     if (!m_daydreamConfig.enabled || m_externalSleepCoordinatorEnabled) return;
     DaydreamConsolidator consolidator(m_memoryStore);
@@ -529,6 +543,7 @@ void AIBrain::runDaydreamSession() {
 
 bool AIBrain::canContinueDaydream() const {
     if (!m_running || m_busy || m_externalSleepCoordinatorEnabled) return false;
+    if (m_manualDaydream) return true; // New user requests still cancel through triggerThink().
     const int idleSec = queryUserIdleSeconds();
     const qint64 msToNext = m_scheduler ? m_scheduler->msToNextDue() : -1;
     return m_daydreamPolicy.shouldContinue(idleSec, m_busy, msToNext);
@@ -653,6 +668,7 @@ void AIBrain::finishDaydreamSession(quint64 generation) {
     m_daydreamBatchOffset = 0;
     m_daydreamFallbackBatches = 0;
     m_daydreamInvalidBatches = 0;
+    m_manualDaydream = false;
     emit daydreamFinished(summary);
 }
 
@@ -670,6 +686,7 @@ void AIBrain::cancelDaydreamSession(const QString& reason) {
     m_daydreamInvalidBatches = 0;
     qInfo() << "[Daydream] session cancelled:" << reason;
     recordDaydreamInterruption(reason, processedBatches, totalItems);
+    m_manualDaydream = false;
     emit daydreamCancelled(reason);
 }
 

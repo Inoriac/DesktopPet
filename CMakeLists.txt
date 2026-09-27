@@ -128,6 +128,7 @@ set(AGENT_RUNTIME_SOURCES
     core/ai/runtime/runtime_ui_bridge.cpp
     core/ai/runtime/agent_runtime_services.h
     core/ai/runtime/agent_runtime_services.cpp
+    core/ai/runtime/agent_runtime_growth.cpp
     core/ai/runtime/agent_bootstrap.h
     core/ai/runtime/agent_bootstrap.cpp
 )
@@ -668,6 +669,8 @@ add_desktop_pet_cpp_test(event_ledger_tests EventLedgerTests
 
 # ---- Agent bootstrap and runtime service composition test support ----
 set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
+    core/ai/tools/companion_tools.cpp
+    core/ai/tools/companion_tools.h
     ${EVENT_LEDGER_SOURCES}
     ${AGENT_RUNTIME_SOURCES}
     ${MODEL_ROUTING_SOURCES}
@@ -865,6 +868,23 @@ add_desktop_pet_cpp_test(identity_state_tests IdentityStateTests
 )
 
 # ---- Reflection, private diary, and sleep coordinator tests ----
+add_desktop_pet_cpp_test(module_connectivity_tests ModuleConnectivityTests
+    SOURCES
+        tests/test_module_connectivity.cpp
+        core/ai/tools/schedule_tools.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
+)
+
 add_desktop_pet_cpp_test(sleep_cycle_tests SleepCycleTests
     SOURCES
         tests/test_sleep_cycle.cpp

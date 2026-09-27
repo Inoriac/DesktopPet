@@ -20,6 +20,7 @@ class AgentRuntimeServices;
 
 class DiaryFragmentService : public QObject {
     Q_OBJECT
+    friend class TestModuleConnectivity;
 public:
     struct Policy {
         int idleWindowMinutes;
@@ -53,6 +54,7 @@ public:
     Result<QList<QPair<QDate, int>>, DomainError> detectOrphanDrafts() const;
 
 signals:
+    void stopped();
     void fragmentCollected(const QString& fragmentId, const QDate& localDate);
     // 存在孤儿便签的历史日期（最老优先），需补写日记
     void recoveryNeeded(const QDate& localDate);
@@ -71,6 +73,8 @@ private:
     std::function<int()> m_userIdleSeconds;
     std::function<bool()> m_isBrainBusy;
     bool m_started = false;
+    bool m_collecting = false;
+    quint64 m_generation = 0;
     std::shared_ptr<std::atomic_bool> m_alive =
         std::make_shared<std::atomic_bool>(true);
 

@@ -114,7 +114,8 @@ QList<PriorityCandidate> BatchSelector::gatherCandidates(const QDateTime& now) c
     for (const MemoryEntry& entry : m_store.all()) {
         // 筛选：Hippocampus + Active 状态（Phase 1 用 Active 表示 Pending）
         if (entry.partition != QLatin1String("hippocampus")
-            || entry.status != MemoryStatus::Active) {
+            || entry.status != MemoryStatus::Active
+            || entry.type == MemoryType::TaskShadow) {
             continue;
         }
         

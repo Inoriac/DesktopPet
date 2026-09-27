@@ -6,6 +6,7 @@
 #include <QJsonObject>
 #include <QJsonParseError>
 #include <QUuid>
+#include <QPointer>
 
 #include "ai/context/context_assembler.h"
 #include "ai/event/event_ledger.h"
@@ -156,6 +157,7 @@ DiaryFragmentService::DiaryFragmentService(
       m_policy(policy) {}
 
 DiaryFragmentService::~DiaryFragmentService() {
+    stop();
     m_alive->store(false, std::memory_order_release);
 }
 
@@ -170,6 +172,7 @@ void DiaryFragmentService::setBusyProbe(std::function<bool()> isBrainBusy) {
 void DiaryFragmentService::start() {
     if (m_started) return;
     m_started = true;
+    const quint64 generation = ++m_generation;
     // 周期性便签收集：满足“短空闲”（≥ 5 分钟，低于 Sleep 的 30 分钟）
     // 且大脑不忙时，把自上次便签以来的新事件写成一段便签。
     m_timer.setInterval(qMax(1, m_policy.idleWindowMinutes) * 60 * 1000);
@@ -188,8 +191,8 @@ void DiaryFragmentService::start() {
 
     // 启动后延迟检测孤儿便签（有 Draft 无日记的历史日期），避免与启动流程争资源。
     const std::shared_ptr<std::atomic_bool> alive = m_alive;
-    QTimer::singleShot(60 * 1000, this, [this, alive]() {
-        if (!alive->load(std::memory_order_acquire)) return;
+    QTimer::singleShot(60 * 1000, this, [this, alive, generation]() {
+        if (!alive->load(std::memory_order_acquire) || !m_started || generation != m_generation) return;
         const auto orphans = detectOrphanDrafts();
         if (!orphans.isOk()) return;
         const QDate today = QDateTime::currentDateTime().date();
@@ -204,10 +207,14 @@ void DiaryFragmentService::start() {
 
 void DiaryFragmentService::stop() {
     m_timer.stop();
+    QObject::disconnect(&m_timer, nullptr, this, nullptr);
     m_started = false;
+    ++m_generation;
+    emit stopped();
 }
 
 Result<void, DomainError> DiaryFragmentService::collectFragmentIfIdle() {
+    if (m_collecting) return Result<void, DomainError>::success();
     if (!m_repository || !m_eventLedger || !m_modelRouter || !m_services) {
         return Result<void, DomainError>::failure(
             domainError(QStringLiteral("PRIVATE_STORE_UNAVAILABLE"),
@@ -241,8 +248,13 @@ Result<void, DomainError> DiaryFragmentService::collectFragmentIfIdle() {
     }
     const qint64 fromSequence = lastSequence + 1;
     const qint64 toSequence = events.value().last().sequence;
+    QPointer<DiaryFragmentService> guard(this);
+    m_collecting = true;
     const auto fragmentId = composeFragment(
         today, nextSegment, fromSequence, toSequence, events.value());
+    if (!guard) return Result<void, DomainError>::failure(
+        domainError(QStringLiteral("CANCELLED"), QStringLiteral("fragment service stopped")));
+    m_collecting = false;
     if (!fragmentId.isOk()) {
         return Result<void, DomainError>::failure(fragmentId.error());
     }
@@ -305,23 +317,35 @@ Result<QString, DomainError> DiaryFragmentService::composeFragment(
     
     // Fragment collection runs synchronously via blocking wait on async call
     QEventLoop loop;
-    Result<ModelCompletion, DomainError> completionResult =
-        Result<ModelCompletion, DomainError>::failure(
+    using Completion = Result<ModelCompletion, DomainError>;
+    auto completionResult = std::make_shared<Completion>(Completion::failure(
             domainError(QStringLiteral("MODEL_TIMEOUT"),
-                        QStringLiteral("fragment LLM call timed out")));
+                        QStringLiteral("fragment LLM call timed out"))));
+    auto completed = std::make_shared<bool>(false);
+    QPointer<QEventLoop> loopGuard(&loop);
+    QPointer<DiaryFragmentService> guard(this);
+    const quint64 generation = m_generation;
+    QObject::connect(this, &DiaryFragmentService::stopped, &loop, &QEventLoop::quit);
+    QTimer timeout;
+    timeout.setSingleShot(true);
+    QObject::connect(&timeout, &QTimer::timeout, &loop, &QEventLoop::quit);
+    timeout.start(120000);
     m_modelRouter->completeAsync(
         modelRequest,
-        [&loop, &completionResult](Result<ModelCompletion, DomainError> result) {
-            completionResult = std::move(result);
-            loop.quit();
+        [loopGuard, completionResult, completed](Completion result) {
+            *completionResult = std::move(result);
+            *completed = true;
+            if (loopGuard) loopGuard->quit();
         });
-    loop.exec();
+    if (!*completed && guard && generation == guard->m_generation) loop.exec();
+    if (!guard || generation != guard->m_generation) return Result<QString, DomainError>::failure(
+        domainError(QStringLiteral("CANCELLED"), QStringLiteral("fragment service stopped")));
     
-    if (!completionResult.isOk()) {
-        return Result<QString, DomainError>::failure(completionResult.error());
+    if (!completionResult->isOk()) {
+        return Result<QString, DomainError>::failure(completionResult->error());
     }
     const auto parsed = parseFragment(
-        completionResult.value().response.content, m_policy.maxFragmentBodyChars);
+        completionResult->value().response.content, m_policy.maxFragmentBodyChars);
     if (!parsed.isOk()) {
         return Result<QString, DomainError>::failure(parsed.error());
     }

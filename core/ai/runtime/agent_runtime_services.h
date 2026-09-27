@@ -3,6 +3,7 @@
 
 #include <memory>
 #include <functional>
+#include <QTimer>
 
 #include "ai/domain/domain_result.h"
 #include "ai/event/event_types.h"
@@ -78,6 +79,8 @@ public:
     }
     OwnerDiaryServer* ownerDiaryServer() const { return m_ownerDiaryServer.get(); }
     void reflectOnCompletedSession(const QString& sessionId);
+    Result<void, DomainError> processIdentityEvents(
+        const QDateTime& now = QDateTime::currentDateTimeUtc());
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     void setReflectionProbeForTests(std::function<void(const QString&)> probe) {
         m_reflectionProbeForTests = std::move(probe);
@@ -88,6 +91,8 @@ public:
     void stop();
 
 private:
+    friend class TestModuleConnectivity;
+    QTimer m_identityTimer;
     friend class AgentBootstrap;
     Result<RuntimeStartReport, DomainError> startAfterStorageReady(
         const RuntimeStartRequest& request,

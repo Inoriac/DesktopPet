@@ -70,33 +70,114 @@ AgentScheduler::AgentScheduler(QObject* parent)
     connect(&m_timer, &QTimer::timeout, this, &AgentScheduler::checkDueTasks);
 }
 
+AgentScheduler::~AgentScheduler() { stop(); }
+
+bool AgentScheduler::acquireStorage() const {
+    if (!m_storageReady) return false;
+    if (m_storageLock) return m_storageLock->isLocked();
+    if (!QDir().mkpath(QFileInfo(m_storagePath).absolutePath())) return false;
+    auto lock = std::make_unique<QLockFile>(m_storagePath + QStringLiteral(".lock"));
+    lock->setStaleLockTime(0); // An idle live owner must never lose its tasks to another process.
+    if (!lock->tryLock(0)) return false;
+    m_storageLock = std::move(lock);
+    return true;
+}
+
+bool AgentScheduler::configureProfileStorage(const QString& appDataRoot, const QString& profileId,
+                                              const QStringList& registeredIds, QString* error) {
+    if (!registeredIds.contains(profileId) || QUuid(profileId).isNull()) {
+        m_storageReady = false;
+        if (error) *error = QStringLiteral("提醒角色标识无效");
+        return false;
+    }
+    setStoragePath(QDir(appDataRoot).filePath(
+        QStringLiteral("profiles/%1/scheduled_tasks.json").arg(profileId)));
+    if (!acquireStorage()) {
+        m_storageReady = false;
+        if (error) *error = QStringLiteral("该角色的提醒已由另一个实例管理，或存储不可写");
+        return false;
+    }
+    const QString legacy = defaultStoragePath();
+    if (!QFile::exists(m_storagePath) && QFile::exists(legacy) && registeredIds.size() == 1) {
+        if (!QFile::copy(legacy, m_storagePath)) {
+            m_storageReady = false;
+            if (error) *error = QStringLiteral("旧提醒迁移失败，原文件已保留");
+            return false;
+        }
+    }
+    if (!load()) {
+        if (error) *error = QStringLiteral("提醒文件无法读取，已停止调度以保留原数据");
+        return false;
+    }
+    return true;
+}
+
+void AgentScheduler::setStateSink(StateSink sink) {
+    m_stateSink = std::move(sink);
+    // Reconcile legacy tasks too; queued terminal states take precedence.
+    for (const auto& task : m_tasks) {
+        if (!m_pendingStates.contains(task.id)) queueState(task, QStringLiteral("active"));
+    }
+    if (save()) synchronizeState();
+}
+
+void AgentScheduler::queueState(const ScheduledTask& task, const QString& status,
+                                 const QString& outcome) {
+    QJsonObject state = task.toJson();
+    state[QStringLiteral("status")] = status;
+    state[QStringLiteral("outcome")] = outcome;
+    m_pendingStates.insert(task.id, state);
+}
+
+bool AgentScheduler::synchronizeState() {
+    if (m_pendingStates.isEmpty()) return true;
+    if (!m_stateSink || !m_storageReady || !acquireStorage()) return false;
+    const auto original = m_pendingStates;
+    for (auto it = original.cbegin(); it != original.cend(); ++it) {
+        if (m_stateSink(it.value())) m_pendingStates.remove(it.key());
+    }
+    if (!save()) { m_pendingStates = original; return false; }
+    return m_pendingStates.isEmpty();
+}
+
 void AgentScheduler::setToolRegistry(ToolRegistry* registry) {
     m_toolRegistry = registry;
     m_toolRuntime.setToolRegistry(registry);
 }
 
 void AgentScheduler::setStoragePath(const QString& storagePath) {
-    if (!storagePath.trimmed().isEmpty()) {
+    if (!m_running && !storagePath.trimmed().isEmpty()) {
+        m_storageLock.reset();
+        m_storageReady = true;
         m_storagePath = storagePath;
     }
 }
 
 bool AgentScheduler::load() {
+    if (!acquireStorage()) return false;
     m_tasks.clear();
+    m_pendingStates.clear();
 
     QFile file(m_storagePath);
     if (!file.exists()) {
         return true;
     }
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+        m_storageReady = false;
         return false;
     }
 
     const QJsonDocument doc = QJsonDocument::fromJson(file.readAll());
     if (!doc.isObject()) {
+        m_storageReady = false;
         return false;
     }
 
+    for (const auto& value : doc.object().value("pending_states").toArray()) {
+        const auto state = value.toObject();
+        const QString id = state.value("id").toString();
+        if (!id.isEmpty()) m_pendingStates.insert(id, state);
+    }
     const QJsonArray items = doc.object().value("tasks").toArray();
     const QDateTime now = QDateTime::currentDateTime();
     for (const QJsonValue& value : items) {
@@ -113,6 +194,7 @@ bool AgentScheduler::load() {
 }
 
 bool AgentScheduler::save() const {
+    if (!acquireStorage()) return false;
     if (!QDir().mkpath(QFileInfo(m_storagePath).absolutePath())) {
         return false;
     }
@@ -123,7 +205,10 @@ bool AgentScheduler::save() const {
     }
 
     QJsonObject root;
-    root["version"] = 1;
+    root["version"] = 2;
+    QJsonArray pending;
+    for (const auto& state : m_pendingStates) pending.append(state);
+    root["pending_states"] = pending;
     root["tasks"] = items;
 
     QSaveFile file(m_storagePath);
@@ -142,7 +227,9 @@ void AgentScheduler::start() {
     if (m_running) {
         return;
     }
+    if (!acquireStorage()) return;
     m_running = true;
+    synchronizeState();
     scheduleNextTick();
 }
 
@@ -152,6 +239,10 @@ void AgentScheduler::stop() {
 }
 
 ScheduledTask AgentScheduler::createTask(const QJsonObject& params, QString* errorMessage) {
+    if (!acquireStorage()) {
+        if (errorMessage) *errorMessage = QStringLiteral("该角色提醒不可用或由另一个实例管理");
+        return {};
+    }
     const QDateTime now = QDateTime::currentDateTime();
 
     ScheduledTask task;
@@ -194,7 +285,8 @@ ScheduledTask AgentScheduler::createTask(const QJsonObject& params, QString* err
         task.intervalMs = intervalMs;
     }
 
-    task.respectQuietHours = params.value("respect_quiet_hours").toBool(true);
+    const auto quiet = params.value("respect_quiet_hours");
+    task.respectQuietHours = quiet.isDouble() ? quiet.toInt() != 0 : quiet.toBool(true);
     task.skipWhenUserBusy = params.value("skip_when_user_busy").toBool(false);
     task.minGapMs = params.value("min_gap_ms").toInt(0);
     task.allowLlm = false;
@@ -211,30 +303,51 @@ ScheduledTask AgentScheduler::createTask(const QJsonObject& params, QString* err
         return {};
     }
 
+    for (const auto& existing : m_tasks) {
+        if (existing.id == task.id) {
+            if (errorMessage) *errorMessage = QStringLiteral("提醒 id 已存在");
+            return {};
+        }
+    }
+    const auto originalStates = m_pendingStates;
     m_tasks.append(task);
+    queueState(task, QStringLiteral("active"), QStringLiteral("created"));
     if (!save()) {
+        m_pendingStates = originalStates;
         m_tasks.removeLast();
         if (errorMessage) {
             *errorMessage = QString("无法持久化调度任务: %1").arg(m_storagePath);
         }
         return {};
     }
+    synchronizeState();
     scheduleNextTick();
     emit taskChanged();
     return task;
 }
 
 bool AgentScheduler::cancelTask(const QString& id, QString* errorMessage) {
+    if (!acquireStorage()) {
+        if (errorMessage) *errorMessage = QStringLiteral("提醒存储不可用");
+        return false;
+    }
     for (int i = 0; i < m_tasks.size(); ++i) {
         if (m_tasks[i].id == id) {
-            const ScheduledTask removed = m_tasks.takeAt(i);
+            const auto originalStates = m_pendingStates;
+            const ScheduledTask original = m_tasks.takeAt(i);
+            ScheduledTask removed = original;
+            removed.updatedAt = QDateTime::currentDateTimeUtc();
+            removed.nextTriggerAt = {};
+            queueState(removed, QStringLiteral("cancelled"));
             if (!save()) {
-                m_tasks.insert(i, removed);
+                m_pendingStates = originalStates;
+                m_tasks.insert(i, original);
                 if (errorMessage) {
                     *errorMessage = QString("无法持久化任务取消: %1").arg(m_storagePath);
                 }
                 return false;
             }
+            synchronizeState();
             scheduleNextTick();
             emit taskChanged();
             return true;
@@ -248,20 +361,28 @@ bool AgentScheduler::cancelTask(const QString& id, QString* errorMessage) {
 }
 
 bool AgentScheduler::snoozeTask(const QString& id, int minutes, QString* errorMessage) {
+    if (!acquireStorage()) {
+        if (errorMessage) *errorMessage = QStringLiteral("提醒存储不可用");
+        return false;
+    }
     const QDateTime now = QDateTime::currentDateTime();
     for (ScheduledTask& task : m_tasks) {
         if (task.id == id) {
             const ScheduledTask original = task;
+            const auto originalStates = m_pendingStates;
             task.enabled = true;
             task.nextTriggerAt = now.addMSecs(minutesToMs(minutes));
             task.updatedAt = now;
+            queueState(task, QStringLiteral("active"), QStringLiteral("snoozed"));
             if (!save()) {
+                m_pendingStates = originalStates;
                 task = original;
                 if (errorMessage) {
                     *errorMessage = QString("无法持久化任务推迟: %1").arg(m_storagePath);
                 }
                 return false;
             }
+            synchronizeState();
             scheduleNextTick();
             emit taskChanged();
             return true;
@@ -275,97 +396,93 @@ bool AgentScheduler::snoozeTask(const QString& id, int minutes, QString* errorMe
 }
 
 void AgentScheduler::checkDueTasks() {
+    if (!m_running || !acquireStorage()) return;
     const QDateTime now = QDateTime::currentDateTime();
-    const QList<ScheduledTask> originalTasks = m_tasks;
-    const QDateTime originalLastProactiveAt = m_lastProactiveAt;
+    const auto originalTasks = m_tasks;
+    const auto originalStates = m_pendingStates;
+    const auto originalLastProactiveAt = m_lastProactiveAt;
+    struct Notification { ScheduledTask task; ExecutionResult result; };
+    QList<Notification> notifications;
     bool changed = false;
-
-    for (ScheduledTask& task : m_tasks) {
-        if (!task.shouldTrigger(now)) {
-            continue;
-        }
-
+    for (auto& task : m_tasks) {
+        if (!task.shouldTrigger(now)) continue;
         if (task.respectQuietHours && isInQuietHours(now)) {
             task.nextTriggerAt = now.addSecs(30 * 60);
+        } else if (m_lastProactiveAt.isValid()
+                   && m_lastProactiveAt.msecsTo(now) < m_minProactiveGapMs) {
+            task.nextTriggerAt = m_lastProactiveAt.addMSecs(m_minProactiveGapMs);
+        } else {
+            auto result = executeTask(task, now);
+            notifications.append({task, result});
+            task.updatedAt = now;
+            if (result.delivered) {
+                task.lastTriggeredAt = now;
+                m_lastProactiveAt = now;
+                if (task.triggerType == "once_at") task.nextTriggerAt = {};
+                else task.refreshNextTrigger(now);
+                queueState(task, task.triggerType == "once_at" ? "completed" : "active",
+                           result.error.isEmpty() ? "delivered" : "partially_delivered");
+            } else {
+                task.nextTriggerAt = now.addSecs(60); // Retry failed notification; do not mark complete.
+                queueState(task, "active", "retry_pending");
+            }
             changed = true;
             continue;
         }
-
-        if (m_lastProactiveAt.isValid() && m_lastProactiveAt.msecsTo(now) < m_minProactiveGapMs) {
-            task.nextTriggerAt = now.addMSecs(m_minProactiveGapMs - m_lastProactiveAt.msecsTo(now));
-            changed = true;
-            continue;
-        }
-
-        executeTask(task, now);
+        task.updatedAt = now;
+        queueState(task, "active", "deferred");
         changed = true;
     }
-
     for (int i = m_tasks.size() - 1; i >= 0; --i) {
-        const ScheduledTask& task = m_tasks[i];
-        if (task.triggerType == "once_at" && task.lastTriggeredAt.isValid()) {
+        if (m_tasks[i].triggerType == "once_at" && m_tasks[i].lastTriggeredAt.isValid())
             m_tasks.removeAt(i);
-            changed = true;
-        }
     }
-
     if (changed) {
         if (!save()) {
             m_tasks = originalTasks;
+            m_pendingStates = originalStates;
             m_lastProactiveAt = originalLastProactiveAt;
-            m_running = false;
-            m_timer.stop();
-            emit taskFailed({}, QString("无法持久化调度状态，调度器已停止: %1").arg(m_storagePath));
-            emit taskChanged();
+            stop();
+            emit taskFailed({}, QStringLiteral("无法持久化调度状态，调度器已停止"));
             return;
+        }
+        for (const auto& notice : notifications) {
+            if (notice.result.delivered) {
+                if (!notice.result.error.isEmpty())
+                    emit taskPartiallySucceeded(notice.task.id, notice.result.error);
+                emit taskTriggered(notice.task.id, notice.task.title);
+            } else emit taskFailed(notice.task.id, notice.result.error);
         }
         emit taskChanged();
     }
+    synchronizeState();
     scheduleNextTick();
 }
 
-void AgentScheduler::executeTask(ScheduledTask& task, const QDateTime& now) {
-    if (!m_toolRegistry) {
-        emit taskFailed(task.id, "ToolRegistry 未配置");
-        return;
-    }
-
-    auto executeTool = [this](const QString& toolName, const QJsonObject& arguments) -> ToolResult {
+AgentScheduler::ExecutionResult AgentScheduler::executeTask(ScheduledTask& task, const QDateTime&) {
+    if (!m_toolRegistry) return {false, QStringLiteral("ToolRegistry 未配置")};
+    auto executeTool = [this](const QString& name, const QJsonObject& arguments) {
         ToolExecutionRequest request;
-        request.toolName = toolName;
+        request.toolName = name;
         request.arguments = arguments;
         request.policyContext.triggerTag = "schedule";
         request.policyContext.initiatedByLlm = false;
         return m_toolRuntime.execute(request).result;
     };
-
+    QStringList errors;
+    bool animationDelivered = false;
     if (!task.animationState.trimmed().isEmpty()) {
-        QJsonObject animationArgs;
-        animationArgs["state"] = task.animationState.trimmed();
-        const ToolResult animationResult = executeTool("play_animation", animationArgs);
-        if (!animationResult.success) {
-            emit taskFailed(task.id, animationResult.errorMessage);
-        }
+        const auto result = executeTool("play_animation", {{"state", task.animationState.trimmed()}});
+        animationDelivered = result.success;
+        if (!result.success) errors.append(result.errorMessage);
     }
-
+    bool delivered = animationDelivered;
     if (!task.message.trimmed().isEmpty()) {
-        QJsonObject bubbleArgs;
-        bubbleArgs["text"] = task.message.trimmed();
-        const ToolResult bubbleResult = executeTool("show_chat_bubble", bubbleArgs);
-        if (!bubbleResult.success) {
-            emit taskFailed(task.id, bubbleResult.errorMessage);
-        }
+        const auto result = executeTool("show_chat_bubble", {{"text", task.message.trimmed()}});
+        delivered = result.success; // The optional animation cannot substitute for the reminder text.
+        if (!result.success) errors.append(result.errorMessage);
     }
-
-    task.lastTriggeredAt = now;
-    task.updatedAt = now;
-    m_lastProactiveAt = now;
-
-    if (task.triggerType == "daily_at" || task.triggerType == "interval") {
-        task.refreshNextTrigger(now);
-    }
-
-    emit taskTriggered(task.id, task.title);
+    return {delivered, errors.join(QStringLiteral("; "))};
 }
 
 bool AgentScheduler::isInQuietHours(const QDateTime& now) const {

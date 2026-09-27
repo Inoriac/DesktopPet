@@ -55,6 +55,7 @@ class AIBrain : public QObject {
     Q_OBJECT
 
     friend class TestIdentityState;
+    friend class TestModuleConnectivity;
 
 public:
     using EmotionSnapshotProvider = std::function<std::optional<EmotionSnapshot>()>;
@@ -92,6 +93,8 @@ public:
     bool isBusy() const { return m_busy; }
     bool canStartProactiveChat() const;
     ProactiveChatTiming proactiveChatTiming(int baseIntervalMs) const;
+    QString proactiveStatePath() const { return m_proactiveStatePath; }
+    Result<bool, DomainError> requestManualDaydream();
     bool canAcceptUserMessage() const;
     quint64 interactionRevision() const { return m_interactionRevision; }
     int userIdleSeconds() const;
@@ -149,6 +152,8 @@ signals:
     void chatPreparationTimingsObserved(ChatPreparationTimings timings);
 
 private:
+    QString m_proactiveStatePath;
+    bool m_manualDaydream = false;
     void thinkInternal(const QString& reason,
                       const QString& triggerTag,
                       const QString& sessionId,
