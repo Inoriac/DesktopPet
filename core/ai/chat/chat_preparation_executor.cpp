@@ -35,9 +35,43 @@
 
 namespace {
 
-MemoryQuery memoryQueryFor(const ChatPreparationRequest& request) {
+MemoryQuery memoryQueryFor(const ChatPreparationRequest& request,
+                          const std::optional<PersonaProjection>& projection) {
     MemoryQuery query;
     query.text = request.reason;
+    const bool timerOpportunity = request.triggerTag == QLatin1String("proactive_chat")
+        && request.reason == QLatin1String("proactive_chat_tick");
+    if (timerOpportunity) query.text.clear();
+    query.personality = projection.has_value()
+        ? projection->behaviorParameters : request.identityBaseline.traits;
+    QStringList recentTopics;
+    for (auto it = request.conversationMemory.crbegin();
+         it != request.conversationMemory.crend() && recentTopics.size() < 2; ++it) {
+        if (it->role == QLatin1String("user") && !it->content.trimmed().isEmpty()
+            && !MemoryExtractor::isLikelySensitiveContent(it->content)) {
+            recentTopics.prepend(it->content.left(400));
+            if (query.sessionTopic.isEmpty()) query.sessionTopic = it->content.left(400);
+        }
+    }
+    const bool needsContext = timerOpportunity || request.reason.size() < 24
+        || request.reason.contains(QStringLiteral("刚才"))
+        || request.reason.contains(QStringLiteral("继续"))
+        || request.reason.contains(QStringLiteral("这件事"));
+    const auto now = QDateTime::currentDateTimeUtc();
+    QStringList observations;
+    for (auto it = request.workingMemory.crbegin(); it != request.workingMemory.crend(); ++it) {
+        if ((it->expiresAt.isValid() && it->expiresAt <= now)
+            || it->privacyLevel == PrivacyLevel::Sensitive) continue;
+        if (it->source == QLatin1String("user_task") && query.activeGoals.size() < 3) {
+            query.activeGoals.append(it->summary.left(200));
+        }
+        if (observations.size() < 2) observations.append(it->summary.left(300));
+    }
+    if (needsContext) {
+        QStringList cues = recentTopics + query.activeGoals + observations;
+        if (!query.text.isEmpty()) cues.prepend(query.text);
+        query.text = cues.join(QLatin1Char('\n')).left(2000);
+    }
     query.limit = 8;
     query.includeSensitive = false;
     query.includeInactive = false;
@@ -336,16 +370,16 @@ public:
         contextMessage.role = QStringLiteral("user");
         contextMessage.content = contextBuilder.buildRuntimeContext(
             request.petName, request.reason, QStringLiteral("Idle"), request.triggerTag,
-            request.allowedActions, projection.has_value() ? std::nullopt : request.emotion);
+            request.allowedActions, request.emotion);
 
-        if (m_memoryRepository) {
+        if (m_memoryRepository || !request.workingMemory.isEmpty()) {
             const QStringList forgetQueries = forgetQueriesFor(request);
             
             // Phase 3: Use graph propagation recall through the worker-local
             // cache.  The cache owns a dedicated SQLite connection and is only
             // refreshed when SQLite reports an external commit.
             const WorkerRecallResult recallResult = recallWithCache(
-                memoryQueryFor(request), request.workingMemory);
+                memoryQueryFor(request, projection), request.workingMemory);
             notifyLifecycle(QStringLiteral("memory.load"));
             
             // Filter out forgotten memories (in-memory forget queries from current request)
@@ -371,6 +405,7 @@ public:
             }
             
             for (const RetrievedMemory& memory : memories) {
+                if (memory.entry.id.startsWith(QLatin1String("wm:"))) continue;
                 m_recallActivePool.activate(memory.entry.id,
                     qBound(0.05, memory.score / 3.0, 1.0), QStringLiteral("session"));
             }
@@ -413,7 +448,10 @@ private:
                                        const QList<WorkingMemoryItem>& workingMemory) {
         refreshRecallCache(false);
         WorkerRecallResult result;
-        if (!m_recallStore) return result;
+        if (!m_recallStore) {
+            result.memories = MemoryRetriever().retrieve({}, query, workingMemory);
+            return result;
+        }
         return retrieveWithGraphPropagationForWorker(
             *m_recallStore, m_recallActivePool, m_recallWorkingSet,
             m_recallKeywordIndex, m_semanticService ? m_semanticService->index() : nullptr,

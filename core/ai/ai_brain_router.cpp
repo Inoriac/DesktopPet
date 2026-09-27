@@ -12,6 +12,8 @@
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QUuid>
+#include <QSet>
+#include <algorithm>
 
 #include "configLoader/config_manager.h"
 #include "runtime/agent_runtime_services.h"
@@ -198,7 +200,10 @@ ChatPreparationRequest AIBrain::makeChatPreparationRequest(
     request.triggerTag = triggerTag;
     request.petName = m_petName;
     request.allowedActions = allowedActionsForTrigger(triggerTag);
-    request.conversationMemory = m_memory;
+    // The current user message is already remembered for the next turn; this
+    // request receives it once via reason, alongside the prior conversation.
+    request.conversationMemory = m_activeDialogueResponse
+        ? m_activeDialogueResponse->priorConversation : m_memory;
     request.workingMemory = m_workingMemoryCache.all();
     request.skills = m_skillStore.all();
     request.emotion = currentEmotionSnapshot();
@@ -293,7 +298,11 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
         .arg(toolName, outcome.result.success ? QStringLiteral("成功") : QStringLiteral("失败"));
     WorkingMemoryItem wm;
     wm.summary = summary;
-    wm.content = summary;
+    wm.content = summary + QStringLiteral("：")
+        + m_toolRuntime.sanitizer()->toPayload(outcome.result).left(1200);
+    if (MemoryExtractor::isLikelySensitiveContent(wm.content)) {
+        wm.privacyLevel = PrivacyLevel::Sensitive;
+    }
     wm.tags = {triggerTag, toolName};
     wm.source = QStringLiteral("tool_result");
     wm.importance = 0.2;
@@ -354,25 +363,67 @@ QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
     return messages;
 }
 
+void AIBrain::restoreConversationHistory(const QList<ChatHistoryEntry>& history) {
+    if (m_busy) return;
+    m_memory.clear();
+    m_workingMemoryCache.clear();
+    QSet<QString> seen;
+    QSet<QString> userIds;
+    for (const ChatHistoryEntry& entry : history) {
+        if (entry.status != ChatMessageStatus::Complete || entry.content.trimmed().isEmpty()
+            || (!entry.id.isEmpty() && seen.contains(entry.id))) continue;
+        if (entry.role == QLatin1String("user")) {
+            userIds.insert(entry.id);
+        } else if (entry.role != QLatin1String("assistant")
+                   || (!entry.replyToId.isEmpty() && !userIds.contains(entry.replyToId))) {
+            continue;
+        }
+        if (!entry.id.isEmpty()) seen.insert(entry.id);
+        ChatMessage message;
+        message.role = entry.role;
+        message.content = entry.content;
+        appendToMemory(message);
+    }
+}
+
+void AIBrain::rememberScreenObservation(const QString& observation) {
+    if (observation.trimmed().isEmpty()) return;
+    m_workingMemoryCache.cleanup();
+    WorkingMemoryItem item;
+    item.summary = QStringLiteral("屏幕观察（可能不准确）：") + observation.left(600);
+    item.content = item.summary;
+    if (MemoryExtractor::isLikelySensitiveContent(item.content)) {
+        item.privacyLevel = PrivacyLevel::Sensitive;
+    }
+    item.source = QStringLiteral("screen_observation");
+    item.createdAt = QDateTime::currentDateTimeUtc();
+    item.expiresAt = item.createdAt.addSecs(5 * 60);
+    item.importance = 0.3;
+    m_workingMemoryCache.add(item);
+}
+
 void AIBrain::appendToMemory(const ChatMessage& message) {
     // Tool protocol messages are only valid inside the request that contains
     // their matching assistant tool_calls entry. Cross-request memory keeps
     // natural conversation only, otherwise Gemini rejects orphan results.
-    if (message.role == QLatin1String("tool")
+    if ((message.role != QLatin1String("user") && message.role != QLatin1String("assistant"))
+        || message.content.trimmed().isEmpty()
         || !message.toolCallId.isEmpty() || !message.toolCalls.isEmpty()) {
         return;
     }
-    m_memory.append(message);
+    ChatMessage naturalMessage;
+    naturalMessage.role = message.role;
+    naturalMessage.content = message.content.left(8000);
+    m_memory.append(naturalMessage);
 
     while (m_memory.size() > m_maxMemoryMessages) {
-        int removeIndex = 0;
-        for (int i = 0; i < m_memory.size(); ++i) {
-            const ChatMessage& candidate = m_memory.at(i);
-            if (candidate.role != "system" && candidate.role != "user") {
-                removeIndex = i;
-                break;
-            }
+        // Trim the oldest turn, preserving user/assistant pairs when possible.
+        m_memory.removeFirst();
+        while (!m_memory.isEmpty() && m_memory.first().role != QLatin1String("user")
+               && std::any_of(m_memory.cbegin(), m_memory.cend(), [](const ChatMessage& item) {
+                   return item.role == QLatin1String("user");
+               })) {
+            m_memory.removeFirst();
         }
-        m_memory.removeAt(removeIndex);
     }
 }

@@ -5,6 +5,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include "memory_types.h"
 
 struct WorkingMemoryItem {
     QString id;
@@ -17,6 +18,7 @@ struct WorkingMemoryItem {
     double importance = 0.3;
     double emotionIntensity = 0.0;
     int mentionCount = 1;
+    PrivacyLevel privacyLevel = PrivacyLevel::Personal;
 };
 
 class MemoryStore;

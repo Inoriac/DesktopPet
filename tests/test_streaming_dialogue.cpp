@@ -8,10 +8,13 @@
 #include <memory>
 #include <optional>
 #include <atomic>
+#include <limits>
 
 #include "ai/ai_brain.h"
+#include "ai/chat/profile_chat_history_store.h"
 #include "ai/ai_tool.h"
 #include "ai/event/event_ledger.h"
+#include "ai/identity/sqlite_identity_repository.h"
 #include "ai/model/model_role_registry.h"
 #include "ai/model/model_router.h"
 #include "ai/memory/sqlite_memory_repository.h"
@@ -270,6 +273,20 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void conversation_shouldKeepUserAndAssistantWithoutDuplicatingCurrentMessage();
+    void conversation_shouldRestorePersistedHistoryAndKeepProfileIsolation();
+    void conversation_shouldTrimOldTurnsAndIgnoreFailedHistory();
+    void screenObservation_shouldRemainTemporaryAndAvailableToFollowup();
+    void memoryWrite_shouldSurviveRestartAndFeedProactiveChat();
+    void toolResult_shouldBeAvailableToNextTurn();
+    void proactiveTiming_shouldReflectPersonalityAndMood();
+    void proactiveTiming_shouldRespectBackoffAndBounds();
+    void proactiveTiming_shouldReevaluateLiveStateDuringWait();
+    void proactiveTiming_shouldUseEvolvedPersonality();
+    void proactiveSilence_shouldNotCreateVisibleResponse();
+    void proactiveFailure_shouldNotLeakPartialTextOrShowFallback();
+    void proactiveReply_shouldUseContextAndStartSharedCooldown();
+    void userMessage_shouldPreemptPendingProactiveReply();
     void completeStreamAsync_whenPrimaryCompletes_shouldReturnPrimaryStream();
     void completeStreamAsync_whenPrimaryFailsBeforeVisibleText_shouldUseFallbackWithoutLeakingPrimaryEvents();
     void completeStreamAsync_whenPrimaryFailsAfterVisibleText_shouldInterruptWithoutFallback();
@@ -298,6 +315,383 @@ private slots:
     void stop_whenSideEffectsArePending_shouldNotDeliverCallbacksToDestroyedState();
     void messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillisecondTimerToAdvance();
 };
+
+void StreamingDialogueTests::conversation_shouldKeepUserAndAssistantWithoutDuplicatingCurrentMessage() {
+    FakeStreamingClient client;
+    client.attempts = {
+        {{}, true, textResponse(QStringLiteral("听起来不错。")), {}, false},
+        {{}, true, textResponse(QStringLiteral("我们接着聊。")), {}, false}
+    };
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QVERIFY(initializeBrain(brain, directory));
+    const QString original = QStringLiteral("周六我准备和阿林去海边散步");
+    brain.triggerThink(original, QStringLiteral("user_request"));
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+    brain.triggerThink(QStringLiteral("那件事你怎么看？"), QStringLiteral("user_request"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 2, 2000);
+    const auto messages = client.messageBatches.last();
+    QCOMPARE(std::count_if(messages.cbegin(), messages.cend(), [&](const ChatMessage& item) {
+        return item.role == QLatin1String("user") && item.content == original;
+    }), 1);
+    QCOMPARE(messages.at(1).content, original);
+    QCOMPARE(messages.at(2).content, QStringLiteral("听起来不错。"));
+    QCOMPARE(std::count_if(messages.cbegin(), messages.cend(), [](const ChatMessage& item) {
+        return item.content.contains(QStringLiteral("那件事你怎么看？"));
+    }), 1);
+}
+
+void StreamingDialogueTests::conversation_shouldRestorePersistedHistoryAndKeepProfileIsolation() {
+    QTemporaryDir directory;
+    const QString profile = QStringLiteral("5bb00e6d-937a-4f46-9c87-e3933c078f5a");
+    ProfileChatStoreOptions options;
+    options.appDataRoot = directory.filePath(QStringLiteral("chat-data"));
+    options.profileId = profile;
+    options.registeredProfileIds = {profile};
+    ProfileChatHistoryStore store;
+    QString error;
+    QVERIFY(store.open(options, &error));
+    ChatHistoryEntry user;
+    user.id = QStringLiteral("persisted-user");
+    user.role = QStringLiteral("user");
+    user.content = QStringLiteral("我们计划周六去海边");
+    user.timestamp = QDateTime::currentDateTimeUtc();
+    QVERIFY(store.appendFinal(user, &error));
+    ChatHistoryEntry reply = user;
+    reply.id = QStringLiteral("persisted-assistant");
+    reply.role = QStringLiteral("assistant");
+    reply.replyToId = user.id;
+    reply.content = QStringLiteral("可以先看看天气。" );
+    QVERIFY(store.appendFinal(reply, &error));
+
+    ProfileChatHistoryStore reopened;
+    QVERIFY(reopened.open(options, &error));
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("接着聊海边。")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QVERIFY(initializeBrain(brain, directory));
+    brain.restoreConversationHistory(reopened.load(&error));
+    brain.triggerThink(QStringLiteral("继续刚才的话题"), QStringLiteral("user_request"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    QCOMPARE(client.messageBatches.first().at(1).content, user.content);
+    QCOMPARE(client.messageBatches.first().at(2).content, reply.content);
+    options.profileId = QStringLiteral("f8685597-fc48-4df7-a15a-8ccfde643c52");
+    options.registeredProfileIds.append(options.profileId);
+    ProfileChatHistoryStore other;
+    QVERIFY(other.open(options, &error));
+    QVERIFY(other.load(&error).isEmpty());
+}
+
+void StreamingDialogueTests::conversation_shouldTrimOldTurnsAndIgnoreFailedHistory() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("好的")), {}, false}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QVERIFY(initializeBrain(brain, directory));
+    QList<ChatHistoryEntry> history;
+    for (int i = 0; i < 14; ++i) {
+        ChatHistoryEntry user;
+        user.id = QStringLiteral("user-%1").arg(i);
+        user.role = QStringLiteral("user");
+        user.content = QStringLiteral("话题 %1").arg(i);
+        history.append(user);
+        ChatHistoryEntry assistant = user;
+        assistant.role = QStringLiteral("assistant");
+        assistant.replyToId = user.id;
+        assistant.id = QStringLiteral("reply-%1").arg(i);
+        assistant.content = QStringLiteral("回应 %1").arg(i);
+        history.append(assistant);
+    }
+    auto failed = history.last();
+    failed.id = QStringLiteral("failed");
+    failed.status = ChatMessageStatus::Failed;
+    failed.content = QStringLiteral("不应恢复的错误文本");
+    history.append(failed);
+    history.append(history.first()); // duplicate persisted ID
+    brain.restoreConversationHistory(history);
+    brain.triggerThink(QStringLiteral("我们继续"), QStringLiteral("user_request"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    const auto messages = client.messageBatches.first();
+    QCOMPARE(messages.at(1).role, QStringLiteral("user"));
+    QCOMPARE(messages.at(1).content, QStringLiteral("话题 4"));
+    QCOMPARE(messages.at(20).content, QStringLiteral("回应 13"));
+    for (const auto& message : messages) QVERIFY(!message.content.contains(failed.content));
+}
+
+void StreamingDialogueTests::screenObservation_shouldRemainTemporaryAndAvailableToFollowup() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("你正在画海边。")), {}, false}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QVERIFY(initializeBrain(brain, directory));
+    brain.rememberScreenObservation(QStringLiteral("正在浏览旧的新闻页面"));
+    brain.rememberScreenObservation(QStringLiteral("绘画软件里有一幅蓝色海边插画"));
+    brain.triggerThink(QStringLiteral("我刚才在干什么？"), QStringLiteral("user_request"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    const auto context = client.messageBatches.first().last().content;
+    QVERIFY(context.contains(QStringLiteral("蓝色海边插画")));
+    QVERIFY(!context.contains(QStringLiteral("旧的新闻页面")));
+    for (const auto& entry : brain.memoryStore()->all()) {
+        QVERIFY(!entry.content.contains(QStringLiteral("蓝色海边插画")));
+    }
+}
+
+void StreamingDialogueTests::memoryWrite_shouldSurviveRestartAndFeedProactiveChat() {
+    QTemporaryDir directory;
+    {
+        FakeStreamingClient client;
+        client.attempts = {{{}, true, textResponse(QStringLiteral("记住了。")), {}, false}};
+        AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+        auto bridge = makeRuntimeBridge();
+        AgentRuntimeServices services;
+        QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+        brain.triggerThink(QStringLiteral("我喜欢爵士乐"), QStringLiteral("user_request"));
+        QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+        QTRY_VERIFY_WITH_TIMEOUT(persistedMemoryContains(
+            brain.memoryStore()->databasePath(), QStringLiteral("爵士乐")), 2000);
+    }
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("最近练琴还顺利吗？")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    ChatHistoryEntry recent;
+    recent.id = QStringLiteral("recent-topic");
+    recent.role = QStringLiteral("user");
+    recent.content = QStringLiteral("最近在练习爵士乐");
+    brain.restoreConversationHistory({recent});
+    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    QVERIFY(client.messageBatches.first().last().content.contains(QStringLiteral("用户喜欢爵士乐")));
+}
+
+void StreamingDialogueTests::toolResult_shouldBeAvailableToNextTurn() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("查到的是中午十二点。")), {}, false}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QVERIFY(initializeBrain(brain, directory));
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<CurrentTimeTool>());
+    brain.setToolRegistry(&tools);
+    brain.triggerThink(QStringLiteral("现在几点"), QStringLiteral("user_request"));
+    QVERIFY(!brain.isBusy());
+    QVERIFY(client.messageBatches.isEmpty());
+    brain.triggerThink(QStringLiteral("刚才工具查到了什么？"), QStringLiteral("user_request"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
+    QVERIFY(client.messageBatches.first().last().content.contains(QStringLiteral("12:00")));
+}
+
+void StreamingDialogueTests::proactiveTiming_shouldReflectPersonalityAndMood() {
+    const auto baseline = IdentityBaseline::defaults().traits;
+    auto outgoing = baseline;
+    outgoing[QStringLiteral("initiative")] = 0.9;
+    outgoing[QStringLiteral("sociability")] = 0.9;
+    auto reserved = baseline;
+    reserved[QStringLiteral("initiative")] = 0.1;
+    reserved[QStringLiteral("sociability")] = 0.1;
+    const auto normal = calculateProactiveChatTiming(240000, baseline, {}, 0);
+    const auto eager = calculateProactiveChatTiming(240000, outgoing, {}, 0);
+    const auto quiet = calculateProactiveChatTiming(240000, reserved, {}, 0);
+    QVERIFY(eager.intervalMs < normal.intervalMs);
+    QVERIFY(normal.intervalMs < quiet.intervalMs);
+    QVERIFY(eager.cooldownMs < quiet.cooldownMs);
+
+    EmotionSnapshot mood;
+    mood.active = EmotionType::Joy;
+    mood.moodValence = 0.8;
+    mood.moodArousal = 0.8;
+    mood.intensity = 0.8;
+    QVERIFY(calculateProactiveChatTiming(240000, baseline, mood, 0).intervalMs
+            < normal.intervalMs);
+    mood.moodValence = -0.8;
+    for (EmotionType type : {EmotionType::Sadness, EmotionType::Anger, EmotionType::Fear}) {
+        mood.active = type;
+        QVERIFY(calculateProactiveChatTiming(240000, baseline, mood, 0).intervalMs
+                > normal.intervalMs);
+    }
+    mood.confidence = 0.0;
+    QCOMPARE(calculateProactiveChatTiming(240000, baseline, mood, 0).intervalMs,
+             normal.intervalMs);
+}
+
+void StreamingDialogueTests::proactiveTiming_shouldRespectBackoffAndBounds() {
+    const auto baseline = IdentityBaseline::defaults().traits;
+    const auto first = calculateProactiveChatTiming(240000, baseline, {}, 1);
+    const auto second = calculateProactiveChatTiming(240000, baseline, {}, 2);
+    const auto third = calculateProactiveChatTiming(240000, baseline, {}, 3);
+    QVERIFY(first.intervalMs < second.intervalMs);
+    QVERIFY(second.intervalMs < third.intervalMs);
+    QVERIFY(first.cooldownMs < second.cooldownMs);
+    QCOMPARE(calculateProactiveChatTiming(240000, baseline, {}, 99).intervalMs,
+             third.intervalMs);
+    QCOMPARE(calculateProactiveChatTiming(-1, baseline, {}, 0).intervalMs, 60000);
+    QCOMPARE(calculateProactiveChatTiming(std::numeric_limits<int>::max(), baseline, {}, 3)
+                 .intervalMs, std::numeric_limits<int>::max());
+    auto invalidTraits = baseline;
+    invalidTraits[QStringLiteral("initiative")] = std::numeric_limits<double>::quiet_NaN();
+    EmotionSnapshot invalidEmotion;
+    invalidEmotion.intensity = std::numeric_limits<double>::infinity();
+    QCOMPARE(calculateProactiveChatTiming(240000, invalidTraits, invalidEmotion, 0).intervalMs,
+             calculateProactiveChatTiming(240000, baseline, {}, 0).intervalMs);
+}
+
+void StreamingDialogueTests::proactiveTiming_shouldReevaluateLiveStateDuringWait() {
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    brain.setIdentityBaseline(IdentityBaseline::defaults());
+    EmotionSnapshot mood;
+    mood.updatedAt = QDateTime::currentDateTimeUtc();
+    mood.active = EmotionType::Sadness;
+    mood.moodValence = -0.8;
+    mood.intensity = 0.8;
+    brain.setEmotionSnapshotProvider([&mood]() { return std::optional<EmotionSnapshot>(mood); });
+    const auto sad = brain.proactiveChatTiming(240000);
+    QVERIFY(sad.remainingMs(240000) > 0);
+    mood.active = EmotionType::Joy;
+    mood.moodValence = 0.8;
+    mood.moodArousal = 0.8;
+    const auto happy = brain.proactiveChatTiming(240000);
+    QCOMPARE(happy.remainingMs(240000), 0);
+    QVERIFY(happy.cooldownMs < sad.cooldownMs);
+    auto personality = IdentityBaseline::defaults();
+    personality.traits[QStringLiteral("initiative")] = 0.0;
+    personality.traits[QStringLiteral("sociability")] = 0.0;
+    brain.setIdentityBaseline(personality);
+    QVERIFY(brain.proactiveChatTiming(240000).intervalMs > happy.intervalMs);
+    QVERIFY(client.routeIds.isEmpty()); // Re-evaluation never invokes a model.
+}
+
+void StreamingDialogueTests::proactiveTiming_shouldUseEvolvedPersonality() {
+    QTemporaryDir directory;
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    const auto request = runtimeRequestFor(directory, &brain, bridge.get());
+    QVERIFY(AgentBootstrap::start(services, request).isOk());
+    const int before = brain.proactiveChatTiming(240000).intervalMs;
+    const auto metadata = services.chatPreparationRuntimeMetadata();
+    SqliteIdentityRepository repository;
+    QVERIFY(repository.open(metadata.runtimeDatabasePath).isOk());
+    const auto current = repository.currentPersonality(metadata.profileId);
+    QVERIFY(current.isOk());
+    PersonalitySnapshot state = current.value().value_or(PersonalitySnapshot{});
+    state.stateId = QStringLiteral("pacing-evolved");
+    state.profileId = metadata.profileId;
+    ++state.version;
+    state.baseline = request.identityBaseline;
+    state.tendencies.insert(QStringLiteral("initiative"), 0.3);
+    state.tendencies.insert(QStringLiteral("sociability"), 0.3);
+    state.createdAt = state.effectiveAt = QDateTime::currentDateTimeUtc();
+    auto transaction = services.unitOfWorkFactory()->begin();
+    QVERIFY(transaction.isOk());
+    auto work = transaction.takeValue();
+    QVERIFY(repository.appendPersonalityState(*work, state, {}).isOk());
+    QVERIFY(work->commit().isOk());
+    work.reset();
+    QVERIFY(brain.proactiveChatTiming(240000).intervalMs < before);
+    QVERIFY(client.routeIds.isEmpty());
+}
+
+void StreamingDialogueTests::proactiveSilence_shouldNotCreateVisibleResponse() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("[[SI")), delta(QStringLiteral("LENT]]"))},
+                        true, textResponse(QStringLiteral("[[SILENT]]")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy thinking(&brain, &AIBrain::thinkingStarted);
+    QSignalSpy deltas(&brain, &AIBrain::assistantResponseDelta);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+    QCOMPARE(started.size(), 0);
+    QCOMPARE(thinking.size(), 0);
+    QCOMPARE(deltas.size(), 0);
+    QCOMPARE(replies.size(), 0);
+    QVERIFY(brain.canStartProactiveChat());
+}
+
+void StreamingDialogueTests::proactiveFailure_shouldNotLeakPartialTextOrShowFallback() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("还没完成的主动回复"))},
+                        false, {}, QStringLiteral("network failure"), false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy thinkingFinished(&brain, &AIBrain::thinkingFinished);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+    QCOMPARE(started.size(), 0);
+    QCOMPARE(thinkingFinished.size(), 0);
+    QCOMPARE(replies.size(), 0);
+}
+
+void StreamingDialogueTests::proactiveReply_shouldUseContextAndStartSharedCooldown() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("这个配色很温暖。"))},
+                        true, textResponse(QStringLiteral("这个配色很温暖。")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    QSignalSpy replies(&brain, &AIBrain::proactiveResponseReady);
+    QSignalSpy spoken(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("屏幕观察：用户正在画一幅暖色插画"),
+                       QStringLiteral("proactive_chat"), {}, QStringLiteral("screenChat"));
+    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 2000);
+    QCOMPARE(started.size(), 1);
+    QCOMPARE(replies.size(), 1);
+    QCOMPARE(spoken.first().at(1).toString(), QStringLiteral("screenChat"));
+    QVERIFY(!brain.canStartProactiveChat());
+    bool hasObservation = false;
+    for (const ChatMessage& message : client.messageBatches.first()) {
+        hasObservation |= message.content.contains(QStringLiteral("暖色插画"));
+    }
+    QVERIFY(hasObservation);
+    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    QVERIFY(!brain.isBusy());
+    QCOMPARE(client.routeIds.size(), 1);
+}
+
+void StreamingDialogueTests::userMessage_shouldPreemptPendingProactiveReply() {
+    FakeStreamingClient client;
+    client.attempts = {
+        {{delta(QStringLiteral("过时的主动搭话"))}, true,
+         textResponse(QStringLiteral("过时的主动搭话")), {}, true},
+        {{delta(QStringLiteral("先回答你的问题。"))}, true,
+         textResponse(QStringLiteral("先回答你的问题。")), {}, false}
+    };
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
+    QVERIFY(brain.canAcceptUserMessage());
+    client.publishPending(delta(QStringLiteral("未展示的片段")));
+    QCOMPARE(started.size(), 0);
+    const quint64 revision = brain.interactionRevision();
+    brain.triggerThink(QStringLiteral("请分析一下这个复杂问题"),
+                       QStringLiteral("user_request"), QStringLiteral("user-priority"));
+    QVERIFY(client.handles.first()->isCancelled());
+    QVERIFY(brain.interactionRevision() > revision);
+    QTRY_COMPARE_WITH_TIMEOUT(replies.size(), 1, 2000);
+    QCOMPARE(replies.first().first().toString(), QStringLiteral("先回答你的问题。"));
+    client.finishPendingEvenIfCancelled();
+    QCOMPARE(replies.size(), 1);
+    QCOMPARE(started.size(), 1);
+    QVERIFY(!brain.canStartProactiveChat());
+}
 
 void StreamingDialogueTests::completeStreamAsync_whenPrimaryCompletes_shouldReturnPrimaryStream() {
     ModelRoleRegistry registry({dialogueRoutes({route(QStringLiteral("primary"))})});

@@ -162,6 +162,7 @@ PetWindow::PetWindow(PetProfile profile,
     }
 
     aiBrain = std::make_unique<AIBrain>(this);
+    aiBrain->restoreConversationHistory(conversationModel->messages());
     aiBrain->setEmotionSnapshotProvider([this]() -> std::optional<EmotionSnapshot> {
         if (!emotionEngine || !emotionEngine->isEnabled()) {
             return std::nullopt;
@@ -198,14 +199,14 @@ PetWindow::PetWindow(PetProfile profile,
                     assistantId, ChatMessageStatus::Complete);
                 showBubbleMessage(errorMessage, 4000);
             });
-    connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content) {
+    connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content, const QString& voiceSource) {
         qDebug() << "[AIBrain] assistant response:" << content;
         thinkingHadAssistantResponse = true;
         if (thinkingBubbleActive) {
             stopThinkingBubble(true);
         }
         showBubbleMessageAnimated(content);
-        speakPetReply(content, QStringLiteral("assistant"));
+        speakPetReply(content, voiceSource);
     });
     connect(aiBrain.get(), &AIBrain::proactiveResponseReady, this, [this](const QString& content) {
         qDebug() << "[AIBrain] proactive response:" << content;
@@ -455,7 +456,7 @@ void PetWindow::setupLauncherChatBridge() {
             {QStringLiteral("petName"), modelName},
             {QStringLiteral("profileId"), profileMigration.profileId},
             {QStringLiteral("aiEnabled"), aiBrain && aiBrain->isEnabled()},
-            {QStringLiteral("busy"), aiBrain && aiBrain->isBusy()},
+            {QStringLiteral("busy"), aiBrain && !aiBrain->canAcceptUserMessage()},
             {QStringLiteral("messages"), messageArray},
             {QStringLiteral("statistics"), launcherChatStatistics(modelName)}
         };
@@ -478,7 +479,7 @@ void PetWindow::setupLauncherChatBridge() {
                 QStringLiteral("AI_DISABLED"),
                 QStringLiteral("AI 当前没有启用。")));
         }
-        if (aiBrain->isBusy()) {
+        if (!aiBrain->canAcceptUserMessage()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_BUSY"),
                 QStringLiteral("上一条消息仍在处理中。")));
@@ -498,7 +499,7 @@ void PetWindow::setupLauncherChatBridge() {
     callbacks.retryMessage = [this](const QString& assistantMessageId)
         -> Result<QJsonObject, DomainError> {
         if (!conversationModel || !aiBrain || !aiBrain->isEnabled()
-            || aiBrain->isBusy()) {
+            || !aiBrain->canAcceptUserMessage()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_BUSY"),
                 QStringLiteral("当前无法重新生成回复。")));

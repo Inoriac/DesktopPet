@@ -22,9 +22,18 @@ void WorkingMemoryCache::add(const WorkingMemoryItem& item) {
     }
 
     for (WorkingMemoryItem& existing : m_items) {
+        if (stored.source == QLatin1String("screen_observation")
+            && existing.source == stored.source) {
+            existing = stored;
+            return;
+        }
         if (!existing.summary.isEmpty()
             && existing.summary.compare(stored.summary, Qt::CaseInsensitive) == 0) {
             existing.mentionCount += 1;
+            existing.content = stored.content;
+            existing.tags = stored.tags;
+            existing.privacyLevel = stored.privacyLevel;
+            existing.createdAt = stored.createdAt;
             existing.expiresAt = stored.expiresAt;
             if (stored.importance > existing.importance) {
                 existing.importance = stored.importance;
@@ -92,7 +101,7 @@ void WorkingMemoryCache::consolidateToStore(const WorkingMemoryItem& item, Memor
     MemoryEntry entry;
     entry.type = MemoryType::Episodic;
     entry.status = MemoryStatus::Active;
-    entry.privacyLevel = PrivacyLevel::Personal;
+    entry.privacyLevel = item.privacyLevel;
     entry.key = QStringLiteral("consolidated:%1").arg(item.id.left(8));
     entry.summary = item.summary;
     entry.content = item.content;

@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QHash>
 #include <QTimer>
+#include <QElapsedTimer>
 #include <QList>
 #include <QStringList>
 #include <atomic>
@@ -20,6 +21,7 @@
 #include "agent/agent_session.h"
 #include "ai_call_logger.h"
 #include "chat/chat_side_effect_queue.h"
+#include "chat/chat_types.h"
 #include "domain/domain_result.h"
 #include "context_builder.h"
 #include "emotion/emotion_types.h"
@@ -32,6 +34,7 @@
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
 #include "scheduler/daydream_trigger_policy.h"
+#include "scheduler/proactive_chat_policy.h"
 #include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
 #include "model/model_router.h"
@@ -87,6 +90,10 @@ public:
     void setThinkIntervalMs(int ms);
 
     bool isBusy() const { return m_busy; }
+    bool canStartProactiveChat() const;
+    ProactiveChatTiming proactiveChatTiming(int baseIntervalMs) const;
+    bool canAcceptUserMessage() const;
+    quint64 interactionRevision() const { return m_interactionRevision; }
     int userIdleSeconds() const;
     ModelRoleRegistry* modelRoleRegistry() { return &m_modelRoleRegistry; }
     ModelRouter* modelRouter() { return &m_modelRouter; }
@@ -100,11 +107,14 @@ public:
 
     void triggerThink(const QString& reason = "manual",
                       const QString& triggerTag = "manual",
-                      const QString& replyToId = {});
+                      const QString& replyToId = {},
+                      const QString& voiceSource = {});
     void stopCurrentResponse();
     void onUserInteraction(const QString& eventName, const QString& detail = QString());
 
     void clearMemory();
+    void restoreConversationHistory(const QList<ChatHistoryEntry>& history);
+    void rememberScreenObservation(const QString& observation);
     void resolveToolConfirmation(const QString& requestId, bool approved);
     MemoryStore* memoryStore() { return &m_memoryStore; }
     const MemoryStore* memoryStore() const { return &m_memoryStore; }
@@ -116,7 +126,7 @@ signals:
     void thinkingFinished(bool success, const QString& errorMessage);
     void thinkRequestRejected(const QString& replyToId,
                               const QString& errorMessage);
-    void assistantResponseReady(const QString& content);
+    void assistantResponseReady(const QString& content, const QString& voiceSource);
     void proactiveResponseReady(const QString& content);
     void assistantResponseStarted(const QString& messageId,
                                   const QString& replyToId,
@@ -217,6 +227,7 @@ private:
     bool canContinueDaydream() const;
     void armDaydreamTimer();
     AiTriggerConfig triggerConfigForTag(const QString& triggerTag) const;
+    void armProactiveChatCheck();
     QStringList allowedActionsForTrigger(const QString& triggerTag) const;
     bool isToolCallAllowed(const QString& triggerTag,
                            const LlmToolCall& call,
@@ -278,6 +289,12 @@ private:
     bool m_busy = false;
     bool m_idleRetryScheduled = false;
     quint64 m_requestGeneration = 0;
+    quint64 m_interactionRevision = 0;
+    QElapsedTimer m_conversationCooldown;
+    bool m_cooldownAfterProactive = false;
+    int m_unansweredProactiveChats = 0;
+    QElapsedTimer m_proactiveOpportunityClock;
+    int m_proactiveBaseIntervalMs = 180000;
 
     struct ActiveDialogueResponse {
         QString messageId;
@@ -285,9 +302,11 @@ private:
         QString triggerTag;
         QString sessionId;
         QString reason;
+        QString voiceSource;
         QString preparationRequestId;
         QStringList reinforcementIds;
         QString visibleContent;
+        QList<ChatMessage> priorConversation;
         ChatMessageStatus status = ChatMessageStatus::Pending;
         ChatActivityStage stage = ChatActivityStage::WaitingForModel;
         quint64 generation = 0;
@@ -297,6 +316,7 @@ private:
         qint64 preparationMs = 0;
         std::shared_ptr<LlmRequestHandle> requestHandle;
         bool terminal = false;
+        bool announced = false;
     };
     std::optional<ActiveDialogueResponse> m_activeDialogueResponse;
 

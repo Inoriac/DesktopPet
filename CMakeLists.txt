@@ -961,6 +961,8 @@ add_desktop_pet_cpp_test(model_router_tests ModelRouterTests
 add_desktop_pet_cpp_test(streaming_dialogue_tests StreamingDialogueTests
     SOURCES
         tests/test_streaming_dialogue.cpp
+        core/ai/chat/chat_types.cpp
+        core/ai/chat/profile_chat_history_store.cpp
         ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}

@@ -104,6 +104,7 @@ private:
     void setupScreenChat();
     void updateScreenChatSchedule();
     void scheduleNextScreenChat();
+    void checkScreenChatOpportunity();
     void triggerScreenChatNow(const QString& reason);
     void triggerScreenChat(bool debugSaveScreenshotOnly, const QString& reason);
     QString captureDesktopScreenshot(bool debugKeepCopy, QString* debugCopyPath = nullptr) const;
@@ -226,12 +227,15 @@ private:
     QStringList m_allowedRoots;  // 文件工具允许的根目录
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;
+    QElapsedTimer screenChatOpportunityClock;
+    int screenChatBaseIntervalMs = 480000;
     QTimer* bubbleHideTimer = nullptr;
     QTimer* thinkingBubbleTimer = nullptr;
     QTimer* typewriterBubbleTimer = nullptr;
     QPointer<LiquidGlassChatBubble> outputBubble;
     QPointer<LiquidGlassChatBubble> inputBubble;
     bool screenChatBusy = false;
+    QString lastScreenObservation;
     bool thinkingBubbleActive = false;
     bool thinkingHadAssistantResponse = false;
     bool streamingBubbleHasText = false;

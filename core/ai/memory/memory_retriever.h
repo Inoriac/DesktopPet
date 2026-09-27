@@ -4,6 +4,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QMap>
 
 #include "memory_types.h"
 #include "memory_relation.h"
@@ -28,6 +29,9 @@ struct MemoryQuery {
     bool includeInactive = false;
     EmotionType currentEmotion = EmotionType::Neutral;
     double currentEmotionIntensity = 0.0;
+    QString sessionTopic;
+    QStringList activeGoals;
+    QMap<QString, double> personality;
 };
 
 struct RetrievedMemory {
@@ -53,6 +57,7 @@ struct ActivationChannels {
     const MemoryKeywordIndex* keywordIndex = nullptr;
     EmbeddingIndex* embeddingIndex = nullptr;
     AssociativeActivationEngine* graphPropagation = nullptr;  // Phase 3
+    const QList<WorkingMemoryItem>* workingMemory = nullptr;
 };
 
 class MemoryRetriever {

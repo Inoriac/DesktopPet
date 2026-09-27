@@ -80,6 +80,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
         MemoryEntry synthetic;
         synthetic.id = QStringLiteral("wm:") + item.id;
         synthetic.type = MemoryType::Working;
+        synthetic.privacyLevel = item.privacyLevel;
+        if (!query.includeSensitive && item.privacyLevel == PrivacyLevel::Sensitive) continue;
         synthetic.status = MemoryStatus::Active;
         synthetic.summary = item.summary;
         synthetic.content = item.content;
@@ -313,12 +315,17 @@ QStringList MemoryRetriever::formatForContext(const QList<RetrievedMemory>& memo
     int index = 1;
     for (const RetrievedMemory& memory : memories) {
         const MemoryEntry& entry = memory.entry;
-        const QString summary = bestSummary(entry);
+        const QString summary = entry.type == MemoryType::Working && !entry.content.trimmed().isEmpty()
+            ? entry.content.trimmed().left(1600) : bestSummary(entry);
         if (summary.isEmpty()) continue;
 
         QStringList labels;
         labels.append(memoryTypeToString(entry.type));
         labels.append(confidenceLabel(entry.confidence));
+        if (entry.type == MemoryType::Working) {
+            labels.append(QStringLiteral("临时观察/非用户声明"));
+            if (entry.createdAt.isValid()) labels.append(entry.createdAt.toLocalTime().toString(Qt::ISODate));
+        }
         if (!entry.scope.trimmed().isEmpty()) {
             labels.append(entry.scope.trimmed());
         }
@@ -738,6 +745,10 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     QSet<QString> exploratoryIds;
 
     if (channels.graphPropagation) {
+        if (!query.personality.isEmpty()) {
+            channels.graphPropagation->setPersonality(
+                {cue.openness, cue.sociability, cue.initiative});
+        }
         // Build seed activation map from Phase 2 seeds
         QHash<QString, double> propagationSeeds;
         for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
@@ -794,6 +805,39 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         candidates.append(candidate);
     }
 
+    // Temporary observations and tool results compete in the same bounded ranking.
+    // They never enter SQLite, the persistent activation pool or reinforcement.
+    if (channels.workingMemory) {
+        const auto now = QDateTime::currentDateTimeUtc();
+        int taken = 0;
+        for (auto it = channels.workingMemory->crbegin();
+             it != channels.workingMemory->crend() && taken < 8; ++it) {
+            const WorkingMemoryItem& item = *it;
+            if (item.summary.trimmed().isEmpty()
+                || (item.expiresAt.isValid() && item.expiresAt <= now)) continue;
+            CandidateMemory candidate;
+            auto& entry = candidate.entry;
+            entry.id = QStringLiteral("wm:") + (item.id.isEmpty()
+                ? QString::number(taken) : item.id);
+            entry.type = MemoryType::Working;
+            entry.status = MemoryStatus::Active;
+            entry.privacyLevel = item.privacyLevel;
+            entry.summary = item.summary;
+            entry.content = item.content;
+            entry.tags = item.tags;
+            entry.source = item.source;
+            entry.importance = item.importance;
+            entry.strength = 0.6;
+            entry.confidence = item.source == QLatin1String("screen_observation") ? 0.5 : 0.9;
+            entry.createdAt = entry.updatedAt = item.createdAt;
+            if (!passesFilters(entry, query)) continue;
+            candidate.sourceChannels = {QStringLiteral("working_memory")};
+            candidate.runtimeActivation = 1.0;
+            candidates.append(candidate);
+            ++taken;
+        }
+    }
+
     // ---- 阶段 5：ACT-R 精排（含 G_i 图谱分量）----
     ACTRRanker ranker;
     const QList<CandidateMemory> ranked = ranker.select(candidates, cue, limit);
@@ -829,7 +873,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         }
         
         result.append(memory);
-        reinforcementIds.append(candidate.entry.id);
+        if (!candidate.entry.id.startsWith(QLatin1String("wm:"))) {
+            reinforcementIds.append(candidate.entry.id);
+        }
     }
 
     if (!skipReinforcement && !reinforcementIds.isEmpty()) {
@@ -857,8 +903,20 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     channels.keywordIndex = &keywordIndex;
     channels.embeddingIndex = embeddingIndex;
     channels.graphPropagation = &graphEngine;
+    channels.workingMemory = &workingMemory;
 
     MemoryCueExtractor cueExtractor;
+    cueExtractor.setSessionContext(query.sessionTopic, query.activeGoals);
+    cueExtractor.setEmotionContext(query.currentEmotion, query.currentEmotionIntensity);
+    if (!query.personality.isEmpty()) {
+        const auto trait = [&query](const QString& key, double fallback) {
+            const double value = query.personality.value(key, fallback);
+            return std::isfinite(value) ? std::clamp(value, 0.0, 1.0) : fallback;
+        };
+        cueExtractor.setPersonalityParameters(
+            trait(QStringLiteral("openness"), 0.6), trait(QStringLiteral("sociability"), 0.45),
+            trait(QStringLiteral("initiative"), 0.35));
+    }
     MemoryRetriever retriever;
     const QList<RetrievedMemory> memories = retriever.retrieveWithGraphPropagation(
         store, query, channels, &cueExtractor, /*skipReinforcement=*/true);
@@ -869,7 +927,6 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
             result.reinforcementIds.append(memory.entry.id);
         }
     }
-    Q_UNUSED(workingMemory);
     return result;
 }
 

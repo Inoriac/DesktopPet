@@ -25,6 +25,9 @@
 #include "ai/memory/memory_relation.h"
 #include "ai/memory/memory_retriever.h"
 #include "ai/memory/memory_store.h"
+#include "ai/memory/active_memory_pool.h"
+#include "ai/memory/hippocampus_working_set.h"
+#include "ai/memory/memory_keyword_index.h"
 
 namespace {
 
@@ -127,6 +130,9 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems();
+    void proactiveRecall_shouldUseRecentTopicAndEmotionAlongsidePersona();
+    void personality_shouldChangeAssociationStrengthInWorkerRecall();
     void wholeTagRecallFindsOldMemoryWithoutEmbeddings();
     void semanticRecallFindsOldMemoryAndRejectsStalePrivateHits();
     void activePoolSurvivesWorkerRestartAndClear();
@@ -148,6 +154,120 @@ private slots:
     void resources_whenExecutorIsDestroyed_shouldOpenLoadAndCloseOnWorkerThread();
     void retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation();
 };
+
+void ChatPreparationExecutorTests::workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(environmentFor(directory).memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environmentFor(directory)).isOk());
+    auto request = requestFor(QStringLiteral("刚才查询的结果是什么？"));
+    WorkingMemoryItem item;
+    item.id = QStringLiteral("tool-weather");
+    item.source = QStringLiteral("tool_result");
+    item.summary = QStringLiteral("天气查询成功");
+    item.content = QStringLiteral("天气查询成功：杭州，晴，23摄氏度");
+    item.createdAt = QDateTime::currentDateTimeUtc();
+    item.expiresAt = item.createdAt.addSecs(900);
+    request.workingMemory.append(item);
+    item.id = QStringLiteral("expired");
+    item.content = item.summary = QStringLiteral("不应看到的过期结果");
+    item.expiresAt = item.createdAt.addSecs(-1);
+    request.workingMemory.append(item);
+    item.id = QStringLiteral("private");
+    item.content = item.summary = QStringLiteral("不应看到的敏感结果");
+    item.expiresAt = item.createdAt.addSecs(900);
+    item.privacyLevel = PrivacyLevel::Sensitive;
+    request.workingMemory.append(item);
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, request, &result));
+    const auto context = result.messages.last().content;
+    QVERIFY(context.contains(QStringLiteral("23摄氏度")));
+    QVERIFY(!context.contains(QStringLiteral("不应看到")));
+    QVERIFY(result.reinforcementIds.isEmpty());
+    QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
+    QVERIFY(store.all().isEmpty());
+}
+
+void ChatPreparationExecutorTests::proactiveRecall_shouldUseRecentTopicAndEmotionAlongsidePersona() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto memory = matchingMemory();
+    memory.tags = {QStringLiteral("爵士乐")};
+    store.addEntry(memory);
+    SqliteEventRepository schema;
+    QVERIFY(schema.open(environment.runtimeDatabasePath).isOk());
+    schema.close();
+    SqliteIdentityRepository identity;
+    QVERIFY(identity.open(environment.runtimeDatabasePath).isOk());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    auto request = requestFor(QStringLiteral("proactive_chat_tick"));
+    request.triggerTag = QStringLiteral("proactive_chat");
+    request.runtimeMetadata.runtimeDatabasePath = environment.runtimeDatabasePath;
+    ChatMessage prior;
+    prior.role = QStringLiteral("user");
+    prior.content = QStringLiteral("最近在练习爵士乐");
+    request.conversationMemory = {prior};
+    EmotionSnapshot mood;
+    mood.active = EmotionType::Joy;
+    mood.moodValence = 0.8;
+    mood.intensity = 0.7;
+    mood.updatedAt = QDateTime::currentDateTimeUtc();
+    request.emotion = mood;
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, request, &result));
+    QVERIFY(result.runtimeSnapshot.has_value());
+    QVERIFY(result.messages.last().content.contains(QStringLiteral("主人喜欢爵士乐")));
+    QVERIFY(result.messages.last().content.contains(QStringLiteral("active_emotion=joy")));
+    QVERIFY(result.reinforcementIds.contains(memory.id));
+}
+
+void ChatPreparationExecutorTests::personality_shouldChangeAssociationStrengthInWorkerRecall() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(environmentFor(directory).memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    const auto source = store.addEntry(matchingMemory());
+    MemoryEntry neighbor = matchingMemory();
+    neighbor.id = QStringLiteral("association-neighbor");
+    neighbor.type = MemoryType::Semantic;
+    neighbor.summary = neighbor.content = QStringLiteral("海边黄昏的经历");
+    neighbor = store.addEntry(neighbor);
+    MemoryRelation relation;
+    relation.id = QStringLiteral("jazz-seaside");
+    relation.fromMemoryId = source.id;
+    relation.toMemoryId = neighbor.id;
+    relation.type = MemoryRelationType::Related;
+    QVERIFY(store.relationGraph().addRelation(relation));
+    ActiveMemoryPool pool;
+    HippocampusWorkingSet workingSet(&store);
+    workingSet.refresh();
+    MemoryKeywordIndex index;
+    index.rebuild(store.all());
+    MemoryQuery query;
+    query.text = QStringLiteral("爵士乐");
+    query.personality = {{QStringLiteral("openness"), 0.0},
+                         {QStringLiteral("sociability"), 0.0},
+                         {QStringLiteral("initiative"), 0.35}};
+    const auto quiet = retrieveWithGraphPropagationForWorker(
+        store, pool, workingSet, index, nullptr, query);
+    query.personality[QStringLiteral("sociability")] = 1.0;
+    const auto outgoing = retrieveWithGraphPropagationForWorker(
+        store, pool, workingSet, index, nullptr, query);
+    const auto score = [&neighbor](const WorkerRecallResult& result) {
+        for (const auto& memory : result.memories) {
+            if (memory.entry.id == neighbor.id) return memory.score;
+        }
+        return -1.0;
+    };
+    QVERIFY(score(quiet) >= 0.0);
+    QVERIFY(score(outgoing) > score(quiet));
+}
 
 void ChatPreparationExecutorTests::
 start_whenEnvironmentIsValid_shouldCreateWorkerOwnedResources() {
