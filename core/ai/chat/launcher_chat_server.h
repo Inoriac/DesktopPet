@@ -39,6 +39,7 @@ public:
         int sessionTtlSeconds);
     void stop();
     bool isListening() const;
+    bool hasAuthenticatedClient() const;
 
     void notifyStateChanged();
     void requestOpenInLauncher();

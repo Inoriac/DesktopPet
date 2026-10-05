@@ -618,6 +618,10 @@ if(Python3_Interpreter_FOUND)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_chat.py)
     set_tests_properties(LauncherChatTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME LauncherChatTransportTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_chat_transport.py)
+    set_tests_properties(LauncherChatTransportTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()
 
 # ---- Profile identity and legacy memory migration tests ----

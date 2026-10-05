@@ -107,6 +107,7 @@ void AIBrain::thinkInternal(const QString& reason,
                             int toolRound,
                             const QList<ChatMessage>& workingMessages) {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    if (suppressMutedAutomaticResponse()) return;
     const bool proactive = triggerTag == QLatin1String("proactive_chat");
     const QJsonArray tools = m_toolRegistry && !proactive
         ? m_toolRegistry->allToolSchemas() : QJsonArray{};
@@ -176,6 +177,7 @@ void AIBrain::thinkInternal(const QString& reason,
         modelRequest,
         [this, isCurrent, roundVisibleContent, proactive](const LlmStreamEvent& event) {
             if (!isCurrent()) return;
+            if (suppressMutedAutomaticResponse()) return;
             if (event.type == LlmStreamEventType::StageChanged) {
                 publishActiveStage(event.stage);
             } else if (event.type == LlmStreamEventType::TextDelta
@@ -224,6 +226,11 @@ void AIBrain::thinkInternal(const QString& reason,
                 }
                 return;
             }
+            if (suppressMutedAutomaticResponse()) {
+                enqueueCallLog(ChatSideEffectType::ResponseLog, requestId,
+                               sessionId, requestGeneration, responseLog);
+                return;
+            }
 
             QJsonObject modelEvent{
                 {QStringLiteral("role"), QStringLiteral("dialogue")},
@@ -256,9 +263,6 @@ void AIBrain::thinkInternal(const QString& reason,
                     ? ChatMessageStatus::Interrupted
                     : ChatMessageStatus::Failed;
                 finishActiveResponse(status, error, responseLog);
-                if (m_running && !proactive) {
-                    scheduleTrigger(triggerTag);
-                }
                 return;
             }
 
@@ -293,9 +297,6 @@ void AIBrain::thinkInternal(const QString& reason,
                 }
                 publishActiveStage(ChatActivityStage::Finalizing);
                 finishActiveResponse(ChatMessageStatus::Complete, {}, responseLog);
-                if (m_running) {
-                    scheduleTrigger(triggerTag);
-                }
                 return;
             }
 
@@ -308,6 +309,7 @@ void AIBrain::thinkInternal(const QString& reason,
             publishActiveStage(ChatActivityStage::PreparingTool);
 
             for (const LlmToolCall& call : response.toolCalls) {
+                if (!isCurrent() || suppressMutedAutomaticResponse()) return;
                 QJsonObject functionObj;
                 functionObj["name"] = call.name;
                 functionObj["arguments"] = QString::fromUtf8(QJsonDocument(call.arguments).toJson(QJsonDocument::Compact));
@@ -368,6 +370,7 @@ void AIBrain::thinkInternal(const QString& reason,
                                 || m_activeDialogueResponse->messageId != activeMessageId) {
                                 return;
                             }
+                            if (suppressMutedAutomaticResponse()) return;
                             const ToolExecutionOutcome resolved =
                                 m_toolRuntime.resolveConfirmation(confirmationId, approved);
                             const QString resolvedPayload =

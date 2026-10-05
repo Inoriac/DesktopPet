@@ -178,9 +178,10 @@ PetWindow::PetWindow(PetProfile profile,
         const bool wasThinkingBubbleVisible = thinkingBubbleActive;
         if (wasThinkingBubbleVisible && !thinkingHadAssistantResponse) {
             stopThinkingBubble(true);
-            const QString fallbackText = success
-                ? QStringLiteral("我还没想好怎么说呢。")
-                : QStringLiteral("我刚刚有点卡住了，等会儿再试试。") ;
+            if (!success) {
+                return;
+            }
+            const QString fallbackText = QStringLiteral("我还没想好怎么说呢。");
             showBubbleMessage(fallbackText, 3200);
             speakPetReply(fallbackText, QStringLiteral("fallback"));
             return;
@@ -194,10 +195,9 @@ PetWindow::PetWindow(PetProfile profile,
                 const QString assistantId =
                     QUuid::createUuid().toString(QUuid::WithoutBraces);
                 conversationModel->beginAssistantMessage(assistantId, replyToId);
-                conversationModel->appendAssistantDelta(assistantId, errorMessage);
                 conversationModel->finishAssistantMessage(
-                    assistantId, ChatMessageStatus::Complete);
-                showBubbleMessage(errorMessage, 4000);
+                    assistantId, ChatMessageStatus::Failed, errorMessage);
+                showChatErrorNotification();
             });
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content, const QString& voiceSource) {
         qDebug() << "[AIBrain] assistant response:" << content;
@@ -241,6 +241,10 @@ PetWindow::PetWindow(PetProfile profile,
                    const QString& errorMessage) {
                 conversationModel->finishAssistantMessage(
                     messageId, status, errorMessage);
+                if (status == ChatMessageStatus::Failed
+                    || status == ChatMessageStatus::Interrupted) {
+                    showChatErrorNotification();
+                }
             });
     connect(aiBrain.get(), &AIBrain::toolExecuted, this, [this](const QString& toolName, bool success, const QString& payload) {
         qDebug() << "[AIBrain] tool executed:" << toolName << "success:" << success << "payload:" << payload;
@@ -626,6 +630,20 @@ void PetWindow::closeEvent(QCloseEvent *event) {
     unloadModel();
     emit aboutToClose();
     event->accept();
+}
+
+void PetWindow::showChatErrorNotification() {
+    // Launcher observes failed message metadata and owns its own notification.
+    if (launcherChatServer && launcherChatServer->hasAuthenticatedClient()) return;
+    if (chatErrorNotification) return;
+    auto* notice = new QMessageBox(
+        QMessageBox::Warning, QStringLiteral("聊天遇到问题"),
+        QStringLiteral("模型服务暂时不可用，请检查网络或模型配置后重试。"),
+        QMessageBox::Ok, this);
+    chatErrorNotification = notice;
+    notice->setAttribute(Qt::WA_DeleteOnClose);
+    notice->setWindowModality(Qt::NonModal);
+    notice->show();
 }
 
 void PetWindow::setupWindow() {

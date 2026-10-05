@@ -122,6 +122,17 @@ bool LauncherChatServer::isListening() const {
     return m_server && m_server->isListening();
 }
 
+bool LauncherChatServer::hasAuthenticatedClient() const {
+    const QDateTime now = QDateTime::currentDateTimeUtc();
+    for (auto it = m_connections.cbegin(); it != m_connections.cend(); ++it) {
+        if (it.key()->state() == QLocalSocket::ConnectedState
+            && !it->sessionToken.isEmpty() && it->expiresAt > now) {
+            return true;
+        }
+    }
+    return false;
+}
+
 void LauncherChatServer::notifyStateChanged() {
     ++m_revision;
 }

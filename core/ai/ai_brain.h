@@ -154,6 +154,9 @@ signals:
 private:
     QString m_proactiveStatePath;
     bool m_manualDaydream = false;
+    static bool isAutomaticTrigger(const QString& triggerTag);
+    bool automaticTextAllowed() const;
+    bool suppressMutedAutomaticResponse();
     void thinkInternal(const QString& reason,
                       const QString& triggerTag,
                       const QString& sessionId,

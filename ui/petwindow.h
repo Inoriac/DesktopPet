@@ -27,6 +27,7 @@
 class ChatConversationModel;
 class LauncherChatServer;
 class LiquidGlassChatBubble;
+class QMessageBox;
 
 class RenderViewport;
 class BehaviorManager;
@@ -112,6 +113,8 @@ private:
                               const QString& reason,
                               bool debugSaveScreenshotOnly);
     bool showBubbleMessage(const QString& message, int durationMs = -1);
+    void showChatErrorNotification();
+    QPointer<QMessageBox> chatErrorNotification;
     bool showToolBubbleMessage(const QString& message, int durationMs);
     void showBubbleMessageNow(const QString& message, int durationMs = -1, bool forceRefreshGlass = true);
     void showBubbleMessageAnimated(const QString& message, int durationMs = -1);

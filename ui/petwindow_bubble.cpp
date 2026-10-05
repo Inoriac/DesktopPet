@@ -221,6 +221,14 @@ void PetWindow::finishStreamingBubble(const QString& messageId,
     if (inputBubble) inputBubble->setInputSubmissionEnabled(true);
 
     if (outputBubble) {
+        if (status == ChatMessageStatus::Failed
+            || status == ChatMessageStatus::Interrupted) {
+            // Errors are shown by the notification surface, never as pet dialogue.
+            outputBubble->setActivityText({});
+            if (bubblePlaybackController->pageCount() == 0) outputBubble->hide();
+            scheduleFinishedBubbleHide();
+            return;
+        }
         if (bubblePlaybackController->pageCount() == 0) {
             switch (status) {
             case ChatMessageStatus::Stopped:

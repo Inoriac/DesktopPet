@@ -335,7 +335,28 @@ void AIBrain::stop() {
 
 bool AIBrain::canAcceptUserMessage() const {
     return !m_busy || (m_activeDialogueResponse
-        && m_activeDialogueResponse->triggerTag == QLatin1String("proactive_chat"));
+        && isAutomaticTrigger(m_activeDialogueResponse->triggerTag));
+}
+
+bool AIBrain::isAutomaticTrigger(const QString& triggerTag) {
+    return triggerTag == QLatin1String("proactive_chat")
+        || triggerTag == QLatin1String("idle_action")
+        || triggerTag == QLatin1String("emotion");
+}
+
+bool AIBrain::automaticTextAllowed() const {
+    const QString mode = CompanionProactiveState::mode(m_proactiveStatePath);
+    return mode != QLatin1String("quiet") && mode != QLatin1String("focus");
+}
+
+bool AIBrain::suppressMutedAutomaticResponse() {
+    if (!m_activeDialogueResponse
+        || !isAutomaticTrigger(m_activeDialogueResponse->triggerTag)
+        || automaticTextAllowed()) {
+        return false;
+    }
+    stopCurrentResponse();
+    return true;
 }
 
 ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
@@ -360,8 +381,7 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
 }
 
 bool AIBrain::canStartProactiveChat() const {
-    const QString mode = CompanionProactiveState::mode(m_proactiveStatePath);
-    if (mode == QLatin1String("quiet") || mode == QLatin1String("focus")) return false;
+    if (!automaticTextAllowed()) return false;
     return m_enabled && m_storageInitialized && !m_busy && !m_daydreamRunning
         && (!m_conversationCooldown.isValid()
             || m_conversationCooldown.elapsed() >= (m_cooldownAfterProactive
@@ -377,6 +397,10 @@ void AIBrain::triggerThink(const QString& reason,
         || triggerTag == QLatin1String("user_request")
         || triggerTag == QLatin1String("screen_chat")
         || triggerTag == QLatin1String("touch_event");
+    if (isAutomaticTrigger(triggerTag) && !automaticTextAllowed()) {
+        scheduleTrigger(triggerTag);
+        return;
+    }
     if (triggerTag == QLatin1String("proactive_chat") && !canStartProactiveChat()) {
         scheduleTrigger(triggerTag);
         return;
@@ -388,7 +412,7 @@ void AIBrain::triggerThink(const QString& reason,
         m_conversationCooldown.start();
         // A user's message takes priority over an unannounced background thought.
         if (m_activeDialogueResponse
-            && m_activeDialogueResponse->triggerTag == QLatin1String("proactive_chat")) {
+            && isAutomaticTrigger(m_activeDialogueResponse->triggerTag)) {
             stopCurrentResponse();
         }
     }
@@ -433,7 +457,7 @@ void AIBrain::triggerThink(const QString& reason,
     qInfo() << "[AIBrain] accepted request, trigger:" << triggerTag;
     std::cerr << "[AIBrain] accepted request: trigger="
               << triggerTag.toStdString() << std::endl;
-    if (triggerTag != QLatin1String("proactive_chat")) emit thinkingStarted(reason);
+    if (!isAutomaticTrigger(triggerTag)) emit thinkingStarted(reason);
     beginActiveResponse(replyToId, triggerTag, {});
     m_workingMemoryCache.cleanup();
     if (shouldUseLocalRouter(triggerTag)) {
@@ -524,6 +548,7 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
         || result.requestId != m_activeDialogueResponse->preparationRequestId) {
         return;
     }
+    if (suppressMutedAutomaticResponse()) return;
     if (!result.error.code.isEmpty() || result.messages.isEmpty()) {
         const QString error = result.error.message.isEmpty()
             ? QStringLiteral("Unable to build model context") : result.error.message;
@@ -584,7 +609,7 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
     response.acceptedAtMonotonicMs = monotonicMilliseconds();
     response.priorConversation = m_memory;
     m_activeDialogueResponse.emplace(std::move(response));
-    if (triggerTag == QLatin1String("proactive_chat")) return;
+    if (isAutomaticTrigger(triggerTag)) return;
     m_activeDialogueResponse->announced = true;
     emit assistantResponseStarted(m_activeDialogueResponse->messageId,
                                   m_activeDialogueResponse->replyToId,
@@ -625,6 +650,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
                                    const QString& errorMessage,
                                    const QJsonObject& responseLog) {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    if (status == ChatMessageStatus::Complete && suppressMutedAutomaticResponse()) return;
     m_activeDialogueResponse->terminal = true;
     m_activeDialogueResponse->status = status;
     ActiveDialogueResponse finished = std::move(*m_activeDialogueResponse);
@@ -661,7 +687,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
 
     finishRuntimeSession(finished.sessionId, finished.generation);
     m_busy = false;
-    if (finished.triggerTag == QLatin1String("proactive_chat")) {
+    if (isAutomaticTrigger(finished.triggerTag)) {
         scheduleTrigger(finished.triggerTag);
     }
     if (status == ChatMessageStatus::Complete

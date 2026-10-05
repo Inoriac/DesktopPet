@@ -164,6 +164,8 @@ void TestModuleConnectivity::proactiveModeControlsBrainAndExpires() {
 void TestModuleConnectivity::reminderStateFollowsSnoozeCancelAndDelivery() {
     Runtime runtime;
     QVERIFY(runtime.ready);
+    QVERIFY(CompanionProactiveState::setMode(
+        "quiet", nullptr, 2, runtime.brain.proactiveStatePath()));
     AgentScheduler scheduler;
     scheduler.setStoragePath(runtime.directory.filePath("tasks.json"));
     QVERIFY(scheduler.load());

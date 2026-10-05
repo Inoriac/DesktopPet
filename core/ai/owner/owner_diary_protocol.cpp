@@ -181,10 +181,14 @@ Result<OwnerDiaryBootstrap, DomainError> consumeOwnerDiaryBootstrap(
 
     static const QRegularExpression socketPattern(
         QStringLiteral("^[A-Za-z0-9_.-]{16,220}$"));
+    static const QRegularExpression compactSocketPattern(
+        QStringLiteral("^dp-[co]-[a-f0-9]{24}$"));
+    const bool validSocketName = compactSocketPattern.match(bootstrap.socketName).hasMatch()
+        || (socketPattern.match(bootstrap.socketName).hasMatch()
+            && bootstrap.socketName.contains(expectedProfileId));
     const bool valid = bootstrap.protocolVersion == kOwnerDiaryProtocolVersion
         && bootstrap.profileId == expectedProfileId
-        && socketPattern.match(bootstrap.socketName).hasMatch()
-        && bootstrap.socketName.contains(expectedProfileId)
+        && validSocketName
         && bootstrap.capabilityToken.size() == 32
         && expiresAt.endsWith(QLatin1Char('Z'))
         && bootstrap.expiresAt.isValid()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 import uuid
 
+from PySide6.QtCore import Slot
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QWidget, QHBoxLayout
 from qfluentwidgets import (
@@ -300,6 +301,9 @@ class AiPage(ScrollPage):
         self._connection_test_buttons[endpoint_id] = self.test_connection_button
         self.test_connection_button.setEnabled(
             not bool(self._active_connection_test_ids.get(endpoint_id)))
+        self.test_connection_button.setText(
+            "正在测试…" if self._active_connection_test_ids.get(endpoint_id)
+            else "测试连接")
 
     def _add_endpoint(self) -> None:
         endpoint_id = self.new_endpoint_id.text().strip()
@@ -328,8 +332,12 @@ class AiPage(ScrollPage):
                 "无法删除连接档案", "请先将引用它的角色切换到其他档案",
                 parent=self, position=InfoBarPosition.TOP, duration=4000)
             return
+        request_id = self._active_connection_test_ids.get(endpoint_id)
+        if request_id:
+            self.connection_tester.cancel(request_id)
         self.state.model_endpoints.pop(endpoint_id, None)
         self._active_connection_test_ids.pop(endpoint_id, None)
+        self._connection_test_buttons.pop(endpoint_id, None)
         self._models_by_endpoint.pop(endpoint_id, None)
         index = self.endpoint_selector.findText(endpoint_id)
         if index >= 0:
@@ -350,14 +358,19 @@ class AiPage(ScrollPage):
     def _start_connection_test(
         self, endpoint_id: str, endpoint: ModelEndpointState, model: str
     ) -> str:
+        previous_id = self._active_connection_test_ids.get(endpoint_id)
+        if previous_id:
+            self.connection_tester.cancel(previous_id)
         request_id = uuid.uuid4().hex
         self._active_connection_test_ids[endpoint_id] = request_id
         button = self._connection_test_buttons.get(endpoint_id)
         if button is not None:
             button.setEnabled(False)
+            button.setText("正在测试…")
         self.connection_tester.test(request_id, endpoint, model)
         return request_id
 
+    @Slot(str, bool, str, str)
     def _on_connection_test_finished(
         self,
         request_id: str,
@@ -376,6 +389,7 @@ class AiPage(ScrollPage):
             if button is not None and (
                     button is not visible_button or endpoint_id == current_id):
                 button.setEnabled(True)
+                button.setText("测试连接")
             self._show_connection_test_result(
                 endpoint_id, success, category, message)
             return
@@ -392,12 +406,12 @@ class AiPage(ScrollPage):
                 InfoBar.warning(
                     f"{endpoint_id} 连接成功",
                     "接口可用，但 AI 开关尚未启用",
-                    parent=self, position=InfoBarPosition.TOP, duration=5000)
+                    parent=self.window(), position=InfoBarPosition.TOP, duration=5000)
                 return
             InfoBar.success(
-                f"{endpoint_id} 连接成功", message, parent=self,
+                f"{endpoint_id} 连接成功", message, parent=self.window(),
                 position=InfoBarPosition.TOP, duration=3000)
             return
         InfoBar.error(
-            f"{endpoint_id} 连接失败", message, parent=self,
+            f"{endpoint_id} 连接失败", message, parent=self.window(),
             position=InfoBarPosition.TOP, duration=5000)

@@ -1,8 +1,10 @@
 import json
 import os
 import sys
+import time
 import types
 import unittest
+from unittest.mock import patch
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
@@ -36,6 +38,24 @@ class SignalDescriptor:
 class QObject:
     def __init__(self, parent=None):
         self.parent = parent
+
+    def deleteLater(self):
+        pass
+
+
+class QTimer(QObject):
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.timeout = FakeSignal()
+
+    def setSingleShot(self, single):
+        pass
+
+    def start(self, interval):
+        pass
+
+    def stop(self):
+        pass
 
 
 class QUrl:
@@ -81,11 +101,13 @@ class QNetworkReply:
 class FakeReply:
     def __init__(self, status=200, body=b"{}", error=0, error_text=""):
         self.finished = FakeSignal()
+        self.readyRead = FakeSignal()
         self._status = status
         self._body = body
         self._error = error
         self._error_text = error_text
         self.deleted = False
+        self.aborted = False
 
     def attribute(self, name):
         return self._status if name == ActiveQNetworkRequest.HttpStatusCodeAttribute else None
@@ -93,8 +115,19 @@ class FakeReply:
     def readAll(self):
         return self._body
 
+    def read(self, count):
+        chunk, self._body = self._body[:count], self._body[count:]
+        return chunk
+
+    def isFinished(self):
+        return False
+
+    def abort(self):
+        self.aborted = True
+        self.finished.emit()
+
     def error(self):
-        return self._error
+        return ActiveQNetworkReply.NetworkError.NoError if self._error == 0 else self._error
 
     def errorString(self):
         return self._error_text
@@ -116,14 +149,18 @@ class FakeNetworkManager:
 def _install_qt_stubs():
     try:
         import PySide6  # noqa: F401
-        return
+        return True
     except ModuleNotFoundError:
         pass
 
     pyside = types.ModuleType("PySide6")
     qtcore = types.ModuleType("PySide6.QtCore")
     qtcore.QObject = QObject
+    qtcore.QTimer = QTimer
+    qtcore.QCoreApplication = type(
+        "QCoreApplication", (), {"instance": staticmethod(lambda: None)})
     qtcore.Signal = lambda *args: SignalDescriptor()
+    qtcore.Slot = lambda *args: lambda method: method
     qtcore.QUrl = QUrl
     qtcore.Qt = type("Qt", (), {"Vertical": 1})
     qtnetwork = types.ModuleType("PySide6.QtNetwork")
@@ -133,6 +170,7 @@ def _install_qt_stubs():
     sys.modules.setdefault("PySide6", pyside)
     sys.modules.setdefault("PySide6.QtCore", qtcore)
     sys.modules.setdefault("PySide6.QtNetwork", qtnetwork)
+    return False
 
 
 def _install_ui_stubs():
@@ -152,6 +190,10 @@ def _install_ui_stubs():
     qtgui.QColor = Dummy
     qtgui.QFont = Dummy
     qtwidgets = types.ModuleType("PySide6.QtWidgets")
+    qtwidgets.QApplication = type("QApplication", (), {
+        "instance": staticmethod(lambda: None),
+        "__init__": lambda self, *args: None,
+    })
     for name in ("QWidget", "QHBoxLayout", "QVBoxLayout", "QSizePolicy"):
         setattr(qtwidgets, name, Dummy)
     fluent = types.ModuleType("qfluentwidgets")
@@ -171,14 +213,21 @@ def _install_ui_stubs():
     sys.modules.setdefault("qfluentwidgets", fluent)
 
 
-_install_qt_stubs()
+HAS_QT = _install_qt_stubs()
 
 from api_connection_tester import ApiConnectionTester  # noqa: E402
 from app_state import ModelEndpointState  # noqa: E402
 from PySide6.QtNetwork import QNetworkRequest as ActiveQNetworkRequest  # noqa: E402
+from PySide6.QtNetwork import QNetworkReply as ActiveQNetworkReply  # noqa: E402
 
 
 class ApiConnectionTesterTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        if HAS_QT:
+            from PySide6.QtWidgets import QApplication
+            cls._app = QApplication.instance() or QApplication([])
+
     def _tester(self, reply=None):
         manager = FakeNetworkManager()
         if reply is not None:
@@ -307,6 +356,57 @@ class ApiConnectionTesterTests(unittest.TestCase):
 
         self.assertNotIn(original_key, results[0][3])
 
+    def test_malformedAddressFailsWithoutLeavingPendingRequest(self):
+        for address in ("http://[invalid", "http://localhost:bad", "http://user:password@localhost"):
+            with self.subTest(address=address):
+                tester, manager, results = self._tester()
+                tester.test("invalid-url", ModelEndpointState(
+                    base_url=address, api_key="fixture"), "model")
+                self.assertEqual(manager.posts, [])
+                self.assertEqual(results[0][:3], ("invalid-url", False, "invalid"))
+                self.assertFalse(tester._pending)
+
+    def test_invalidHeaderIsRejectedBeforeEncoding(self):
+        tester, manager, results = self._tester()
+        tester.test("invalid-header", ModelEndpointState(
+            base_url="https://example.test", api_key="fixture",
+            extra_headers={"无效": "value"}), "model")
+        self.assertEqual(manager.posts, [])
+        self.assertEqual(results[0][2], "invalid")
+
+    def test_reusedRequestIdCancelsOldReplyAndIgnoresLateCompletion(self):
+        old = FakeReply()
+        tester, manager, results = self._tester(old)
+        endpoint = ModelEndpointState(base_url="https://example.test", api_key="fixture")
+        tester.test("same-id", endpoint, "model")
+        new = manager.next_reply = FakeReply()
+        tester.test("same-id", endpoint, "model")
+        self.assertTrue(old.aborted)
+        old.finished.emit()
+        self.assertFalse(results)
+        new.finished.emit()
+        self.assertEqual(len(results), 1)
+        self.assertTrue(results[0][1])
+
+    def test_interruptedSuccessResponseIsNotReportedAsConnected(self):
+        tester, manager, results = self._tester(FakeReply(
+            status=200, error=2, error_text="Connection closed"))
+        tester.test("interrupted", ModelEndpointState(
+            base_url="https://example.test", api_key="fixture"), "model")
+        manager.next_reply.finished.emit()
+        self.assertEqual(results[0][1:3], (False, "network"))
+
+    def test_oversizedResponseIsAbortedWithoutParsingEntirePayload(self):
+        from api_connection_tester import MAX_RESPONSE_BYTES
+        reply = FakeReply(body=b"x" * (MAX_RESPONSE_BYTES + 100))
+        tester, manager, results = self._tester(reply)
+        tester.test("large", ModelEndpointState(
+            base_url="https://example.test", api_key="fixture"), "model")
+        reply.readyRead.emit()
+        self.assertTrue(reply.aborted)
+        self.assertEqual(results[0][1:3], (False, "protocol"))
+        self.assertFalse(tester._pending)
+
 
 class FakeButton:
     def __init__(self):
@@ -315,14 +415,21 @@ class FakeButton:
     def setEnabled(self, enabled):
         self.enabled = enabled
 
+    def setText(self, text):
+        self.text = text
+
 
 class FakeTester:
     def __init__(self):
         self.finished = FakeSignal()
         self.requests = []
+        self.canceled = []
 
     def test(self, request_id, endpoint, model):
         self.requests.append((request_id, endpoint, model))
+
+    def cancel(self, request_id):
+        self.canceled.append(request_id)
 
 
 class AiPageConnectionTests(unittest.TestCase):
@@ -374,6 +481,7 @@ class AiPageConnectionTests(unittest.TestCase):
 
         old_id = page._start_connection_test("DEFAULT", endpoint, "text")
         new_id = page._start_connection_test("DEFAULT", endpoint, "text")
+        self.assertEqual(page.connection_tester.canceled, [old_id])
         page.connection_tester.finished.emit(old_id, False, "network", "old")
 
         self.assertFalse(page._connection_test_buttons["DEFAULT"].enabled)
@@ -381,6 +489,145 @@ class AiPageConnectionTests(unittest.TestCase):
         page.connection_tester.finished.emit(new_id, True, "success", "new")
         self.assertTrue(page._connection_test_buttons["DEFAULT"].enabled)
         self.assertEqual(page._shown_connection_results[0][-1], "new")
+
+
+@unittest.skipUnless(HAS_QT, "PySide6 is required for event-loop integration tests")
+class ApiConnectionEventLoopTests(unittest.TestCase):
+    """Exercise real Qt requests against a local, deliberately slow service."""
+
+    @classmethod
+    def setUpClass(cls):
+        from PySide6.QtWidgets import QApplication
+        cls._app = QApplication.instance() or QApplication([])
+        cls._app.setQuitOnLastWindowClosed(False)
+
+    def setUp(self):
+        from PySide6.QtNetwork import QHostAddress, QTcpServer
+        self.server = QTcpServer()
+        self.assertTrue(self.server.listen(QHostAddress.LocalHost, 0))
+        self.sockets = []
+        self.server.newConnection.connect(self._accept)
+        self.endpoint = ModelEndpointState(
+            base_url=f"http://127.0.0.1:{self.server.serverPort()}/v1",
+            api_key="local-test-only")
+        self.widgets = []
+        self.testers = []
+
+    def _accept(self):
+        socket = self.server.nextPendingConnection()
+        self.sockets.append(socket)
+        socket.write(b"HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n"
+                     b"Content-Type: application/json\r\nConnection: close\r\n\r\n")
+
+    def _wait_until(self, predicate, timeout=2):
+        from PySide6.QtTest import QTest
+        deadline = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < deadline:
+            QTest.qWait(5)
+        self.assertTrue(predicate())
+
+    def tearDown(self):
+        from PySide6.QtCore import QCoreApplication, QEvent
+        from shiboken6 import isValid
+        for tester in self.testers:
+            if isValid(tester):
+                tester.cancel_all()
+                tester.deleteLater()
+        for widget in self.widgets:
+            if isValid(widget):
+                widget.close()
+                widget.deleteLater()
+        for socket in self.sockets:
+            socket.abort()
+        self.server.close()
+        self.server.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+
+    def test_tricklingResponseHasTotalDeadlineAndEmitsOnlyOneResult(self):
+        from PySide6.QtCore import QTimer
+        from PySide6.QtTest import QTest
+        tester = ApiConnectionTester()
+        self.testers.append(tester)
+        results = []
+        tester.finished.connect(lambda *args: results.append(args))
+        with patch("api_connection_tester.CONNECTION_TIMEOUT_MS", 150):
+            tester.test("slow", self.endpoint, "fixture")
+        self._wait_until(lambda: bool(self.sockets))
+        pulse = QTimer()
+        pulse.timeout.connect(lambda: self.sockets[0].write(b" "))
+        pulse.start(15)
+        try:
+            self._wait_until(lambda: bool(results), timeout=1)
+        finally:
+            pulse.stop()
+        QTest.qWait(30)
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][1:3], (False, "timeout"))
+        self.assertFalse(tester._pending)
+
+    def test_pendingConnectionAllowsPageInteractionAndSafePageDestruction(self):
+        from PySide6.QtCore import QCoreApplication, QEvent, Qt
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QPushButton, QStackedWidget
+        from shiboken6 import isValid
+        from app_state import AppState
+        from pages.ai_page import AiPage
+        state = AppState()
+        state.model_endpoints["DEFAULT"] = self.endpoint
+        state.model_roles["dialogue"].model = "fixture"
+        stack = QStackedWidget()
+        self.widgets.append(stack)
+        page = AiPage(state)
+        other = QPushButton("Another page")
+        stack.addWidget(page)
+        stack.addWidget(other)
+        stack.show()
+        results, clicks = [], []
+        tester = page.connection_tester
+        tester.finished.connect(lambda *args: results.append(args))
+        page.test_connection_button.click()
+        self.assertFalse(page.test_connection_button.isEnabled())
+        self._wait_until(lambda: bool(self.sockets))
+        stack.setCurrentWidget(other)
+        other.clicked.connect(lambda: clicks.append(True))
+        QTest.mouseClick(other, Qt.LeftButton)
+        self.assertEqual(clicks, [True])
+        page.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+        self.assertFalse(isValid(tester))
+        self.sockets[0].write(b" " * 1000)
+        QTest.qWait(30)
+        self.assertFalse(results)
+
+    def test_incompleteHttpSuccessIsReportedAsNetworkFailure(self):
+        tester = ApiConnectionTester()
+        self.testers.append(tester)
+        results = []
+        tester.finished.connect(lambda *args: results.append(args))
+        tester.test("interrupted", self.endpoint, "fixture")
+        self._wait_until(lambda: bool(self.sockets))
+        self.sockets[0].write(b"partial response")
+        self.sockets[0].disconnectFromHost()
+        self._wait_until(lambda: bool(results))
+        self.assertEqual(len(results), 1)
+        self.assertEqual(results[0][1:3], (False, "network"))
+        self.assertFalse(tester._pending)
+
+    def test_removingEndpointCancelsItsPendingConnection(self):
+        from app_state import AppState
+        from pages.ai_page import AiPage
+        state = AppState(model_endpoints={"CUSTOM": self.endpoint})
+        page = AiPage(state)
+        self.widgets.append(page)
+        page.endpoint_selector.setCurrentText("CUSTOM")
+        page.endpoint_model.setText("fixture")
+        page.test_connection_button.click()
+        self._wait_until(lambda: bool(self.sockets))
+        self.assertTrue(page.connection_tester._pending)
+        page._delete_current_endpoint()
+        self.assertFalse(page.connection_tester._pending)
+        self.assertNotIn("CUSTOM", page.state.model_endpoints)
+        self.assertTrue(page.test_connection_button.isEnabled())
 
 
 if __name__ == "__main__":

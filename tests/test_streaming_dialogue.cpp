@@ -23,6 +23,7 @@
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "ai/tool_registry.h"
+#include "ai/tools/companion_tools.h"
 
 namespace {
 
@@ -288,6 +289,16 @@ private slots:
     void proactiveSilence_shouldNotCreateVisibleResponse();
     void proactiveFailure_shouldNotLeakPartialTextOrShowFallback();
     void proactiveReply_shouldUseContextAndStartSharedCooldown();
+    void automaticTriggers_whenMuted_shouldRemainSilent_data();
+    void automaticTriggers_whenMuted_shouldRemainSilent();
+    void userTriggers_whenMuted_shouldStayAvailable_data();
+    void userTriggers_whenMuted_shouldStayAvailable();
+    void automaticResponse_whenMutedDuringPreparation_shouldNotDispatch();
+    void automaticResponse_whenMutedDuringStream_shouldDiscardLateOutput_data();
+    void automaticResponse_whenMutedDuringStream_shouldDiscardLateOutput();
+    void automaticResponse_whenMutedBeforeCompletion_shouldNotPublish();
+    void automaticTools_whenModeChanges_shouldNotExecuteLaterBubble();
+    void userMessage_shouldPreemptPendingProactiveReply_data();
     void userMessage_shouldPreemptPendingProactiveReply();
     void completeStreamAsync_whenPrimaryCompletes_shouldReturnPrimaryStream();
     void completeStreamAsync_whenPrimaryFailsBeforeVisibleText_shouldUseFallbackWithoutLeakingPrimaryEvents();
@@ -772,7 +783,165 @@ void StreamingDialogueTests::proactiveReply_shouldUseContextAndStartSharedCooldo
     QCOMPARE(client.routeIds.size(), 1);
 }
 
+void StreamingDialogueTests::automaticTriggers_whenMuted_shouldRemainSilent_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<QString>("trigger");
+    for (const QString& mode : {QStringLiteral("quiet"), QStringLiteral("focus")}) {
+        for (const QString& trigger : {QStringLiteral("idle_action"),
+                                      QStringLiteral("proactive_chat"),
+                                      QStringLiteral("emotion")}) {
+            QTest::newRow(qPrintable(mode + QLatin1Char('-') + trigger)) << mode << trigger;
+        }
+    }
+}
+
+void StreamingDialogueTests::automaticTriggers_whenMuted_shouldRemainSilent() {
+    QFETCH(QString, mode);
+    QFETCH(QString, trigger);
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QVERIFY(CompanionProactiveState::setMode(mode, nullptr, 2, brain.proactiveStatePath()));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy thinking(&brain, &AIBrain::thinkingStarted);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("automatic tick"), trigger);
+    QTest::qWait(20);
+    QCOMPARE(client.routeIds.size(), 0);
+    QCOMPARE(started.size(), 0);
+    QCOMPARE(thinking.size(), 0);
+    QCOMPARE(replies.size(), 0);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::userTriggers_whenMuted_shouldStayAvailable_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::addColumn<QString>("trigger");
+    for (const QString& mode : {QStringLiteral("quiet"), QStringLiteral("focus")}) {
+        for (const QString& trigger : {QStringLiteral("manual"), QStringLiteral("user_request"),
+                                      QStringLiteral("screen_chat"), QStringLiteral("touch_event")}) {
+            QTest::newRow(qPrintable(mode + QLatin1Char('-') + trigger)) << mode << trigger;
+        }
+    }
+}
+
+void StreamingDialogueTests::userTriggers_whenMuted_shouldStayAvailable() {
+    QFETCH(QString, mode);
+    QFETCH(QString, trigger);
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("回应你的互动。")), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QVERIFY(CompanionProactiveState::setMode(mode, nullptr, 2, brain.proactiveStatePath()));
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("聊聊最近读过的书"), trigger, QStringLiteral("user-interaction"));
+    QTRY_COMPARE_WITH_TIMEOUT(replies.size(), 1, 2000);
+    QCOMPARE(replies.first().first().toString(), QStringLiteral("回应你的互动。"));
+    QCOMPARE(client.routeIds.size(), 1);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::automaticResponse_whenMutedDuringPreparation_shouldNotDispatch() {
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    brain.setChatPreparationDelayForTests(100);
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("idle_tick"), QStringLiteral("idle_action"));
+    QVERIFY(brain.isBusy());
+    QVERIFY(CompanionProactiveState::setMode("quiet", nullptr, 2, brain.proactiveStatePath()));
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+    QCOMPARE(client.routeIds.size(), 0);
+    QCOMPARE(started.size(), 0);
+    QCOMPARE(replies.size(), 0);
+}
+
+void StreamingDialogueTests::automaticResponse_whenMutedDuringStream_shouldDiscardLateOutput_data() {
+    automaticTriggers_whenMuted_shouldRemainSilent_data();
+}
+
+void StreamingDialogueTests::automaticResponse_whenMutedDuringStream_shouldDiscardLateOutput() {
+    QFETCH(QString, mode);
+    QFETCH(QString, trigger);
+    FakeStreamingClient client;
+    client.attempts = {{{delta(QStringLiteral("迟到的自动消息"))}, true,
+                        textResponse(QStringLiteral("迟到的自动消息")), {}, true}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy deltas(&brain, &AIBrain::assistantResponseDelta);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    brain.triggerThink(QStringLiteral("automatic tick"), trigger);
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
+    QVERIFY(CompanionProactiveState::setMode(mode, nullptr, 2, brain.proactiveStatePath()));
+    client.publishPending(delta(QStringLiteral("模式切换后的消息")));
+    QVERIFY(client.handles.first()->isCancelled());
+    QVERIFY(!brain.isBusy());
+    client.finishPendingEvenIfCancelled();
+    QCOMPARE(started.size(), 0);
+    QCOMPARE(deltas.size(), 0);
+    QCOMPARE(replies.size(), 0);
+}
+
+void StreamingDialogueTests::automaticResponse_whenMutedBeforeCompletion_shouldNotPublish() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse(QStringLiteral("不应再主动搭话")), {}, true}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
+    QSignalSpy deltas(&brain, &AIBrain::assistantResponseDelta);
+    brain.triggerThink(QStringLiteral("idle_tick"), QStringLiteral("idle_action"));
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
+    QVERIFY(CompanionProactiveState::setMode("focus", nullptr, 2, brain.proactiveStatePath()));
+    client.finishPendingEvenIfCancelled();
+    QVERIFY(!brain.isBusy());
+    QCOMPARE(replies.size(), 0);
+    QCOMPARE(deltas.size(), 0);
+}
+
+void StreamingDialogueTests::automaticTools_whenModeChanges_shouldNotExecuteLaterBubble() {
+    FakeStreamingClient client;
+    LlmResponse response;
+    response.toolCalls = {
+        {QStringLiteral("quiet"), QStringLiteral("function"), QStringLiteral("set_proactive_mode"),
+         {{QStringLiteral("mode"), QStringLiteral("quiet")}}},
+        {QStringLiteral("bubble"), QStringLiteral("function"), QStringLiteral("show_chat_bubble"),
+         {{QStringLiteral("text"), QStringLiteral("不应该显示的消息")}}}
+    };
+    client.attempts = {{{}, true, response, {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    int bubbles = 0;
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<SetProactiveModeTool>(
+        SetProactiveModeTool::Callback{}, brain.proactiveStatePath()));
+    tools.registerTool(std::make_unique<ShowChatBubbleTool>(
+        [&bubbles](const QString&, int) { ++bubbles; return true; }));
+    brain.setToolRegistry(&tools);
+    brain.triggerThink(QStringLiteral("idle_tick"), QStringLiteral("idle_action"));
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
+    QCOMPARE(CompanionProactiveState::mode(brain.proactiveStatePath()), QStringLiteral("quiet"));
+    QCOMPARE(bubbles, 0);
+    QCOMPARE(client.routeIds.size(), 1);
+}
+
+void StreamingDialogueTests::userMessage_shouldPreemptPendingProactiveReply_data() {
+    QTest::addColumn<QString>("trigger");
+    QTest::newRow("proactive") << QStringLiteral("proactive_chat");
+    QTest::newRow("idle") << QStringLiteral("idle_action");
+    QTest::newRow("emotion") << QStringLiteral("emotion");
+}
+
 void StreamingDialogueTests::userMessage_shouldPreemptPendingProactiveReply() {
+    QFETCH(QString, trigger);
     FakeStreamingClient client;
     client.attempts = {
         {{delta(QStringLiteral("过时的主动搭话"))}, true,
@@ -785,10 +954,12 @@ void StreamingDialogueTests::userMessage_shouldPreemptPendingProactiveReply() {
     QVERIFY(initializeBrain(brain, directory));
     QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
     QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
-    brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
+    brain.triggerThink(QStringLiteral("automatic tick"), trigger);
     QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 2000);
     QVERIFY(brain.canAcceptUserMessage());
-    client.publishPending(delta(QStringLiteral("未展示的片段")));
+    if (trigger == QLatin1String("proactive_chat")) {
+        client.publishPending(delta(QStringLiteral("未展示的片段")));
+    }
     QCOMPARE(started.size(), 0);
     const quint64 revision = brain.interactionRevision();
     brain.triggerThink(QStringLiteral("请分析一下这个复杂问题"),

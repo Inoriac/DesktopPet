@@ -154,9 +154,8 @@ struct OwnerFixture {
 };
 
 QString socketName() {
-    return QStringLiteral("desktop-pet-owner-test-%1-%2")
-        .arg(kProfileId,
-             QUuid::createUuid().toString(QUuid::WithoutBraces));
+    return QStringLiteral("dp-o-%1")
+        .arg(QString::fromLatin1(ownerDiaryRandomToken().toHex().left(24)));
 }
 
 QByteArray capabilityToken() {
@@ -309,6 +308,7 @@ private slots:
     void get_whenOwnerSessionValid_shouldReturnOneDecryptedEntry();
     void get_whenEntryBelongsToAnotherProfile_shouldNotRevealExistence();
     void listen_whenBootstrapIsValid_shouldConsumeSecretAndAcceptAuthenticatedHello();
+    void bootstrap_whenCompactSocketName_shouldValidateFormatAndProfile();
     void listen_whenBootstrapOwnerOrExpiryInvalid_shouldRejectAndNotBindSocket();
     void listen_whenTokenIsForgedOrReplayed_shouldRejectSession();
     void handleFrame_whenListOrGetActionValid_shouldReturnMatchingReadOnlyResponse();
@@ -402,6 +402,39 @@ void OwnerDiaryServerTests::listen_whenBootstrapIsValid_shouldConsumeSecretAndAc
     const QString session = authenticate(socket, name, token);
     QVERIFY(!session.isEmpty());
     QCOMPARE(server.sessionCount(), 1);
+}
+
+void OwnerDiaryServerTests::bootstrap_whenCompactSocketName_shouldValidateFormatAndProfile() {
+    OwnerFixture fixture;
+    QVERIFY(fixture.open());
+    const QByteArray token = capabilityToken();
+    const QString legacyName = QStringLiteral("desktop-pet-owner-test-%1-%2")
+        .arg(kProfileId, QUuid::createUuid().toString(QUuid::WithoutBraces));
+    const QString legacyPath = writeBootstrap(fixture, legacyName, token);
+    QVERIFY(consumeOwnerDiaryBootstrap(legacyPath, kProfileId).isOk());
+    for (const QString& purpose : {QStringLiteral("c"), QStringLiteral("o")}) {
+        const QString name = QStringLiteral("dp-%1-%2").arg(
+            purpose, QString::fromLatin1(ownerDiaryRandomToken().toHex().left(24)));
+        const QString path = writeBootstrap(fixture, name, token);
+        const auto result = consumeOwnerDiaryBootstrap(path, kProfileId);
+        QVERIFY(result.isOk());
+        QCOMPARE(result.value().profileId, kProfileId);
+        QCOMPARE(result.value().socketName, name);
+        QCOMPARE(result.value().capabilityToken, token);
+        QVERIFY(!QFile::exists(path));
+
+        const QString wrongProfile = writeBootstrap(fixture, name, token, kOtherProfileId);
+        QVERIFY(!consumeOwnerDiaryBootstrap(wrongProfile, kProfileId).isOk());
+    }
+    for (const QString& name : {
+             QStringLiteral("dp-c-1234"),
+             QStringLiteral("dp-x-0123456789abcdef01234567"),
+             QStringLiteral("dp-c-0123456789abcdef0123456g"),
+             QStringLiteral("../dp-c-0123456789abcdef01234567")}) {
+        const QString path = writeBootstrap(fixture, name, token);
+        QVERIFY(!consumeOwnerDiaryBootstrap(path, kProfileId).isOk());
+        QVERIFY(!QFile::exists(path));
+    }
 }
 
 void OwnerDiaryServerTests::listen_whenBootstrapOwnerOrExpiryInvalid_shouldRejectAndNotBindSocket() {

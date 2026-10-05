@@ -14,7 +14,6 @@ import os
 import sys
 import subprocess
 import base64
-import getpass
 import hashlib
 import json
 import re
@@ -44,7 +43,7 @@ from pages.advanced_page import AdvancedPage
 from pages.about_page import AboutPage
 from pages.private_diary_page import PrivateDiaryPage
 from pages.chat_page import ChatPage
-from launcher_chat_client import LauncherChatClient, LauncherChatError
+from launcher_chat_client import AsyncLauncherChatClient, LauncherChatError
 from owner_diary_client import OwnerDiaryClient, OwnerDiaryError
 from process_tracker import PetProcessTracker
 
@@ -86,6 +85,14 @@ def resolve_cpp_executable() -> str:
         os.path.join(_PROJECT_ROOT, "build", "Debug", name),
     ]
     existing = [path for path in candidates if os.path.isfile(path)]
+    # Local Windows verification often builds Debug while an old Release remains.
+    # Prefer the most recently built compatible executable, regardless of configuration.
+    def modified_at(path: str) -> float:
+        try:
+            return os.stat(path).st_mtime_ns
+        except OSError:
+            return -1
+    existing.sort(key=modified_at, reverse=True)
     for path in existing:
         if core_supports_launcher_chat(path):
             return path
@@ -262,12 +269,13 @@ class LauncherWindow(MSFluentWindow):
         self._owner_capability_token: str | None = None
         self._owner_bootstrap_path: str | None = None
         self._owner_connect_generation = 0
-        self.launcher_chat_client: LauncherChatClient | None = None
+        self.launcher_chat_client: AsyncLauncherChatClient | None = None
         self._chat_socket_name: str | None = None
         self._chat_capability_token: str | None = None
         self._chat_bootstrap_path: str | None = None
         self._chat_connect_generation = 0
         self._chat_log_path: str | None = None
+        self._active_core_executable: str | None = None
         self._pet_process_tracker = PetProcessTracker()
 
         # 主题：从共享 QSettings 读取并应用
@@ -426,6 +434,8 @@ class LauncherWindow(MSFluentWindow):
                 "请重新构建 Desktop_Pet 后再启动。",
                 parent=self, position=InfoBarPosition.TOP, duration=7000)
             return False
+        self._active_core_executable = core_executable
+        self.pet_page.start_btn.setToolTip(f"核心程序：{core_executable}")
 
         if not self.state.ai_enabled:
             InfoBar.warning(
@@ -555,10 +565,11 @@ class LauncherWindow(MSFluentWindow):
             self, profile_id: str, purpose: str, max_frame_bytes: int) -> dict:
         token = base64.urlsafe_b64encode(
             secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
-        user = getpass.getuser().encode("utf-8", errors="replace")
-        user_hash = hashlib.sha256(user).hexdigest()[:16]
-        socket_name = (
-            f"desktop-pet-{purpose}-{user_hash}-{profile_id}-{secrets.token_hex(8)}")
+        # QLocalSocket prepends the user's temp directory on Unix. Keep the
+        # endpoint short enough for macOS sun_path; identity stays in the
+        # private bootstrap payload and the authenticated protocol.
+        purpose_tag = {"chat": "c", "owner": "o"}[purpose]
+        socket_name = f"dp-{purpose_tag}-{secrets.token_hex(12)}"
         expires_at = (datetime.now(timezone.utc) + timedelta(seconds=60)) \
             .isoformat(timespec="milliseconds").replace("+00:00", "Z")
         payload = json.dumps({
@@ -653,32 +664,53 @@ class LauncherWindow(MSFluentWindow):
     def _connect_chat(self, generation: int, attempt: int) -> None:
         if generation != self._chat_connect_generation \
                 or self._chat_socket_name is None \
-                or self._chat_capability_token is None:
+                or self._chat_capability_token is None \
+                or self.launcher_chat_client is not None:
             return
-        client = LauncherChatClient(timeout_ms=750)
-        try:
-            client.connect_to_server(
-                self._chat_socket_name, self._chat_capability_token)
-        except LauncherChatError as error:
+        client = AsyncLauncherChatClient(timeout_ms=2000, parent=self)
+        self.launcher_chat_client = client
+        client.connected.connect(
+            lambda: self._on_chat_connected(generation, attempt, client))
+        client.operationFailed.connect(
+            lambda action, reason: self._on_chat_connect_failed(
+                generation, attempt, client, action, reason))
+        client.connect_to_server(
+            self._chat_socket_name, self._chat_capability_token)
+
+    def _on_chat_connected(self, generation: int, attempt: int,
+                           client: AsyncLauncherChatClient) -> None:
+        if generation != self._chat_connect_generation \
+                or client is not self.launcher_chat_client:
             client.close()
-            if attempt == 0 or (attempt + 1) % 10 == 0 or attempt >= 59:
-                self._append_chat_log("connect_failed", attempt=attempt + 1,
-                                      error=error)
-            if attempt < 59:
-                QTimer.singleShot(
-                    250,
-                    lambda: self._connect_chat(generation, attempt + 1))
-                return
-            self._chat_socket_name = None
-            self._chat_capability_token = None
-            self._secure_remove_bootstrap(self._chat_bootstrap_path)
-            self._chat_bootstrap_path = None
-            self.chat_page.set_client(None)
+            client.deleteLater()
             return
         self._append_chat_log("connected", attempt=attempt + 1)
-        self.launcher_chat_client = client
         self.chat_page.set_client(client)
         self._chat_bootstrap_path = None
+
+    def _on_chat_connect_failed(self, generation: int, attempt: int,
+                               client: AsyncLauncherChatClient,
+                               action: str, reason: str) -> None:
+        if action != "connect" or generation != self._chat_connect_generation \
+                or client is not self.launcher_chat_client:
+            return
+        self.launcher_chat_client = None
+        client.close()
+        client.deleteLater()
+        if attempt == 0 or (attempt + 1) % 10 == 0 or attempt >= 59:
+            self._append_chat_log("connect_failed", attempt=attempt + 1,
+                                  error=LauncherChatError(reason))
+        if attempt < 59:
+            QTimer.singleShot(
+                250, lambda: self._connect_chat(generation, attempt + 1))
+            return
+        self._chat_socket_name = None
+        self._chat_capability_token = None
+        self._secure_remove_bootstrap(self._chat_bootstrap_path)
+        self._chat_bootstrap_path = None
+        self.chat_page.set_client(None)
+        InfoBar.error("聊天连接失败", "桌宠的聊天服务暂不可用，请重新启动桌宠。",
+                      parent=self, position=InfoBarPosition.TOP, duration=6000)
 
     def _on_chat_connection_lost(self, reason: str) -> None:
         client = self.launcher_chat_client
@@ -689,6 +721,7 @@ class LauncherWindow(MSFluentWindow):
         self.launcher_chat_client = None
         self.chat_page.set_client(None)
         client.close()
+        client.deleteLater()
         generation = self._chat_connect_generation
         if self._chat_socket_name and self._chat_capability_token:
             QTimer.singleShot(
@@ -763,6 +796,7 @@ class LauncherWindow(MSFluentWindow):
         self.chat_page.set_client(None)
         if self.launcher_chat_client is not None:
             self.launcher_chat_client.close()
+            self.launcher_chat_client.deleteLater()
         self.launcher_chat_client = None
         self._chat_socket_name = None
         self._chat_capability_token = None
