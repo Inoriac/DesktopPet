@@ -2,6 +2,7 @@
 #include <QTemporaryDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QJsonArray>
 #include "core/ai/memory/recall_text.h"
 #include "core/ai/memory/working_memory_cache.h"
 #include "core/ai/memory/memory_cue_extractor.h"
@@ -18,6 +19,7 @@ class TestMemoryRecallPhase2 : public QObject {
 private slots:
     void testWholeTagMatchingAndBoundaries();
     void testTextAndTagEvidenceStaySeparate();
+    void testSourceTagsAreNotRecallEvidence();
     void testLexicalIdfAndSharedTokenization();
     void testGlobalTagMigrationAndEligibility();
     void testMemoryCueExtractor();
@@ -49,6 +51,45 @@ void TestMemoryRecallPhase2::testWholeTagMatchingAndBoundaries() {
     QCOMPARE(extractor.extractFromQuery(QStringLiteral("机器学习，机器学习" )).knownTags.size(), 1);
     extractor.setKnownTags({});
     QVERIFY(extractor.extractFromQuery(QStringLiteral("人工智能研究" )).knownTags.isEmpty());
+}
+
+void TestMemoryRecallPhase2::testSourceTagsAreNotRecallEvidence() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath(QStringLiteral("memory.db")));
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry entry;
+    entry.type = MemoryType::Semantic;
+    entry.summary = entry.content = QStringLiteral("晴天适合散步");
+    entry.tags = {"manual", "user_interaction", "custom-route", "hiking"};
+    entry.payload["source_tags"] = QJsonArray{"custom-route"};
+    entry = store.addEntry(entry);
+    QVERIFY(!entry.id.isEmpty());
+
+    MemoryKeywordIndex index;
+    index.rebuild(store.all());
+    QCOMPARE(index.knownTags(), QSet<QString>{QStringLiteral("hiking")});
+    QVERIFY(index.refreshGlobalTags(store.databaseConnectionName()));
+    QCOMPARE(index.knownTags(), QSet<QString>{QStringLiteral("hiking")});
+    QVERIFY(index.lookup(QStringList{}, QStringList{"manual", "custom-route"}, 8).isEmpty());
+    QCOMPARE(index.lookup(QStringList{}, QStringList{"hiking"}, 8), QStringList{entry.id});
+
+    MemoryCue cue;
+    cue.knownTags = {"manual", "custom-route"};
+    CandidateMemory candidate;
+    candidate.entry = entry;
+    QCOMPARE(ACTRRanker().rank({candidate}, cue).first().tagCue, 0.0);
+
+    // Existing inbox labels remain usable as explicit filters, never text matches.
+    entry.id.clear();
+    entry.type = MemoryType::ShortTerm;
+    entry.partition.clear();
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    HippocampusWorkingSet inbox(&store);
+    QVERIFY(inbox.refresh());
+    QVERIFY(inbox.scan("custom-route", {}, 8).isEmpty());
+    QCOMPARE(inbox.scan({}, {"manual"}, 8).size(), 1);
 }
 
 void TestMemoryRecallPhase2::testTextAndTagEvidenceStaySeparate() {

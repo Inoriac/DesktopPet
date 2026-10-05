@@ -20,11 +20,11 @@ struct ScheduledTask {
     QString triggerType = "once_at"; // once_at / daily_at / interval
     QDateTime onceAt;
     QTime dailyAt;
-    int intervalMs = 0;
+    qint64 intervalMs = 0;
 
     bool respectQuietHours = true;
     bool skipWhenUserBusy = false;
-    int minGapMs = 0;
+    qint64 minGapMs = 0;
     bool allowLlm = false;
     bool allowNetwork = false;
 

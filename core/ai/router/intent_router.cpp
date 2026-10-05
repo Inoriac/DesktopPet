@@ -5,10 +5,44 @@
 #include <QStringList>
 
 namespace {
-int firstCapturedInt(const QString& input, int fallback = 0) {
-    const QRegularExpression re("(\\d+)");
-    const QRegularExpressionMatch match = re.match(input);
-    return match.hasMatch() ? match.captured(1).toInt() : fallback;
+IntentRoute routeReminder(const QString& input) {
+    // Only execute an unambiguous numeric duration locally. Numbers in the
+    // reminder's contents, Chinese numerals and compound durations are not defaults.
+    static const QRegularExpression interval(
+        QStringLiteral("每(?:隔)?\\s*([0-9]+)\\s*(分钟|小时|分)(?![钟]|\\s*[0-9一二三四五六七八九十百千万亿零〇两半又])"));
+    static const QRegularExpression delay(
+        QStringLiteral("(?<![0-9.＋+\\-负一二三四五六七八九十百千万亿零〇两半时钟分点至到或])([0-9]+)\\s*(分钟|小时|分)\\s*后"));
+    static const QRegularExpression compoundPrefix(
+        QStringLiteral("(?:小时|分钟|分|点|至|到|或|或者|[.+＋\\-负])\\s*(?:又|零)?\\s*$"));
+    static const QRegularExpression delayMarker(QStringLiteral("(?:分钟|小时|分)\\s*后"));
+    const auto intervalMatch = interval.match(input);
+    const auto delayMatch = delay.match(input);
+    const bool periodic = intervalMatch.hasMatch();
+    const auto match = periodic ? intervalMatch : delayMatch;
+    if (!match.hasMatch() || (periodic && delayMatch.hasMatch())
+        || (periodic && (input.count(QStringLiteral("每")) != 1 || input.contains(delayMarker)))
+        || (!periodic && input.contains(QStringLiteral("每")))
+        || (!periodic && input.count(delayMarker) != 1)
+        || (!periodic && compoundPrefix.match(input.left(match.capturedStart())).hasMatch())
+        || (periodic ? interval : delay).match(input, match.capturedEnd()).hasMatch()) {
+        return IntentRoute::needLlm(QStringLiteral("schedule_time_needs_interpretation"));
+    }
+
+    bool valid = false;
+    qint64 minutes = match.captured(1).toLongLong(&valid);
+    const qint64 multiplier = match.captured(2) == QStringLiteral("小时") ? 60 : 1;
+    constexpr qint64 maxMinutes = 9007199254740991LL / 60000;
+    if (!valid || minutes <= 0 || minutes > maxMinutes / multiplier) {
+        return IntentRoute::needLlm(QStringLiteral("schedule_time_needs_interpretation"));
+    }
+    minutes *= multiplier;
+    QJsonObject args;
+    args["type"] = periodic ? "interval" : "once_at";
+    args["title"] = periodic ? "周期提醒" : "提醒";
+    args["message"] = input;
+    args[periodic ? "interval_minutes" : "delay_minutes"] = minutes;
+    return IntentRoute::directToolCall("schedule_create", args,
+        periodic ? "schedule_interval" : "schedule_delay_minutes", 0.9);
 }
 
 QString extractLocationFromLifeAssistantQuery(const QString& normalizedInput) {
@@ -68,6 +102,19 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         return IntentRoute::rejected("这个请求涉及高风险或敏感操作，默认不会执行。");
     }
 
+    if (containsAny(normalized, {"提醒", "日程", "叫我"})
+        && containsAny(normalized, {"取消", "推迟", "延后", "删除", "稍后", "不要", "别再", "不用"})) {
+        return IntentRoute::needLlm("schedule_management_needs_interpretation");
+    }
+    if (containsAny(normalized, {"提醒列表", "查看提醒", "列出提醒", "日程列表", "查看日程"})) {
+        return IntentRoute::directToolCall("schedule_list", {}, "schedule_list", 0.9);
+    }
+    // The reminder's contents may mention weather, battery or the current time.
+    // Resolve the outer request before any keyword-only query rules.
+    if (containsAny(normalized, {"提醒", "叫我"})) {
+        return routeReminder(normalized);
+    }
+
     if (containsAny(normalized, {"几点", "现在时间", "当前时间", "今天几号", "星期几"})) {
         return IntentRoute::directToolCall("get_current_time", {}, "time_query", 0.95);
     }
@@ -104,10 +151,6 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         return IntentRoute::directToolCall("holiday_query", {}, "holiday_query", 0.84);
     }
 
-    if (containsAny(normalized, {"提醒列表", "查看提醒", "列出提醒", "日程列表", "查看日程"})) {
-        return IntentRoute::directToolCall("schedule_list", {}, "schedule_list", 0.9);
-    }
-
     if (containsAny(normalized, {"安静一点", "别打扰", "勿扰", "专注模式"})) {
         QJsonObject args;
         args["mode"] = "focus";
@@ -124,29 +167,6 @@ IntentRoute IntentRouter::route(const QString& input, const QString& triggerTag)
         QJsonObject args;
         args["mode"] = "normal";
         return IntentRoute::directToolCall("set_proactive_mode", args, "set_normal_mode", 0.85);
-    }
-
-    if (containsAny(normalized, {"提醒我", "叫我", "提醒一下"}) && containsAny(normalized, {"分钟后", "分后"})) {
-        const int minutes = firstCapturedInt(normalized, 10);
-        QJsonObject args;
-        args["type"] = "once_at";
-        args["title"] = "提醒";
-        args["message"] = normalized;
-        args["delay_minutes"] = minutes;
-        return IntentRoute::directToolCall("schedule_create", args, "schedule_delay_minutes", 0.8);
-    }
-
-    if (containsAny(normalized, {"每隔", "每"}) && containsAny(normalized, {"提醒我", "提醒一下"}) && containsAny(normalized, {"分钟", "小时"})) {
-        int minutes = firstCapturedInt(normalized, 60);
-        if (normalized.contains("小时")) {
-            minutes *= 60;
-        }
-        QJsonObject args;
-        args["type"] = "interval";
-        args["title"] = "周期提醒";
-        args["message"] = normalized;
-        args["interval_minutes"] = minutes;
-        return IntentRoute::directToolCall("schedule_create", args, "schedule_interval", 0.75);
     }
 
     if (containsAny(normalized, {"lx music下一首", "lxmusic下一首", "lx下一首", "lx music切歌", "lxmusic切歌"})) {

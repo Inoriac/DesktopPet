@@ -20,7 +20,6 @@ struct BatchSelectionPolicy {
     
     // 优先级权重（可调参）
     double waitingTimeWeight = 1.0;      // 等待时长奖励（小时）
-    double importanceWeight = 0.5;       // 重要性（importance 字段）
     double emotionSalienceWeight = 0.3;  // 情绪显著性
     double mentionCountWeight = 0.2;     // 被提及/激活次数
     double goalRelevanceWeight = 0.4;    // 目标相关性（暂未实现）

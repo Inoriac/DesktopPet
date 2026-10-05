@@ -19,6 +19,8 @@
 class AgentScheduler : public QObject {
     Q_OBJECT
     friend class TestModuleConnectivity;
+    friend class TestAgentScheduler;
+    friend class TestScheduleConnectivity;
 
 public:
     explicit AgentScheduler(QObject* parent = nullptr);
@@ -28,6 +30,8 @@ public:
     using StateSink = std::function<bool(const QJsonObject&)>;
     void setStateSink(StateSink sink);
     bool synchronizeState();
+    bool storageAvailable() const;
+    void setUserBusyProvider(std::function<bool()> provider);
 
     void setToolRegistry(ToolRegistry* registry);
     void setStoragePath(const QString& storagePath);
@@ -42,8 +46,9 @@ public:
 
     ScheduledTask createTask(const QJsonObject& params, QString* errorMessage = nullptr);
     QList<ScheduledTask> tasks() const { return m_tasks; }
+    QList<ScheduledTask> completedTasks() const { return m_completedTasks; }
     bool cancelTask(const QString& id, QString* errorMessage = nullptr);
-    bool snoozeTask(const QString& id, int minutes, QString* errorMessage = nullptr);
+    bool snoozeTask(const QString& id, qint64 minutes, QString* errorMessage = nullptr);
 
     // 距最近一个待办 due 的毫秒数（已过期返回 0，无待办返回 -1）。不封顶，
     // 供 Daydream 触发判定「距待办 > N₂ 分钟」用。与 scheduleNextTick 同源。
@@ -58,7 +63,8 @@ signals:
 
 private:
     void checkDueTasks();
-    struct ExecutionResult { bool delivered = false; QString error; };
+    void checkDueTasksAt(const QDateTime& now);
+    struct ExecutionResult { bool delivered = false; QString error; bool deferred = false; };
     ExecutionResult executeTask(ScheduledTask& task, const QDateTime& now);
     bool acquireStorage() const;
     void queueState(const ScheduledTask& task, const QString& status,
@@ -72,6 +78,7 @@ private:
 
 private:
     QList<ScheduledTask> m_tasks;
+    QList<ScheduledTask> m_completedTasks;
     ToolRegistry* m_toolRegistry = nullptr; // non-owning
     ToolRuntime m_toolRuntime;
     QTimer m_timer;
@@ -79,6 +86,7 @@ private:
     mutable std::unique_ptr<QLockFile> m_storageLock;
     QMap<QString, QJsonObject> m_pendingStates;
     StateSink m_stateSink;
+    std::function<bool()> m_userBusyProvider;
     bool m_storageReady = true;
     bool m_running = false;
     QDateTime m_lastProactiveAt;

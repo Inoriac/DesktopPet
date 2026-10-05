@@ -7,6 +7,7 @@
 
 #include "ai/memory/daydream_relation_reviewer.h"
 #include "ai/memory/memory_store.h"
+#include "ai/memory/memory_metadata.h"
 #include "ai/model/model_router.h"
 
 namespace {
@@ -16,11 +17,11 @@ QJsonObject memoryJson(const MemoryEntry& entry, bool includeMetadata) {
     object.insert(QStringLiteral("id"), entry.id);
     object.insert(QStringLiteral("summary"), entry.summary.left(200));
     object.insert(QStringLiteral("content"), entry.content.left(700));
-    object.insert(QStringLiteral("tags"), QJsonArray::fromStringList(entry.tags));
+    object.insert(QStringLiteral("tags"), QJsonArray::fromStringList(MemoryMetadata::semanticTags(entry)));
     if (includeMetadata) {
         object.insert(QStringLiteral("source"), entry.source);
         object.insert(QStringLiteral("mention_count"), entry.mentionCount);
-        object.insert(QStringLiteral("importance"), entry.importance);
+        object.insert(QStringLiteral("session_ids"), QJsonArray::fromStringList(MemoryMetadata::sessionIds(entry)));
     } else {
         object.insert(QStringLiteral("type"), memoryTypeToString(entry.type));
     }

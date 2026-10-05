@@ -161,6 +161,7 @@ private slots:
     void enqueue_whenSessionHasOrderedEffects_shouldPersistBeforeBarrier();
     void enqueue_whenReinforcementContainsEightEntries_shouldUseOneTransaction();
     void enqueue_whenReinforcementSnapshotWasDeleted_shouldNotReactivateEntry();
+    void enqueue_whenReminderCompletesAfterReinforcementRead_shouldRetryWithoutReactivating();
     void enqueue_whenLogWriteFails_shouldWarnWithoutBlockingLaterEffects();
     void enqueue_whenQueueIsFull_shouldDropLogsBeforeCriticalEffects();
     void enqueue_whenBarrierWasAccepted_shouldRejectLaterSessionEffects();
@@ -338,6 +339,80 @@ enqueue_whenReinforcementSnapshotWasDeleted_shouldNotReactivateEntry() {
     QVERIFY(entry);
     QCOMPARE(entry->status, MemoryStatus::Deleted);
     QCOMPARE(entry->accessCount, 0);
+}
+
+void ChatSideEffectQueueTests::
+enqueue_whenReminderCompletesAfterReinforcementRead_shouldRetryWithoutReactivating() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath(QStringLiteral("memory.db")));
+    store.setStoragePath({});
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry reminder = memoryFor(1);
+    reminder.type = MemoryType::TaskShadow;
+    reminder.key = QStringLiteral("schedule:completed-during-read");
+    reminder.payload = {{QStringLiteral("linked_task_id"), QStringLiteral("completed-during-read")},
+                        {QStringLiteral("task_status"), QStringLiteral("active")}};
+    reminder = store.addEntry(reminder);
+    const MemoryEntry other = store.addEntry(memoryFor(2));
+    QVERIFY(!reminder.id.isEmpty());
+    QVERIFY(!other.id.isEmpty());
+    const auto batch = store.stageReinforcement({other.id, reminder.id});
+    const auto environment = environmentFor(directory);
+    std::atomic_int reads{0};
+    std::atomic_bool archived{false};
+    ChatSideEffectQueue queue;
+    queue.setTestLifecycleProbe(
+        [&, path = environment.memoryDatabasePath, id = reminder.id]
+        (const QString& phase, const QString&, quintptr) {
+            if (phase != QLatin1String("memory.reinforcement.read")) return;
+            if (reads.fetch_add(1) != 0) return;
+            // This connection is created and used on the worker thread, but
+            // commits independently of its already-open reinforcement snapshot.
+            const QString connection = QStringLiteral("scheduler-race-")
+                + QUuid::createUuid().toString(QUuid::WithoutBraces);
+            {
+                auto database = QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connection);
+                database.setDatabaseName(path);
+                if (database.open()) {
+                    QSqlQuery update(database);
+                    update.prepare(QStringLiteral(
+                        "UPDATE memory_items SET status='archived', summary='completed reminder', "
+                        "content='completed reminder', payload_json=json_set(payload_json, "
+                        "'$.task_status','completed','$.next_trigger_at','') WHERE id=:id"));
+                    update.bindValue(QStringLiteral(":id"), id);
+                    archived.store(update.exec() && update.numRowsAffected() == 1);
+                    update.finish();
+                    database.close();
+                }
+            }
+            QSqlDatabase::removeDatabase(connection);
+        });
+    QVERIFY(queue.start(environment).isOk());
+    QSignalSpy warnings(&queue, &ChatSideEffectQueue::persistenceWarning);
+    QSignalSpy barrier(&queue, &ChatSideEffectQueue::barrierCommitted);
+    DeferredChatSideEffect effect;
+    effect.type = ChatSideEffectType::MemoryReinforcement;
+    effect.requestId = QStringLiteral("reminder-race");
+    effect.sessionId = QStringLiteral("reminder-race-session");
+    effect.generation = 1;
+    effect.reinforcedEntries = batch.entries;
+    QVERIFY(queue.tryEnqueue(std::move(effect)));
+    QVERIFY(queue.tryEnqueueBarrier(QStringLiteral("reminder-race-session"), 1));
+    QTRY_COMPARE_WITH_TIMEOUT(barrier.size(), 1, 1000);
+
+    QVERIFY(archived.load());
+    QCOMPARE(reads.load(), 2); // The stale snapshot failed and was retried.
+    QCOMPARE(warnings.size(), 0);
+    const auto completed = store.readForRecall(reminder.id);
+    QVERIFY(completed.has_value());
+    QCOMPARE(completed->status, MemoryStatus::Archived);
+    QCOMPARE(completed->summary, QStringLiteral("completed reminder"));
+    QCOMPARE(completed->payload.value(QStringLiteral("task_status")).toString(), QStringLiteral("completed"));
+    QCOMPARE(completed->accessCount, 0);
+    const auto reinforced = store.readForRecall(other.id);
+    QVERIFY(reinforced.has_value());
+    QCOMPARE(reinforced->accessCount, 1);
 }
 
 void ChatSideEffectQueueTests::

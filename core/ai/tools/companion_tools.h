@@ -24,7 +24,9 @@ public:
 
 class ShowChatBubbleTool : public AITool {
 public:
-    using Callback = std::function<void(const QString& text, int durationMs)>;
+    // True means the UI accepted the text for display. A busy or unavailable
+    // surface must return false so scheduled reminders can retry.
+    using Callback = std::function<bool(const QString& text, int durationMs)>;
 
     explicit ShowChatBubbleTool(Callback callback);
 

@@ -7,9 +7,23 @@
 #include <QJsonArray>
 #include <QTimeZone>
 
+#include <cmath>
+
 namespace {
+constexpr qint64 kMaxJsonInteger = 9007199254740991LL;
+
+qint64 durationFromJson(const QJsonValue& value, qint64 fallback) {
+    if (value.isUndefined()) return fallback;
+    const double number = value.toDouble(-1.0);
+    if (!value.isDouble() || !std::isfinite(number) || number < 0.0
+        || number > static_cast<double>(kMaxJsonInteger) || std::trunc(number) != number) {
+        return -1;
+    }
+    return static_cast<qint64>(number);
+}
+
 QString dateTimeToString(const QDateTime& value) {
-    return value.isValid() ? value.toString(Qt::ISODate) : QString();
+    return value.isValid() ? value.toString(Qt::ISODateWithMs) : QString();
 }
 
 QDateTime dateTimeFromString(const QString& value) {
@@ -40,7 +54,7 @@ QJsonObject ScheduledTask::toJson() const {
     if (triggerType == "once_at") {
         trigger["at"] = dateTimeToString(onceAt);
     } else if (triggerType == "daily_at") {
-        trigger["time"] = dailyAt.toString("HH:mm");
+        trigger["time"] = dailyAt.toString("HH:mm:ss");
     } else if (triggerType == "interval") {
         trigger["interval_ms"] = intervalMs;
     }
@@ -95,12 +109,12 @@ ScheduledTask ScheduledTask::fromJson(const QJsonObject& obj) {
     task.triggerType = trigger.value("type").toString("once_at");
     task.onceAt = dateTimeFromString(trigger.value("at").toString());
     task.dailyAt = timeFromString(trigger.value("time").toString());
-    task.intervalMs = trigger.value("interval_ms").toInt(0);
+    task.intervalMs = durationFromJson(trigger.value("interval_ms"), 0);
 
     const QJsonObject policy = obj.value("policy").toObject();
     task.respectQuietHours = policy.value("respect_quiet_hours").toBool(true);
     task.skipWhenUserBusy = policy.value("skip_when_user_busy").toBool(false);
-    task.minGapMs = policy.value("min_gap_ms").toInt(0);
+    task.minGapMs = durationFromJson(policy.value("min_gap_ms"), 0);
     task.allowLlm = policy.value("allow_llm").toBool(false);
     task.allowNetwork = policy.value("allow_network").toBool(false);
 
@@ -124,6 +138,17 @@ ScheduledTask ScheduledTask::fromJson(const QJsonObject& obj) {
 }
 
 bool ScheduledTask::isValid(QString* errorMessage) const {
+    for (const auto& timestamp : {onceAt, createdAt, updatedAt, lastTriggeredAt, nextTriggerAt}) {
+        // QDateTime supports years outside the range that ISODate can persist.
+        if (timestamp.isValid() && dateTimeToString(timestamp).isEmpty()) {
+            if (errorMessage) *errorMessage = "任务时间超出 ISO 日期可保存范围";
+            return false;
+        }
+    }
+    if (minGapMs < 0 || minGapMs > kMaxJsonInteger) {
+        if (errorMessage) *errorMessage = "任务最小间隔必须是 JSON 安全范围内的非负整数";
+        return false;
+    }
     if (id.trimmed().isEmpty()) {
         if (errorMessage) *errorMessage = "任务 id 不能为空";
         return false;
@@ -147,8 +172,8 @@ bool ScheduledTask::isValid(QString* errorMessage) const {
             return false;
         }
     } else if (triggerType == "interval") {
-        if (intervalMs < 60000) {
-            if (errorMessage) *errorMessage = "固定间隔任务的间隔不能小于 60 秒";
+        if (intervalMs < 60000 || intervalMs > kMaxJsonInteger) {
+            if (errorMessage) *errorMessage = "固定间隔必须是至少 60000 毫秒且不超过 JSON 安全范围的整数";
             return false;
         }
     } else {

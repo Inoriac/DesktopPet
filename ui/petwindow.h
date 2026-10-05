@@ -111,7 +111,8 @@ private:
     void requestVisionSummary(const QString& screenshotPath,
                               const QString& reason,
                               bool debugSaveScreenshotOnly);
-    void showBubbleMessage(const QString& message, int durationMs = -1);
+    bool showBubbleMessage(const QString& message, int durationMs = -1);
+    bool showToolBubbleMessage(const QString& message, int durationMs);
     void showBubbleMessageNow(const QString& message, int durationMs = -1, bool forceRefreshGlass = true);
     void showBubbleMessageAnimated(const QString& message, int durationMs = -1);
     void showBubbleInput();
@@ -228,6 +229,8 @@ private:
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;
     QElapsedTimer screenChatOpportunityClock;
+    QElapsedTimer toolBubbleOccupancyClock;
+    int toolBubbleOccupancyMs = 0;
     int screenChatBaseIntervalMs = 480000;
     QTimer* bubbleHideTimer = nullptr;
     QTimer* thinkingBubbleTimer = nullptr;

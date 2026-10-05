@@ -3,6 +3,7 @@
 #include <QDateTime>
 #include <algorithm>
 
+#include "memory_metadata.h"
 #include "memory_relation_graph.h"
 
 namespace {
@@ -31,9 +32,7 @@ int HybridGraphBuilder::buildForConsolidationBatch(const QList<MemoryEntry>& res
         for (int j = i + 1; j < results.size(); ++j) {
             const MemoryEntry& a = results.at(i);
             const MemoryEntry& b = results.at(j);
-            const QString hintA = contextHintFor(a);
-            const QString hintB = contextHintFor(b);
-            if (hintA.isEmpty() || hintA != hintB) continue;
+            if (!MemoryMetadata::shareContext(a, b)) continue;
 
             const bool aAtCap = mentionedCountPerNode.value(a.id, 0)
                 >= m_policy.mentionedWithMaxPerNode;
@@ -63,9 +62,11 @@ int HybridGraphBuilder::buildForConsolidationBatch(const QList<MemoryEntry>& res
         for (int j = i + 1; j < results.size(); ++j) {
             const MemoryEntry& a = results.at(i);
             const MemoryEntry& b = results.at(j);
-            if (a.tags.isEmpty() || b.tags.isEmpty()) continue;
-            const QSet<QString> tagsA(a.tags.begin(), a.tags.end());
-            const QSet<QString> tagsB(b.tags.begin(), b.tags.end());
+            const QStringList semanticA = MemoryMetadata::semanticTags(a);
+            const QStringList semanticB = MemoryMetadata::semanticTags(b);
+            if (semanticA.isEmpty() || semanticB.isEmpty()) continue;
+            const QSet<QString> tagsA(semanticA.begin(), semanticA.end());
+            const QSet<QString> tagsB(semanticB.begin(), semanticB.end());
             const int shared = (tagsA & tagsB).size();
             if (shared <= 0) continue;
             const double weight = qMin(
@@ -150,15 +151,4 @@ HybridGraphBuilder::MaintenanceStats HybridGraphBuilder::maintain(
         stats.capRemoved += m_graph.enforceAssociativeEdgeCap(nodeId);
     }
     return stats;
-}
-
-QString HybridGraphBuilder::contextHintFor(const MemoryEntry& entry) {
-    const QString sessionId = entry.payload.value(
-        QStringLiteral("session_id")).toString();
-    if (!sessionId.isEmpty()) return sessionId;
-    const QString task = entry.payload.value(QStringLiteral("task")).toString();
-    if (!task.isEmpty()) return QStringLiteral("task:") + task;
-    const QString tool = entry.payload.value(QStringLiteral("tool")).toString();
-    if (!tool.isEmpty()) return QStringLiteral("tool:") + tool;
-    return {};
 }

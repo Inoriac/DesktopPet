@@ -3,6 +3,7 @@
 //
 
 #include "ai_brain.h"
+#include "memory/memory_metadata.h"
 
 #include "chat/chat_preparation_types.h"
 
@@ -20,6 +21,67 @@
 #include "tools/runtime/tool_policy.h"
 #include "memory/working_memory_cache.h"
 #include "skill/skill_matcher.h"
+
+namespace {
+QString reminderTime(const QJsonObject& task) {
+    const auto time = QDateTime::fromString(task.value("next_trigger_at").toString(), Qt::ISODate);
+    return time.isValid() ? time.toLocalTime().toString(QStringLiteral("yyyy-MM-dd HH:mm:ss"))
+                          : QStringLiteral("未安排");
+}
+
+QString reminderDescription(const QJsonObject& task) {
+    const QString title = task.value("title").toString();
+    const QString message = task.value("message").toString();
+    return message.isEmpty() || message == title ? title
+        : QStringLiteral("%1：%2").arg(title, message);
+}
+
+QString scheduleResponse(const QString& toolName, const QJsonObject& data) {
+    if (toolName == QLatin1String("schedule_create")) {
+        const auto task = data.value("task").toObject();
+        return QStringLiteral("已创建提醒：%1\nID：%2\n下次提醒：%3（本地时间）")
+            .arg(reminderDescription(task), task.value("id").toString(), reminderTime(task));
+    }
+    if (toolName == QLatin1String("schedule_cancel")) {
+        return QStringLiteral("已取消提醒，ID：%1。").arg(data.value("id").toString());
+    }
+    if (toolName == QLatin1String("schedule_snooze")) {
+        const auto task = data.value("task").toObject();
+        return QStringLiteral("已推迟提醒：%1\nID：%2\n下次提醒：%3（本地时间）")
+            .arg(reminderDescription(task), data.value("id").toString(),
+                 reminderTime(task.isEmpty() ? data : task));
+    }
+    if (toolName != QLatin1String("schedule_list")) return {};
+
+    const auto tasks = data.value("tasks").toArray();
+    const int total = data.value("total_count").toInt(tasks.size());
+    QStringList lines;
+    lines.append(total == 0 ? QStringLiteral("当前没有待提醒任务。")
+                           : QStringLiteral("当前有 %1 个提醒，本页显示 %2 个：").arg(total).arg(tasks.size()));
+    for (const auto& value : tasks) {
+        const auto task = value.toObject();
+        lines.append(QStringLiteral("%1%2\nID：%3；下次提醒：%4（本地时间）")
+            .arg(task.value("enabled").toBool(true) ? QString() : QStringLiteral("[已停用] "),
+                 reminderDescription(task), task.value("id").toString(), reminderTime(task)));
+    }
+    if (data.value("has_more").toBool())
+        lines.append(QStringLiteral("还有提醒未显示，可以继续查询更多提醒。"));
+    const auto completed = data.value("recent_completed").toArray();
+    const int completedTotal = data.value("recent_completed_total").toInt(completed.size());
+    if (completedTotal > 0) {
+        lines.append(QStringLiteral("最近已完成的提醒（共 %1 个，本页 %2 个；可按 ID 稍后再提醒）：")
+            .arg(completedTotal).arg(completed.size()));
+        for (const auto& value : completed) {
+            const auto task = value.toObject();
+            lines.append(QStringLiteral("%1\nID：%2").arg(
+                reminderDescription(task), task.value("id").toString()));
+        }
+        if (data.value("completed_has_more").toBool())
+            lines.append(QStringLiteral("还有已完成记录未显示，可以继续查询。"));
+    }
+    return lines.join(QLatin1Char('\n'));
+}
+}
 
 bool AIBrain::tryHandleRoutedIntent(const IntentRoute& route,
                                     const QString& reason,
@@ -67,9 +129,10 @@ bool AIBrain::tryHandleRoutedIntent(const IntentRoute& route,
                     toolMessage.name = toolName;
                     toolMessage.content = resolvedPayload;
 
-                    const QString responseText = resolved.result.success
-                        ? QStringLiteral("已完成。")
+                    QString responseText = resolved.result.success
+                        ? scheduleResponse(toolName, resolved.result.data)
                         : QStringLiteral("操作未执行：%1").arg(resolved.result.errorMessage);
+                    if (responseText.isEmpty()) responseText = QStringLiteral("已完成。");
                     publishActiveStage(ChatActivityStage::Finalizing);
                     appendActiveDelta(responseText);
                     publishActiveStage(ChatActivityStage::Finalizing);
@@ -95,7 +158,9 @@ bool AIBrain::tryHandleRoutedIntent(const IntentRoute& route,
         if (outcome.policyDecision.needsConfirmation()) {
             responseText = QString("这个操作需要你确认后才能执行：%1").arg(outcome.policyDecision.reason);
         } else if (outcome.result.success) {
-            if (route.toolName == "lx_music_status") {
+            if (route.toolName.startsWith(QLatin1String("schedule_"))) {
+                responseText = scheduleResponse(route.toolName, outcome.result.data);
+            } else if (route.toolName == "lx_music_status") {
                 const QString status = outcome.result.data.value("status").toString();
                 const QString name = outcome.result.data.value("name").toString();
                 const QString singer = outcome.result.data.value("singer").toString();
@@ -274,6 +339,11 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
                                       : QStringLiteral("router"),
                        toolName};
     toolMemory.source = QStringLiteral("tool_result");
+    MemoryMetadata::recordSession(toolMemory, sessionId);
+    toolMemory.payload[QStringLiteral("request_id")] = outcome.requestId;
+    // A tool context identifies the actual invocation, not every use of its name.
+    toolMemory.payload[QStringLiteral("tool")] = outcome.requestId;
+    toolMemory.payload[QStringLiteral("source_tags")] = QJsonArray::fromStringList(toolMemory.tags);
     annotateMemoryEntry(toolMemory);
     MemoryMutationBatch mutations;
     m_memoryStore.stageEntry(toolMemory, &mutations);

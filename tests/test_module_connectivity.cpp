@@ -131,6 +131,8 @@ private slots:
     void reminderMemoryOutboxSurvivesRestart();
     void profileSchedulersHaveExclusiveOwnership();
     void corruptScheduleIsNotOverwritten();
+    void structurallyInvalidSchedulesArePreserved_data();
+    void structurallyInvalidSchedulesArePreserved();
     void chatFeedsRelationshipAndGrowthSurvivesRestart();
     void growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests();
     void manualDaydreamBypassesInitialIdleAndCancelsOnChat();
@@ -288,6 +290,73 @@ void TestModuleConnectivity::corruptScheduleIsNotOverwritten() {
     QVERIFY(scheduler.createTask(reminder()).id.isEmpty());
     QVERIFY(file.open(QIODevice::ReadOnly));
     QCOMPARE(file.readAll(), QByteArray("broken"));
+}
+
+void TestModuleConnectivity::structurallyInvalidSchedulesArePreserved_data() {
+    QTest::addColumn<QByteArray>("payload");
+    ScheduledTask task;
+    task.id = "valid-task";
+    task.title = task.message = "reminder";
+    task.onceAt = task.nextTriggerAt = QDateTime::currentDateTime().addSecs(3600);
+    const auto valid = task.toJson();
+    const auto add = [](const char* name, const QJsonObject& root) {
+        QTest::newRow(name) << QJsonDocument(root).toJson();
+    };
+    add("missing-tasks", {});
+    add("future-version", {{"version", 99}, {"tasks", QJsonArray{valid}}});
+    add("tasks-wrong-type", {{"tasks", QJsonObject{{"saved", valid}}}});
+    add("invalid-row-alongside-valid", {{"tasks", QJsonArray{valid, QJsonObject{}}}});
+    add("duplicate-id", {{"tasks", QJsonArray{valid, valid}}});
+    add("pending-wrong-type", {{"tasks", QJsonArray{valid}}, {"pending_states", "damaged"}});
+    auto pending = valid;
+    pending["status"] = "unknown";
+    add("invalid-pending-status", {{"tasks", QJsonArray{valid}}, {"pending_states", QJsonArray{pending}}});
+    pending["status"] = "active";
+    add("duplicate-pending-id", {{"tasks", QJsonArray{valid}}, {"pending_states", QJsonArray{pending, pending}}});
+    auto unsupportedAction = valid;
+    auto actions = unsupportedAction.value("actions").toArray();
+    actions.append(QJsonObject{{"tool", "unsupported_action"}, {"arguments", QJsonObject{}}});
+    unsupportedAction["actions"] = actions;
+    add("unsupported-action", {{"tasks", QJsonArray{unsupportedAction}}});
+    auto badTimestamp = valid;
+    badTimestamp["next_trigger_at"] = "not-a-time";
+    add("invalid-due-date", {{"tasks", QJsonArray{badTimestamp}}});
+    auto badPolicy = valid;
+    badPolicy["policy"] = QJsonObject{{"respect_quiet_hours", "false"}};
+    add("invalid-policy-type", {{"tasks", QJsonArray{badPolicy}}});
+    auto badSource = valid;
+    badSource["source"] = 3;
+    add("invalid-source", {{"tasks", QJsonArray{badSource}}});
+    auto badPriority = valid;
+    badPriority["priority"] = "urgent";
+    add("invalid-priority", {{"tasks", QJsonArray{badPriority}}});
+    add("completed-wrong-type", {{"tasks", QJsonArray{valid}}, {"completed_tasks", QJsonObject{}}});
+    add("invalid-completed-row", {{"tasks", QJsonArray{}}, {"completed_tasks", QJsonArray{valid}}});
+}
+
+void TestModuleConnectivity::structurallyInvalidSchedulesArePreserved() {
+    QFETCH(QByteArray, payload);
+    QTemporaryDir directory;
+    const QString path = directory.filePath("tasks.json");
+    AgentScheduler scheduler;
+    scheduler.setStoragePath(path);
+    const auto original = scheduler.createTask(reminder());
+    QVERIFY(!original.id.isEmpty());
+    scheduler.start();
+    QFile file(path);
+    QVERIFY(file.open(QIODevice::WriteOnly | QIODevice::Truncate));
+    QCOMPARE(file.write(payload), payload.size());
+    file.close();
+    QVERIFY(!scheduler.load());
+    QVERIFY(!scheduler.isRunning());
+    QCOMPARE(scheduler.tasks().size(), 1);
+    QCOMPARE(scheduler.tasks().first().id, original.id);
+    scheduler.setStateSink([](const QJsonObject&) { return true; });
+    QVERIFY(!scheduler.save());
+    QVERIFY(scheduler.createTask(reminder()).id.isEmpty());
+    QVERIFY(!ScheduleListTool(&scheduler).execute({}).success);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), payload);
 }
 
 void TestModuleConnectivity::chatFeedsRelationshipAndGrowthSurvivesRestart() {

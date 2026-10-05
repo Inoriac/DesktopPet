@@ -1,7 +1,11 @@
 #include "memory_policy.h"
 
 #include <QCryptographicHash>
+#include <QRegularExpression>
 
+#include <optional>
+
+#include "memory_metadata.h"
 #include "memory_store.h"
 
 namespace {
@@ -29,23 +33,74 @@ int countSharedTags(const QStringList& tagsA, const QStringList& tagsB) {
     return count;
 }
 
-bool isSentimentOpposite(const QString& summaryA, const QString& summaryB) {
-    static const QList<QPair<QString, QString>> opposites = {
-        {QStringLiteral("喜欢"), QStringLiteral("不喜欢")},
-        {QStringLiteral("希望"), QStringLiteral("不希望")},
-        {QStringLiteral("喜欢"), QStringLiteral("讨厌")},
-        {QStringLiteral("想要"), QStringLiteral("不想要")},
-        {QStringLiteral("喜欢"), QStringLiteral("不希望")},
-        {QStringLiteral("希望"), QStringLiteral("不喜欢")},
-    };
+struct PreferenceAssertion {
+    QString subject;
+    QString attribute;
+    QString object;
+    bool positive = false;
+};
 
-    for (const auto& pair : opposites) {
-        if ((summaryA.contains(pair.first) && summaryB.contains(pair.second))
-            || (summaryA.contains(pair.second) && summaryB.contains(pair.first))) {
-            return true;
-        }
+std::optional<PreferenceAssertion> parsePreferenceAssertion(QString text,
+                                                            bool implicitUser) {
+    text = text.trimmed();
+    if (implicitUser) {
+        static const QRegularExpression rememberPrefix(QStringLiteral(
+            "^(?:请)?(?:帮我)?(?:记住|记一下|记下来)[：:，, ]*"));
+        text.remove(rememberPrefix);
     }
-    return false;
+    text.remove(QRegularExpression(QStringLiteral("[。.!！]+$")));
+    static const QRegularExpression statement(QStringLiteral(
+        "^(我|用户)?\\s*(不喜欢|讨厌|不希望|不想要|喜欢|希望|想要)[：:，, ]*(.+)$"));
+    const QRegularExpressionMatch match = statement.match(text);
+    if (!match.hasMatch() || (match.captured(1).isEmpty() && !implicitUser)) {
+        return std::nullopt;
+    }
+
+    const QString object = match.captured(3).simplified().toCaseFolded();
+    // Only assert a conflict for a complete, unambiguous proposition. Compound
+    // clauses, alternatives and uncertainty need model review, not a rule edge.
+    static const QRegularExpression ambiguousObject(QStringLiteral(
+        "[，,。.!！?？；;：:\\r\\n]|但是|不过|然而|如果|是否|是不是|也许|可能|据说|"
+        "或者|还是|喜欢|讨厌|希望|想要"));
+    if (object.isEmpty() || ambiguousObject.match(object).hasMatch()) {
+        return std::nullopt;
+    }
+
+    const QString predicate = match.captured(2);
+    PreferenceAssertion assertion;
+    assertion.subject = QStringLiteral("user");
+    assertion.object = object;
+    assertion.positive = !predicate.startsWith(QStringLiteral("不"))
+        && predicate != QStringLiteral("讨厌");
+    if (predicate.endsWith(QStringLiteral("喜欢")) || predicate == QStringLiteral("讨厌")) {
+        assertion.attribute = QStringLiteral("likes");
+    } else if (predicate.endsWith(QStringLiteral("希望"))) {
+        assertion.attribute = QStringLiteral("hopes");
+    } else {
+        assertion.attribute = QStringLiteral("wants");
+    }
+    return assertion;
+}
+
+std::optional<PreferenceAssertion> preferenceAssertion(const MemoryEntry& entry) {
+    // rule_v1 rewrites both dislikes and negative wishes as "用户不希望...".
+    // Its original evidence preserves which property the user actually stated.
+    if (entry.payload.value(QStringLiteral("extractor")).toString() == QStringLiteral("rule_v1")) {
+        if (entry.evidence.size() != 1) return std::nullopt;
+        return parsePreferenceAssertion(entry.evidence.first(), true);
+    }
+    return parsePreferenceAssertion(
+        entry.content.trimmed().isEmpty() ? entry.summary : entry.content, false);
+}
+
+bool hasOppositeAssertion(const MemoryEntry& a, const MemoryEntry& b) {
+    const auto assertionA = preferenceAssertion(a);
+    const auto assertionB = preferenceAssertion(b);
+    return assertionA && assertionB
+        && assertionA->subject == assertionB->subject
+        && assertionA->attribute == assertionB->attribute
+        && assertionA->object == assertionB->object
+        && assertionA->positive != assertionB->positive;
 }
 
 bool isFirstOfScopeAndType(const MemoryStore* store, const MemoryEntry& entry) {
@@ -219,16 +274,17 @@ void MemoryPolicy::discoverRelations(const MemoryEntry& newEntry,
             continue;
         }
 
-        // ConflictsWith: same scope, sentiment opposite
+        // ConflictsWith requires the same proposition with opposite polarity.
         if (!existing.scope.isEmpty() && existing.scope == newEntry.scope
-            && isSentimentOpposite(newEntry.summary, existing.summary)) {
+            && hasOppositeAssertion(newEntry, existing)) {
             mutations->relations.append(stagedRelation(
                 newEntry, existing, MemoryRelationType::ConflictsWith, 0.8));
             ++report->relationsCreated;
         }
 
-        // Related: shared tags >= 2
-        if (countSharedTags(newEntry.tags, existing.tags) >= 2) {
+        // Source and routing tags do not establish a shared topic.
+        if (countSharedTags(MemoryMetadata::semanticTags(newEntry),
+                            MemoryMetadata::semanticTags(existing)) >= 2) {
             mutations->relations.append(stagedRelation(
                 newEntry, existing, MemoryRelationType::Related, 0.6));
             ++report->relationsCreated;

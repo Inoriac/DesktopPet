@@ -1,6 +1,7 @@
 #include "actr_ranker.h"
 #include "recall_text.h"
 #include "partition_policy.h"
+#include "memory_metadata.h"
 
 #include <algorithm>
 #include <cmath>
@@ -42,7 +43,7 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
             + QLatin1Char(' ') + candidate.entry.scope);
         candidate.lexicalCue = RecallText::lexicalCoverage(cue.normalizedQuery, cue.tokens,
             QSet<QString>(terms.cbegin(), terms.cend()), cue.tokenWeights);
-        candidate.tagCue = RecallText::tagCoverage(cue.knownTags, candidate.entry.tags);
+        candidate.tagCue = RecallText::tagCoverage(cue.knownTags, MemoryMetadata::semanticTags(candidate.entry));
         candidate.cueMatch = m_lexicalCueCoeff * std::max(candidate.lexicalCue, candidate.tagCue)
             / (m_semanticCueCoeff + m_lexicalCueCoeff);
         // Embedding channels provide the semantic part of C_i.  Keep the
@@ -143,7 +144,7 @@ double ACTRRanker::computeCueMatch(const MemoryEntry& entry,
         + QLatin1Char(' ') + entry.content + QLatin1Char(' ') + entry.scope);
     const double lexical = RecallText::lexicalCoverage(cue.normalizedQuery, cue.tokens,
         QSet<QString>(tokens.cbegin(), tokens.cend()), cue.tokenWeights);
-    const double tag = RecallText::tagCoverage(cue.knownTags, entry.tags);
+    const double tag = RecallText::tagCoverage(cue.knownTags, MemoryMetadata::semanticTags(entry));
     // Correlated text/tag evidence competes for one bounded contribution.
     return m_lexicalCueCoeff * std::max(lexical, tag) / (m_semanticCueCoeff + m_lexicalCueCoeff);
 }

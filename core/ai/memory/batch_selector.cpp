@@ -6,41 +6,16 @@
 
 #include "memory_store.h"
 #include "memory_relation_graph.h"
+#include "memory_metadata.h"
 
 namespace {
 
-constexpr int kSessionWindowMinutes = 30;  // 同会话窗口：30分钟内
 constexpr int kTemporalAdjacentMinutes = 10;  // 时间邻接：10分钟内
-constexpr double kMinTextSimilarityThreshold = 0.3;  // 文本相似度门槛
+constexpr double kMinTextSimilarity = 0.3;
 
 // 提取情绪显著性（直接用 emotionIntensity 字段）
 double extractEmotionSalience(const MemoryEntry& entry) {
     return entry.emotionIntensity;
-}
-
-// 简单 Jaccard 相似度（用标签 + 词粒度文本）
-double computeJaccardSimilarity(const QStringList& tagsA, const QString& textA,
-                                 const QStringList& tagsB, const QString& textB) {
-    QSet<QString> setA;
-    for (const QString& tag : tagsA) setA.insert(tag.toLower());
-    const QStringList wordsA = textA.toLower().split(
-        QRegularExpression(QStringLiteral("\\W+")), Qt::SkipEmptyParts);
-    for (const QString& word : wordsA) {
-        if (word.length() >= 3) setA.insert(word);
-    }
-    
-    QSet<QString> setB;
-    for (const QString& tag : tagsB) setB.insert(tag.toLower());
-    const QStringList wordsB = textB.toLower().split(
-        QRegularExpression(QStringLiteral("\\W+")), Qt::SkipEmptyParts);
-    for (const QString& word : wordsB) {
-        if (word.length() >= 3) setB.insert(word);
-    }
-    
-    if (setA.isEmpty() && setB.isEmpty()) return 0.0;
-    const int intersectionSize = (setA & setB).size();
-    const int unionSize = (setA | setB).size();
-    return unionSize > 0 ? static_cast<double>(intersectionSize) / unionSize : 0.0;
 }
 
 } // namespace
@@ -93,8 +68,7 @@ double BatchSelector::computePriority(const MemoryEntry& entry,
     const double waitingHours = waitingMs / 3600000.0;
     score += waitingHours * m_policy.waitingTimeWeight;
     
-    // 重要性
-    score += entry.importance * m_policy.importanceWeight;
+    // Importance is assessed by the model after selection, not an inbox signal.
     
     // 情绪显著性
     const double emotionSalience = extractEmotionSalience(entry);
@@ -127,13 +101,7 @@ QList<PriorityCandidate> BatchSelector::gatherCandidates(const QDateTime& now) c
         candidate.waitingHours = entry.createdAt.msecsTo(now) / 3600000.0;
         
         // clusterHint：优先用 payload 中的 session_id，其次 task/tool
-        candidate.clusterHint = entry.payload.value(QStringLiteral("session_id")).toString();
-        if (candidate.clusterHint.isEmpty()) {
-            const QString task = entry.payload.value(QStringLiteral("task")).toString();
-            const QString tool = entry.payload.value(QStringLiteral("tool")).toString();
-            if (!task.isEmpty()) candidate.clusterHint = QStringLiteral("task:") + task;
-            else if (!tool.isEmpty()) candidate.clusterHint = QStringLiteral("tool:") + tool;
-        }
+        candidate.clusterHint = MemoryMetadata::contextHint(entry);
         
         candidates.append(candidate);
     }
@@ -215,10 +183,8 @@ QList<MemoryEntry> BatchSelector::expandScenarioClusters(
     
     QMap<QString, int> clusterSizes;  // 每簇已有记忆数
     for (const MemoryEntry& anchor : anchors) {
-        const QString sessionId = anchor.payload.value(QStringLiteral("session_id")).toString();
-        const QString hint = sessionId.isEmpty()
-            ? QStringLiteral("orphan")
-            : sessionId;
+        const QString context = MemoryMetadata::contextHint(anchor);
+        const QString hint = context.isEmpty() ? QStringLiteral("unassigned:") + anchor.id : context;
         clusterSizes[hint]++;
     }
     
@@ -226,10 +192,8 @@ QList<MemoryEntry> BatchSelector::expandScenarioClusters(
     for (const MemoryEntry& anchor : anchors) {
         if (batch.size() >= maxTotal) break;
         
-        const QString anchorSession = anchor.payload.value(QStringLiteral("session_id")).toString();
-        const QString clusterHint = anchorSession.isEmpty()
-            ? QStringLiteral("orphan")
-            : anchorSession;
+        const QString context = MemoryMetadata::contextHint(anchor);
+        const QString clusterHint = context.isEmpty() ? QStringLiteral("unassigned:") + anchor.id : context;
         const int currentClusterSize = clusterSizes.value(clusterHint, 0);
         
         if (currentClusterSize >= m_policy.clusterMaxSize) {
@@ -254,9 +218,10 @@ QList<MemoryEntry> BatchSelector::expandScenarioClusters(
             if (temporallyAdjacent(anchor, cand.entry)) score += 5.0;
             if (sameCausalChain(anchor, cand.entry)) score += 8.0;
             score += sharedTagCount(anchor, cand.entry) * 2.0;
-            score += textSimilarity(anchor, cand.entry) * 3.0;
+            const double contentSimilarity = textSimilarity(anchor, cand.entry);
+            score += contentSimilarity * 3.0;
             
-            if (score >= 5.0) {  // 至少要有一定相关性
+            if (score >= 5.0 || contentSimilarity >= kMinTextSimilarity) {
                 scored.append({cand.entry, score});
             }
         }
@@ -291,13 +256,10 @@ QList<MemoryEntry> BatchSelector::expandScenarioClusters(
 
 bool BatchSelector::sameSessionWindow(const MemoryEntry& a,
                                       const MemoryEntry& b) const {
-    const QString sessionA = a.payload.value(QStringLiteral("session_id")).toString();
-    const QString sessionB = b.payload.value(QStringLiteral("session_id")).toString();
-    if (!sessionA.isEmpty() && sessionA == sessionB) {
-        return true;
-    }
-    const qint64 diffMs = qAbs(a.createdAt.msecsTo(b.createdAt));
-    return diffMs <= kSessionWindowMinutes * 60 * 1000;
+    const auto sessionsA = MemoryMetadata::sessionIds(a);
+    const auto sessionsB = MemoryMetadata::sessionIds(b);
+    for (const auto& id : sessionsA) if (sessionsB.contains(id)) return true;
+    return false; // Unknown or different sessions are not the same context.
 }
 
 bool BatchSelector::temporallyAdjacent(const MemoryEntry& a,
@@ -338,12 +300,13 @@ bool BatchSelector::sameCausalChain(const MemoryEntry& a,
 
 double BatchSelector::textSimilarity(const MemoryEntry& a,
                                      const MemoryEntry& b) const {
-    return computeJaccardSimilarity(a.tags, a.content, b.tags, b.content);
+    return MemoryMetadata::textSimilarity(a, b);
 }
 
 int BatchSelector::sharedTagCount(const MemoryEntry& a,
                                   const MemoryEntry& b) const {
-    QSet<QString> tagsA = QSet<QString>(a.tags.begin(), a.tags.end());
-    QSet<QString> tagsB = QSet<QString>(b.tags.begin(), b.tags.end());
+    const auto left = MemoryMetadata::semanticTags(a), right = MemoryMetadata::semanticTags(b);
+    QSet<QString> tagsA(left.cbegin(), left.cend());
+    QSet<QString> tagsB(right.cbegin(), right.cend());
     return (tagsA & tagsB).size();
 }

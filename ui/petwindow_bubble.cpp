@@ -16,13 +16,13 @@
 
 #include <algorithm>
 
-void PetWindow::showBubbleMessage(const QString& message, int durationMs) {
+bool PetWindow::showBubbleMessage(const QString& message, int durationMs) {
     if (!outputBubble || !streamingTextPaginator
         || !bubblePlaybackController) {
-        return;
+        return false;
     }
     if (!streamingBubbleMessageId.isEmpty() && !streamingBubbleFinished) {
-        return;
+        return false;
     }
     stopTypewriterBubble();
     if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
@@ -44,6 +44,23 @@ void PetWindow::showBubbleMessage(const QString& message, int durationMs) {
     }
     updateOutputBubblePosition();
     scheduleFinishedBubbleHide();
+    return true;
+}
+
+bool PetWindow::showToolBubbleMessage(const QString& message, int durationMs) {
+    // Reminders due together must each get their own reading time. Leave the
+    // next task pending until this reminder's pages have been read as well.
+    if (toolBubbleOccupancyClock.isValid()
+        && (toolBubbleOccupancyClock.elapsed() < toolBubbleOccupancyMs
+            || (bubblePlaybackController
+                && (bubblePlaybackController->hasUnreadPages()
+                    || bubblePlaybackController->isHovered())))) {
+        return false;
+    }
+    if (!showBubbleMessage(message, durationMs)) return false;
+    toolBubbleOccupancyMs = qMax(1000, durationMs);
+    toolBubbleOccupancyClock.start();
+    return true;
 }
 
 void PetWindow::showBubbleMessageNow(const QString& message, int durationMs, bool forceRefreshGlass) {

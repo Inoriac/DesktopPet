@@ -112,7 +112,7 @@ public:
     Stats applyDecisions(const Snapshot& snapshot,
                          const QList<Decision>& decisions);
 
-    // Synchronous fallback used when the LLM is unavailable.
+    // Offline fallback keeps unassessed impressions pending for a later model call.
     Stats runHardcodedDrain(int maxItems = SESSION_LIMIT);
 
 private:

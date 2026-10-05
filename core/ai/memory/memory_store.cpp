@@ -919,6 +919,102 @@ bool MemoryStore::updateTaskShadowStatus(const QString& linkedTaskId,
     return changed;
 }
 
+bool MemoryStore::synchronizeTaskShadow(const MemoryEntry& projection,
+                                      QString* errorMessage) {
+    const QString taskId = projection.payload.value(QStringLiteral("linked_task_id")).toString();
+    const auto fail = [&](const QString& message) {
+        if (errorMessage) *errorMessage = message;
+        return false;
+    };
+    if (projection.type != MemoryType::TaskShadow || taskId.trimmed().isEmpty())
+        return fail(QStringLiteral("invalid task shadow projection"));
+    if (!openDatabase(errorMessage)) return false;
+
+    const auto matches = [&](const MemoryEntry& entry) {
+        return entry.type == MemoryType::TaskShadow
+            && (entry.payload.value(QStringLiteral("linked_task_id")).toString() == taskId
+                || entry.key == QStringLiteral("schedule:") + taskId);
+    };
+    MemoryEntry* local = nullptr;
+    for (auto& entry : m_entries) {
+        if (!matches(entry)) continue;
+        // A queued chat forget is already authoritative in this process.
+        if (entry.status == MemoryStatus::Deleted) return true;
+        if (!local) local = &entry;
+    }
+    if (!m_repository->beginTransaction()) return fail(QStringLiteral("task shadow transaction failed"));
+    const auto rollback = [&](const QString& message) {
+        m_repository->rollbackTransaction();
+        return fail(message);
+    };
+    QSqlQuery query(QSqlDatabase::database(databaseConnectionName(), false));
+    query.prepare(QStringLiteral(
+        "SELECT id FROM memory_items WHERE type='task_shadow' AND "
+        "(key=:key OR json_extract(CASE WHEN json_valid(payload_json) THEN payload_json ELSE '{}' END, "
+        "'$.linked_task_id')=:task) ORDER BY created_at,id"));
+    query.bindValue(QStringLiteral(":key"), QStringLiteral("schedule:") + taskId);
+    query.bindValue(QStringLiteral(":task"), taskId);
+    if (!query.exec()) return rollback(QStringLiteral("task shadow lookup failed"));
+    QStringList ids;
+    while (query.next()) ids.append(query.value(0).toString());
+    query.finish();
+
+    std::optional<MemoryEntry> durable;
+    for (const auto& id : ids) {
+        const auto entry = m_repository->loadById(id);
+        if (!entry.has_value()) return rollback(QStringLiteral("task shadow read failed"));
+        if (entry->status == MemoryStatus::Deleted) {
+            if (!m_repository->commitTransaction())
+                return rollback(QStringLiteral("task shadow transaction failed"));
+            // Reflect an external forget only on this target; other staged
+            // additions and updates in m_entries are left untouched.
+            if (local) *local = *entry;
+            else m_entries.append(*entry);
+            return true;
+        }
+        if (!durable.has_value()) durable = entry;
+    }
+    if (ids.size() > 1) return rollback(QStringLiteral("duplicate task shadow identities"));
+
+    const auto applyProjection = [&](MemoryEntry target) {
+        target.status = projection.status;
+        target.value = projection.value;
+        target.summary = projection.summary;
+        target.content = projection.content;
+        for (const QString key : {QStringLiteral("linked_task_id"), QStringLiteral("title"),
+                QStringLiteral("description"), QStringLiteral("message"), QStringLiteral("trigger_type"),
+                QStringLiteral("next_trigger_at"), QStringLiteral("last_triggered_at"),
+                QStringLiteral("created_at"), QStringLiteral("animation_state"),
+                QStringLiteral("scheduler_source"), QStringLiteral("task_status"), QStringLiteral("last_outcome")}) {
+            if (projection.payload.contains(key)) target.payload[key] = projection.payload.value(key);
+        }
+        if (projection.updatedAt.isValid()
+            && (!target.updatedAt.isValid() || projection.updatedAt > target.updatedAt))
+            target.updatedAt = projection.updatedAt;
+        return target;
+    };
+    MemoryEntry saved = durable.has_value() ? applyProjection(*durable) : normalizedEntry(projection);
+    if (!durable.has_value() && local) saved.id = local->id;
+    const bool changed = !durable.has_value() || saved.toJson() != durable->toJson();
+    if (changed) {
+        const bool written = durable.has_value() ? m_repository->update(saved) : m_repository->insert(saved);
+        if (!written || !enqueueIndexJob(saved.id,
+                saved.status == MemoryStatus::Active && saved.privacyLevel != PrivacyLevel::Sensitive
+                    ? QStringLiteral("upsert") : QStringLiteral("delete")))
+            return rollback(QStringLiteral("task shadow write failed"));
+    }
+    if (!m_repository->commitTransaction()) return rollback(QStringLiteral("task shadow commit failed"));
+    if (local) {
+        // Preserve target metadata owned by memory (including staged privacy
+        // changes) while applying only the scheduler-owned projection fields.
+        *local = applyProjection(*local);
+        local->id = saved.id;
+    } else {
+        m_entries.append(saved);
+    }
+    return true;
+}
+
 QList<MemoryEntry> MemoryStore::recent(MemoryType type, int limit) const {
     QList<MemoryEntry> result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {

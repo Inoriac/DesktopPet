@@ -1,4 +1,5 @@
 #include "daydream_consolidator.h"
+#include "memory_metadata.h"
 
 #include <algorithm>
 #include <utility>
@@ -102,17 +103,14 @@ bool sameRevision(const MemoryEntry& current, const MemoryEntry& snapshot) {
         && current.mentionCount == snapshot.mentionCount;
 }
 
-int relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch) {
-    int score = 0;
+double relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch) {
+    double score = 0.0;
+    const auto candidateTags = MemoryMetadata::semanticTags(candidate);
     for (const MemoryEntry& source : batch) {
-        for (const QString& tag : source.tags) {
-            if (candidate.tags.contains(tag, Qt::CaseInsensitive)) score += 3;
-        }
-        const QString sourceText = source.summary.trimmed();
-        if (!sourceText.isEmpty()
-            && candidate.summary.contains(sourceText.left(24), Qt::CaseInsensitive)) {
-            score += 2;
-        }
+        const double text = MemoryMetadata::textSimilarity(candidate, source);
+        const double tags = RecallText::tagCoverage(
+            MemoryMetadata::semanticTags(source), candidateTags);
+        score = qMax(score, qMax(text, tags));
     }
     return score;
 }
@@ -324,7 +322,7 @@ Result<DaydreamChangeSet, DomainError> DaydreamChangeSet::fromJson(
 
 DaydreamConsolidator::DaydreamConsolidator(MemoryStore& store)
     : m_store(store),
-      m_batchSelector(std::make_unique<BatchSelector>(store)) {}
+      m_batchSelector(std::make_unique<BatchSelector>(store, &store.relationGraph())) {}
 
 DaydreamConsolidator::~DaydreamConsolidator() = default;
 
@@ -361,14 +359,14 @@ QList<MemoryEntry> DaydreamConsolidator::relatedLongTermMemories(
             || entry.privacyLevel == PrivacyLevel::Sensitive) {
             continue;
         }
-        candidates.append(entry);
+        if (relevanceScore(entry, batch) > 0.0) candidates.append(entry);
     }
     std::sort(candidates.begin(), candidates.end(),
               [&batch](const MemoryEntry& a, const MemoryEntry& b) {
-                  const int aScore = relevanceScore(a, batch);
-                  const int bScore = relevanceScore(b, batch);
+                  const double aScore = relevanceScore(a, batch);
+                  const double bScore = relevanceScore(b, batch);
                   if (aScore != bScore) return aScore > bScore;
-                  return a.updatedAt > b.updatedAt;
+                  return a.updatedAt != b.updatedAt ? a.updatedAt > b.updatedAt : a.id < b.id;
               });
     return candidates.mid(0, qMax(0, limit));
 }
@@ -533,80 +531,15 @@ bool DaydreamConsolidator::requiresModelDecision(const MemoryEntry& entry) {
         && !entry.tags.contains(QStringLiteral("assistant"), Qt::CaseInsensitive);
 }
 
-namespace {
-
-// 兜底分区分类（pre-phase4-roadmap §一）：LLM 不可用时的启发式替代，
-// 准确率低于模型但保证积压可被消化。关键词命中优先级：
-// Preference > Procedural > Semantic > Episodic（默认）。
-MemoryType heuristicTargetType(const MemoryEntry& entry) {
-    const QString text = (entry.key + QLatin1Char(' ') + entry.summary
-                          + QLatin1Char(' ') + entry.content).toLower();
-    const bool hasPreferenceTag =
-        entry.tags.contains(QStringLiteral("preference"), Qt::CaseInsensitive)
-        || entry.tags.contains(QStringLiteral("偏好"), Qt::CaseInsensitive);
-    if (hasPreferenceTag
-        || text.contains(QStringLiteral("喜欢"))
-        || text.contains(QStringLiteral("讨厌"))
-        || text.contains(QStringLiteral("偏好"))
-        || text.contains(QStringLiteral("习惯"))
-        || text.contains(QLatin1String("likes"))
-        || text.contains(QLatin1String("dislikes"))) {
-        return MemoryType::Preference;
-    }
-    const bool hasTaskTag =
-        entry.tags.contains(QStringLiteral("task"), Qt::CaseInsensitive)
-        || entry.tags.contains(QStringLiteral("procedure"), Qt::CaseInsensitive);
-    if (hasTaskTag
-        || entry.source.contains(QLatin1String("tool"))
-        || text.contains(QStringLiteral("步骤"))
-        || text.contains(QStringLiteral("如何"))
-        || text.contains(QStringLiteral("方法"))) {
-        return MemoryType::Procedural;
-    }
-    if (entry.mentionCount >= 3
-        || text.contains(QStringLiteral("叫做"))
-        || text.contains(QStringLiteral("定义"))
-        || text.contains(QStringLiteral("生日"))
-        || text.contains(QStringLiteral("住在"))) {
-        return MemoryType::Semantic;
-    }
-    return MemoryType::Episodic;
-}
-
-// 兜底质量评分：importance 主导，mention/emotion 辅助，clamp 0-10。
-double heuristicQualityScore(const MemoryEntry& entry) {
-    double score = entry.importance * 10.0;
-    score += qMin(2.0, entry.mentionCount * 0.5);
-    score += entry.emotionIntensity * 3.0;
-    return qBound(0.0, score, 10.0);
-}
-
-}
-
 QList<DaydreamConsolidator::Decision> DaydreamConsolidator::hardcodedDecisions(
     const QList<MemoryEntry>& batch) {
     QList<Decision> decisions;
-    QSet<QString> seenContent;  // 批内去重：相同归一化正文只升级第一条
     for (const MemoryEntry& entry : batch) {
         Decision decision;
         decision.sourceId = entry.id;
-        const QString normalized =
-            (entry.summary + entry.content).simplified().toLower();
-        if (!requiresModelDecision(entry)) {
-            decision.action = Action::Discard;
-        } else if (!normalized.isEmpty() && seenContent.contains(normalized)) {
-            decision.action = Action::Discard;  // 批内重复
-        } else if (entry.mentionCount >= 2
-                   || entry.emotionIntensity >= 0.7
-                   || entry.importance >= 0.6) {
-            decision.action = Action::Create;
-            decision.targetType = heuristicTargetType(entry);
-            decision.qualityScore = heuristicQualityScore(entry);
-            decision.tags = entry.tags;
-            seenContent.insert(normalized);
-        } else {
-            decision.action = Action::Discard;
-        }
+        // Classification has not happened. Entry defaults and observed recurrence
+        // cannot substitute for a model's quality/type decision after a failed call.
+        decision.action = requiresModelDecision(entry) ? Action::Preserve : Action::Discard;
         decisions.append(decision);
     }
     return decisions;
@@ -739,8 +672,10 @@ MemoryEntry DaydreamConsolidator::makeLongTermEntry(const MemoryEntry& source,
         }
         if (!consolidated.tags.contains(tag, Qt::CaseInsensitive)) consolidated.tags.append(tag);
     };
-    for (const QString& tag : source.tags) appendTag(tag);
+    for (const QString& tag : MemoryMetadata::semanticTags(source)) appendTag(tag);
     for (const QString& tag : decision.tags) appendTag(tag);
+    consolidated.tags = MemoryMetadata::semanticTags(consolidated);
+    MemoryMetadata::mergeContext(consolidated, source);
     consolidated.scope = source.scope;
     consolidated.source = QStringLiteral("daydream");
     consolidated.importance = qBound(0.1, decision.qualityScore / 10.0, 1.0);
@@ -809,9 +744,16 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
         updated.partition = partitionToString(partitionForType(staged.type));
         updated.summary = staged.summary;
         updated.content = staged.content;
+        updated.source = staged.source;
+        // The model has reinterpreted the current statement. Original evidence
+        // remains for audit, but its extraction markers no longer describe it.
+        updated.payload.remove(QStringLiteral("extractor"));
+        updated.payload.remove(QStringLiteral("explicit_request"));
         updated.importance = qMax(updated.importance, staged.importance);
         updated.strength = qMax(updated.strength, staged.strength);
         updated.confidence = qMax(updated.confidence, staged.confidence);
+        MemoryMetadata::mergeContext(updated, source);
+        updated.tags = MemoryMetadata::semanticTags(updated);
         updated.updatedAt = QDateTime::currentDateTimeUtc();
         for (const QString& tag : staged.tags) {
             if (!updated.tags.contains(tag, Qt::CaseInsensitive)) updated.tags.append(tag);

@@ -25,7 +25,7 @@ Daydream 是作者提出的桌宠**空闲时刻自主记忆整理**机制。它*
 
 ## 二、现状校正
 
-当前分支已有 Daydream 的全局空闲触发器、Hippocampus 快照、异步批量 LLM 决策、硬编码失败降级和最终短事务提交。检索路径已只读，不再同步巩固。运行开关、触发阈值、容量、批次和独立轻量模型均已配置化；标签共现图也已落 SQLite 并纳入最终短事务。尚需继续用真实模型输出做兼容性验证。
+当前分支已有 Daydream 的全局空闲触发器、Hippocampus 快照、异步批量 LLM 决策、失败保留待重试和最终短事务提交。检索路径已只读，不再同步巩固。运行开关、触发阈值、容量、批次和独立轻量模型均已配置化；标签共现图也已落 SQLite 并纳入最终短事务。尚需继续用真实模型输出做兼容性验证。
 
 ## 三、触发设计：大概率空闲 + 解耦 + 可中断
 
@@ -186,12 +186,12 @@ ShortTerm/TaskShadow 存量分流：都先进 Hippocampus inbox，由 LLM 判定
 |------|------|
 | LLM 判定无价值（如纯闲聊）→ 返回 discard/空 | 删除源印象，清空 inbox（对齐 hebb `consolidation_drain_empty_sources`） |
 | LLM 输出解析失败 | 保留源印象 → 下轮 Daydream 再处理 |
-| LLM 调用超时 | 保留源印象 → 降级为原硬编码规则（mentionCount≥2 / emotion≥0.7） |
+| LLM 调用超时或模型不可用 | 有效源印象保持 Active，等待后续模型成功决策，不使用暂存评分推断升格或丢弃 |
 | **运行中滑入非空闲** | generation 失效 → 丢弃在途/迟到回调和内存 staging；此时尚未写库，无需等待或回滚 |
 | 最终 apply 写失败 | 短事务 `ROLLBACK`，随后从 SQLite 重载内存镜像 |
 | 快照源条目在 LLM 期间变化 | 拒绝整 session 提交，保留最新源条目供下轮重算 |
 
-原硬编码巩固规则（`mentionCount≥2` / `emotion≥0.7`）并存到 Phase 3，作为 Daydream 失败降级兜底，验证稳定后删。
+2026-10-05 起移除硬编码质量/分类兜底。模型失败时有效用户印象返回 Preserve；默认重要性、提及次数和情绪不替代内容评估。旧的无效 assistant inbox 项仍可按来源规则归档。
 
 ## 八、风险
 
@@ -225,7 +225,7 @@ ShortTerm/TaskShadow 存量分流：都先进 Hippocampus inbox，由 LLM 判定
 | `relatedMemoryLimit` | `8` | 每批提供给模型的历史候选上限 |
 | `model` / `maxTokens` / `temperature` | 空 / `1200` / `0.2` | 独立模型及推理参数 |
 
-平台不支持全局空闲检测时仍默认不触发；原硬编码规则继续作为 LLM 请求失败时的有界降级。被用户交互打断时 generation 立即失效，新对话不等待 Daydream。
+平台不支持全局空闲检测时仍默认不触发；LLM 请求失败时保留有效源印象待后续重试。被用户交互打断时 generation 立即失效，新对话不等待 Daydream。
 
 ## 十一、路线图（Daydream 部分，属主文档 Phase 2）
 

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 
+#include "memory_metadata.h"
 #include "memory_relation_graph.h"
 
 namespace {
@@ -52,8 +53,12 @@ QList<QPair<QString, QString>> DaydreamRelationReviewer::generateCandidates(
         QString a;
         QString b;
         int sharedTags;
+        double textSimilarity;
         bool operator<(const ScoredPair& other) const {
-            return sharedTags > other.sharedTags;  // 降序
+            if (sharedTags != other.sharedTags) return sharedTags > other.sharedTags;
+            if (textSimilarity != other.textSimilarity) return textSimilarity > other.textSimilarity;
+            if (a != other.a) return a < other.a;
+            return b < other.b;
         }
     };
     QList<ScoredPair> scored;
@@ -61,12 +66,19 @@ QList<QPair<QString, QString>> DaydreamRelationReviewer::generateCandidates(
         for (int j = i + 1; j < entries.size(); ++j) {
             const MemoryEntry& a = entries.at(i);
             const MemoryEntry& b = entries.at(j);
-            if (a.tags.isEmpty() || b.tags.isEmpty()) continue;
-            const QSet<QString> tagsA(a.tags.begin(), a.tags.end());
-            const QSet<QString> tagsB(b.tags.begin(), b.tags.end());
+            const QStringList semanticA = MemoryMetadata::semanticTags(a);
+            const QStringList semanticB = MemoryMetadata::semanticTags(b);
+            const QSet<QString> tagsA(semanticA.begin(), semanticA.end());
+            const QSet<QString> tagsB(semanticB.begin(), semanticB.end());
             const int shared = (tagsA & tagsB).size();
-            if (shared < m_policy.minSharedTagsForCandidate) continue;
-            scored.append({a.id, b.id, shared});
+            const double textSimilarity = MemoryMetadata::textSimilarity(a, b);
+            const bool sharedTopic = shared >= qMax(1, m_policy.minSharedTagsForCandidate);
+            // Raw impressions have no semantic tags yet. Use their actual text
+            // to nominate a pair for model review, never their routing labels.
+            const bool relatedUnclassifiedText = (semanticA.isEmpty() || semanticB.isEmpty())
+                && textSimilarity >= 0.3;
+            if (!sharedTopic && !relatedUnclassifiedText) continue;
+            scored.append({qMin(a.id, b.id), qMax(a.id, b.id), shared, textSimilarity});
         }
     }
 

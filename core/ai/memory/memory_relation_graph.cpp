@@ -288,11 +288,18 @@ int MemoryRelationGraph::decayAssociativeEdges(double decayFactor, double remove
         // 结构性边不衰减
         if (relation.structural()) continue;
 
-        // 距最后强化/更新的天数 → 累乘衰减
-        const QDateTime anchor = relation.lastReinforcedAt.isValid()
-            ? relation.lastReinforcedAt : relation.updatedAt;
+        // weight 已包含 updatedAt 之前的衰减，只计算这次新增的闲置时间。
+        // lastReinforcedAt 保留真实证据强化时间，不能在维护时改写，也不能
+        // 每轮都从该时间重复扣减已经反映在 weight 中的同一段闲置时间。
+        QDateTime anchor = relation.updatedAt.isValid()
+            ? relation.updatedAt : relation.createdAt;
+        if (relation.lastReinforcedAt.isValid()
+            && (!anchor.isValid() || relation.lastReinforcedAt > anchor)) {
+            anchor = relation.lastReinforcedAt;
+        }
         const double days = anchor.isValid()
-            ? qMax(0.0, static_cast<double>(anchor.daysTo(now))) : 0.0;
+            ? qMax(0.0, static_cast<double>(anchor.msecsTo(now)) / 86400000.0)
+            : 0.0;
         const double newWeight = relation.weight * std::pow(decayFactor, days);
 
         if (newWeight < removeThreshold) {

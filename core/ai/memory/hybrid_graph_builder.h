@@ -54,9 +54,6 @@ public:
                               double removeThreshold = 0.15);
 
 private:
-    // 提取记忆的上下文聚类提示（session_id > task > tool），同提示视为同情景。
-    static QString contextHintFor(const MemoryEntry& entry);
-
     MemoryRelationGraph& m_graph;
     Policy m_policy;
 };

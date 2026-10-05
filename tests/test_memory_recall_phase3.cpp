@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <algorithm>
 #include <cmath>
 #include <QDir>
 #include <QFile>
@@ -38,6 +39,9 @@ private slots:
     void testExplorationRateBounds();
     void testPersonalityModulation();
     void testGraphRetrievalIntegration();
+    void testUnconnectedSeedsHaveNoGraphEvidence_data();
+    void testUnconnectedSeedsHaveNoGraphEvidence();
+    void testSeedsReceiveOnlyActualEdgeContributions();
     void testSeedBudgetPreservesMultiChannelMatch();
     void testFullCandidatePoolReachesRanker();
     void testExplorationSelectionBudget();
@@ -324,7 +328,10 @@ void TestMemoryRecallPhase3::testConvergingPathsAccumulateAtCapacity() {
     QCOMPARE(result.size(), 4);
     bool found = false;
     for (const auto& item : result) {
-        if (item.memoryId == "seed") QCOMPARE(item.activation, 1.0);
+        if (item.memoryId == "seed") {
+            QCOMPARE(item.seedActivation, 1.0);
+            QCOMPARE(item.activation, 0.0);
+        }
         if (item.memoryId != "target") continue;
         found = true;
         QVERIFY(std::abs(item.activation - 2.0 * second) < 1e-9);
@@ -351,6 +358,129 @@ void TestMemoryRecallPhase3::testConvergingPathsAccumulateAtCapacity() {
         QVERIFY(std::abs(item.activation - expectedLeaf) < 1e-9);
     }
     QVERIFY(leafFound);
+}
+
+void TestMemoryRecallPhase3::testUnconnectedSeedsHaveNoGraphEvidence_data() {
+    QTest::addColumn<bool>("useActivePool");
+    QTest::newRow("keyword-seed") << false;
+    QTest::newRow("active-pool-seed") << true;
+}
+
+void TestMemoryRecallPhase3::testUnconnectedSeedsHaveNoGraphEvidence() {
+    QFETCH(bool, useActivePool);
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("unconnected-seed.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry seed;
+    seed.type = MemoryType::Semantic;
+    seed.summary = "needle";
+    seed.importance = seed.strength = 0.6;
+    seed = store.addEntry(seed);
+    QVERIFY(!seed.id.isEmpty());
+    MemoryKeywordIndex keywords;
+    keywords.rebuild(store.all());
+    ActiveMemoryPool pool;
+    pool.activate(seed.id, 1.2, "session");
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    const auto propagated = engine.propagate({{seed.id, 1.2}}, store.relationGraph());
+    QCOMPARE(propagated.size(), 1);
+    QCOMPARE(propagated.first().seedActivation, 1.2);
+    QCOMPARE(propagated.first().activation, 0.0);
+
+    ActivationChannels channels;
+    channels.keywordIndex = &keywords;
+    if (useActivePool) channels.activePool = &pool;
+    MemoryQuery query;
+    query.text = "needle";
+    MemoryRetriever retriever;
+    const auto withoutGraph = retriever.retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    channels.graphPropagation = &engine;
+    const auto withGraph = retriever.retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    QCOMPARE(withoutGraph.size(), 1);
+    QCOMPARE(withGraph.size(), 1);
+    QCOMPARE(withGraph.first().score, withoutGraph.first().score);
+    QCOMPARE(withGraph.first().scoreWithoutEmotion, withoutGraph.first().scoreWithoutEmotion);
+    QCOMPARE(withGraph.first().runtimeActivation, useActivePool ? 0.6 : 0.0);
+    QVERIFY(!withGraph.first().fromGraphExpansion);
+    QVERIFY(!withGraph.first().sourceChannels.contains("graph_propagation"));
+    QVERIFY(!withGraph.first().sourceChannels.contains("graph_exploratory"));
+    for (const auto& reason : withGraph.first().reasons)
+        QVERIFY(!reason.startsWith("graph_path:"));
+}
+
+void TestMemoryRecallPhase3::testSeedsReceiveOnlyActualEdgeContributions() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("connected-seeds.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry first;
+    first.type = MemoryType::Semantic;
+    first.key = "first";
+    first.summary = "needle";
+    first = store.addEntry(first);
+    MemoryEntry second = first;
+    second.id.clear();
+    second.key = "second";
+    second = store.addEntry(second);
+    QVERIFY(!first.id.isEmpty());
+    QVERIFY(!second.id.isEmpty());
+    QVERIFY(first.id != second.id);
+    QVERIFY(store.relationGraph().addRelation(makeRelation(
+        "seed-link", first.id, second.id, MemoryRelationType::DerivedFrom)));
+    ActiveMemoryPool pool;
+    pool.activate(first.id, 0.4, "session");
+    pool.activate(second.id, 1.2, "session");
+    MemoryKeywordIndex keywords;
+    keywords.rebuild(store.all());
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    const double contributionToFirst = 0.55 / (1.0 + std::exp(-1.2));
+    const double contributionToSecond = 0.55 / (1.0 + std::exp(-0.4));
+    const auto propagated = engine.propagate(
+        {{first.id, 0.4}, {second.id, 1.2}}, store.relationGraph());
+    QCOMPARE(propagated.size(), 2);
+    for (const auto& item : propagated) {
+        const bool isFirst = item.memoryId == first.id;
+        QCOMPARE(item.seedActivation, isFirst ? 0.4 : 1.2);
+        QVERIFY(qAbs(item.activation - (isFirst ? contributionToFirst : contributionToSecond)) < 1e-12);
+        QCOMPARE(item.hopCount, 1);
+        QCOMPARE(item.propagationPath, QStringList({isFirst ? second.id : first.id, item.memoryId}));
+    }
+
+    ActivationChannels channels;
+    channels.activePool = &pool;
+    channels.keywordIndex = &keywords;
+    MemoryQuery query;
+    query.text = "needle";
+    MemoryRetriever retriever;
+    const auto withoutGraph = retriever.retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    channels.graphPropagation = &engine;
+    const auto withGraph = retriever.retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    QCOMPARE(withoutGraph.size(), 2);
+    QCOMPARE(withGraph.size(), 2);
+    for (const auto& item : withGraph) {
+        const auto baseline = std::find_if(withoutGraph.cbegin(), withoutGraph.cend(),
+            [&](const RetrievedMemory& other) { return other.entry.id == item.entry.id; });
+        QVERIFY(baseline != withoutGraph.cend());
+        const double contribution = item.entry.id == first.id ? contributionToFirst : contributionToSecond;
+        QVERIFY(qAbs(item.score - baseline->score - 0.6 * contribution) < 1e-12);
+        QCOMPARE(item.runtimeActivation, baseline->runtimeActivation);
+        QVERIFY(item.sourceChannels.contains("graph_propagation"));
+        QVERIFY(!item.fromGraphExpansion);
+    }
+    // An explored path must not turn an independently retrieved seed into an
+    // exploration-only candidate and consume the sole exploratory result slot.
+    engine.setRandomSource(fixedRandomSource(0.05));
+    const auto explored = retriever.retrieveWithGraphPropagation(
+        store, query, channels, nullptr, true);
+    QCOMPARE(explored.size(), 2);
+    for (const auto& item : explored) QVERIFY(!item.isExploratory);
 }
 
 void TestMemoryRecallPhase3::initTestCase() {

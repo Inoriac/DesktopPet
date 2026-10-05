@@ -2,6 +2,7 @@
 
 #include <QCryptographicHash>
 #include <QDateTime>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QRegularExpression>
 
@@ -112,6 +113,7 @@ MemoryCandidate makeWriteCandidate(MemoryType type,
     payload["extracted_at"] = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
     payload["extractor"] = "rule_v1";
     payload["explicit_request"] = explicitRequest;
+    payload["source_tags"] = QJsonArray::fromStringList(entry.tags);
     entry.payload = payload;
 
     candidate.entry = entry;
@@ -229,6 +231,7 @@ MemoryEntry MemoryExtractor::extractDaydreamImpression(const QString& input,
     entry.mentionCount = 1;
     entry.evidence = {bounded};
     entry.payload[QStringLiteral("extractor")] = QStringLiteral("daydream_impression_v1");
+    entry.payload[QStringLiteral("source_tags")] = QJsonArray::fromStringList(entry.tags);
     return entry;
 }
 

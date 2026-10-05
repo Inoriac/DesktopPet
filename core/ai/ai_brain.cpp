@@ -3,6 +3,7 @@
 //
 
 #include "ai_brain.h"
+#include "memory/memory_metadata.h"
 
 #include <QJsonDocument>
 #include <QJsonObject>
@@ -831,13 +832,19 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
         for (MemoryCandidate& candidate : candidates) {
             if (candidate.operation == MemoryCandidateOperation::Write) {
                 annotateMemoryEntry(candidate.entry);
+                MemoryMetadata::recordSession(candidate.entry, sessionId);
+                candidate.entry.payload[QStringLiteral("request_id")] = requestId;
             }
         }
     }
     MemoryEntry impression;
     if (candidates.isEmpty() && m_daydreamConfig.enabled) {
         impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
-        if (!impression.content.isEmpty()) annotateMemoryEntry(impression);
+        if (!impression.content.isEmpty()) {
+            annotateMemoryEntry(impression);
+            MemoryMetadata::recordSession(impression, sessionId);
+            impression.payload[QStringLiteral("request_id")] = requestId;
+        }
     }
     if (candidates.isEmpty() && impression.content.isEmpty()) return;
 
@@ -853,6 +860,7 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
                 continue;
             }
             MemoryEntry updated = existing;
+            MemoryMetadata::mergeContext(updated, impression);
             updated.mentionCount = qMax(1, existing.mentionCount) + 1;
             updated.updatedAt = QDateTime::currentDateTimeUtc();
             if (!updated.evidence.contains(impression.content)) {

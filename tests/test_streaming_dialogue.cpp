@@ -2,6 +2,7 @@
 
 #include <QDir>
 #include <QElapsedTimer>
+#include <QJsonArray>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -278,6 +279,7 @@ private slots:
     void conversation_shouldTrimOldTurnsAndIgnoreFailedHistory();
     void screenObservation_shouldRemainTemporaryAndAvailableToFollowup();
     void memoryWrite_shouldSurviveRestartAndFeedProactiveChat();
+    void memoryWrite_repeatedImpressions_shouldRetainEverySourceSession();
     void toolResult_shouldBeAvailableToNextTurn();
     void proactiveTiming_shouldReflectPersonalityAndMood();
     void proactiveTiming_shouldRespectBackoffAndBounds();
@@ -438,6 +440,9 @@ void StreamingDialogueTests::screenObservation_shouldRemainTemporaryAndAvailable
 
 void StreamingDialogueTests::memoryWrite_shouldSurviveRestartAndFeedProactiveChat() {
     QTemporaryDir directory;
+    QString memoryId;
+    QString sourceSessionId;
+    QString sourceRequestId;
     {
         FakeStreamingClient client;
         client.attempts = {{{}, true, textResponse(QStringLiteral("记住了。")), {}, false}};
@@ -445,10 +450,36 @@ void StreamingDialogueTests::memoryWrite_shouldSurviveRestartAndFeedProactiveCha
         auto bridge = makeRuntimeBridge();
         AgentRuntimeServices services;
         QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
-        brain.triggerThink(QStringLiteral("我喜欢爵士乐"), QStringLiteral("user_request"));
+        QSignalSpy responseStarted(&brain, &AIBrain::assistantResponseStarted);
+        brain.triggerThink(QStringLiteral("我喜欢爵士乐"), QStringLiteral("user_request"),
+                           QStringLiteral("remember-jazz"));
         QTRY_VERIFY_WITH_TIMEOUT(!brain.isBusy(), 2000);
         QTRY_VERIFY_WITH_TIMEOUT(persistedMemoryContains(
             brain.memoryStore()->databasePath(), QStringLiteral("爵士乐")), 2000);
+        QCOMPARE(responseStarted.size(), 1);
+        QCOMPARE(responseStarted.first().at(1).toString(), QStringLiteral("remember-jazz"));
+
+        const auto entries = persistedMemories(brain.memoryStore()->databasePath());
+        const auto written = std::find_if(entries.cbegin(), entries.cend(),
+                                          [](const MemoryEntry& entry) {
+                                              return entry.summary.contains(QStringLiteral("爵士乐"));
+                                          });
+        QVERIFY(written != entries.cend());
+        memoryId = written->id;
+        sourceSessionId = written->payload.value(QStringLiteral("session_id")).toString();
+        sourceRequestId = written->payload.value(QStringLiteral("request_id")).toString();
+        QVERIFY(!sourceSessionId.isEmpty());
+        QVERIFY(!sourceRequestId.isEmpty());
+        const auto authorization = services.authorizationFor(QStringLiteral("identity"));
+        QVERIFY(authorization.isOk());
+        const EventFilter filter{{QStringLiteral("UserMessageReceived")}, QString(),
+                                 authorization.value()};
+        const auto events = services.eventLedger()->readAfter(0, filter, 20);
+        QVERIFY(events.isOk());
+        QCOMPARE(events.value().size(), 1);
+        QCOMPARE(events.value().first().payload.value(QStringLiteral("text")).toString(),
+                 QStringLiteral("我喜欢爵士乐"));
+        QCOMPARE(sourceSessionId, events.value().first().sessionId);
     }
     FakeStreamingClient client;
     client.attempts = {{{}, true, textResponse(QStringLiteral("最近练琴还顺利吗？")), {}, false}};
@@ -456,6 +487,10 @@ void StreamingDialogueTests::memoryWrite_shouldSurviveRestartAndFeedProactiveCha
     auto bridge = makeRuntimeBridge();
     AgentRuntimeServices services;
     QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    const auto restored = persistedMemory(brain.memoryStore()->databasePath(), memoryId);
+    QVERIFY(restored.has_value());
+    QCOMPARE(restored->payload.value(QStringLiteral("session_id")).toString(), sourceSessionId);
+    QCOMPARE(restored->payload.value(QStringLiteral("request_id")).toString(), sourceRequestId);
     ChatHistoryEntry recent;
     recent.id = QStringLiteral("recent-topic");
     recent.role = QStringLiteral("user");
@@ -464,6 +499,81 @@ void StreamingDialogueTests::memoryWrite_shouldSurviveRestartAndFeedProactiveCha
     brain.triggerThink(QStringLiteral("proactive_chat_tick"), QStringLiteral("proactive_chat"));
     QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
     QVERIFY(client.messageBatches.first().last().content.contains(QStringLiteral("用户喜欢爵士乐")));
+}
+
+void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySourceSession() {
+    FakeStreamingClient client;
+    client.attempts = {
+        {{}, true, textResponse(QStringLiteral("散步的感觉怎么样？")), {}, false},
+        {{}, true, textResponse(QStringLiteral("下次也可以聊聊路上的见闻。")), {}, false}
+    };
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    QSignalSpy responseStarted(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy responseFinished(&brain, &AIBrain::assistantResponseFinished);
+    const QString input = QStringLiteral("我今天在公园散步");
+
+    brain.triggerThink(input, QStringLiteral("user_request"), QStringLiteral("walk-first"));
+    QTRY_COMPARE_WITH_TIMEOUT(responseFinished.size(), 1, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(persistedMemoryContains(brain.memoryStore()->databasePath(), input), 2000);
+    const auto firstEntries = persistedMemories(brain.memoryStore()->databasePath());
+    const auto first = std::find_if(firstEntries.cbegin(), firstEntries.cend(),
+                                    [&input](const MemoryEntry& entry) {
+                                        return entry.source == QLatin1String("user_interaction")
+                                            && entry.content == input;
+                                    });
+    QVERIFY(first != firstEntries.cend());
+    QCOMPARE(first->partition, QStringLiteral("hippocampus"));
+    QCOMPARE(first->mentionCount, 1);
+    const QString memoryId = first->id;
+    const QString firstSessionId = first->payload.value(QStringLiteral("session_id")).toString();
+    const QString firstRequestId = first->payload.value(QStringLiteral("request_id")).toString();
+    QVERIFY(!firstSessionId.isEmpty());
+    QVERIFY(!firstRequestId.isEmpty());
+
+    brain.triggerThink(input, QStringLiteral("user_request"), QStringLiteral("walk-second"));
+    QTRY_COMPARE_WITH_TIMEOUT(responseFinished.size(), 2, 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(([&]() {
+        const auto entry = persistedMemory(brain.memoryStore()->databasePath(), memoryId);
+        return entry.has_value() && entry->mentionCount == 2;
+    }()), 2000);
+    QCOMPARE(responseStarted.size(), 2);
+    QCOMPARE(responseStarted.at(0).at(1).toString(), QStringLiteral("walk-first"));
+    QCOMPARE(responseStarted.at(1).at(1).toString(), QStringLiteral("walk-second"));
+    const auto merged = persistedMemory(brain.memoryStore()->databasePath(), memoryId);
+    QVERIFY(merged.has_value());
+    const QString latestSessionId = merged->payload.value(QStringLiteral("session_id")).toString();
+    const QString latestRequestId = merged->payload.value(QStringLiteral("request_id")).toString();
+    QVERIFY(!latestSessionId.isEmpty());
+    QVERIFY(!latestRequestId.isEmpty());
+    QVERIFY(latestSessionId != firstSessionId);
+    QVERIFY(latestRequestId != firstRequestId);
+    const QJsonArray sourceSessions = merged->payload.value(QStringLiteral("session_ids")).toArray();
+    QCOMPARE(sourceSessions.size(), 2);
+    QVERIFY(sourceSessions.contains(firstSessionId));
+    QVERIFY(sourceSessions.contains(latestSessionId));
+
+    const auto authorization = services.authorizationFor(QStringLiteral("identity"));
+    QVERIFY(authorization.isOk());
+    const EventFilter filter{{QStringLiteral("UserMessageReceived")}, QString(), authorization.value()};
+    const auto events = services.eventLedger()->readAfter(0, filter, 20);
+    QVERIFY(events.isOk());
+    QCOMPARE(events.value().size(), 2);
+    QCOMPARE(events.value().at(0).sessionId, firstSessionId);
+    QCOMPARE(events.value().at(1).sessionId, latestSessionId);
+    for (const auto& event : events.value()) {
+        QCOMPARE(event.payload.value(QStringLiteral("text")).toString(), input);
+    }
+    int matchingImpressions = 0;
+    for (const auto& entry : persistedMemories(brain.memoryStore()->databasePath())) {
+        if (entry.source == QLatin1String("user_interaction") && entry.content == input) {
+            ++matchingImpressions;
+        }
+    }
+    QCOMPARE(matchingImpressions, 1);
 }
 
 void StreamingDialogueTests::toolResult_shouldBeAvailableToNextTurn() {

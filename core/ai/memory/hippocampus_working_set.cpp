@@ -7,6 +7,7 @@
 #include "memory_store.h"
 #include "partition_policy.h"
 #include "recall_text.h"
+#include "memory_metadata.h"
 
 HippocampusWorkingSet::HippocampusWorkingSet(MemoryStore* store)
     : m_store(store) {}
@@ -103,7 +104,7 @@ QList<MemoryEntry> HippocampusWorkingSet::scan(const QString& queryText,
                 relevance = 1.0;
             }
             // A complete tag can match; tag fragments are not content evidence.
-            for (const auto& tag : entry.tags)
+            for (const auto& tag : MemoryMetadata::semanticTags(entry))
                 if (RecallText::normalize(tag) == normalizedQuery) relevance = 1.0;
             if (relevance <= 0.0) continue;
         }

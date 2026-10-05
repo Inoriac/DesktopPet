@@ -169,7 +169,7 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
     for (auto it = seedActivations.constBegin(); it != seedActivations.constEnd(); ++it) {
         PropagatedMemory mem;
         mem.memoryId = it.key();
-        mem.activation = it.value();
+        mem.seedActivation = it.value();
         mem.propagationPath = {it.key()};
         mem.hopCount = 0;
         mem.isExploratory = false;
@@ -244,7 +244,8 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
         }
         
         if (isExploratoryStep && current.hop > 0) {
-            results[current.memoryId].isExploratory = true;
+            if (!seedActivations.contains(current.memoryId))
+                results[current.memoryId].isExploratory = true;
             current.isExploratory = true;
         }
 
@@ -264,8 +265,9 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
                 : edge.fromMemoryId;
             
             // Reject cycles on this path, not independent converging paths.
-            // Seeds keep their supplied activation rather than receiving feedback.
-            if (current.path.contains(targetId) || seedActivations.contains(targetId)) {
+            // Other seeds may receive real edge evidence without reusing their
+            // initial activation as part of the propagated contribution.
+            if (current.path.contains(targetId)) {
                 continue;
             }
             
@@ -291,23 +293,26 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
             );
             
             // Skip if delta too small
-            if (delta < m_minDelta) {
+            if (delta <= 0.0 || delta < m_minDelta) {
                 continue;
             }
             
-            const bool existing = results.contains(targetId);
             PropagatedMemory& mem = results[targetId];
+            const bool firstContribution = mem.activation <= 0.0;
             mem.memoryId = targetId;
             mem.activation = qMin(1.0, mem.activation + delta);
             // Keep the shortest explanation, independent of arrival order.
             QStringList path = current.path;
             path.append(targetId);
-            if (!existing || path.size() < mem.propagationPath.size()
+            if (firstContribution || path.size() < mem.propagationPath.size()
                 || (path.size() == mem.propagationPath.size() && path < mem.propagationPath)) {
                 mem.propagationPath = path;
                 mem.hopCount = current.hop + 1;
             }
-            mem.isExploratory = mem.isExploratory || current.isExploratory || isExploratoryStep;
+            // Directly retrieved seeds remain stable candidates even if one of
+            // their additional graph paths was chosen through exploration.
+            if (!seedActivations.contains(targetId))
+                mem.isExploratory = mem.isExploratory || current.isExploratory || isExploratoryStep;
 
             // Propagate this path's delta, never the accumulated total: otherwise
             // earlier paths would be counted again each time another arrives.

@@ -14,7 +14,8 @@ class TagCooccurrenceGraph;
 
 struct PropagatedMemory {
     QString memoryId;
-    double activation = 0.0;
+    double seedActivation = 0.0;  // Initial frontier signal, never graph evidence.
+    double activation = 0.0;      // Accumulated contribution through actual edges only.
     QStringList propagationPath;  // ["seed_id", "hop1_id", "hop2_id"]
     int hopCount = 0;
     bool isExploratory = false;
@@ -48,7 +49,8 @@ public:
     void setTemperatureOpennessScale(double scale) { m_temperatureScale = scale; }
     
     // Propagate from seed memories with initial activations
-    // Returns expanded candidate set with propagation paths
+    // Returns seeds and expanded candidates; activation excludes seedActivation.
+    // A seed can still receive graph evidence along another seed's acyclic path.
     QList<PropagatedMemory> propagate(
         const QHash<QString, double>& seedActivations,
         const MemoryRelationGraph& relationGraph,

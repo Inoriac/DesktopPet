@@ -30,6 +30,7 @@
 #include <QDebug>
 #include <QDir>
 #include <QMetaObject>
+#include <QThread>
 
 #include <iostream>
 #include <utility>
@@ -138,11 +139,18 @@ void PetWindow::setupAiBrain() {
     }
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
-    aiToolRegistry->registerTool(std::make_unique<ShowChatBubbleTool>([this](const QString& text, int durationMs) {
-        QMetaObject::invokeMethod(this, [this, text, durationMs]() {
-            showBubbleMessage(text, durationMs);
-            speakPetReply(text, QStringLiteral("toolBubble"));
-        }, Qt::QueuedConnection);
+    aiToolRegistry->registerTool(std::make_unique<ShowChatBubbleTool>([window](const QString& text, int durationMs) {
+        if (!window) return false;
+        const auto show = [window, text, durationMs]() {
+            if (!window || !window->showToolBubbleMessage(text, durationMs)) return false;
+            window->speakPetReply(text, QStringLiteral("toolBubble"));
+            return true;
+        };
+        if (QThread::currentThread() == window->thread()) return show();
+        bool accepted = false;
+        const bool dispatched = QMetaObject::invokeMethod(window.data(),
+            [&accepted, show]() { accepted = show(); }, Qt::BlockingQueuedConnection);
+        return dispatched && accepted;
     }));
     aiToolRegistry->registerTool(std::make_unique<NotifyUserTool>([this](const QString& title, const QString& message, int durationMs) {
         const QString bubbleText = title.trimmed().isEmpty()
@@ -217,6 +225,10 @@ void PetWindow::setupAiBrain() {
     aiToolRegistry->registerTool(std::make_unique<DailyBriefingTool>());
 
     agentScheduler->setToolRegistry(aiToolRegistry.get());
+    agentScheduler->setUserBusyProvider([this]() {
+        const int idle = aiBrain ? aiBrain->userIdleSeconds() : -1;
+        return idle >= 0 && idle < 60;
+    });
     connect(agentScheduler.get(), &AgentScheduler::taskTriggered, this, [this](const QString& id, const QString& title) {
         qDebug() << "[AgentScheduler] task triggered:" << id << title;
         if (petController) {
@@ -294,6 +306,9 @@ void PetWindow::setupAiAnimationTools() {
 }
 
 void PetWindow::teardownAiRuntime() {
+    if (agentScheduler) {
+        agentScheduler->stop();
+    }
     if (runtimeServices) {
         runtimeServices->stop();
         runtimeServices.reset();
@@ -301,9 +316,6 @@ void PetWindow::teardownAiRuntime() {
     runtimeUiBridge.reset();
     emotionStateProvider.reset();
 
-    if (agentScheduler) {
-        agentScheduler->stop();
-    }
     if (aiBrain) {
         aiBrain->setAgentScheduler(nullptr);
         aiBrain->setToolRegistry(nullptr);

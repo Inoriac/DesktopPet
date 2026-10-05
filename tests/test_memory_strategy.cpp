@@ -5,6 +5,7 @@
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFile>
+#include <QJsonArray>
 #include <QJsonDocument>
 #include <QTemporaryDir>
 #include <QTest>
@@ -60,8 +61,10 @@ private slots:
     void testRetrieverFiltersSensitiveByDefault();
     void testRetrieverFormatsContextLines();
     void testPolicyCreatesSupersedes();
+    void testPolicyCreatesConflictsWith_data();
     void testPolicyCreatesConflictsWith();
     void testPolicyCreatesRelatedByTags();
+    void testPolicyDoesNotRelateSourceTags();
     void testPolicyCreatesMentionedWith();
     void testPolicyFirstOfScopeImportanceBoost();
     void testRetrieverDecayCurve();
@@ -126,21 +129,24 @@ private slots:
     void testRepositoryTransactionsRespectExternalTransaction();
     void testTransactionRollbackRevertsRelationGraph();
     void testTransactionRollbackRevertsTagCooccurrence();
-    void testDaydreamDrainUpgradesAndClearsHippocampus();
+    void testDaydreamModelDecisionCreatesLongTermMemory();
     void testDaydreamOutboxFailureRollsBackBatch();
     void testDaydreamUpdatesTagCooccurrenceGraph();
     void testDaydreamUpdateRecordsTagCooccurrence();
     void testDaydreamTagCooccurrenceAccumulates();
-    void testDaydreamDrainDiscardsLowValue();
+    void testDaydreamFallbackDiscardsAssistantResponse();
     void testDaydreamDrainSparesOtherPartitions();
     void testStoreKeyPersistsRoundtrip();
     void testRepositoryBoundedRecentRead();
     void testRecallUsesIndexedSqlAndFreshPointReads();
     void testDaydreamArchiveFailureRollsBackEvidence();
-    void testDaydreamDrainUpgradesViaPersistedMentionCount();
-    void testDaydreamFallbackUpgradesHighImportance();
-    void testDaydreamFallbackRoutesPreferenceKeyword();
-    void testDaydreamFallbackDeduplicatesBatch();
+    void testDaydreamFallbackPreservesUnassessedMemory_data();
+    void testDaydreamFallbackPreservesUnassessedMemory();
+    void testDaydreamFallbackPreservesDuplicatesUntilModelReview();
+    void testDaydreamRelatedHistoryUsesContentBeforeSourceTags();
+    void testDaydreamCreatePreservesSourceContext();
+    void testDaydreamUpdateRetainsHistoricalSessions();
+    void testDaydreamUpdateReplacesExtractionProvenanceForConflictChecks();
     void testDaydreamDiscardsLegacyAssistantInbox();
     void testDaydreamSessionLimitLeavesRemainder();
     void testDaydreamRejectsStaleSnapshotAtomically();
@@ -682,7 +688,39 @@ void TestMemoryStrategy::testPolicyCreatesSupersedes() {
     QVERIFY(store.relationGraph().hasRelation(store.all().last().id, oldId, MemoryRelationType::Supersedes));
 }
 
+void TestMemoryStrategy::testPolicyCreatesConflictsWith_data() {
+    QTest::addColumn<QString>("firstInput");
+    QTest::addColumn<QString>("secondInput");
+    QTest::addColumn<bool>("expectedConflict");
+
+    QTest::newRow("same-object-opposite-polarity")
+        << QStringLiteral("我喜欢 Java") << QStringLiteral("我不喜欢 Java") << true;
+    QTest::newRow("reverse-polarity")
+        << QStringLiteral("我不喜欢猫") << QStringLiteral("我喜欢猫") << true;
+    QTest::newRow("same-object-hate")
+        << QStringLiteral("我喜欢猫") << QStringLiteral("我讨厌猫") << true;
+    QTest::newRow("different-objects")
+        << QStringLiteral("我喜欢猫") << QStringLiteral("我讨厌香菜") << false;
+    QTest::newRow("two-negative-preferences")
+        << QStringLiteral("我不喜欢猫") << QStringLiteral("我不喜欢香菜") << false;
+    QTest::newRow("different-properties")
+        << QStringLiteral("我喜欢猫") << QStringLiteral("我不希望猫") << false;
+    QTest::newRow("same-wish-opposite-polarity")
+        << QStringLiteral("记住：我希望养猫") << QStringLiteral("记住：我不希望养猫") << true;
+    QTest::newRow("compound-proposition-needs-review")
+        << QStringLiteral("我喜欢猫，但我不喜欢狗")
+        << QStringLiteral("我不喜欢猫，但我不喜欢狗") << false;
+    QTest::newRow("unknown-subject-needs-review")
+        << QStringLiteral("记住：我的朋友喜欢猫")
+        << QStringLiteral("记住：我的朋友不喜欢猫") << false;
+    QTest::newRow("uncertain-proposition-needs-review")
+        << QStringLiteral("记住：我可能喜欢猫") << QStringLiteral("我不喜欢猫") << false;
+}
+
 void TestMemoryStrategy::testPolicyCreatesConflictsWith() {
+    QFETCH(QString, firstInput);
+    QFETCH(QString, secondInput);
+    QFETCH(bool, expectedConflict);
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
 
@@ -692,13 +730,12 @@ void TestMemoryStrategy::testPolicyCreatesConflictsWith() {
     MemoryPolicy policy;
     MemoryExtractor extractor;
 
-    policy.applyCandidates(
-        extractor.extractFromUserInput(QStringLiteral("我喜欢 Java"), QStringLiteral("user_request")),
-        &store);
-
-    policy.applyCandidates(
-        extractor.extractFromUserInput(QStringLiteral("我不喜欢 Java"), QStringLiteral("user_request")),
-        &store);
+    const MemoryPolicyReport firstReport = policy.applyCandidates(
+        extractor.extractFromUserInput(firstInput, QStringLiteral("user_request")), &store);
+    const MemoryPolicyReport secondReport = policy.applyCandidates(
+        extractor.extractFromUserInput(secondInput, QStringLiteral("user_request")), &store);
+    QCOMPARE(firstReport.written, 1);
+    QCOMPARE(secondReport.written, 1);
 
     const QList<MemoryRelation> relations = store.relationGraph().all();
     bool foundConflict = false;
@@ -708,7 +745,7 @@ void TestMemoryStrategy::testPolicyCreatesConflictsWith() {
             break;
         }
     }
-    QVERIFY(foundConflict);
+    QCOMPARE(foundConflict, expectedConflict);
 }
 
 void TestMemoryStrategy::testPolicyCreatesRelatedByTags() {
@@ -753,6 +790,25 @@ void TestMemoryStrategy::testPolicyCreatesRelatedByTags() {
         }
     }
     QVERIFY(foundRelated);
+}
+
+void TestMemoryStrategy::testPolicyDoesNotRelateSourceTags() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, tempDir);
+    MemoryPolicy policy;
+    MemoryExtractor extractor;
+
+    const auto first = policy.applyCandidates(extractor.extractFromUserInput(
+        QStringLiteral("我喜欢猫"), QStringLiteral("user_request")), &store);
+    const auto second = policy.applyCandidates(extractor.extractFromUserInput(
+        QStringLiteral("我喜欢香菜"), QStringLiteral("user_request")), &store);
+    QCOMPARE(first.written, 1);
+    QCOMPARE(second.written, 1);
+    for (const MemoryRelation& relation : store.relationGraph().all()) {
+        QVERIFY(relation.type != MemoryRelationType::Related);
+    }
 }
 
 void TestMemoryStrategy::testPolicyCreatesMentionedWith() {
@@ -3020,8 +3076,8 @@ void TestMemoryStrategy::testTransactionRollbackRevertsTagCooccurrence() {
         QStringLiteral("qt"), QStringLiteral("c++")), 0);
 }
 
-// Daydream 第③步：硬编码降级巩固回路。mentionCount>=2 的 Hippocampus 条目应升级为
-// Episodic 长期记忆并归档源；低价值条目归档移出活跃 inbox；其他分区条目不受影响。
+// Successful model decisions exercise consolidation independently of the
+// conservative offline fallback, which leaves unassessed user memories pending.
 namespace {
 QList<MemoryEntry> activeEntries(const MemoryStore& store) {
     QList<MemoryEntry> result;
@@ -3029,16 +3085,33 @@ QList<MemoryEntry> activeEntries(const MemoryStore& store) {
         if (entry.status == MemoryStatus::Active) result.append(entry);
     return result;
 }
+
+QList<DaydreamConsolidator::Decision> modelCreateDecisions(
+    const QList<MemoryEntry>& entries,
+    MemoryType targetType = MemoryType::Episodic) {
+    QList<DaydreamConsolidator::Decision> decisions;
+    for (const MemoryEntry& source : entries) {
+        DaydreamConsolidator::Decision decision;
+        decision.sourceId = source.id;
+        decision.action = DaydreamConsolidator::Action::Create;
+        decision.targetType = targetType;
+        decision.mergedContent = source.content.isEmpty() ? source.summary : source.content;
+        decision.qualityScore = 8.0;
+        decision.tags = source.tags;
+        decisions.append(decision);
+    }
+    return decisions;
+}
 }
 
-void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
+void TestMemoryStrategy::testDaydreamModelDecisionCreatesLongTermMemory() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
 
     MemoryStore store;
     setupStoreWithDb(store, tempDir);
 
-    // 一条高提及 Hippocampus 条目（ShortTerm→hippocampus），应被升级。
+    // A reviewed Hippocampus item produces a long-term entry and retains its source.
     MemoryEntry hot;
     hot.type = MemoryType::ShortTerm;
     hot.key = QStringLiteral("hot_topic");
@@ -3046,12 +3119,14 @@ void TestMemoryStrategy::testDaydreamDrainUpgradesAndClearsHippocampus() {
     hot.content = hot.summary;
     hot.source = QStringLiteral("user_interaction");
     hot.importance = 0.4;
-    hot.mentionCount = 2; // Three mentions select Semantic in the fallback policy.
+    hot.mentionCount = 2;
     const QString hotId = store.addEntry(hot).id;
     QVERIFY(store.load());
 
     DaydreamConsolidator consolidator(store);
-    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    const auto snapshot = consolidator.createSnapshot();
+    const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
+        snapshot, modelCreateDecisions(snapshot.items));
     QVERIFY(stats.committed);
     QCOMPARE(stats.scanned, 1);
     QCOMPARE(stats.upgraded, 1);
@@ -3095,7 +3170,7 @@ void TestMemoryStrategy::testDaydreamOutboxFailureRollsBackBatch() {
     DaydreamConsolidator consolidator(store);
     const auto snapshot = consolidator.createSnapshot();
     QCOMPARE(snapshot.size(), 2);
-    const auto decisions = DaydreamConsolidator::hardcodedDecisions(snapshot.items);
+    const auto decisions = modelCreateDecisions(snapshot.items);
     QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
     QVERIFY(query.exec(QStringLiteral(
         "CREATE TEMP TRIGGER fail_second_long_term BEFORE INSERT ON memory_index_jobs "
@@ -3146,7 +3221,9 @@ void TestMemoryStrategy::testDaydreamUpdatesTagCooccurrenceGraph() {
     QVERIFY(!store.addEntry(source).id.isEmpty());
 
     DaydreamConsolidator consolidator(store);
-    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    const auto snapshot = consolidator.createSnapshot();
+    const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
+        snapshot, modelCreateDecisions(snapshot.items));
     QVERIFY(stats.committed);
     QCOMPARE(stats.upgraded, 1);
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
@@ -3225,7 +3302,9 @@ void TestMemoryStrategy::testDaydreamTagCooccurrenceAccumulates() {
         QVERIFY(!store.addEntry(source).id.isEmpty());
 
         DaydreamConsolidator consolidator(store);
-        QVERIFY(consolidator.runHardcodedDrain().committed);
+        const auto snapshot = consolidator.createSnapshot();
+        QVERIFY(consolidator.applyDecisions(
+            snapshot, modelCreateDecisions(snapshot.items)).committed);
     }
 
     QCOMPARE(store.tagCooccurrenceGraph().weightBetween(
@@ -3236,7 +3315,7 @@ void TestMemoryStrategy::testDaydreamTagCooccurrenceAccumulates() {
     QCOMPARE(neighbors.first().weight, 2);
 }
 
-void TestMemoryStrategy::testDaydreamDrainDiscardsLowValue() {
+void TestMemoryStrategy::testDaydreamFallbackDiscardsAssistantResponse() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
 
@@ -3250,7 +3329,7 @@ void TestMemoryStrategy::testDaydreamDrainDiscardsLowValue() {
     chitchat.content = chitchat.summary;
     chitchat.source = QStringLiteral("assistant_response");
     chitchat.importance = 0.2;
-    chitchat.mentionCount = 1; // 不满足 >=2，emotion 为 0 → discard
+    chitchat.mentionCount = 1; // Assistant-origin inbox entries are excluded by source.
     const QString id = store.addEntry(chitchat).id;
     QVERIFY(store.load());
 
@@ -3278,7 +3357,7 @@ void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
 
     // 一条 Semantic 长期记忆（不在 Hippocampus），不应被 drain 触碰。
     store.add(MemoryType::Semantic, QStringLiteral("fact"), QStringLiteral("用户用 Qt6"), {QStringLiteral("tech")});
-    // 一条 Hippocampus 低价值条目，会被 discard。
+    // Low provisional importance does not authorize discarding an unreviewed item.
     MemoryEntry junk;
     junk.type = MemoryType::ShortTerm;
     junk.key = QStringLiteral("junk");
@@ -3293,11 +3372,12 @@ void TestMemoryStrategy::testDaydreamDrainSparesOtherPartitions() {
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
     QCOMPARE(stats.scanned, 1); // 只扫到 1 条 Hippocampus
-    QCOMPARE(stats.discarded, 1);
+    QCOMPARE(stats.discarded, 0);
+    QCOMPARE(stats.preserved, 1);
 
     QVERIFY(store.load());
-    // Semantic 那条仍活跃；Hippocampus 那条归档 → 活跃总数减 1。
-    QCOMPARE(activeEntries(store).size(), totalBefore - 1);
+    QCOMPARE(activeEntries(store).size(), totalBefore);
+    QCOMPARE(consolidator.pendingCount(), 1);
     bool semanticKept = false;
     for (const MemoryEntry& e : activeEntries(store)) {
         if (e.type == MemoryType::Semantic && e.key == QStringLiteral("fact")) semanticKept = true;
@@ -3319,117 +3399,103 @@ void TestMemoryStrategy::testStoreKeyPersistsRoundtrip() {
     QCOMPARE(store.all().first().key, QStringLiteral("fact"));
 }
 
-// Exact repeated user impressions are coalesced by the production path. Verify
-// that the persisted recurrence signal can drive the offline fallback.
-void TestMemoryStrategy::testDaydreamDrainUpgradesViaPersistedMentionCount() {
+void TestMemoryStrategy::testDaydreamFallbackPreservesUnassessedMemory_data() {
+    QTest::addColumn<QString>("input");
+    QTest::addColumn<double>("importanceOverride");
+    QTest::addColumn<int>("mentionsOverride");
+    QTest::addColumn<double>("emotionOverride");
+    QTest::addColumn<int>("reviewedType");
+    QTest::newRow("first-impression-production-defaults")
+        << QStringLiteral("我决定换一份新工作了") << -1.0 << -1 << -1.0
+        << static_cast<int>(MemoryType::Episodic);
+    QTest::newRow("high-provisional-importance")
+        << QStringLiteral("我决定换一份新工作了") << 0.9 << -1 << -1.0
+        << static_cast<int>(MemoryType::Episodic);
+    QTest::newRow("persisted-repeated-mentions")
+        << QStringLiteral("我反复在准备面试安排") << -1.0 << 3 << -1.0
+        << static_cast<int>(MemoryType::Semantic);
+    QTest::newRow("strong-emotion-needs-review")
+        << QStringLiteral("我最近经历了一次告别") << -1.0 << -1 << 0.9
+        << static_cast<int>(MemoryType::Episodic);
+    QTest::newRow("preference-keyword-needs-review")
+        << QStringLiteral("我喜欢在深夜写代码") << -1.0 << -1 << -1.0
+        << static_cast<int>(MemoryType::Preference);
+}
+
+void TestMemoryStrategy::testDaydreamFallbackPreservesUnassessedMemory() {
+    QFETCH(QString, input);
+    QFETCH(double, importanceOverride);
+    QFETCH(int, mentionsOverride);
+    QFETCH(double, emotionOverride);
+    QFETCH(int, reviewedType);
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
-
     MemoryStore store;
     setupStoreWithDb(store, tempDir);
 
     MemoryExtractor extractor;
     MemoryEntry impression = extractor.extractDaydreamImpression(
-        QStringLiteral("我反复在准备面试安排"), QStringLiteral("user_request"));
+        input, QStringLiteral("user_request"));
+    QVERIFY(!impression.key.isEmpty());
+    QCOMPARE(impression.importance, 0.3);
+    QCOMPARE(impression.mentionCount, 1);
+    QCOMPARE(impression.emotionIntensity, 0.0);
+    if (importanceOverride >= 0.0) impression.importance = importanceOverride;
+    if (mentionsOverride >= 0) impression.mentionCount = mentionsOverride;
+    if (emotionOverride >= 0.0) {
+        impression.emotion = EmotionType::Sadness;
+        impression.emotionIntensity = emotionOverride;
+        impression.emotionConfidence = 0.9;
+    }
     const MemoryEntry stored = store.addEntry(impression);
     QVERIFY(!stored.id.isEmpty());
-    impression = stored;
-    impression.mentionCount = 2;
-    impression.updatedAt = impression.updatedAt.addMSecs(1);
-    QVERIFY(store.updateEntryById(impression));
     QVERIFY(store.load());
-
-    QCOMPARE(activeEntries(store).size(), 1);
-    QCOMPARE(activeEntries(store).first().mentionCount, 2); // recurrence 信号已持久化
-    QCOMPARE(activeEntries(store).first().partition, QStringLiteral("hippocampus"));
 
     DaydreamConsolidator consolidator(store);
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
     QCOMPARE(stats.scanned, 1);
-    QCOMPARE(stats.upgraded, 1); // mentionCount>=2 → 升级而非 discard
+    QCOMPARE(stats.upgraded, 0);
     QCOMPARE(stats.discarded, 0);
+    QCOMPARE(stats.preserved, 1);
 
     QVERIFY(store.load());
     QCOMPARE(activeEntries(store).size(), 1);
+    QVERIFY(store.findById(stored.id));
+    QCOMPARE(store.findById(stored.id)->status, MemoryStatus::Active);
+    QCOMPARE(store.findById(stored.id)->content, input);
+    QCOMPARE(consolidator.pendingCount(), 1);
+
+    const auto retrySnapshot = consolidator.createSnapshot();
+    QCOMPARE(retrySnapshot.size(), 1);
+    QCOMPARE(retrySnapshot.items.first().id, stored.id);
+    const auto reviewed = consolidator.applyDecisions(retrySnapshot,
+        modelCreateDecisions(retrySnapshot.items, static_cast<MemoryType>(reviewedType)));
+    QVERIFY(reviewed.committed);
+    QCOMPARE(reviewed.upgraded, 1);
+    QVERIFY(store.load());
+    QCOMPARE(consolidator.pendingCount(), 0);
+    QCOMPARE(store.findById(stored.id)->status, MemoryStatus::Consolidated);
     const MemoryEntry upgraded = activeEntries(store).first();
-    QCOMPARE(upgraded.type, MemoryType::Episodic);
-    QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal); // review finding #3
+    QCOMPARE(upgraded.type, static_cast<MemoryType>(reviewedType));
+    QCOMPARE(upgraded.privacyLevel, PrivacyLevel::Personal);
     QCOMPARE(upgraded.source, QStringLiteral("daydream"));
 }
 
-void TestMemoryStrategy::testDaydreamFallbackUpgradesHighImportance() {
+void TestMemoryStrategy::testDaydreamFallbackPreservesDuplicatesUntilModelReview() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
     MemoryStore store;
     setupStoreWithDb(store, tempDir);
 
     MemoryExtractor extractor;
-    MemoryEntry impression = extractor.extractDaydreamImpression(
-        QStringLiteral("我决定换一份新工作了"), QStringLiteral("user_request"));
-    QVERIFY(!impression.key.isEmpty()); // 自我披露检查通过
-    impression.importance = 0.7; // 高重要性（≥ 0.6 门槛），mentionCount 仍为 1
-    const MemoryEntry stored = store.addEntry(impression);
-    QVERIFY(!stored.id.isEmpty());
-    QCOMPARE(stored.partition, QStringLiteral("hippocampus"));
-
-    DaydreamConsolidator consolidator(store);
-    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
-    QVERIFY(stats.committed);
-    QCOMPARE(stats.scanned, 1);
-    QCOMPARE(stats.upgraded, 1); // importance >= 0.6 → 升级（新增兜底规则）
-    QCOMPARE(stats.discarded, 0);
-
-    QVERIFY(store.load());
-    QCOMPARE(activeEntries(store).size(), 1);
-    const MemoryEntry upgraded = activeEntries(store).first();
-    QVERIFY(upgraded.partition != QLatin1String("hippocampus"));
-    QCOMPARE(upgraded.type, MemoryType::Episodic); // 无关键词命中 → 默认 Episodic
-}
-
-void TestMemoryStrategy::testDaydreamFallbackRoutesPreferenceKeyword() {
-    QTemporaryDir tempDir;
-    QVERIFY(tempDir.isValid());
-    MemoryStore store;
-    setupStoreWithDb(store, tempDir);
-
-    MemoryExtractor extractor;
-    MemoryEntry impression = extractor.extractDaydreamImpression(
-        QStringLiteral("我喜欢在深夜写代码"), QStringLiteral("user_request"));
-    QVERIFY(!impression.key.isEmpty());
-    impression.importance = 0.7; // 达到升级门槛
-    const MemoryEntry stored = store.addEntry(impression);
-    QVERIFY(!stored.id.isEmpty());
-
-    DaydreamConsolidator consolidator(store);
-    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
-    QVERIFY(stats.committed);
-    QCOMPARE(stats.scanned, 1);
-    QCOMPARE(stats.upgraded, 1);
-    QCOMPARE(stats.discarded, 0);
-
-    QVERIFY(store.load());
-    QCOMPARE(activeEntries(store).size(), 1);
-    const MemoryEntry upgraded = activeEntries(store).first();
-    QCOMPARE(upgraded.type, MemoryType::Preference); // 「喜欢」→ 路由为偏好
-    QCOMPARE(upgraded.partition, QStringLiteral("preference"));
-}
-
-void TestMemoryStrategy::testDaydreamFallbackDeduplicatesBatch() {
-    QTemporaryDir tempDir;
-    QVERIFY(tempDir.isValid());
-    MemoryStore store;
-    setupStoreWithDb(store, tempDir);
-
-    MemoryExtractor extractor;
-    // 3 条内容相同的高重要性印象（模拟重复采集）
+    // Even duplicate provisional records require a reviewed consolidation decision.
     for (int i = 0; i < 3; ++i) {
         MemoryEntry impression = extractor.extractDaydreamImpression(
             QStringLiteral("我最近在反复准备面试"), QStringLiteral("user_request"));
         QVERIFY(!impression.key.isEmpty());
         impression.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
         impression.key = QStringLiteral("daydream:test:%1").arg(i); // 避免 key 覆盖
-        impression.importance = 0.7;
         const MemoryEntry stored = store.addEntry(impression);
         QVERIFY(!stored.id.isEmpty());
     }
@@ -3439,11 +3505,225 @@ void TestMemoryStrategy::testDaydreamFallbackDeduplicatesBatch() {
     const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
     QVERIFY(stats.committed);
     QCOMPARE(stats.scanned, 3);
-    QCOMPARE(stats.upgraded, 1); // 批内去重：相同正文只升级第一条
-    QCOMPARE(stats.discarded, 2);
+    QCOMPARE(stats.upgraded, 0);
+    QCOMPARE(stats.discarded, 0);
+    QCOMPARE(stats.preserved, 3);
 
     QVERIFY(store.load());
+    QCOMPARE(activeEntries(store).size(), 3);
+    QCOMPARE(consolidator.pendingCount(), 3);
+
+    const auto snapshot = consolidator.createSnapshot();
+    auto decisions = modelCreateDecisions(snapshot.items);
+    for (int i = 1; i < decisions.size(); ++i) {
+        decisions[i].action = DaydreamConsolidator::Action::Discard;
+    }
+    const auto reviewed = consolidator.applyDecisions(snapshot, decisions);
+    QVERIFY(reviewed.committed);
+    QCOMPARE(reviewed.upgraded, 1);
+    QCOMPARE(reviewed.discarded, 2);
     QCOMPARE(activeEntries(store).size(), 1);
+    QCOMPARE(consolidator.pendingCount(), 0);
+}
+
+void TestMemoryStrategy::testDaydreamRelatedHistoryUsesContentBeforeSourceTags() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryExtractor extractor;
+
+    const auto remembered = extractor.extractFromUserInput(
+        QStringLiteral("记住：我住在上海"), QStringLiteral("manual"));
+    QCOMPARE(remembered.size(), 1);
+    MemoryEntry oldAddress = remembered.first().entry;
+    oldAddress.createdAt = QDateTime::currentDateTimeUtc().addDays(-30);
+    oldAddress.updatedAt = oldAddress.createdAt;
+    oldAddress = store.addEntry(oldAddress);
+    QVERIFY(!oldAddress.id.isEmpty());
+
+    // Existing databases contain Daydream results with legacy routing tags.
+    // These eight unrelated records must not crowd the old address out of the
+    // model's eight-entry update whitelist merely because their source matches.
+    for (int i = 0; i < 8; ++i) {
+        MemoryEntry unrelated;
+        unrelated.type = MemoryType::Episodic;
+        unrelated.key = QStringLiteral("legacy-daydream:%1").arg(i);
+        unrelated.summary = QStringLiteral("无关艺术档案 %1").arg(i);
+        unrelated.content = unrelated.summary;
+        unrelated.source = QStringLiteral("daydream");
+        unrelated.tags = {QStringLiteral("user_interaction"), QStringLiteral("manual"),
+                          QStringLiteral("艺术")};
+        QVERIFY(!store.addEntry(unrelated).id.isEmpty());
+    }
+    const MemoryEntry newAddress = store.addEntry(extractor.extractDaydreamImpression(
+        QStringLiteral("我现在住在杭州"), QStringLiteral("manual")));
+    QVERIFY(!newAddress.id.isEmpty());
+    QVERIFY(store.load());
+
+    DaydreamConsolidator consolidator(store);
+    const auto related = consolidator.relatedLongTermMemories({newAddress}, 8);
+    bool foundOldAddress = false;
+    for (const MemoryEntry& entry : related) {
+        if (entry.id == oldAddress.id) foundOldAddress = true;
+    }
+    QVERIFY(foundOldAddress);
+    const QJsonArray response{QJsonObject{
+        {QStringLiteral("source_id"), newAddress.id},
+        {QStringLiteral("action"), QStringLiteral("update")},
+        {QStringLiteral("target_partition"), QStringLiteral("semantic")},
+        {QStringLiteral("target_memory_id"), oldAddress.id},
+        {QStringLiteral("merged_content"), QStringLiteral("用户现在住在杭州")},
+        {QStringLiteral("quality_score"), 8},
+        {QStringLiteral("new_tags"), QJsonArray{QStringLiteral("居住地")}}
+    }};
+    QList<DaydreamConsolidator::Decision> decisions;
+    QString error;
+    QVERIFY2(DaydreamConsolidator::parseDecisions(
+        QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact)),
+        {newAddress}, related, &decisions, &error), qPrintable(error));
+    QCOMPARE(decisions.first().targetMemoryId, oldAddress.id);
+}
+
+void TestMemoryStrategy::testDaydreamCreatePreservesSourceContext() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryEntry source = MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我今天学习了 Qt 的模型视图"), QStringLiteral("manual"));
+    source.payload[QStringLiteral("session_id")] = QStringLiteral("session-latest");
+    const QJsonArray sessions{QStringLiteral("session-earlier"), QStringLiteral("session-latest")};
+    source.payload[QStringLiteral("session_ids")] = sessions;
+    source.payload[QStringLiteral("task")] = QStringLiteral("task-qt");
+    source.payload[QStringLiteral("tool")] = QStringLiteral("tool-reference");
+    source.payload[QStringLiteral("event_id")] = QStringLiteral("event-study");
+    source.payload[QStringLiteral("request_id")] = QStringLiteral("request-study");
+    source = store.addEntry(source);
+    QVERIFY(!source.id.isEmpty());
+
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    const auto stats = consolidator.applyDecisions(snapshot, modelCreateDecisions(snapshot.items));
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.upgraded, 1);
+    QVERIFY(store.load());
+    const MemoryEntry result = activeEntries(store).first();
+    QCOMPARE(result.payload.value(QStringLiteral("session_id")).toString(), QStringLiteral("session-latest"));
+    QCOMPARE(result.payload.value(QStringLiteral("session_ids")).toArray(), sessions);
+    for (const QString& key : {QStringLiteral("task"), QStringLiteral("tool"),
+                               QStringLiteral("event_id"), QStringLiteral("request_id")}) {
+        QCOMPARE(result.payload.value(key), source.payload.value(key));
+    }
+    QCOMPARE(result.sourceMemoryIds, QStringList{source.id});
+    QCOMPARE(store.findById(source.id)->status, MemoryStatus::Consolidated);
+}
+
+void TestMemoryStrategy::testDaydreamUpdateRetainsHistoricalSessions() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryEntry target;
+    target.type = MemoryType::Semantic;
+    target.key = QStringLiteral("residence");
+    target.summary = QStringLiteral("用户住在上海");
+    target.content = target.summary;
+    // Legacy history has only session_id, with no session_ids array yet.
+    target.payload[QStringLiteral("session_id")] = QStringLiteral("legacy-session");
+    target.payload[QStringLiteral("existing_metadata")] = QStringLiteral("retained");
+    target = store.addEntry(target);
+    QVERIFY(!target.id.isEmpty());
+
+    MemoryEntry source = MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我现在住在杭州"), QStringLiteral("manual"));
+    source.payload[QStringLiteral("session_id")] = QStringLiteral("new-session");
+    source.payload[QStringLiteral("session_ids")] = QJsonArray{
+        QStringLiteral("repeat-session"), QStringLiteral("new-session")};
+    source.payload[QStringLiteral("task")] = QStringLiteral("moving-task");
+    source = store.addEntry(source);
+    QVERIFY(!source.id.isEmpty());
+
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    auto decisions = modelCreateDecisions(snapshot.items, MemoryType::Semantic);
+    QCOMPARE(decisions.size(), 1);
+    decisions.first().action = DaydreamConsolidator::Action::Update;
+    decisions.first().targetMemoryId = target.id;
+    decisions.first().expectedTarget = target;
+    const auto stats = consolidator.applyDecisions(snapshot, decisions);
+    QVERIFY(stats.committed);
+    QCOMPARE(stats.updated, 1);
+    QVERIFY(store.load());
+    const MemoryEntry* updated = store.findById(target.id);
+    QVERIFY(updated);
+    QCOMPARE(updated->payload.value(QStringLiteral("session_id")).toString(), QStringLiteral("new-session"));
+    const QJsonArray expectedSessions{QStringLiteral("legacy-session"),
+        QStringLiteral("repeat-session"), QStringLiteral("new-session")};
+    QCOMPARE(updated->payload.value(QStringLiteral("session_ids")).toArray(), expectedSessions);
+    QCOMPARE(updated->payload.value(QStringLiteral("task")).toString(), QStringLiteral("moving-task"));
+    QCOMPARE(updated->payload.value(QStringLiteral("existing_metadata")).toString(), QStringLiteral("retained"));
+    QVERIFY(updated->sourceMemoryIds.contains(source.id));
+    QCOMPARE(store.findById(source.id)->status, MemoryStatus::Consolidated);
+}
+
+void TestMemoryStrategy::testDaydreamUpdateReplacesExtractionProvenanceForConflictChecks() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryExtractor extractor;
+    MemoryPolicy policy;
+    const auto initial = policy.applyCandidates(extractor.extractFromUserInput(
+        QStringLiteral("我喜欢猫"), QStringLiteral("manual")), &store);
+    QCOMPARE(initial.written, 1);
+    const MemoryEntry target = store.all().first();
+    QCOMPARE(target.payload.value(QStringLiteral("extractor")).toString(), QStringLiteral("rule_v1"));
+    QVERIFY(target.payload.value(QStringLiteral("explicit_request")).toBool());
+    QCOMPARE(target.evidence, QStringList{QStringLiteral("我喜欢猫")});
+
+    const MemoryEntry source = store.addEntry(extractor.extractDaydreamImpression(
+        QStringLiteral("我现在开始讨厌猫"), QStringLiteral("manual")));
+    QVERIFY(!source.id.isEmpty());
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    auto decisions = modelCreateDecisions(snapshot.items, MemoryType::Preference);
+    QCOMPARE(decisions.size(), 1);
+    decisions.first().action = DaydreamConsolidator::Action::Update;
+    decisions.first().targetMemoryId = target.id;
+    decisions.first().expectedTarget = target;
+    decisions.first().mergedContent = QStringLiteral("用户不喜欢猫");
+    decisions.first().tags = {QStringLiteral("猫")};
+    const auto reviewed = consolidator.applyDecisions(snapshot, decisions);
+    QVERIFY(reviewed.committed);
+    QCOMPARE(reviewed.updated, 1);
+    QVERIFY(store.load());
+    const MemoryEntry* updated = store.findById(target.id);
+    QVERIFY(updated);
+    QCOMPARE(updated->source, QStringLiteral("daydream"));
+    QVERIFY(!updated->payload.contains(QStringLiteral("extractor")));
+    QVERIFY(!updated->payload.contains(QStringLiteral("explicit_request")));
+    QCOMPARE(updated->evidence, target.evidence);
+
+    // The new negative statement agrees with the reviewed content, even though
+    // the target still retains its original positive evidence for audit.
+    const auto negative = policy.applyCandidates(extractor.extractFromUserInput(
+        QStringLiteral("我不喜欢猫"), QStringLiteral("manual")), &store);
+    QCOMPARE(negative.written, 1);
+    const QString negativeId = store.all().last().id;
+    QVERIFY(!store.relationGraph().hasRelation(
+        negativeId, target.id, MemoryRelationType::ConflictsWith));
+
+    // This explicit form has a different key, so it exercises conflict detection
+    // independently of the existing same-key Supersedes rule.
+    const auto positive = policy.applyCandidates(extractor.extractFromUserInput(
+        QStringLiteral("记住：我喜欢猫"), QStringLiteral("manual")), &store);
+    QCOMPARE(positive.written, 1);
+    const QString positiveId = store.all().last().id;
+    QVERIFY(store.relationGraph().hasRelation(
+        positiveId, target.id, MemoryRelationType::ConflictsWith));
+    QVERIFY(store.relationGraph().hasRelation(
+        positiveId, negativeId, MemoryRelationType::ConflictsWith));
 }
 
 void TestMemoryStrategy::testDaydreamDiscardsLegacyAssistantInbox() {
@@ -3489,12 +3769,14 @@ void TestMemoryStrategy::testDaydreamSessionLimitLeavesRemainder() {
     }
 
     DaydreamConsolidator consolidator(store);
-    const DaydreamConsolidator::Stats stats = consolidator.runHardcodedDrain();
+    const auto snapshot = consolidator.createSnapshot();
+    const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
+        snapshot, modelCreateDecisions(snapshot.items));
     QVERIFY(stats.committed);
     // Phase 4: 批次选择器将整批上限设为 20（设计："整批最多 20 条"），
     // 而非旧的 SESSION_LIMIT=32。35 条候选中处理 20 条，剩余 15 条。
     QCOMPARE(stats.scanned, 20);
-    QCOMPARE(stats.discarded, 20);
+    QCOMPARE(stats.upgraded, 20);
     QCOMPARE(consolidator.pendingCount(), DaydreamConsolidator::SESSION_LIMIT + 3 - 20);
 }
 
@@ -3518,7 +3800,7 @@ void TestMemoryStrategy::testDaydreamRejectsStaleSnapshotAtomically() {
     const DaydreamConsolidator::Snapshot snapshot = consolidator.createSnapshot();
     QCOMPARE(snapshot.size(), 2);
     const QList<DaydreamConsolidator::Decision> decisions =
-        DaydreamConsolidator::hardcodedDecisions(snapshot.items);
+        modelCreateDecisions(snapshot.items);
 
     MemoryEntry changed = *store.findById(snapshot.items.first().id);
     changed.content += QStringLiteral(" changed");
@@ -3606,7 +3888,7 @@ void TestMemoryStrategy::testDaydreamSnapshotDoesNotConsumeNewInboxItems() {
     QVERIFY(!newId.isEmpty());
 
     const DaydreamConsolidator::Stats stats = consolidator.applyDecisions(
-        snapshot, DaydreamConsolidator::hardcodedDecisions(snapshot.items));
+        snapshot, modelCreateDecisions(snapshot.items));
     QVERIFY(stats.committed);
     QCOMPARE(consolidator.pendingCount(), 1);
     QVERIFY(store.findById(newId));
@@ -4000,7 +4282,7 @@ void TestMemoryStrategy::testDaydreamArchiveFailureRollsBackEvidence() {
     source = store.addEntry(source);
     DaydreamConsolidator consolidator(store);
     const auto snapshot = consolidator.createSnapshot();
-    const auto decisions = DaydreamConsolidator::hardcodedDecisions(snapshot.items);
+    const auto decisions = modelCreateDecisions(snapshot.items);
     QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName(), false));
     QVERIFY(query.exec(QStringLiteral("CREATE TEMP TRIGGER fail_archive BEFORE UPDATE ON memory_items "
         "WHEN NEW.status='consolidated' BEGIN SELECT RAISE(ABORT, 'archive failed'); END")));

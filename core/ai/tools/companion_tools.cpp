@@ -175,7 +175,11 @@ ToolResult ShowChatBubbleTool::execute(const QJsonObject& params) {
 
     const QString text = clippedText(params.value("text").toString(), kMaxBubbleTextLength);
     const int durationMs = boundedDuration(params.value("duration_ms").toInt(kDefaultBubbleDurationMs));
-    m_callback(text, durationMs);
+    if (!m_callback(text, durationMs)) {
+        auto result = ToolResult::fail("气泡暂未显示：界面忙碌或不可用，请稍后重试");
+        result.data["delivery_deferred"] = true;
+        return result;
+    }
 
     QJsonObject result;
     result["text"] = text;

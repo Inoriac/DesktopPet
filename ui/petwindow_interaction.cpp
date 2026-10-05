@@ -223,7 +223,8 @@ void PetWindow::mousePressEvent(QMouseEvent *event) {
 }
 
 void PetWindow::mouseMoveEvent(QMouseEvent *event) {
-    if (!clickThrough) {
+    // Mouse tracking also delivers hover moves, which must not start a drag.
+    if (!clickThrough && event->buttons().testFlag(Qt::LeftButton)) {
         QPoint currentPosition = event->globalPosition().toPoint();
 #ifdef Q_OS_WIN
         POINT cp {};
@@ -263,6 +264,8 @@ void PetWindow::mouseMoveEvent(QMouseEvent *event) {
         }
 
         event->accept();
+    } else {
+        QWidget::mouseMoveEvent(event);
     }
 }
 

@@ -123,3 +123,21 @@
 本轮验证：主程序 `Desktop_Pet` 重新编译成功；新增连通性测试 13 项通过（含初始化、清理和 11 个业务场景），另有 16 组原有回归测试全部通过，共 17 组测试通过。回归覆盖 Launcher、聊天准备与流式回复、记忆召回、运行时、人格、情绪、工具、睡眠整理和日记客户端。`git diff --check` 通过。构建与测试记录：[构建日志](/E:/Funny-Projects/Desktop-Pet/build/connectivity-fix-tests-build.log)、[新增连通性测试](/E:/Funny-Projects/Desktop-Pet/build/connectivity-fix-integration-tests.txt)、[回归测试](/E:/Funny-Projects/Desktop-Pet/build/connectivity-fix-regression-tests.log)。本轮未调用真实外部模型 API、加载 TTS 模型或进行桌面可视化手动验收。
 
 运行约束：多角色旧全局提醒不会自动分配；外部通知已经送达但进程在保存结果之前崩溃，仍可能在恢复后重复一次（外部副作用无法与本地文件原子提交）。私密日记仍需 libsodium / QtKeychain；本轮修复其连接与生命周期，没有改变加密依赖要求。MCP 与旧占位模块不属于本轮的 7 个断点修复。
+
+## 调度与提醒模块复查（2026-10-05，macOS）
+
+本轮按“一次检查并修复一个模块”处理生产使用的 `AgentScheduler`，并检查它与聊天、界面、记忆及睡眠整理的连接。`PetReminderManager` 没有生产实例，本轮没有将旧类接回主程序。
+
+- **时间与触发**：时长改为 64 位并校验范围，缺失、非正数、小数等非法周期不再自动变成每分钟提醒；无法保存为 ISO 日期的超长时间会被拒绝。每日任务保留秒、时间戳保留毫秒。用户明确设置的提醒不再共用主动任务的 10 分钟冷却；主动任务按到期和等待情况公平执行，避免周期任务长期挤掉一次性提醒。单任务最小间隔与用户忙碌策略实际生效，静默期直接顺延到本地 08:00。
+- **恢复与管理**：完整校验文件结构、任务、状态和重复 ID，失败时保留原文件与内存并停止调度，查询工具明确报错。保存最近 100 条已完成的一次性提醒，重启后仍可按原 ID 延后；停用任务的记忆明确归档为“已停用”。
+- **聊天入口**：“5 分钟后提醒我充电”不再被电池查询抢走。数字与对应时间单位一起解析，内容中的章节数或“半小时”等文字不会修改触发间隔；无法可靠解析的时间交给模型处理。创建、查询、取消、延后的回复包含实际任务信息，查询支持分页并控制结果长度，保留模型后续操作所需的 ID。
+- **实际送达**：气泡展示返回是否接受，流式回复、上一条提醒展示或未读分页占用时保留任务重试，不发出成功或失败情绪事件。文字被接受后才执行可选动画；动画失败仅标记部分成功。销毁运行时前先停止调度器。
+- **记忆回写**：只读写对应 TaskShadow，不再全量刷新共享记忆缓存或覆盖待写入的聊天记忆。本地及数据库中的删除标记优先，重复投影不重复写入，数据库失败保留待同步状态。后台强化将读取和更新放在同一事务，避免并发完成的提醒被旧 Active 状态覆盖。
+
+主程序中的连接为 `PetWindow::setupAiBrain → 工具注册/AIBrain → AgentScheduler → ShowChatBubbleTool → PetWindow 气泡接收结果 → 任务持久化/TaskShadow`；任务结果仍连接到情绪记录。AIBrain 与 SleepCycle 读取同一个 scheduler 的待办时间，已核对组装与销毁路径。新增集成测试走真实聊天入口、工具注册和气泡工具，并用可控的显示接收回调验证重试与归档。
+
+验证：主程序 `Desktop_Pet` 构建成功；AgentScheduler、ScheduleTools、ScheduleConnectivity、ModuleConnectivity、IntentRouter、Tool、SleepCycle、StreamingDialogue、ChatSideEffectQueue、MemoryStrategy 共 10 组测试通过。构建显式设置 `DESKTOP_PET_ENABLE_ONNX_RUNTIME=OFF`，`otool -L` 确认主程序未链接 ONNX。测试使用替身模型和显示回调，未调用真实模型、运行 ONNX 或进行桌面交互验收。记录见 `build/scheduler-fix-build.log`、`build/scheduler-fix-tests.log`。
+
+分页收尾后重新构建主程序及直接受影响目标，并复跑 ScheduleTools、ScheduleConnectivity、ModuleConnectivity、StreamingDialogue 四组测试，全部通过；100 条完成记录可经真实工具运行时分页取回，未被结果长度限制整体省略。`git diff --check` 通过。
+
+桌面验收补充：macOS 使用临时静态模型启动了真实主程序，发现鼠标悬停也会进入拖拽，影响右键菜单操作。`PetWindow::mouseMoveEvent` 已增加按住左键的条件，修复后主程序重新构建成功。用户决定转到 Windows 验证，因此本轮未完成修复后的鼠标交互及提醒到期、流式占用、重启恢复的桌面验收；真实角色显示亦未验收。临时验收服务已停止，原角色注册文件已按备份校验恢复。

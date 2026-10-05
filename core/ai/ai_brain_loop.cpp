@@ -19,6 +19,7 @@
 
 #include "configLoader/config_manager.h"
 #include "memory/daydream_consolidator.h"
+#include "memory/memory_metadata.h"
 #include "scheduler/agent_scheduler.h"
 #include "tools/environment_tools.h"
 
@@ -29,11 +30,11 @@ QJsonObject daydreamMemoryJson(const MemoryEntry& entry, bool includeMetadata) {
     object[QStringLiteral("id")] = entry.id;
     object[QStringLiteral("summary")] = entry.summary.left(200);
     object[QStringLiteral("content")] = entry.content.left(700);
-    object[QStringLiteral("tags")] = QJsonArray::fromStringList(entry.tags);
+    object[QStringLiteral("tags")] = QJsonArray::fromStringList(MemoryMetadata::semanticTags(entry));
     if (includeMetadata) {
         object[QStringLiteral("source")] = entry.source;
         object[QStringLiteral("mention_count")] = entry.mentionCount;
-        object[QStringLiteral("importance")] = entry.importance;
+        object[QStringLiteral("session_ids")] = QJsonArray::fromStringList(MemoryMetadata::sessionIds(entry));
     } else {
         object[QStringLiteral("type")] = memoryTypeToString(entry.type);
     }
@@ -724,6 +725,7 @@ void AIBrain::recordDaydreamInterruption(const QString& reason,
                   QStringLiteral("self_experience")};
     entry.scope = QStringLiteral("self");
     entry.source = QStringLiteral("daydream_interruption");
+    entry.payload[QStringLiteral("source_tags")] = QJsonArray::fromStringList(entry.tags);
     entry.emotion = EmotionType::Sadness;
     entry.emotionIntensity = 0.25;   // 轻微，不夸张
     entry.emotionConfidence = 0.8;

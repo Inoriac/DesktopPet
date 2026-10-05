@@ -86,6 +86,10 @@ public:
     bool updateTaskShadowStatus(const QString& linkedTaskId,
                                 MemoryStatus status,
                                 const QJsonObject& payloadPatch = {});
+    // Apply a scheduler projection to its one TaskShadow without reloading the
+    // shared cache. Local and durable deletion tombstones always take precedence.
+    bool synchronizeTaskShadow(const MemoryEntry& projection,
+                               QString* errorMessage = nullptr);
     // 显式物理删除单条（含子表）。事务内调用可随 ROLLBACK 撤销；Daydream 使用状态归档。
     bool removeEntryById(const QString& id);
 

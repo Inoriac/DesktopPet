@@ -15,6 +15,7 @@
 #include "active_memory_pool.h"
 #include "hippocampus_working_set.h"
 #include "memory_keyword_index.h"
+#include "memory_metadata.h"
 #include "associative_activation_engine.h"
 
 namespace {
@@ -35,7 +36,7 @@ QString joinedSearchText(const MemoryEntry& entry) {
     text += entry.summary + QStringLiteral("\n");
     text += entry.content + QStringLiteral("\n");
     text += entry.scope + QStringLiteral("\n");
-    text += entry.tags.join(QStringLiteral(" "));
+    text += MemoryMetadata::semanticTags(entry).join(QStringLiteral(" "));
     return text.toLower();
 }
 
@@ -66,8 +67,11 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
     const QDateTime now = QDateTime::currentDateTimeUtc();
     for (const WorkingMemoryItem& item : workingMemory) {
         if (item.expiresAt.isValid() && item.expiresAt <= now) continue;
-        const QString searchText = (item.summary + QLatin1Char(' ') + item.content
-                                    + QLatin1Char(' ') + item.tags.join(QLatin1Char(' '))).toLower();
+        MemoryEntry searchable;
+        searchable.summary = item.summary;
+        searchable.content = item.content;
+        searchable.tags = item.tags;
+        const QString searchText = joinedSearchText(searchable);
         bool hit = tokens.isEmpty();
         for (const QString& token : tokens) {
             if (searchText.contains(token)) {
@@ -178,7 +182,11 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
         const QString queryLower = query.text.toLower();
         for (const WorkingMemoryItem& wm : cache->all()) {
             if (wm.expiresAt.isValid() && wm.expiresAt <= QDateTime::currentDateTimeUtc()) continue;
-            const QString searchText = (wm.summary + " " + wm.content + " " + wm.tags.join(" ")).toLower();
+            MemoryEntry searchable;
+            searchable.summary = wm.summary;
+            searchable.content = wm.content;
+            searchable.tags = wm.tags;
+            const QString searchText = joinedSearchText(searchable);
             bool hit = false;
             for (const QString& token : tokens) {
                 if (searchText.contains(token)) { hit = true; break; }
@@ -769,6 +777,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
 
         // Record graph activation and paths
         for (const PropagatedMemory& prop : propagated) {
+            // Seeds are returned for bookkeeping even when no edge reached
+            // them. Only actual edge contributions are graph evidence.
+            if (prop.activation <= 0.0) continue;
             graphActivations[prop.memoryId] = prop.activation;
             graphPaths[prop.memoryId] = prop.propagationPath;
             if (prop.isExploratory) exploratoryIds.insert(prop.memoryId);

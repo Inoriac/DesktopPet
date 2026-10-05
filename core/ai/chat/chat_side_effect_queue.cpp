@@ -208,7 +208,14 @@ private:
     bool persistReinforcementOnce(const QList<MemoryEntry>& stagedEntries,
                                   const QString& sessionId) {
         if (!m_memoryStore || stagedEntries.isEmpty()) return true;
-        if (!m_memoryStore->refreshDatabaseOnly()) return false;
+        // Keep the authoritative status read and its reinforcement write in
+        // one SQLite snapshot. A scheduler completion committed meanwhile must
+        // make this attempt fail and retry, rather than restore the old Active row.
+        if (!m_memoryStore->beginTransaction()) return false;
+        if (!m_memoryStore->refreshDatabaseOnly()) {
+            m_memoryStore->rollbackTransaction();
+            return false;
+        }
 
         QList<MemoryEntry> updates;
         QSet<QString> seen;
@@ -225,8 +232,7 @@ private:
             updated.updatedAt = updated.lastAccessedAt;
             updates.append(std::move(updated));
         }
-        if (updates.isEmpty()) return true;
-        if (!m_memoryStore->beginTransaction()) return false;
+        report(QStringLiteral("memory.reinforcement.read"), sessionId);
         for (const MemoryEntry& update : updates) {
             if (!m_memoryStore->updateEntryById(update)) {
                 m_memoryStore->rollbackTransaction();

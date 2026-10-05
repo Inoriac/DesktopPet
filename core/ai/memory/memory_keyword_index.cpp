@@ -1,6 +1,7 @@
 #include "memory_keyword_index.h"
 #include "partition_policy.h"
 #include "recall_text.h"
+#include "memory_metadata.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QDebug>
@@ -11,6 +12,10 @@ namespace {
 const QString eligible = QStringLiteral(
     "m.status='active' AND m.privacy_level!='sensitive' AND m.partition!='hippocampus' "
     "AND (m.expires_at IS NULL OR m.expires_at='' OR julianday(m.expires_at)>julianday('now'))");
+const QString semanticTag = QStringLiteral(
+    "NOT EXISTS (SELECT 1 FROM json_each("
+    "CASE WHEN json_valid(m.payload_json) THEN m.payload_json ELSE '{}' END, '$.source_tags') source_tag "
+    "WHERE lower(trim(source_tag.value))=t.normalized_tag)");
 }
 
 void MemoryKeywordIndex::rebuild(const QList<MemoryEntry>& entries) {
@@ -25,7 +30,7 @@ void MemoryKeywordIndex::upsert(const MemoryEntry& entry) {
     m_docTokens[entry.id] = extractTokens(entry);
     for (const auto& token : m_docTokens[entry.id]) m_tokenPostings[token].insert(entry.id);
     QStringList tags;
-    for (const auto& tag : entry.tags) {
+    for (const auto& tag : MemoryMetadata::semanticTags(entry)) {
         const auto key = RecallText::normalize(tag);
         if (!key.isEmpty() && !tags.contains(key)) tags.append(key);
     }
@@ -52,10 +57,11 @@ bool MemoryKeywordIndex::refreshGlobalTags(const QString& connectionName) {
     m_globalTags.clear();
     m_matcherDirty = true;
     if (!query.exec(QStringLiteral("SELECT DISTINCT t.normalized_tag FROM memory_tags t "
-                                  "JOIN memory_items m ON m.id=t.memory_id WHERE ") + eligible)) return false;
+                                  "JOIN memory_items m ON m.id=t.memory_id WHERE ") + eligible
+                    + QStringLiteral(" AND ") + semanticTag)) return false;
     while (query.next()) {
         const auto tag = query.value(0).toString();
-        if (!tag.isEmpty()) m_globalTags.insert(tag);
+        if (!tag.isEmpty() && !MemoryMetadata::isSourceTag(tag)) m_globalTags.insert(tag);
     }
     m_tagRevision = revision;
     return true;
@@ -99,7 +105,7 @@ QList<KeywordMatch> MemoryKeywordIndex::lookup(const MemoryCue& cue, int limit) 
     QStringList tags;
     for (const auto& raw : cue.knownTags) {
         const auto tag = RecallText::normalize(raw);
-        if (!tag.isEmpty() && !tags.contains(tag)) tags.append(tag);
+        if (!tag.isEmpty() && !MemoryMetadata::isSourceTag(tag) && !tags.contains(tag)) tags.append(tag);
         if (tags.size() == 32) break;
     }
     if (!m_connectionName.isEmpty() && !tags.isEmpty() && QSqlDatabase::contains(m_connectionName)) {
@@ -110,6 +116,7 @@ QList<KeywordMatch> MemoryKeywordIndex::lookup(const MemoryCue& cue, int limit) 
             "SELECT m.id, COUNT(DISTINCT t.normalized_tag) AS hits FROM memory_tags t "
             "JOIN memory_items m ON m.id=t.memory_id WHERE t.normalized_tag IN (")
             + placeholders.join(QLatin1Char(',')) + QStringLiteral(") AND ") + eligible
+            + QStringLiteral(" AND ") + semanticTag
             + QStringLiteral(" GROUP BY m.id ORDER BY hits DESC, m.importance DESC, "
                              "COALESCE(m.updated_at,m.created_at) DESC, m.id LIMIT :limit"));
         for (int i = 0; i < tags.size(); ++i) query.bindValue(placeholders[i], tags[i]);

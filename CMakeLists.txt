@@ -867,6 +867,52 @@ add_desktop_pet_cpp_test(identity_state_tests IdentityStateTests
     PRIVATE_REFLECTION
 )
 
+# ---- Scheduler timing, persistence, tools, and production chat wiring ----
+set(SCHEDULER_TEST_SUPPORT_SOURCES
+    core/ai/scheduler/scheduled_task.cpp
+    core/ai/scheduler/agent_scheduler.cpp
+    core/ai/tool_registry.cpp
+    core/ai/tools/runtime/tool_policy.cpp
+    core/ai/tools/runtime/tool_result_sanitizer.cpp
+    core/ai/tools/runtime/tool_runtime.cpp
+)
+
+add_desktop_pet_cpp_test(agent_scheduler_tests AgentSchedulerTests
+    SOURCES tests/test_agent_scheduler.cpp ${SCHEDULER_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES Qt::Core Qt::Test
+)
+
+add_desktop_pet_cpp_test(schedule_tools_tests ScheduleToolsTests
+    SOURCES
+        tests/test_schedule_tools.cpp
+        ${SCHEDULER_TEST_SUPPORT_SOURCES}
+        core/ai/tools/schedule_tools.cpp
+        core/ai/memory/memory_store.cpp
+        core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES Qt::Core Qt::Sql Qt::Test
+)
+
+add_desktop_pet_cpp_test(schedule_connectivity_tests ScheduleConnectivityTests
+    SOURCES
+        tests/test_schedule_connectivity.cpp
+        core/ai/tools/schedule_tools.cpp
+        ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+        ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+        ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test
+        $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS
+    PRIVATE_REFLECTION
+)
+
 # ---- Reflection, private diary, and sleep coordinator tests ----
 add_desktop_pet_cpp_test(module_connectivity_tests ModuleConnectivityTests
     SOURCES
