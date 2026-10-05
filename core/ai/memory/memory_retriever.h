@@ -48,6 +48,7 @@ struct RetrievedMemory {
     double tagCue = 0.0;
     double runtimeActivation = 0.0;
     double emotionBoost = 0.0;
+    double scoreWithoutEmotion = 0.0; // ACT-R score used for activation feedback
 };
 
 // 激活式召回的可选通道集合。为空的通道自动跳过，不强行补齐。

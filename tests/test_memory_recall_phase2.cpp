@@ -27,6 +27,7 @@ private slots:
     void testACTRCueMatch();
     void testACTRSemanticCueAffectsRanking();
     void testACTRFullRanking();
+    void testConsolidatedEvidenceAndSingleEmotionScore();
     void testActivatedRetrievalIntegration();
 };
 
@@ -237,6 +238,37 @@ void TestMemoryRecallPhase2::testKeywordIndexLookup() {
     hits = index.lookup({}, {"music"}, 10);
     QCOMPARE(hits.size(), 1);
     QCOMPARE(hits[0], QString("mem2"));
+}
+
+void TestMemoryRecallPhase2::testConsolidatedEvidenceAndSingleEmotionScore() {
+    const auto now = QDateTime::currentDateTimeUtc();
+    ACTRRanker ranker;
+    CandidateMemory candidate;
+    candidate.entry.type = MemoryType::Semantic;
+    candidate.entry.strength = 0.5;
+    candidate.entry.importance = 0.1;
+    const double low = ranker.computeBaseActivation(candidate.entry, now);
+    candidate.entry.importance = 0.9;
+    QVERIFY(ranker.computeBaseActivation(candidate.entry, now) > low);
+    const double oneMention = ranker.computeBaseActivation(candidate.entry, now);
+    candidate.entry.mentionCount = 6;
+    QVERIFY(ranker.computeBaseActivation(candidate.entry, now) > oneMention);
+    candidate.entry.partition = "hippocampus";
+    QCOMPARE(ranker.computeBaseActivation(candidate.entry, now), oneMention);
+
+    candidate.entry.partition = "semantic";
+    candidate.entry.emotion = EmotionType::Joy;
+    candidate.entry.emotionConfidence = 0.8;
+    MemoryCue neutral;
+    MemoryCue happy;
+    happy.currentEmotion = EmotionType::Joy;
+    happy.emotionIntensity = 0.75;
+    const auto baseline = ranker.rank({candidate}, neutral).first();
+    const auto boosted = ranker.rank({candidate}, happy).first();
+    QCOMPARE(boosted.scoreWithoutEmotion, baseline.finalScore);
+    QVERIFY(qAbs(boosted.finalScore - baseline.finalScore - 0.3 * 0.75 * 0.8) < 1e-12);
+    QCOMPARE(boosted.baseActivation, baseline.baseActivation);
+    QCOMPARE(boosted.cueMatch, baseline.cueMatch);
 }
 
 void TestMemoryRecallPhase2::testACTRBaseActivation() {

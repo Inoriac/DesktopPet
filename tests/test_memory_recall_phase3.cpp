@@ -15,6 +15,7 @@
 #include "core/ai/memory/active_memory_pool.h"
 #include "core/ai/memory/memory_keyword_index.h"
 #include "core/ai/memory/embedding_index.h"
+#include "core/ai/memory/hippocampus_working_set.h"
 
 class TestMemoryRecallPhase3 : public QObject {
     Q_OBJECT
@@ -42,6 +43,7 @@ private slots:
     void testExplorationSelectionBudget();
     void testExplorationReachesRetrievalOutput();
     void testConvergingPathsAccumulateAtCapacity();
+    void testHippocampusSeedBudgetIgnoresEmotionAndImportance();
 };
 
 namespace {
@@ -68,6 +70,47 @@ MemoryRelation makeRelation(const QString& id,
     return rel;
 }
 
+}
+
+void TestMemoryRecallPhase3::testHippocampusSeedBudgetIgnoresEmotionAndImportance() {
+    MemoryStore store;
+    const auto now = QDateTime::currentDateTimeUtc();
+    for (int i = 0; i < 10; ++i) {
+        MemoryEntry entry;
+        entry.id = QString("seed-%1").arg(i);
+        entry.type = MemoryType::ShortTerm;
+        entry.summary = i < 8 ? "music jazz" : "jazz";
+        entry.importance = i < 8 ? 0.1 : 1.0;
+        entry.mentionCount = i < 8 ? 1 : 100;
+        entry.emotion = EmotionType::Joy;
+        entry.emotionConfidence = 1.0;
+        entry.emotionIntensity = i < 8 ? 0.0 : 1.0;
+        entry.createdAt = entry.updatedAt = now.addSecs(i < 8 ? -86400 : 0);
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    HippocampusWorkingSet workingSet(&store);
+    QVERIFY(workingSet.refresh());
+    AssociativeActivationEngine graph;
+    graph.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.workingSet = &workingSet;
+    channels.graphPropagation = &graph;
+    MemoryQuery query;
+    query.text = "jazz music";
+    query.limit = 16;
+    MemoryRetriever retriever;
+    const auto neutral = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    query.currentEmotion = EmotionType::Joy;
+    query.currentEmotionIntensity = 1.0;
+    const auto happy = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(neutral.size(), 8);
+    QCOMPARE(happy.size(), 8);
+    for (int i = 0; i < happy.size(); ++i) {
+        QCOMPARE(happy[i].entry.id, neutral[i].entry.id);
+        QVERIFY(happy[i].entry.id != "seed-8" && happy[i].entry.id != "seed-9");
+        QCOMPARE(happy[i].scoreWithoutEmotion, neutral[i].score);
+        QVERIFY(qAbs(happy[i].score - neutral[i].score - 0.3) < 1e-12);
+    }
 }
 
 void TestMemoryRecallPhase3::testSeedBudgetPreservesMultiChannelMatch() {

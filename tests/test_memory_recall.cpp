@@ -14,6 +14,8 @@ private slots:
     void testActiveMemoryPoolSnapshotBounds();
     void testHippocampusWorkingSetLoad();
     void testHippocampusWorkingSetScan();
+    void testHippocampusContentAndRecencyPriority();
+    void testHippocampusMetadataDoesNotSelectSeeds();
 };
 
 void TestMemoryRecall::testActiveMemoryPoolBasics() {
@@ -212,6 +214,73 @@ void TestMemoryRecall::testHippocampusWorkingSetScan() {
     // Combined
     results = workingSet.scan("", {"weather", "outdoor"}, 10);
     QCOMPARE(results.size(), 1);
+}
+
+void TestMemoryRecall::testHippocampusContentAndRecencyPriority() {
+    MemoryStore store;
+    const auto now = QDateTime::currentDateTimeUtc();
+    const auto add = [&](const QString& id, const QString& text, int ageSeconds) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::ShortTerm;
+        entry.summary = text;
+        entry.createdAt = entry.updatedAt = now.addSecs(-ageSeconds);
+        return store.addEntry(entry);
+    };
+    // Partial coverage is 4/9; matching both words must beat recency alone.
+    add("partial-new", "jazz", 0);           // 0.8 * 4/9 + 0.2 * 1
+    add("full-old", "music jazz", 86400);    // 0.8 * 1 + 0.2 * 0 = .8
+    add("full-recent", "music jazz", 3600);  // .8 + .2 * 23/24
+    add("unrelated", "weather", -86400);
+    HippocampusWorkingSet set(&store);
+    QVERIFY(set.refresh());
+    const auto hits = set.scan("jazz music", {}, 3);
+    QCOMPARE(hits.size(), 3);
+    QCOMPARE(hits[0].id, QString("full-recent"));
+    QCOMPARE(hits[1].id, QString("full-old"));
+    QCOMPARE(hits[2].id, QString("partial-new"));
+    QCOMPARE(set.scan("jazz music", {}, 1).first().id, QString("full-recent"));
+
+    // Future dates cap at 1 instead of growing an unlimited recency bonus.
+    add("future-partial", "jazz", -86400 * 30);
+    QVERIFY(set.refresh());
+    QCOMPARE(set.scan("jazz music", {}, 1).first().id, QString("full-recent"));
+    QCOMPARE(set.scan("", {}, 1).first().id, QString("future-partial"));
+    // Chinese partial matches use the same bounded coverage.
+    add("chinese", QString::fromUtf8("周末一起爬山"), 0);
+    QVERIFY(set.refresh());
+    QCOMPARE(set.scan(QString::fromUtf8("想去爬山"), {}, 1).first().id, QString("chinese"));
+}
+
+void TestMemoryRecall::testHippocampusMetadataDoesNotSelectSeeds() {
+    MemoryStore store;
+    const auto now = QDateTime::currentDateTimeUtc();
+    MemoryEntry entry;
+    entry.id = "a-low";
+    entry.type = MemoryType::ShortTerm;
+    entry.summary = "jazz music";
+    entry.createdAt = entry.updatedAt = now;
+    entry.importance = 0.1;
+    entry.strength = 0.1;
+    store.addEntry(entry);
+    entry.id = "z-high";
+    entry.importance = 1.0;
+    entry.strength = 1.0;
+    entry.emotion = EmotionType::Joy;
+    entry.emotionIntensity = entry.emotionConfidence = 1.0;
+    entry.mentionCount = entry.accessCount = 100;
+    store.addEntry(entry);
+    HippocampusWorkingSet set(&store);
+    QVERIFY(set.refresh());
+    // Equal relevance/recency resolves by ID, not salience.
+    QCOMPARE(set.scan("jazz", {}, 1).first().id, QString("a-low"));
+
+    entry.id = "old-high";
+    entry.createdAt = entry.updatedAt = now.addSecs(-3600);
+    store.addEntry(entry);
+    set.setCapacity(2);
+    QVERIFY(set.refresh());
+    for (const auto& item : set.items()) QVERIFY(item.id != QString("old-high"));
 }
 
 QTEST_MAIN(TestMemoryRecall)

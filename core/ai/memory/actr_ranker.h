@@ -20,6 +20,7 @@ struct CandidateMemory {
     double emotionBoost = 0.0;        // E_i: emotion match
     double graphActivation = 0.0;     // G_i: graph propagation (Phase 3)
     double finalScore = 0.0;          // Weighted sum
+    double scoreWithoutEmotion = 0.0; // Runtime feedback must not recycle E_i
     
     QStringList sourceChannels;       // e.g., ["active_pool", "hnsw", "keyword"]
     bool isExploratory = false;

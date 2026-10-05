@@ -19,14 +19,15 @@ public:
     void setCapacity(int capacity);
     int capacity() const { return m_capacity; }
     
-    // Reload working set from Hippocampus partition (most recent/high-priority)
+    // Reload a bounded recency window; quality/emotion do not select its rows.
     bool refresh();
     
     const QList<MemoryEntry>& items() const { return m_items; }
     int size() const { return m_items.size(); }
     bool isEmpty() const { return m_items.isEmpty(); }
     
-    // Linear scan over working set (not full SQLite)
+    // Rank the whole window by 0.8 * content relevance + 0.2 * recency,
+    // then take the seed budget (not a full SQLite scan).
     QList<MemoryEntry> scan(const QString& queryText,
                             const QStringList& requiredTags = {},
                             int limit = 8) const;
@@ -34,7 +35,8 @@ public:
     int totalPendingCount() const { return m_totalPendingCount; }
     
 private:
-    double computePriority(const MemoryEntry& entry, const QDateTime& now) const;
+    double computePriority(const MemoryEntry& entry, double relevance,
+                           const QDateTime& now) const;
     
     MemoryStore* m_store = nullptr;
     int m_capacity = DEFAULT_CAPACITY;

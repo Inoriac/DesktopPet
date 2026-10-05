@@ -1,5 +1,6 @@
 #include "actr_ranker.h"
 #include "recall_text.h"
+#include "partition_policy.h"
 
 #include <algorithm>
 #include <cmath>
@@ -65,11 +66,12 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
         candidate.graphActivation = clamp01(candidate.graphActivation);
         
         // A_i = 1.0*B + 1.0*C + 1.5*R + 0.3*E + 0.6*G（设计 §7）
-        candidate.finalScore = m_baseLevelWeight * candidate.baseActivation
+        candidate.scoreWithoutEmotion = m_baseLevelWeight * candidate.baseActivation
                              + m_cueMatchWeight * candidate.cueMatch
                              + m_runtimeWeight * candidate.runtimeActivation
-                             + m_emotionWeight * candidate.emotionBoost
                              + m_graphWeight * candidate.graphActivation;
+        candidate.finalScore = candidate.scoreWithoutEmotion
+                             + m_emotionWeight * candidate.emotionBoost;
     }
     
     std::sort(ranked.begin(), ranked.end(),
@@ -119,7 +121,17 @@ double ACTRRanker::computeBaseActivation(const MemoryEntry& entry,
     }
     
     // ln(1+x)/3 封顶 1.0：accessTerm ≈ 19 时达到饱和
-    const double accessComponent = std::min(1.0, std::log(1.0 + accessTerm) / 3.0);
+    double accessComponent = std::min(1.0, std::log(1.0 + accessTerm) / 3.0);
+
+    // Repeated mentions are evidence for consolidated memories, never an
+    // inbox seed priority. Share the frequency component with access history
+    // so repeated mention/retrieval of the same fact is not counted twice.
+    const auto partition = entry.partition.trimmed().isEmpty()
+        ? partitionForType(entry.type) : partitionFromString(entry.partition);
+    if (partition != MemoryPartition::Hippocampus) {
+        const double mentions = (std::clamp(entry.mentionCount, 1, 6) - 1) / 5.0;
+        accessComponent = std::max(accessComponent, mentions);
+    }
     
     // 固定边界归一化：三个分量均在 [0,1]，除以 3
     return clamp01((strength + importance + accessComponent) / 3.0);

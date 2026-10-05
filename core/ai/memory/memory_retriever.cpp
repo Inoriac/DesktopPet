@@ -605,6 +605,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
         RetrievedMemory memory;
         memory.entry = candidate.entry;
         memory.score = candidate.finalScore;
+        memory.scoreWithoutEmotion = candidate.scoreWithoutEmotion;
         memory.reasons = candidate.sourceChannels;
         memory.sourceChannels = candidate.sourceChannels;
         memory.baseActivation = candidate.baseActivation;
@@ -851,6 +852,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         RetrievedMemory memory;
         memory.entry = candidate.entry;
         memory.score = candidate.finalScore;
+        memory.scoreWithoutEmotion = candidate.scoreWithoutEmotion;
         memory.reasons = candidate.sourceChannels;
         memory.sourceChannels = candidate.sourceChannels;
         memory.baseActivation = candidate.baseActivation;

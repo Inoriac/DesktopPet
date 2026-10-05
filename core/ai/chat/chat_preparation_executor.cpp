@@ -406,8 +406,10 @@ public:
             
             for (const RetrievedMemory& memory : memories) {
                 if (memory.entry.id.startsWith(QLatin1String("wm:"))) continue;
+                // Emotion affects this response's final ranking only; feeding
+                // its bonus back into R_i would bias the next seed selection.
                 m_recallActivePool.activate(memory.entry.id,
-                    qBound(0.05, memory.score / 3.0, 1.0), QStringLiteral("session"));
+                    qBound(0.05, memory.scoreWithoutEmotion / 3.0, 1.0), QStringLiteral("session"));
             }
             if (m_recallStore && !m_recallStore->saveActiveMemorySnapshot(m_recallActivePool.snapshot()))
                 qWarning() << "[Recall] failed to save activation snapshot";

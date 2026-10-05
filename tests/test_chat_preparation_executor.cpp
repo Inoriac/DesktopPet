@@ -136,6 +136,7 @@ private slots:
     void wholeTagRecallFindsOldMemoryWithoutEmbeddings();
     void semanticRecallFindsOldMemoryAndRejectsStalePrivateHits();
     void activePoolSurvivesWorkerRestartAndClear();
+    void emotionBonusIsNotPersistedIntoActivationPool();
     void slowProviderInitializationDoesNotBlockGui();
 #ifdef DESKTOP_PET_HAS_ORT
     void nativeOnnxRecallRunsThroughChatWorker();
@@ -798,6 +799,38 @@ void ChatPreparationExecutorTests::semanticRecallFindsOldMemoryAndRejectsStalePr
     QVERIFY(store.removeEntryById(old.id));
     QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("different wording")), &result));
     QVERIFY(!result.reinforcementIds.contains(old.id));
+}
+
+void ChatPreparationExecutorTests::emotionBonusIsNotPersistedIntoActivationPool() {
+    QList<double> activations;
+    for (const auto emotion : {EmotionType::Neutral, EmotionType::Joy}) {
+        QTemporaryDir directory;
+        const auto environment = environmentFor(directory);
+        MemoryStore store;
+        store.setDatabasePath(environment.memoryDatabasePath);
+        QVERIFY(store.loadDatabaseOnly());
+        auto memory = matchingMemory();
+        memory.emotion = EmotionType::Joy;
+        memory.emotionIntensity = memory.emotionConfidence = 1.0;
+        QVERIFY(!store.addEntry(memory).id.isEmpty());
+        {
+            ChatPreparationExecutor executor;
+            QVERIFY(executor.start(environment).isOk());
+            auto request = requestFor();
+            EmotionSnapshot mood;
+            mood.active = emotion;
+            mood.intensity = 1.0;
+            mood.updatedAt = QDateTime::currentDateTimeUtc();
+            request.emotion = mood;
+            ChatPreparationResult result;
+            QVERIFY(prepareOnce(executor, request, &result));
+            QVERIFY(result.reinforcementIds.contains(memory.id));
+        }
+        const auto snapshot = store.loadActiveMemorySnapshot();
+        QCOMPARE(snapshot.items.size(), 1);
+        activations.append(snapshot.items.first().activation);
+    }
+    QVERIFY(qAbs(activations[0] - activations[1]) < 1e-12);
 }
 
 void ChatPreparationExecutorTests::activePoolSurvivesWorkerRestartAndClear() {
