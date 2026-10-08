@@ -234,8 +234,8 @@ void TestMemoryRecall::testHippocampusContentAndRecencyPriority() {
     };
     // Partial coverage is 4/9; matching both words must beat recency alone.
     add("partial-new", "jazz", 0);           // 0.8 * 4/9 + 0.2 * 1
-    add("full-old", "music jazz", 86400);    // .8 + .2 * 6/7
-    add("full-recent", "music jazz", 3600);  // .8 + .2 * 167/168
+    add("full-old", "music jazz", 86400);    // .8: no freshness bonus after 3 hours
+    add("full-recent", "music jazz", 3600);  // .8 + .2 * 2/3
     add("unrelated", "weather", -86400);
     HippocampusWorkingSet set(&store);
     QVERIFY(set.refresh());
@@ -294,29 +294,41 @@ void TestMemoryRecall::testMentionFreshnessAndPersistence() {
     MemoryStore store;
     store.setDatabasePath(directory.filePath("mentions.db"));
     QVERIFY(store.loadDatabaseOnly());
-    const auto now = QDateTime::fromString("2026-10-08T00:00:00Z", Qt::ISODate);
+    const auto now = QDateTime::currentDateTimeUtc();
     MemoryEntry entry;
     entry.id = "mentioned";
     entry.type = MemoryType::ShortTerm;
     entry.summary = "jazz music";
     entry.createdAt = now.addDays(-30);
     entry.updatedAt = now;
-    entry.lastMentionedAt = now.addDays(-2);
+    entry.lastMentionedAt = now.addSecs(-3600);
     QVERIFY(!store.addEntry(entry).id.isEmpty());
     QCOMPARE(store.readForRecall(entry.id)->lastMentionedAt, entry.lastMentionedAt);
     QCOMPARE(MemoryEntry::fromJson(entry.toJson()).lastMentionedAt, entry.lastMentionedAt);
 
     HippocampusWorkingSet set(&store);
-    QVERIFY(qAbs(set.freshness(entry, now) - 5.0 / 7.0) < 1e-12);
+    QVERIFY(qAbs(set.freshness(entry, now) - 2.0 / 3.0) < 1e-12);
     const auto first = set.freshness(entry, now);
-    const auto second = set.freshness(entry, now.addDays(1));
-    const auto third = set.freshness(entry, now.addDays(2));
+    const auto second = set.freshness(entry, now.addSecs(1800));
+    const auto third = set.freshness(entry, now.addSecs(3600));
     QVERIFY(qAbs((first - second) - (second - third)) < 1e-12);
-    QCOMPARE(set.freshness(entry, now.addDays(5)), 0.0);
-    QCOMPARE(set.freshness(entry, now.addDays(-3)), 1.0);
-    set.setFreshnessHorizonSeconds(4 * 86400);
+    QCOMPARE(set.freshness(entry, now.addSecs(7200)), 0.0);
+    QCOMPARE(set.freshness(entry, now.addSecs(-7200)), 1.0);
+    set.setFreshnessHorizonSeconds(2 * 3600);
     QCOMPARE(set.freshness(entry, now), 0.5);
     set.setFreshnessHorizonSeconds(0);
+    QVERIFY(qAbs(set.freshness(entry, now) - 2.0 / 3.0) < 1e-12);
+    // Offline time removes the bonus without expiring the pending impression.
+    const auto restartedAt = now.addDays(3);
+    const auto restored = store.readForRecall(entry.id);
+    QVERIFY(restored.has_value());
+    QCOMPARE(restored->status, MemoryStatus::Active);
+    QCOMPARE(restored->lastMentionedAt, entry.lastMentionedAt);
+    QCOMPARE(set.freshness(*restored, restartedAt), 0.0);
+    MemoryEntry mentionedAgain = *restored;
+    mentionedAgain.lastMentionedAt = restartedAt;
+    QVERIFY(store.updateEntryById(mentionedAgain));
+    QCOMPARE(set.freshness(*store.readForRecall(entry.id), restartedAt), 1.0);
 
     MemoryEntry legacy = entry;
     legacy.id = "z-maintained";

@@ -19,7 +19,7 @@ struct HippocampusCandidate {
 class HippocampusWorkingSet {
 public:
     static constexpr int DEFAULT_CAPACITY = 200;
-    static constexpr qint64 DEFAULT_FRESHNESS_SECONDS = 7 * 24 * 60 * 60;
+    static constexpr qint64 DEFAULT_FRESHNESS_SECONDS = 3 * 60 * 60;
     
     explicit HippocampusWorkingSet(MemoryStore* store = nullptr);
     
