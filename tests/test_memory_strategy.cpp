@@ -20,6 +20,7 @@
 #include "memory/memory_relation_graph.h"
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
+#include "memory/memory_metadata.h"
 #include "memory/working_memory_cache.h"
 #include "memory/noop_embedding_index.h"
 #include "memory/partition_policy.h"
@@ -157,6 +158,11 @@ private slots:
     void testDaydreamParsesRelationsProposalsFromObjectRoot();
     void testDaydreamBuildChangeSetValidatesProposals();
     void testDaydreamChangeSetProposalsHashCompatWithLegacyPayload();
+    void testConsolidationMergesConcurrentMentionsAndAccess();
+    void testConsolidationRejectsDurablePrivacyAndEvidenceChanges();
+    void testQueuedMentionCannotResurrectConsolidatedSource();
+    void testQueuedForgetWinsOverConsolidation();
+    void testConsolidationCooldownSurvivesRestartWithoutExpiringMemory();
     void testDaydreamTriggerPolicyAllConditions();
     void testDaydreamTriggerPolicyNegativeCases();
     void testDaydreamTriggerPolicyNoDueTodoNonBlocking();
@@ -3735,7 +3741,8 @@ void TestMemoryStrategy::testDaydreamUpdateReplacesExtractionProvenanceForConfli
     QCOMPARE(updated->source, QStringLiteral("daydream"));
     QVERIFY(!updated->payload.contains(QStringLiteral("extractor")));
     QVERIFY(!updated->payload.contains(QStringLiteral("explicit_request")));
-    QCOMPARE(updated->evidence, target.evidence);
+    for (const auto& evidence : target.evidence) QVERIFY(updated->evidence.contains(evidence));
+    for (const auto& evidence : source.evidence) QVERIFY(updated->evidence.contains(evidence));
 
     // The new negative statement agrees with the reviewed content, even though
     // the target still retains its original positive evidence for audit.
@@ -4211,6 +4218,144 @@ void TestMemoryStrategy::testDaydreamChangeSetProposalsHashCompatWithLegacyPaylo
 
     // 新旧哈希不同
     QVERIFY(proposalsBuilt.value().changeSetId != legacyBuilt.value().changeSetId);
+}
+
+void TestMemoryStrategy::testConsolidationMergesConcurrentMentionsAndAccess() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    auto source = store.addEntry(MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我最近在学习绘画"), QStringLiteral("manual")));
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    const auto built = consolidator.buildChangeSet(snapshot, modelCreateDecisions(snapshot.items));
+    QVERIFY(built.isOk());
+    MemoryStore foreground;
+    foreground.setDatabasePath(store.databasePath());
+    QVERIFY(foreground.loadDatabaseOnly());
+    auto mentioned = *foreground.findById(source.id);
+    mentioned.mentionCount += 2;
+    mentioned.lastMentionedAt = source.createdAt.addSecs(30);
+    MemoryMetadata::recordSession(mentioned, "new-chat");
+    QVERIFY(foreground.updateEntryById(mentioned));
+    QVERIFY(foreground.reinforceEntries({source.id}));
+    // The consolidator's cache is deliberately stale. Neither read nor identical
+    // mention invalidates classification, and all metadata must survive the commit.
+    const auto stats = consolidator.applyChangeSet(built.value());
+    QVERIFY(stats.committed);
+    QCOMPARE(store.findById(source.id)->accessCount, 1);
+    QCOMPARE(store.findById(source.id)->mentionCount, source.mentionCount + 2);
+    for (const auto& entry : store.all()) {
+        if (entry.status != MemoryStatus::Active) continue;
+        QCOMPARE(entry.mentionCount, source.mentionCount + 2);
+        QCOMPARE(entry.lastMentionedAt, mentioned.lastMentionedAt);
+        QVERIFY(MemoryMetadata::sessionIds(entry).contains("new-chat"));
+    }
+}
+
+void TestMemoryStrategy::testConsolidationRejectsDurablePrivacyAndEvidenceChanges() {
+    for (bool privacy : {false, true}) {
+        QTemporaryDir dir;
+        MemoryStore store;
+        setupStoreWithDb(store, dir);
+        auto source = store.addEntry(MemoryExtractor().extractDaydreamImpression(
+            QStringLiteral("我最近在学习绘画"), QStringLiteral("manual")));
+        DaydreamConsolidator consolidator(store);
+        const auto snapshot = consolidator.createSnapshot();
+        const auto built = consolidator.buildChangeSet(snapshot, modelCreateDecisions(snapshot.items));
+        QVERIFY(built.isOk());
+        MemoryStore foreground;
+        foreground.setDatabasePath(store.databasePath());
+        QVERIFY(foreground.loadDatabaseOnly());
+        auto changed = *foreground.findById(source.id);
+        if (privacy) changed.privacyLevel = PrivacyLevel::Sensitive;
+        else changed.evidence.append("new conflicting evidence");
+        QVERIFY(foreground.updateEntryById(changed));
+        const auto stats = consolidator.applyChangeSet(built.value());
+        QVERIFY(stats.staleSnapshot);
+        QVERIFY(!stats.committed);
+        QCOMPARE(foreground.readForRecall(source.id)->status, MemoryStatus::Active);
+        QCOMPARE(foreground.all().size(), 1);
+    }
+}
+
+void TestMemoryStrategy::testQueuedMentionCannotResurrectConsolidatedSource() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    auto source = store.addEntry(MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我最近在学习绘画"), QStringLiteral("manual")));
+    MemoryEntry mention = source;
+    mention.mentionCount += 1;
+    mention.lastMentionedAt = source.createdAt.addSecs(30);
+    MemoryMutationBatch queued;
+    queued.entries.append({source, mention});
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    QVERIFY(consolidator.applyDecisions(snapshot, modelCreateDecisions(snapshot.items)).committed);
+    QVERIFY(store.persistMutationBatch(queued));
+    QVERIFY(store.refreshDatabaseOnly());
+    QCOMPARE(store.findById(source.id)->status, MemoryStatus::Consolidated);
+    int pending = 0;
+    for (const auto& entry : store.all()) {
+        if (entry.partition != "hippocampus" || entry.status != MemoryStatus::Active) continue;
+        ++pending;
+        QVERIFY(entry.id != source.id);
+        QCOMPARE(entry.mentionCount, 1);
+        QCOMPARE(entry.lastMentionedAt, mention.lastMentionedAt);
+        QSqlQuery query(QSqlDatabase::database(store.databaseConnectionName()));
+        query.prepare("SELECT COUNT(*) FROM memory_index_jobs WHERE memory_id=?");
+        query.addBindValue(entry.id);
+        QVERIFY(query.exec() && query.next());
+        QVERIFY(query.value(0).toInt() > 0);
+    }
+    QCOMPARE(pending, 1);
+    MemoryStore staleReader;
+    staleReader.setDatabasePath(store.databasePath());
+    QVERIFY(staleReader.loadDatabaseOnly());
+    QVERIFY(store.updateStatusById(source.id, MemoryStatus::Deleted));
+    QVERIFY(staleReader.reinforceEntries({source.id}));
+    QCOMPARE(store.readForRecall(source.id)->status, MemoryStatus::Deleted);
+    QVERIFY(!store.persistMutationBatch(queued));
+    QCOMPARE(store.readForRecall(source.id)->status, MemoryStatus::Deleted);
+}
+
+void TestMemoryStrategy::testQueuedForgetWinsOverConsolidation() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    const auto source = store.addEntry(MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我最近在学习绘画"), QStringLiteral("manual")));
+    MemoryEntry forgotten = source;
+    forgotten.status = MemoryStatus::Deleted;
+    MemoryMutationBatch queued;
+    queued.entries.append({source, forgotten});
+    DaydreamConsolidator consolidator(store);
+    const auto snapshot = consolidator.createSnapshot();
+    QVERIFY(consolidator.applyDecisions(snapshot, modelCreateDecisions(snapshot.items)).committed);
+    QVERIFY(store.persistMutationBatch(queued));
+    QVERIFY(store.refreshDatabaseOnly());
+    QCOMPARE(store.all().size(), 2);
+    for (const auto& entry : store.all()) QCOMPARE(entry.status, MemoryStatus::Deleted);
+}
+
+void TestMemoryStrategy::testConsolidationCooldownSurvivesRestartWithoutExpiringMemory() {
+    QTemporaryDir dir;
+    MemoryStore store;
+    setupStoreWithDb(store, dir);
+    auto source = MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我最近在学习绘画"), QStringLiteral("manual"));
+    source.createdAt = QDateTime::currentDateTimeUtc().addDays(-7);
+    source.lastMentionedAt = source.createdAt;
+    source = store.addEntry(source);
+    QVERIFY(store.deferDaydreamSources({source}, QDateTime::currentDateTimeUtc().addSecs(1800)));
+    MemoryStore restarted;
+    restarted.setDatabasePath(store.databasePath());
+    QVERIFY(restarted.loadDatabaseOnly());
+    QVERIFY(DaydreamConsolidator(restarted).createSnapshot().isEmpty());
+    QCOMPARE(restarted.findById(source.id)->status, MemoryStatus::Active);
+    QVERIFY(restarted.deferDaydreamSources({source}, QDateTime::currentDateTimeUtc().addSecs(-1)));
+    QCOMPARE(DaydreamConsolidator(restarted).createSnapshot().size(), 1);
 }
 
 // DaydreamTriggerPolicy 复合判定：全条件满足才触发。

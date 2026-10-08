@@ -38,7 +38,7 @@ QList<MemoryEntry> BatchSelector::selectBatch(int maxItems,
     
     // 1. 选锚点（高分 + 最老保底 + 防簇垄断）
     const QList<MemoryEntry> anchors = selectAnchors(
-        candidates, m_policy.minAnchors, m_policy.maxAnchors);
+        candidates, qMin(maxItems, m_policy.minAnchors), qMin(maxItems, m_policy.maxAnchors));
     
     if (anchorsOut) *anchorsOut = anchors;
     
@@ -84,16 +84,19 @@ double BatchSelector::computePriority(const MemoryEntry& entry,
 
 QList<PriorityCandidate> BatchSelector::gatherCandidates(const QDateTime& now) const {
     QList<PriorityCandidate> candidates;
+    const auto cooling = m_store.coolingDaydreamSources(now);
     
     for (const MemoryEntry& entry : m_store.all()) {
         // 筛选：Hippocampus + Active 状态（Phase 1 用 Active 表示 Pending）
         if (entry.partition != QLatin1String("hippocampus")
             || entry.status != MemoryStatus::Active
-            || entry.type == MemoryType::TaskShadow) {
+            || entry.type == MemoryType::TaskShadow
+            || entry.privacyLevel == PrivacyLevel::Sensitive
+            || cooling.contains(entry.id)
+            || (entry.expiresAt.isValid() && entry.expiresAt <= now)) {
             continue;
         }
         
-        // TODO: 检查租约、重试冷却期（需要 MemoryStore 扩展字段）
         
         PriorityCandidate candidate;
         candidate.entry = entry;

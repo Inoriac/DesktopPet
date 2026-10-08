@@ -1,5 +1,6 @@
 #include "chat_side_effect_queue.h"
 
+#include <QJsonArray>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSet>
@@ -93,7 +94,12 @@ public:
                 shutdownAndQuit();
                 return;
             }
-            if (!hasEffect) return;
+            if (!hasEffect) {
+                const QStringList changed(m_changedMemoryIds.begin(), m_changedMemoryIds.end());
+                m_changedMemoryIds.clear();
+                if (drainedReady) drainedReady(changed);
+                return;
+            }
             process(std::move(effect));
         }
     }
@@ -111,6 +117,7 @@ public:
         QThread::currentThread()->quit();
     }
 
+    std::function<void(const QStringList&)> drainedReady;
     std::function<void(const QString&, quint64)> barrierReady;
     std::function<void(const QString&)> warningReady;
 
@@ -128,13 +135,23 @@ private:
             completionPhase = QStringLiteral("runtime.event.completed");
             break;
         case ChatSideEffectType::MemoryReinforcement:
+            for (const auto& entry : effect.reinforcedEntries) m_changedMemoryIds.insert(entry.id);
             ok = persistReinforcement(effect.reinforcedEntries, effect.sessionId);
             completionPhase = QStringLiteral("memory.reinforcement.completed");
             break;
         case ChatSideEffectType::UserMemoryWrite:
+            for (const auto& change : effect.memoryMutations.entries) m_changedMemoryIds.insert(change.after.id);
             ok = persistMemoryMutations(effect.memoryMutations);
             completionPhase = QStringLiteral("user.memory.write.completed");
             break;
+        case ChatSideEffectType::MemoryTask: {
+            const QJsonObject result = effect.memoryTask && m_memoryStore
+                ? effect.memoryTask(*m_memoryStore) : QJsonObject{};
+            for (const auto& id : result.value("changedMemoryIds").toArray()) m_changedMemoryIds.insert(id.toString());
+            if (effect.memoryTaskCompleted) effect.memoryTaskCompleted(result);
+            completionPhase = QStringLiteral("memory.task.completed");
+            break;
+        }
         case ChatSideEffectType::RequestLog:
             ok = m_logger && m_logger->appendRecord(effect.logRecord);
             completionPhase = QStringLiteral("request.log.completed");
@@ -247,12 +264,19 @@ private:
         return true;
     }
 
+    QSet<QString> m_changedMemoryIds;
+
     bool persistMemoryMutations(const MemoryMutationBatch& mutations) {
         if (!m_memoryStore || mutations.isEmpty()) return true;
-        if (m_memoryStore->persistMutationBatch(mutations)) return true;
-        QThread::msleep(5);
-        return m_memoryStore->refreshDatabaseOnly()
-            && m_memoryStore->persistMutationBatch(mutations);
+        QStringList written;
+        bool ok = m_memoryStore->persistMutationBatch(mutations, &written);
+        if (!ok) {
+            QThread::msleep(5);
+            ok = m_memoryStore->refreshDatabaseOnly()
+                && m_memoryStore->persistMutationBatch(mutations, &written);
+        }
+        for (const auto& id : written) m_changedMemoryIds.insert(id);
+        return ok;
     }
 
     void discardPendingLocked() {
@@ -337,6 +361,11 @@ Result<void, DomainError> ChatSideEffectQueue::startWorker(
                               m_probeState);
     worker->moveToThread(thread);
     QPointer<ChatSideEffectQueue> guard(this);
+    worker->drainedReady = [guard](const QStringList& changed) {
+        if (guard) QMetaObject::invokeMethod(guard, [guard, changed] {
+            if (guard) emit guard->drained(changed);
+        }, Qt::QueuedConnection);
+    };
     worker->barrierReady = [guard](const QString& sessionId, quint64 generation) {
         if (!guard) return;
         QMetaObject::invokeMethod(
@@ -389,6 +418,22 @@ Result<void, DomainError> ChatSideEffectQueue::startWorker(
     m_stopping = false;
     m_accepting.store(true, std::memory_order_release);
     return Result<void, DomainError>::success();
+}
+
+bool ChatSideEffectQueue::submitMemoryTask(
+    std::function<QJsonObject(MemoryStore&)> task,
+    std::function<void(QJsonObject)> completed) {
+    DeferredChatSideEffect effect;
+    effect.type = ChatSideEffectType::MemoryTask;
+    effect.memoryTask = std::move(task);
+    const QPointer<ChatSideEffectQueue> guard(this);
+    effect.memoryTaskCompleted = [guard, completed = std::move(completed)](QJsonObject result) {
+        if (!guard) return;
+        QMetaObject::invokeMethod(guard, [guard, completed, result] {
+            if (guard && completed) completed(result);
+        }, Qt::QueuedConnection);
+    };
+    return tryEnqueue(std::move(effect));
 }
 
 bool ChatSideEffectQueue::tryEnqueue(DeferredChatSideEffect effect) {

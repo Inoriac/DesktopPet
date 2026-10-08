@@ -1,4 +1,5 @@
 #include "memory_store.h"
+#include "memory_metadata.h"
 
 #include <QDir>
 #include <QCryptographicHash>
@@ -234,7 +235,7 @@ bool MemoryStore::stageSleepChange(const StagedMemoryChange& change) {
 
 Result<QList<StagedMemoryChange>, DomainError> MemoryStore::preparedSleepChanges(
     const QString& sessionId,
-    const QString& targetType) const {
+    const QString& targetType, bool pendingOnly) const {
     QList<StagedMemoryChange> changes;
     if (!m_repository || !m_repository->isOpen()
         || sessionId.trimmed().isEmpty()) {
@@ -247,6 +248,7 @@ Result<QList<StagedMemoryChange>, DomainError> MemoryStore::preparedSleepChanges
         "SELECT session_id,change_id,target_type,operation,target_id,payload_json,"
         "payload_hash FROM sleep_staged_change "
         "WHERE session_id=? AND status IN ('Prepared','Finalized')");
+    if (pendingOnly) sql += QStringLiteral(" AND status='Prepared'");
     if (!targetType.trimmed().isEmpty()) sql += QStringLiteral(" AND target_type=?");
     sql += QStringLiteral(" ORDER BY created_at,change_id");
     query.prepare(sql);
@@ -285,6 +287,61 @@ Result<QList<StagedMemoryChange>, DomainError> MemoryStore::preparedSleepChanges
     }
     return Result<QList<StagedMemoryChange>, DomainError>::success(
         std::move(changes));
+}
+
+bool MemoryStore::deferDaydreamSources(const QList<MemoryEntry>& sources, const QDateTime& retryAt) {
+    if (!beginTransaction()) return false;
+    bool ok = true;
+    for (const auto& source : sources) {
+        const auto current = readForRecall(source.id);
+        if (!current || current->status != MemoryStatus::Active || current->partition != "hippocampus") {
+            if (!removePreparedSleepChange(QStringLiteral("maintenance-retry"), source.id)) { ok = false; break; }
+            continue;
+        }
+        const QJsonObject payload{{"revision", MemoryMetadata::semanticRevision(source)},
+            {"retry_at", retryAt.toString(Qt::ISODateWithMs)}};
+        const QByteArray bytes = QJsonDocument(payload).toJson(QJsonDocument::Compact);
+        QSqlQuery query(QSqlDatabase::database(databaseConnectionName()));
+        query.prepare(QStringLiteral(
+            "INSERT INTO sleep_staged_change(session_id,change_id,target_type,operation,target_id,"
+            "payload_json,payload_hash,status,created_at) VALUES('maintenance-retry',?,"
+            "'daydream_retry','defer',?,?,?,'Prepared',?) ON CONFLICT(session_id,change_id) "
+            "DO UPDATE SET payload_json=excluded.payload_json,payload_hash=excluded.payload_hash"));
+        query.addBindValue(source.id);
+        query.addBindValue(source.id);
+        query.addBindValue(QString::fromUtf8(bytes));
+        query.addBindValue(QString::fromLatin1(QCryptographicHash::hash(bytes, QCryptographicHash::Sha256).toHex()));
+        query.addBindValue(QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs));
+        if (!query.exec()) { ok = false; break; }
+    }
+    if (ok && commitTransaction()) return true;
+    rollbackTransaction();
+    return false;
+}
+
+QSet<QString> MemoryStore::coolingDaydreamSources(const QDateTime& now) const {
+    QSet<QString> ids;
+    const auto changes = preparedSleepChanges(QStringLiteral("maintenance-retry"), QStringLiteral("daydream_retry"));
+    // Fail closed on a broken ledger, rather than hot-looping the model.
+    if (!changes.isOk()) {
+        for (const auto& entry : m_entries) ids.insert(entry.id);
+        return ids;
+    }
+    for (const auto& change : changes.value()) {
+        if (QDateTime::fromString(change.payload.value("retry_at").toString(), Qt::ISODateWithMs) <= now) continue;
+        const MemoryEntry* current = findById(change.targetId);
+        if (current && MemoryMetadata::semanticRevision(*current) == change.payload.value("revision").toObject())
+            ids.insert(change.targetId);
+    }
+    return ids;
+}
+
+bool MemoryStore::removePreparedSleepChange(const QString& sessionId, const QString& changeId) {
+    QSqlQuery query(QSqlDatabase::database(databaseConnectionName()));
+    query.prepare(QStringLiteral("DELETE FROM sleep_staged_change WHERE session_id=? AND change_id=? AND status='Prepared'"));
+    query.addBindValue(sessionId);
+    query.addBindValue(changeId);
+    return query.exec();
 }
 
 bool MemoryStore::markSleepChangeFinalized(const QString& sessionId,
@@ -644,6 +701,8 @@ bool MemoryStore::stageEntryUpdate(const MemoryEntry& entry,
     for (MemoryEntry& existing : m_entries) {
         if (existing.id != entry.id) continue;
         MemoryEntry stored = entry;
+        if (stored.partition.trimmed().isEmpty())
+            stored.partition = partitionToString(partitionForType(stored.type));
         if (!stored.createdAt.isValid()) {
             stored.createdAt = existing.createdAt.isValid()
                 ? existing.createdAt : QDateTime::currentDateTimeUtc();
@@ -665,6 +724,7 @@ void MemoryStore::rollbackMutationBatch(const MemoryMutationBatch& batch) {
     for (auto it = batch.entries.crbegin(); it != batch.entries.crend(); ++it) {
         for (int index = 0; index < m_entries.size(); ++index) {
             if (m_entries.at(index).id != it->after.id) continue;
+            if (m_entries.at(index).toJson() != it->after.toJson()) break;
             if (it->before.has_value()) {
                 m_entries[index] = *it->before;
             } else {
@@ -675,15 +735,70 @@ void MemoryStore::rollbackMutationBatch(const MemoryMutationBatch& batch) {
     }
 }
 
-bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch) {
+bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch, QStringList* writtenIds) {
     if (batch.isEmpty() || !m_repository || !m_repository->isOpen()) return true;
     if (!m_repository->beginTransaction()) return false;
     bool ok = true;
+    QList<MemoryEntry> written;
     for (const MemoryEntryMutation& mutation : batch.entries) {
-        ok = mutation.before.has_value()
-            ? m_repository->update(mutation.after)
-            : m_repository->insert(mutation.after);
+        MemoryEntry result = mutation.after;
+        if (mutation.before) {
+            const auto current = m_repository->loadById(result.id);
+            if (!current) { ok = false; break; }
+            const auto& before = *mutation.before;
+            if (result.status == MemoryStatus::Deleted) {
+                // A user's forget intent remains valid if maintenance consumed the
+                // source before this queued operation. Delete its derived result too.
+                const QString derivedId = current->payload.value("consolidated_into").toString();
+                if (!derivedId.isEmpty()) {
+                    const auto derived = m_repository->loadById(derivedId);
+                    if (derived && derived->sourceMemoryIds.contains(current->id)) {
+                        MemoryEntry deleted = *derived;
+                        deleted.status = MemoryStatus::Deleted;
+                        deleted.updatedAt = QDateTime::currentDateTimeUtc();
+                        ok = m_repository->update(deleted);
+                        if (!ok) break;
+                        written.append(deleted);
+                    }
+                }
+                result = *current;
+                result.status = MemoryStatus::Deleted;
+                result.updatedAt = QDateTime::currentDateTimeUtc();
+                ok = m_repository->update(result);
+            } else if (current->status == MemoryStatus::Consolidated
+                && before.status == MemoryStatus::Active
+                && before.partition == QLatin1String("hippocampus")
+                && result.status == MemoryStatus::Active) {
+                MemoryEntry original = *current;
+                original.status = before.status;
+                for (const QString& key : {QStringLiteral("consolidation_action"),
+                        QStringLiteral("consolidated_at"), QStringLiteral("consolidated_into")})
+                    original.payload.remove(key);
+                if (!MemoryMetadata::sameSemanticRevision(original, before)
+                    || (current->expiresAt.isValid() && current->expiresAt <= QDateTime::currentDateTimeUtc())) {
+                    ok = false;
+                    break;
+                }
+                // A mention queued after consolidation is a new pending impression;
+                // it must never resurrect the consumed source or lose new evidence.
+                result.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+                result.createdAt = MemoryMetadata::lastMentionTime(result);
+                result.mentionCount = qMax(1, result.mentionCount - before.mentionCount);
+                result.accessCount = 0;
+                result.lastAccessedAt = {};
+                ok = m_repository->insert(result);
+            } else if (!MemoryMetadata::sameSemanticRevision(*current, before)) {
+                // Explicit deletion/privacy/content changes win over an older queued write.
+                ok = false;
+            } else {
+                result = MemoryMetadata::rebaseMetadata(*current, before, result);
+                ok = m_repository->update(result);
+            }
+        } else {
+            ok = m_repository->insert(result);
+        }
         if (!ok) break;
+        written.append(result);
     }
     if (ok) {
         for (const MemoryRelation& relation : batch.relations) {
@@ -699,11 +814,11 @@ bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch) {
         job.prepare(QStringLiteral(
             "INSERT INTO memory_index_jobs(id,memory_id,operation,model,status,created_at,updated_at) "
             "VALUES(:id,:memory,:operation,'', 'Pending',:created,:updated)"));
-        for (const MemoryEntryMutation& mutation : batch.entries) {
+        for (const MemoryEntry& result : written) {
             job.bindValue(QStringLiteral(":id"), QUuid::createUuid().toString(QUuid::WithoutBraces));
-            job.bindValue(QStringLiteral(":memory"), mutation.after.id);
-            const bool deleted = mutation.after.status != MemoryStatus::Active
-                || mutation.after.privacyLevel == PrivacyLevel::Sensitive;
+            job.bindValue(QStringLiteral(":memory"), result.id);
+            const bool deleted = result.status != MemoryStatus::Active
+                || result.privacyLevel == PrivacyLevel::Sensitive;
             job.bindValue(QStringLiteral(":operation"), deleted ? QStringLiteral("delete") : QStringLiteral("upsert"));
             const QString ts = QDateTime::currentDateTimeUtc().toString(Qt::ISODate);
             job.bindValue(QStringLiteral(":created"), ts);
@@ -717,7 +832,20 @@ bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch) {
     }
     if (ok) ok = m_repository->commitTransaction();
     if (!ok) m_repository->rollbackTransaction();
+    if (ok && writtenIds) for (const auto& entry : written) writtenIds->append(entry.id);
     return ok;
+}
+
+void MemoryStore::refreshEntries(const QStringList& ids) {
+    for (const auto& id : ids) {
+        const auto current = readForRecall(id);
+        const auto cached = std::find_if(m_entries.begin(), m_entries.end(),
+            [&id](const MemoryEntry& entry) { return entry.id == id; });
+        if (current) {
+            if (cached == m_entries.end()) m_entries.append(*current);
+            else *cached = *current;
+        } else if (cached != m_entries.end()) m_entries.erase(cached);
+    }
 }
 
 bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
@@ -731,6 +859,8 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
         }
 
         MemoryEntry stored = entry;
+        if (stored.partition.trimmed().isEmpty())
+            stored.partition = partitionToString(partitionForType(stored.type));
         if (!stored.createdAt.isValid()) {
             stored.createdAt = existing.createdAt.isValid()
                 ? existing.createdAt
@@ -742,8 +872,14 @@ bool MemoryStore::updateEntryById(const MemoryEntry& entry) {
         }
 
         if (m_repository && m_repository->isOpen()) {
-            if (!m_repository->beginTransaction()
-                || !m_repository->update(stored)
+            if (!m_repository->beginTransaction()) return false;
+            const auto current = m_repository->loadById(stored.id);
+            if (!current || !MemoryMetadata::sameSemanticRevision(*current, existing)) {
+                m_repository->rollbackTransaction();
+                return false;
+            }
+            stored = MemoryMetadata::rebaseMetadata(*current, existing, stored);
+            if (!m_repository->update(stored)
                 || !enqueueIndexJob(stored.id, stored.status == MemoryStatus::Active
                     ? QStringLiteral("upsert") : QStringLiteral("delete"))
                 || !m_repository->commitTransaction()) {
@@ -818,7 +954,13 @@ bool MemoryStore::reinforceEntries(const QStringList& ids) {
         if (index < 0) continue;
 
         originals.append({index, m_entries.at(index)});
-        MemoryEntry updated = m_entries.at(index);
+        const auto current = persistent ? m_repository->loadById(id)
+            : std::optional<MemoryEntry>{m_entries.at(index)};
+        if (!current) continue;
+        m_entries[index] = *current;
+        if (current->status != MemoryStatus::Active || current->privacyLevel == PrivacyLevel::Sensitive
+            || (current->expiresAt.isValid() && current->expiresAt <= accessedAt)) continue;
+        MemoryEntry updated = *current;
         updated.strength = qMin(1.0, updated.strength + 0.1);
         updated.accessCount += 1;
         updated.lastAccessedAt = accessedAt;

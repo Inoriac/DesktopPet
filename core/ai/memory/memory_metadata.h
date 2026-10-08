@@ -74,6 +74,48 @@ inline void mergeContext(MemoryEntry& target, const MemoryEntry& source) {
     }
 }
 
+// Revision of meaning/evidence/state. Reads and repeated mentions do not change it.
+// Preserve the latter from the authoritative row when committing a model decision.
+inline QJsonObject semanticRevision(const MemoryEntry& entry) {
+    QJsonObject value = entry.toJson();
+    // SQLite's tag/evidence rows are sets; their read order is not a revision.
+    for (const QString& key : {QStringLiteral("tags"), QStringLiteral("evidence"),
+            QStringLiteral("source_memory_ids"), QStringLiteral("supersedes"), QStringLiteral("conflicts_with")}) {
+        QStringList items;
+        for (const auto& item : value[key].toArray()) items.append(item.toString());
+        items.removeDuplicates();
+        items.sort();
+        value[key] = QJsonArray::fromStringList(items);
+    }
+    if (entry.value.isUndefined() || entry.value.isNull()) value["value"] = QJsonValue::Null;
+    for (const QString& key : {QStringLiteral("updated_at"), QStringLiteral("last_accessed_at"),
+            QStringLiteral("access_count"), QStringLiteral("strength"),
+            QStringLiteral("last_mentioned_at"), QStringLiteral("mention_count")}) value.remove(key);
+    QJsonObject payload = entry.payload;
+    for (const QString& key : {QStringLiteral("session_id"), QStringLiteral("session_ids"),
+                              QStringLiteral("request_id")}) payload.remove(key);
+    value["payload"] = payload;
+    return value;
+}
+
+inline bool sameSemanticRevision(const MemoryEntry& a, const MemoryEntry& b) {
+    return semanticRevision(a) == semanticRevision(b);
+}
+
+inline MemoryEntry rebaseMetadata(const MemoryEntry& current, const MemoryEntry& before,
+                                 const MemoryEntry& after) {
+    MemoryEntry result = after;
+    result.accessCount = current.accessCount + qMax(0, after.accessCount - before.accessCount);
+    result.mentionCount = current.mentionCount + qMax(0, after.mentionCount - before.mentionCount);
+    result.lastAccessedAt = std::max(current.lastAccessedAt, after.lastAccessedAt);
+    result.lastMentionedAt = std::max(lastMentionTime(current), lastMentionTime(after));
+    result.strength = qBound(0.0, current.strength + after.strength - before.strength, 1.0);
+    // Keep newer context, while unioning provenance from both sides.
+    mergeContext(result, current);
+    if (lastMentionTime(after) >= lastMentionTime(current)) mergeContext(result, after);
+    return result;
+}
+
 inline QString contextHint(const MemoryEntry& entry) {
     const auto sessions = sessionIds(entry);
     if (!sessions.isEmpty()) return QStringLiteral("session:") + sessions.last();

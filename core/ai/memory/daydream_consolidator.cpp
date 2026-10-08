@@ -94,14 +94,7 @@ QStringList jsonStringList(const QJsonArray& values) {
 }
 
 bool sameRevision(const MemoryEntry& current, const MemoryEntry& snapshot) {
-    return current.id == snapshot.id
-        && current.partition == snapshot.partition
-        && current.status == snapshot.status
-        && current.updatedAt == snapshot.updatedAt
-        && current.content == snapshot.content
-        && current.summary == snapshot.summary
-        && current.mentionCount == snapshot.mentionCount
-        && current.lastMentionedAt == snapshot.lastMentionedAt;
+    return MemoryMetadata::sameSemanticRevision(current, snapshot);
 }
 
 double relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch) {
@@ -359,7 +352,8 @@ QList<MemoryEntry> DaydreamConsolidator::relatedLongTermMemories(
     for (const MemoryEntry& entry : m_store.all()) {
         if (entry.partition == QLatin1String("hippocampus")
             || entry.status != MemoryStatus::Active
-            || entry.privacyLevel == PrivacyLevel::Sensitive) {
+            || entry.privacyLevel == PrivacyLevel::Sensitive
+            || (entry.expiresAt.isValid() && entry.expiresAt <= QDateTime::currentDateTimeUtc())) {
             continue;
         }
         if (relevanceScore(entry, batch) > 0.0) candidates.append(entry);
@@ -634,8 +628,10 @@ Result<DaydreamChangeSet, DomainError> DaydreamConsolidator::buildChangeSet(
 
 bool DaydreamConsolidator::snapshotStillCurrent(const Snapshot& snapshot) const {
     for (const MemoryEntry& original : snapshot.items) {
-        const MemoryEntry* current = m_store.findById(original.id);
-        if (!current || !sameRevision(*current, original)) return false;
+        const auto current = m_store.readForRecall(original.id);
+        if (!current || current->status != MemoryStatus::Active
+            || (current->expiresAt.isValid() && current->expiresAt <= QDateTime::currentDateTimeUtc())
+            || !sameRevision(*current, original)) return false;
     }
     return true;
 }
@@ -643,9 +639,10 @@ bool DaydreamConsolidator::snapshotStillCurrent(const Snapshot& snapshot) const 
 bool DaydreamConsolidator::updateTargetsStillCurrent(const QList<Decision>& decisions) const {
     for (const Decision& decision : decisions) {
         if (decision.action != Action::Update) continue;
-        const MemoryEntry* current = m_store.findById(decision.targetMemoryId);
+        const auto current = m_store.readForRecall(decision.targetMemoryId);
         if (decision.expectedTarget.id != decision.targetMemoryId
-            || !current
+            || !current || current->status != MemoryStatus::Active
+            || (current->expiresAt.isValid() && current->expiresAt <= QDateTime::currentDateTimeUtc())
             || !sameRevision(*current, decision.expectedTarget)) {
             return false;
         }
@@ -756,6 +753,9 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
         updated.strength = qMax(updated.strength, staged.strength);
         updated.confidence = qMax(updated.confidence, staged.confidence);
         MemoryMetadata::mergeContext(updated, source);
+        updated.mentionCount += source.mentionCount;
+        for (const auto& evidence : source.evidence)
+            if (!updated.evidence.contains(evidence)) updated.evidence.append(evidence);
         updated.tags = MemoryMetadata::semanticTags(updated);
         updated.updatedAt = QDateTime::currentDateTimeUtc();
         for (const QString& tag : staged.tags) {
@@ -806,13 +806,6 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
         stats.committed = true;
         return stats;
     }
-    const auto validation = buildChangeSet(changeSet.snapshot, changeSet.decisions);
-    if (!validation.isOk()) {
-        stats.failed = changeSet.snapshot.size();
-        stats.staleSnapshot = validation.error().code
-            == QLatin1String("STATE_VERSION_CONFLICT");
-        return stats;
-    }
     if (!m_store.hasSleepChange(changeSet.changeSetId, payloadHash)) {
         StagedMemoryChange legacy;
         legacy.sessionId = QStringLiteral("legacy:%1").arg(changeSet.changeSetId);
@@ -834,11 +827,27 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
         return stats;
     }
 
+    // Acquire the SQLite transaction before refreshing and validating both ends.
+    if (!m_store.refreshDatabaseOnly()) {
+        stats.failed = changeSet.snapshot.size();
+        m_store.rollbackTransaction();
+        return stats;
+    }
+    const auto validation = buildChangeSet(changeSet.snapshot, changeSet.decisions);
+    if (!validation.isOk()) {
+        stats.failed = changeSet.snapshot.size();
+        stats.staleSnapshot = validation.error().code
+            == QLatin1String("STATE_VERSION_CONFLICT");
+        m_store.rollbackTransaction();
+        return stats;
+    }
+
     bool ok = true;
     QList<MemoryEntry> consolidatedResults;  // Phase 4.2：巩固产出，供混合建图
     for (const MemoryEntry& source : changeSet.snapshot.items) {
         MemoryEntry resulting;
-        if (!applyOne(source, decisionsById.value(source.id), &stats, &resulting)) {
+        const auto current = m_store.readForRecall(source.id);
+        if (!current || !applyOne(*current, decisionsById.value(source.id), &stats, &resulting)) {
             ++stats.failed;
             ok = false;
             break;
@@ -909,7 +918,7 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(
     } else {
         m_store.rollbackTransaction();
     }
-    m_store.load();
+    m_store.refreshDatabaseOnly();
     return stats;
 }
 

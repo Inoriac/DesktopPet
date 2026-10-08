@@ -70,7 +70,8 @@ public:
     bool stageEntryUpdate(const MemoryEntry& entry,
                           MemoryMutationBatch* batch);
     void rollbackMutationBatch(const MemoryMutationBatch& batch);
-    bool persistMutationBatch(const MemoryMutationBatch& batch);
+    bool persistMutationBatch(const MemoryMutationBatch& batch, QStringList* writtenIds = nullptr);
+    void refreshEntries(const QStringList& ids);
     MemoryReinforcementBatch stageReinforcement(
         const QStringList& ids,
         const QDateTime& accessedAt = QDateTime::currentDateTimeUtc());
@@ -111,7 +112,7 @@ public:
     // （如 SqliteEmbeddingIndex 写 memory_embeddings 表）。
     QString databaseConnectionName() const;
 
-    // 事务原子性，供 Daydream 整 session ROLLBACK 用。beginafter 内所有写入（含
+    // 事务原子性，供整理的小批次提交和旧事务恢复使用。事务内所有写入（含
     // MemoryRelationGraph 等复用同一连接的组件）在 commit 前未落盘，rollback 全撤销。
     bool beginTransaction();
     bool commitTransaction();
@@ -122,7 +123,12 @@ public:
     // missing staging row cannot be mistaken for an already materialized one.
     Result<QList<StagedMemoryChange>, DomainError> preparedSleepChanges(
         const QString& sessionId,
-        const QString& targetType = QString()) const;
+        const QString& targetType = QString(), bool pendingOnly = false) const;
+    // Reuse the staging ledger for per-source retry/ownership, without changing
+    // recall status. A crashed analysis becomes eligible after its bounded lease.
+    bool deferDaydreamSources(const QList<MemoryEntry>& sources, const QDateTime& retryAt);
+    QSet<QString> coolingDaydreamSources(const QDateTime& now) const;
+    bool removePreparedSleepChange(const QString& sessionId, const QString& changeId);
     bool markSleepChangeFinalized(const QString& sessionId,
                                   const QString& changeId);
     bool abortSleepChanges(const QString& sessionId);

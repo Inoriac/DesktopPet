@@ -22,6 +22,7 @@ enum class ChatSideEffectType {
     RuntimeEvent,
     MemoryReinforcement,
     UserMemoryWrite,
+    MemoryTask,
     RequestLog,
     ResponseLog,
     Barrier
@@ -44,6 +45,9 @@ struct DeferredChatSideEffect {
     QList<MemoryEntry> reinforcedEntries;
     MemoryMutationBatch memoryMutations;
     QJsonObject logRecord;
+    // Executed on the existing SQLite writer. No model/network wait belongs here.
+    std::function<QJsonObject(MemoryStore&)> memoryTask;
+    std::function<void(QJsonObject)> memoryTaskCompleted;
 };
 
 struct ChatPreparationTimings {
@@ -66,6 +70,8 @@ public:
     Result<void, DomainError> start(const ChatSideEffectEnvironment& environment);
     bool tryEnqueue(DeferredChatSideEffect effect);
     void enqueue(DeferredChatSideEffect effect);
+    bool submitMemoryTask(std::function<QJsonObject(MemoryStore&)> task,
+                          std::function<void(QJsonObject)> completed);
     bool tryEnqueueBarrier(QString sessionId, quint64 generation);
     void enqueueBarrier(QString sessionId, quint64 generation);
     void stop(bool drainAcceptedWork);
@@ -80,6 +86,7 @@ public:
 #endif
 
 signals:
+    void drained(const QStringList& changedMemoryIds);
     void barrierCommitted(const QString& sessionId, quint64 generation);
     void persistenceWarning(const QString& safeMessage);
 
