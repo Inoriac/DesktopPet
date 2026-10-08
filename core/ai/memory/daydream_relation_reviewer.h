@@ -50,7 +50,7 @@ public:
     // 候选生成：共享语义标签的条目对；尚未分类时使用正文相关性，
     // 不以采集来源标签作为主题证据。按语义标签/正文相关性排序，
     // 最多 maxPairsPerBatch 对。确定性、无模型调用。
-    // 供 DaydreamSleepAdapter 拼入巩固提示词的 candidate_relation_pairs。
+    // 供 MemoryConsolidationService 拼入巩固提示词的 candidate_relation_pairs。
     QList<QPair<QString, QString>> generateCandidates(
         const QList<MemoryEntry>& entries) const;
 

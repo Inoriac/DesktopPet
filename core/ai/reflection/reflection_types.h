@@ -36,13 +36,6 @@ struct InnerThoughtSummary {
     QDateTime createdAt;
 };
 
-struct DaydreamRequest {
-    QString profileId;
-    QString sessionId;
-    qint64 sourceCutoffSequence = 0;
-    int maxItems = 32;
-};
-
 struct DiaryRequest {
     QString profileId;
     QString sessionId;

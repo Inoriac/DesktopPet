@@ -28,6 +28,7 @@
 #include "llm/llm_chat_service.h"
 #include "llm/llm_chat_model_client.h"
 #include "memory/daydream_consolidator.h"
+#include "reflection/cancellation_token.h"
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
 #include "memory/memory_retriever.h"
@@ -39,7 +40,7 @@
 #include "model/model_role_registry.h"
 #include "model/model_router.h"
 
-class AgentScheduler;  // Daydream 距待办判定用，可选注入
+class AgentScheduler;
 class AgentRuntimeServices;
 class ChatPreparationExecutor;
 struct ChatPreparationEnvironment;
@@ -50,6 +51,8 @@ struct ChatPreparationResult;
 #include "skill/skill_store.h"
 #include "tool_registry.h"
 #include "tools/runtime/tool_runtime.h"
+
+class MemoryConsolidationService;
 
 class AIBrain : public QObject {
     Q_OBJECT
@@ -100,10 +103,7 @@ public:
     int userIdleSeconds() const;
     ModelRoleRegistry* modelRoleRegistry() { return &m_modelRoleRegistry; }
     ModelRouter* modelRouter() { return &m_modelRouter; }
-    void setExternalSleepCoordinatorEnabled(bool enabled);
-    bool isExternalSleepCoordinatorEnabled() const {
-        return m_externalSleepCoordinatorEnabled;
-    }
+    MemoryConsolidationService* consolidationService() { return m_consolidationService.get(); }
 
     void start();
     void stop();
@@ -153,7 +153,6 @@ signals:
 
 private:
     QString m_proactiveStatePath;
-    bool m_manualDaydream = false;
     static bool isAutomaticTrigger(const QString& triggerTag);
     bool automaticTextAllowed() const;
     bool suppressMutedAutomaticResponse();
@@ -223,16 +222,10 @@ private:
     void finishActiveResponse(ChatMessageStatus status,
                               const QString& errorMessage = {},
                               const QJsonObject& responseLog = {});
-    // Daydream: snapshot batches are decided asynchronously, then committed once.
+    // Background memory maintenance shares the existing writer and model executor.
     void checkDaydreamTrigger();
     void runDaydreamSession();
-    void runNextDaydreamBatch(quint64 generation);
-    void finishDaydreamSession(quint64 generation);
     void cancelDaydreamSession(const QString& reason);
-    void recordDaydreamInterruption(const QString& reason,
-                                    int processedBatches,
-                                    int totalItems);
-    bool canContinueDaydream() const;
     void armDaydreamTimer();
     AiTriggerConfig triggerConfigForTag(const QString& triggerTag) const;
     void armProactiveChatCheck();
@@ -277,18 +270,12 @@ private:
     DaydreamTriggerPolicy m_daydreamPolicy;
     AgentScheduler* m_scheduler = nullptr; // non-owning
     bool m_daydreamRunning = false;
-    bool m_externalSleepCoordinatorEnabled = false;
     QDateTime m_lastDaydreamAt;
     QDateTime m_daydreamHourAnchor;
     int m_daydreamCountThisHour = 0;
-    bool m_lastDaydreamInterrupted = false;
-    QDateTime m_lastInterruptionMemoryAt;
-    quint64 m_daydreamGeneration = 0;
-    DaydreamConsolidator::Snapshot m_daydreamSnapshot;
-    QList<DaydreamConsolidator::Decision> m_daydreamDecisions;
-    int m_daydreamBatchOffset = 0;
-    int m_daydreamFallbackBatches = 0;
-    int m_daydreamInvalidBatches = 0;
+    QSet<QString> m_pendingMemoryRefreshIds;
+    CancellationSource m_daydreamCancellation;
+    std::unique_ptr<MemoryConsolidationService> m_consolidationService;
 
     bool m_enabled = true;
     bool m_storageInitializationAttempted = false;

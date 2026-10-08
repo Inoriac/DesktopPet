@@ -19,7 +19,7 @@
 #include "ai/owner/owner_diary_facade.h"
 #include "ai/owner/owner_diary_protocol.h"
 #include "ai/owner/owner_diary_server.h"
-#include "ai/reflection/daydream_sleep_adapter.h"
+#include "ai/reflection/memory_consolidation_service.h"
 #include "ai/reflection/diary_service.h"
 #include "ai/reflection/diary_fragment_service.h"
 #include "ai/reflection/inner_thought_service.h"
@@ -191,12 +191,9 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
                     });
                 m_diaryFragmentService->start();
                 m_diaryService->setFragmentService(m_diaryFragmentService.get());
-                m_daydreamSleepAdapter = std::make_unique<DaydreamSleepAdapter>(
-                    m_profileId, request.profile.name, request.aiBrain->memoryStore(),
-                    request.aiBrain->modelRouter());
                 m_sleepCycleCoordinator = std::make_unique<SleepCycleCoordinator>(
                     m_profileId, request.sleepPolicy, m_sleepSessionRepository.get(),
-                    m_daydreamSleepAdapter.get(), m_diaryService.get(),
+                    request.aiBrain->consolidationService(), m_diaryService.get(),
                     m_privateRepository.get(), request.aiBrain,
                     request.agentScheduler, SleepCycleHooks{});
                 m_sleepCycleCoordinator->start();
@@ -244,7 +241,6 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
             if (m_diaryService) m_diaryService->setFragmentService(nullptr);
             m_diaryFragmentService.reset();
             m_sleepCycleCoordinator.reset();
-            m_daydreamSleepAdapter.reset();
             m_diaryService.reset();
             m_innerThoughtService.reset();
             m_reflectionCancellation.reset();
@@ -257,7 +253,7 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
         }
     } else if (report.capabilities.profileGrowth) {
         report.diagnostics.append(QStringLiteral(
-            "private reflection dependencies are unavailable; legacy Daydream retained"));
+            "private reflection dependencies are unavailable; background memory maintenance remains available"));
     }
     report.mode = report.capabilities.profileGrowth
         ? RuntimeMode::Running
@@ -446,7 +442,6 @@ void AgentRuntimeServices::stop() {
     if (m_sleepCycleCoordinator) m_sleepCycleCoordinator->stop();
     if (m_reflectionCancellation) m_reflectionCancellation->cancel();
     m_sleepCycleCoordinator.reset();
-    m_daydreamSleepAdapter.reset();
     m_diaryService.reset();
     m_innerThoughtService.reset();
     m_reflectionCancellation.reset();

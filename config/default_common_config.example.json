@@ -158,15 +158,11 @@
         "promptTemplate": "default",
         "daydream": {
           "enabled": true,
-          "idleThresholdSec": 300,
-          "dueSoonThresholdMs": 600000,
           "minIntervalMs": 900000,
-          "interruptionBackoffMs": 600000,
           "hourlyLimit": 3,
           "tickIntervalMs": 30000,
           "sessionLimit": 32,
           "batchLimit": 8,
-          "inboxLimit": 200,
           "relatedMemoryLimit": 8
         },
         "sleepPolicy": {
@@ -174,7 +170,6 @@
           "bedtime": "23:30",
           "minimumIdleSeconds": 600,
           "dueSoonThresholdSeconds": 600,
-          "maxItemsPerSession": 32,
           "retryBackoffSeconds": 600,
           "tickIntervalSeconds": 60
         },

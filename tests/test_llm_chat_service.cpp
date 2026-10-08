@@ -246,16 +246,12 @@ void TestLlmChatService::testDaydreamConfigLoadsAndClamps() {
     QVERIFY(manager.loadConfig(path));
     const DaydreamConfig& config = manager.getDaydreamConfig();
     QVERIFY(!config.enabled);
-    QCOMPARE(config.idleThresholdSec, 30);
-    QCOMPARE(config.dueSoonThresholdMs, 0);
     QCOMPARE(config.minIntervalMs, 60000);
-    QCOMPARE(config.interruptionBackoffMs, 0);
     QCOMPARE(config.hourlyLimit, 24);
     QCOMPARE(config.tickIntervalMs, 5000);
-    QCOMPARE(config.sessionLimit, 128);
-    QCOMPARE(config.batchLimit, 32);
-    QCOMPARE(config.inboxLimit, 128);
-    QCOMPARE(config.relatedMemoryLimit, 32);
+    QCOMPARE(config.sessionLimit, 32);
+    QCOMPARE(config.batchLimit, 8);
+    QCOMPARE(config.relatedMemoryLimit, 8);
 }
 
 void TestLlmChatService::testEmotionConfigLoadsFromActiveProfile() {

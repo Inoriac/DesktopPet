@@ -135,7 +135,9 @@ private slots:
     void structurallyInvalidSchedulesArePreserved();
     void chatFeedsRelationshipAndGrowthSurvivesRestart();
     void growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests();
-    void manualDaydreamBypassesInitialIdleAndCancelsOnChat();
+    void manualDaydreamAndChatCompleteConcurrently();
+    void startupMaintenanceDoesNotWaitForChatIdle();
+    void hippocampusBacklogDoesNotDropNewImpressions();
     void runtimeStopsFragmentsBeforeTheirRepository();
     void fragmentSynchronousCompletionAndDeletionDuringRequest();
 };
@@ -411,7 +413,7 @@ void TestModuleConnectivity::growthWaitsForRealEvidenceWindowAndIgnoresTemporary
     QCOMPARE(snapshot.selfModelVersion, self);
 }
 
-void TestModuleConnectivity::manualDaydreamBypassesInitialIdleAndCancelsOnChat() {
+void TestModuleConnectivity::manualDaydreamAndChatCompleteConcurrently() {
     Runtime runtime;
     QVERIFY(runtime.ready);
     runtime.client.deferred = true;
@@ -420,17 +422,79 @@ void TestModuleConnectivity::manualDaydreamBypassesInitialIdleAndCancelsOnChat()
     entry.source = "user_explicit";
     entry.key = "test";
     entry.content = entry.summary = QStringLiteral("主人最近在学习绘画");
-    runtime.brain.memoryStore()->addEntry(entry);
+    const auto source = runtime.brain.memoryStore()->addEntry(entry);
     runtime.brain.start();
     const auto started = runtime.brain.requestManualDaydream();
     QVERIFY(started.isOk());
     QVERIFY(started.value());
-    QVERIFY(runtime.brain.canContinueDaydream());
+    QTRY_VERIFY(bool(runtime.client.pending));
+    auto consolidation = std::move(runtime.client.pending);
     QSignalSpy cancelled(&runtime.brain, &AIBrain::daydreamCancelled);
-    runtime.brain.triggerThink(QStringLiteral("你好"), "user_request");
-    QCOMPARE(cancelled.count(), 1);
-    QVERIFY(!runtime.brain.m_daydreamRunning);
+    QSignalSpy finished(&runtime.brain, &AIBrain::daydreamFinished);
+    runtime.brain.triggerThink(QStringLiteral("我最近在学习水彩，聊一聊配色原理吧"), "user_request");
+    QTRY_VERIFY(bool(runtime.client.pending));
+    auto dialogue = std::move(runtime.client.pending);
+    QCOMPARE(cancelled.count(), 0);
+    QVERIFY(runtime.brain.m_daydreamRunning);
+    QVERIFY(runtime.brain.isBusy());
+    LlmResponse memoryResponse;
+    memoryResponse.content = QString::fromUtf8(QJsonDocument(QJsonArray{
+        QJsonObject{{"source_id", source.id},
+                    {"action", "create"}, {"target_partition", "Semantic"},
+                    {"merged_content", "主人最近在学习绘画"}, {"quality_score", 7},
+                    {"new_tags", QJsonArray{}}}}).toJson());
+    consolidation(true, memoryResponse, {});
+    QTRY_COMPARE(finished.count(), 1);
+    QVERIFY(runtime.brain.isBusy()); // Model dialogue is still in flight.
+    LlmResponse response;
+    response.content = QStringLiteral("最近天气不错。");
+    dialogue(true, response, {});
+    QTRY_VERIFY(!runtime.brain.isBusy());
+    QTRY_VERIFY(!runtime.brain.m_daydreamRunning);
+    QCOMPARE(cancelled.count(), 0);
+    QVERIFY(runtime.brain.memoryStore()->refreshDatabaseOnly());
+    int consolidated = 0, pending = 0;
+    for (const auto& memory : runtime.brain.memoryStore()->all()) {
+        if (memory.status == MemoryStatus::Consolidated) ++consolidated;
+        if (memory.partition == "hippocampus" && memory.status == MemoryStatus::Active) ++pending;
+        QVERIFY(memory.source != "daydream_interruption");
+    }
+    QCOMPARE(consolidated, 1);
+    QVERIFY(pending >= 1); // New conversation memory was not part of the frozen batch.
     runtime.brain.stop();
+}
+
+void TestModuleConnectivity::startupMaintenanceDoesNotWaitForChatIdle() {
+    Runtime runtime;
+    QVERIFY(runtime.ready);
+    runtime.client.deferred = true;
+    const auto source = runtime.brain.memoryStore()->addEntry(MemoryExtractor().extractDaydreamImpression(
+        QStringLiteral("我最近在学习水彩"), QStringLiteral("manual")));
+    runtime.brain.start();
+    runtime.brain.m_busy = true;
+    QTRY_VERIFY_WITH_TIMEOUT(bool(runtime.client.pending), 3000);
+    QVERIFY(runtime.brain.m_daydreamRunning);
+    runtime.brain.stop();
+    LlmResponse late;
+    late.content = QString::fromUtf8(QJsonDocument(QJsonArray{
+        QJsonObject{{"source_id", source.id}, {"action", "discard"}}}).toJson());
+    runtime.client.pending(true, late, {});
+    QCOMPARE(runtime.brain.memoryStore()->readForRecall(source.id)->status, MemoryStatus::Active);
+}
+
+void TestModuleConnectivity::hippocampusBacklogDoesNotDropNewImpressions() {
+    Runtime runtime;
+    QVERIFY(runtime.ready);
+    for (int i = 0; i < 200; ++i) {
+        MemoryEntry old;
+        old.type = MemoryType::ShortTerm;
+        old.key = QString::number(i);
+        old.content = old.summary = QStringLiteral("旧的待整理印象 %1").arg(i);
+        QVERIFY(!runtime.brain.memoryStore()->addEntry(old).id.isEmpty());
+    }
+    runtime.brain.enqueueUserMemoryWrite(QStringLiteral("我最近在学习陶艺"), "user_request",
+        "capacity-request", 1, "capacity-session");
+    QTRY_COMPARE(runtime.brain.memoryStore()->loadRecentFromDatabase(512, "hippocampus", true).size(), 201);
 }
 
 void TestModuleConnectivity::runtimeStopsFragmentsBeforeTheirRepository() {

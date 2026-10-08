@@ -137,19 +137,15 @@ struct ScreenChatConfig {
     QString petGender = "female";
 };
 
-// 空闲记忆整理配置。模型连接与调用参数由 ModelRole::Daydream 管理。
+// 后台记忆整理配置。模型连接与调用参数由 ModelRole::Daydream 管理。
 struct DaydreamConfig {
     bool enabled = true;
-    int idleThresholdSec = 5 * 60;
-    int dueSoonThresholdMs = 10 * 60 * 1000;
     int minIntervalMs = 15 * 60 * 1000;
-    int interruptionBackoffMs = 10 * 60 * 1000;
     int hourlyLimit = 3;
     int tickIntervalMs = 30 * 1000;
 
     int sessionLimit = 32;
     int batchLimit = 8;
-    int inboxLimit = 200;
     int relatedMemoryLimit = 8;
 };
 
@@ -165,13 +161,8 @@ struct SleepPolicy {
     int inactivityWindowSeconds = 3600;     // 1 小时窗口（用于检测低活跃度）
     int maxActivityInWindowSeconds = 300;   // 窗口内最多 5 分钟活跃
     
-    // 积压应急触发（容量分级）
-    int hippocampusBacklogThreshold = 120;  // Hippocampus ≥ 120 条时放宽条件
-    int relaxedIdleSeconds = 900;           // 积压时降低到 15 分钟空闲
-    
     // 其他
     int dueSoonThresholdSeconds = 600;
-    int maxItemsPerSession = 32;
     int retryBackoffSeconds = 600;
     int tickIntervalSeconds = 60;
 };

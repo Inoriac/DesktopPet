@@ -327,32 +327,11 @@ void PetWindow::teardownAiRuntime() {
 }
 
 void PetWindow::onManualDaydreamRequested() {
-    if (!runtimeServices || !runtimeServices->sleepCycleCoordinator()) {
-        if (!aiBrain) {
-            showBubbleMessage(QStringLiteral("记忆整理功能未就绪"), 3000);
-            return;
-        }
-        const auto result = aiBrain->requestManualDaydream();
-        showBubbleMessage(!result.isOk() ? result.error().message
-            : result.value() ? QStringLiteral("开始整理记忆...")
-                             : QStringLiteral("这次记忆整理已完成，目前没有待处理的记忆。"), 3000);
+    if (!aiBrain) {
+        showBubbleMessage(QStringLiteral("记忆整理功能未就绪"), 3000);
         return;
     }
-
-    SleepTrigger trigger;
-    trigger.type = SleepTriggerType::Manual;
-    trigger.observedIdleSeconds = 0;
-    trigger.now = QDateTime::currentDateTime();
-    trigger.profileId = profile.profileId;
-
-    auto result = runtimeServices->sleepCycleCoordinator()->tryStart(trigger);
-    if (!result.isOk()) {
-        QString errorMsg = QStringLiteral("无法开始记忆整理: ") +
-                           result.error().message;
-        showBubbleMessage(errorMsg, 3000);
-        qWarning() << "[Manual Daydream] Failed to start:" << errorMsg;
-    } else {
-        showBubbleMessage(QStringLiteral("开始整理记忆..."), 2000);
-        qInfo() << "[Manual Daydream] Started session:" << result.value();
-    }
+    const auto result = aiBrain->requestManualDaydream();
+    showBubbleMessage(result.isOk() ? QStringLiteral("已安排后台记忆整理，可以继续聊天。")
+                                   : result.error().message, 3000);
 }

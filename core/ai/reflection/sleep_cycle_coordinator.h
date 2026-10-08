@@ -13,7 +13,7 @@
 
 class AIBrain;
 class AgentScheduler;
-class DaydreamSleepAdapter;
+class MemoryConsolidationService;
 class DiaryService;
 class SleepSessionRepository;
 class SqlitePrivatePsycheRepository;
@@ -25,8 +25,6 @@ struct SleepCycleHooks {
     std::function<qint64()> sourceCutoffSequence;
     std::function<void(bool)> publishCapability;
     std::function<void()> playSleepAnimation;
-    // 可选：Hippocampus 待巩固数量（积压分级触发用）；未提供时视为 0。
-    std::function<int()> hippocampusPendingCount;
 };
 
 class SleepCycleCoordinator {
@@ -35,7 +33,7 @@ public:
         QString profileId,
         SleepPolicy policy,
         SleepSessionRepository* sessions,
-        DaydreamSleepAdapter* daydream,
+        MemoryConsolidationService* daydream,
         DiaryService* diary,
         SqlitePrivatePsycheRepository* privateRepository,
         AIBrain* aiBrain,
@@ -56,10 +54,9 @@ public:
 
 private:
     bool isReady(const SleepTrigger& trigger) const;
-    void continueAfterDaydream(
+    void composeDiary(
         const QString& sessionId,
-        const CancellationToken& token,
-        Result<DaydreamChangeSet, DomainError> result);
+        const CancellationToken& token);
     void continueAfterDiary(
         const QString& sessionId,
         const CancellationToken& token,
@@ -72,7 +69,7 @@ private:
     QString m_profileId;
     SleepPolicy m_policy;
     SleepSessionRepository* m_sessions = nullptr;
-    DaydreamSleepAdapter* m_daydream = nullptr;
+    MemoryConsolidationService* m_daydream = nullptr;
     DiaryService* m_diary = nullptr;
     SqlitePrivatePsycheRepository* m_privateRepository = nullptr;
     AIBrain* m_aiBrain = nullptr;

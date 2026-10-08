@@ -18,7 +18,7 @@
 #include "ai/memory/memory_store.h"
 #include "ai/model/model_role_registry.h"
 #include "ai/model/model_router.h"
-#include "ai/reflection/daydream_sleep_adapter.h"
+#include "ai/reflection/memory_consolidation_service.h"
 #include "ai/reflection/diary_fragment_service.h"
 #include "ai/reflection/diary_service.h"
 #include "ai/reflection/inner_thought_service.h"
@@ -359,8 +359,8 @@ struct ReflectionFixture {
             &privateRepository, readRole);
     }
 
-    DaydreamSleepAdapter daydreamAdapter() {
-        return DaydreamSleepAdapter(kProfileId, QStringLiteral("Milltina"),
+    MemoryConsolidationService daydreamAdapter() {
+        return MemoryConsolidationService(kProfileId, QStringLiteral("Milltina"),
                                     &memory, &router);
     }
 };
@@ -420,18 +420,26 @@ void queueSleepReplies(ReflectionFixture& fixture) {
 
 bool prepareSleepParticipants(ReflectionFixture& fixture,
                               const QString& sessionId,
-                              DaydreamSleepAdapter& adapter,
+                              MemoryConsolidationService& adapter,
                               DiaryService& diary) {
     queueSleepReplies(fixture);
     CancellationSource cancellation;
     const CancellationToken token = cancellation.token();
     StagingSession staging{sessionId, token.generation()};
-    bool memoryPrepared = false;
-    adapter.consolidateAsync(
-        {kProfileId, sessionId, 12, 32}, staging, token,
-        [&](Result<DaydreamChangeSet, DomainError> result) {
-            memoryPrepared = result.isOk();
-        });
+    // Construct the on-disk format written by the old two-participant protocol.
+    // Recovery tests need historical data, not a second live consolidation runner.
+    fixture.modelClient.replies.removeFirst();
+    DaydreamConsolidator consolidator(fixture.memory);
+    const auto snapshot = consolidator.createSnapshot();
+    const auto built = consolidator.buildChangeSet(snapshot, modelCreateDecisions(snapshot.items));
+    if (!built.isOk()) return false;
+    StagedMemoryChange change;
+    change.sessionId = sessionId;
+    change.changeId = built.value().changeSetId;
+    change.targetType = "daydream_change_set";
+    change.operation = "apply";
+    change.payload = built.value().toJson();
+    const bool memoryPrepared = fixture.memory.stageSleepChange(change);
     bool diaryPrepared = false;
     diary.composeAsync(
         diaryRequest(sessionId), staging, token,
@@ -457,23 +465,10 @@ QString writeConfig(QTemporaryDir& directory, const QJsonObject& root) {
 class TestIdentityState {
 public:
     static void runPreparedDaydreamBatch(AIBrain& brain) {
-        brain.m_daydreamConfig.idleThresholdSec = -1;
-        brain.m_daydreamConfig.dueSoonThresholdMs = 0;
-        brain.m_daydreamConfig.batchLimit = DaydreamConsolidator::BATCH_LIMIT;
-        brain.m_daydreamConfig.relatedMemoryLimit = 8;
-        brain.m_daydreamPolicy.configure(brain.m_daydreamConfig);
-        brain.m_running = true;
-        brain.m_busy = false;
-        brain.m_externalSleepCoordinatorEnabled = false;
-        brain.m_daydreamRunning = true;
-        ++brain.m_daydreamGeneration;
-        DaydreamConsolidator consolidator(brain.m_memoryStore);
-        brain.m_daydreamSnapshot = consolidator.createSnapshot();
-        brain.m_daydreamDecisions.clear();
-        brain.m_daydreamBatchOffset = 0;
-        brain.m_daydreamFallbackBatches = 0;
-        brain.m_daydreamInvalidBatches = 0;
-        brain.runNextDaydreamBatch(brain.m_daydreamGeneration);
+        brain.m_chatPreparationRuntimeMetadata.profileId = kProfileId;
+        brain.m_chatPreparationRuntimeMetadata.runtimeDatabasePath = brain.memoryStore()->databasePath() + ".runtime";
+        brain.start();
+        brain.requestManualDaydream();
     }
 };
 
@@ -481,16 +476,12 @@ class SleepCycleTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void maintenanceCommitsSmallBatchesAndRetainsProgressAfterCancellation();
+    void maintenanceReplaysDurableBatchExactlyOnce();
     void createAsync_whenHighValueEventCompletes_shouldStageShortPrivateSummaryWithoutBlockingReply();
     void createAsync_whenCallbackArrivesAfterCancellation_shouldDiscardResult();
     void createAsync_whenModelReturnsReasoningTrace_shouldPersistOnlyRequestedSummaryFields();
 
-    void consolidateAsync_whenPendingItemsExist_shouldReuseExistingConsolidatorAndStageBoundedChanges();
-    void consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUnchanged();
-    void processNextBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndStageChangeSet();
-    void processNextBatch_whenModelUnavailable_shouldPreserveUntilRetry_data();
-    void processNextBatch_whenModelUnavailable_shouldPreserveUntilRetry();
-    void processNextBatch_whenCallbackArrivesAfterCancellation_shouldDiscardLateResult();
 
     void runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision();
     void runNextDaydreamBatch_whenDaydreamRoutesFail_shouldPreserveUntilRetry();
@@ -516,13 +507,12 @@ private slots:
     void tryStart_whenDiaryAlreadyCommitted_shouldSkipBedtimeButAllowManual();
     void tryStart_whenMorningWithBehaviorDrivenDefault_shouldStart();
     void tryStart_whenTimeBasedTriggerEnabledBeforeBedtime_shouldNotStart();
-    void tryStart_whenHippocampusBacklogHigh_shouldRelaxIdleThreshold();
-    void tryStart_whenAllParticipantsPrepared_shouldPersistCommitThenFinalizeAllStores();
+    void tryStart_whenDiaryPrepared_shouldCommitWithoutOwningMemory();
     void tryStart_whenRestartFindsCommittedSession_shouldIdempotentlyFinishFinalize();
     void cancel_whenDecisionPending_shouldAbortAllStagingAndPreserveFormalState();
     void cancel_whenDecisionCommitted_shouldKeepCommitAndFinishFinalize();
     void recoverIncomplete_whenCommittedSessionExists_shouldFinalizeBeforePublishingCapability();
-    void start_whenCoordinatorTakesOwnership_shouldDisableLegacyDaydreamTimer();
+    void start_whenDiaryCoordinatorStarts_shouldKeepSharedMemoryService();
     void stop_whenCallbacksAreLate_shouldInvalidateGenerationAndPerformNoWrites();
 
     void getSleepPolicy_whenConfigured_shouldReturnSanitizedPolicy();
@@ -530,6 +520,81 @@ private slots:
 
     void testDiaryFragmentsDetectOrphanAndRecover();
 };
+
+void SleepCycleTests::maintenanceCommitsSmallBatchesAndRetainsProgressAfterCancellation() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    for (int i = 0; i < 3; ++i) addInbox(fixture.memory, QStringLiteral("待整理记忆 %1").arg(i));
+    const auto snapshot = DaydreamConsolidator(fixture.memory).createSnapshot(3);
+    QCOMPARE(snapshot.size(), 3);
+    fixture.modelClient.deferCallbacks = true;
+    fixture.modelClient.replies.append({true, createDecisionJson({snapshot.items[0]}), {}, {}});
+    fixture.modelClient.replies.append({true, createDecisionJson({snapshot.items[1]}), {}, {}});
+    ChatSideEffectQueue writer;
+    QVERIFY(writer.start({kProfileId, fixture.directory.filePath("agent_runtime.sqlite"),
+        fixture.memory.databasePath(), fixture.directory.filePath("calls.jsonl")}).isOk());
+    auto service = fixture.daydreamAdapter();
+    CancellationSource cancellation;
+    bool finished = false;
+    service.maintainAsync(&writer, 3, cancellation.token(), [&](QJsonObject) { finished = true; }, 1);
+    QTRY_COMPARE(fixture.modelClient.pending.size(), 1);
+    const auto fresh = addInbox(fixture.memory, QStringLiteral("整理期间新写入的内容"));
+    fixture.modelClient.finishNext();
+    QTRY_COMPARE(fixture.memory.readForRecall(snapshot.items[0].id)->status, MemoryStatus::Consolidated);
+    QTRY_COMPARE(fixture.modelClient.pending.size(), 1);
+    QCOMPARE(fixture.memory.readForRecall(snapshot.items[1].id)->status, MemoryStatus::Active);
+    QCOMPARE(fixture.memory.readForRecall(fresh.id)->status, MemoryStatus::Active);
+    cancellation.cancel();
+    fixture.modelClient.finishNext();
+    QTRY_COMPARE(writer.queueDepth(), 0);
+    QVERIFY(!finished);
+    QCOMPARE(fixture.memory.readForRecall(snapshot.items[0].id)->status, MemoryStatus::Consolidated);
+    QCOMPARE(fixture.memory.readForRecall(snapshot.items[1].id)->status, MemoryStatus::Active);
+    QVERIFY(fixture.memory.refreshDatabaseOnly());
+    const auto prepared = fixture.memory.preparedSleepChanges("maintenance", "daydream_maintenance");
+    QVERIFY(prepared.isOk());
+    QCOMPARE(prepared.value().size(), 1);
+    QVERIFY(fixture.memory.isSleepChangeFinalized(prepared.value()[0].changeId, prepared.value()[0].payloadHash));
+    // A fresh foreground row was never leased by the old run.
+    QVERIFY(!fixture.memory.coolingDaydreamSources(QDateTime::currentDateTimeUtc()).contains(fresh.id));
+    writer.stop(true);
+}
+
+void SleepCycleTests::maintenanceReplaysDurableBatchExactlyOnce() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    const auto source = addInbox(fixture.memory);
+    DaydreamConsolidator consolidator(fixture.memory);
+    const auto snapshot = consolidator.createSnapshot();
+    const auto built = consolidator.buildChangeSet(snapshot, modelCreateDecisions(snapshot.items));
+    QVERIFY(built.isOk());
+    StagedMemoryChange staged;
+    staged.sessionId = "maintenance";
+    staged.changeId = built.value().changeSetId;
+    staged.targetType = "daydream_maintenance";
+    staged.operation = "apply";
+    staged.payload = built.value().toJson();
+    QVERIFY(fixture.memory.stageSleepChange(staged)); // Simulate crash after model result was saved.
+    ChatSideEffectQueue writer;
+    QVERIFY(writer.start({kProfileId, fixture.directory.filePath("agent_runtime.sqlite"),
+        fixture.memory.databasePath(), fixture.directory.filePath("calls.jsonl")}).isOk());
+    auto service = fixture.daydreamAdapter();
+    CancellationSource cancellation;
+    int finished = 0;
+    service.maintainAsync(&writer, 32, cancellation.token(), [&](QJsonObject result) {
+        QVERIFY(result["committed"].toBool());
+        ++finished;
+    });
+    QTRY_COMPARE(finished, 1);
+    QCOMPARE(fixture.memory.readForRecall(source.id)->status, MemoryStatus::Consolidated);
+    QVERIFY(fixture.modelClient.requests.isEmpty());
+    service.maintainAsync(&writer, 32, cancellation.token(), [&](QJsonObject) { ++finished; });
+    QTRY_COMPARE(finished, 2);
+    QVERIFY(fixture.memory.refreshDatabaseOnly());
+    QCOMPARE(fixture.memory.all().size(), 2);
+    QVERIFY(fixture.modelClient.requests.isEmpty());
+    writer.stop(true);
+}
 
 void SleepCycleTests::createAsync_whenHighValueEventCompletes_shouldStageShortPrivateSummaryWithoutBlockingReply() {
     ReflectionFixture fixture;
@@ -589,150 +654,6 @@ void SleepCycleTests::createAsync_whenModelReturnsReasoningTrace_shouldPersistOn
     QVERIFY(!summary.value().uncertainty.contains(QStringLiteral("raw")));
 }
 
-void SleepCycleTests::consolidateAsync_whenPendingItemsExist_shouldReuseExistingConsolidatorAndStageBoundedChanges() {
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    const MemoryEntry source = addInbox(fixture.memory);
-    fixture.modelClient.replies.append({true, createDecisionJson({source}), {}, {}});
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
-    StagingSession staging{QStringLiteral("sleep-1"), 1};
-    DaydreamRequest request{kProfileId, staging.sessionId, 0, 1};
-    CancellationSource cancellation;
-    bool completed = false;
-    adapter.consolidateAsync(request, staging, cancellation.token(),
-                             [&](Result<DaydreamChangeSet, DomainError> result) {
-        QVERIFY(result.isOk());
-        QCOMPARE(result.value().snapshot.size(), 1);
-        completed = true;
-    });
-    QVERIFY(completed);
-    QCOMPARE(fixture.memory.preparedSleepChangeCount(staging.sessionId), 1);
-}
-
-void SleepCycleTests::consolidateAsync_beforeCommit_shouldLeaveFormalMemoryUnchanged() {
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    const MemoryEntry source = addInbox(fixture.memory);
-    fixture.modelClient.replies.append({true, createDecisionJson({source}), {}, {}});
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
-    StagingSession staging{QStringLiteral("sleep-2"), 1};
-    CancellationSource cancellation;
-    adapter.consolidateAsync({kProfileId, staging.sessionId, 0, 1}, staging,
-                             cancellation.token(), [](auto) {});
-    QVERIFY(fixture.memory.findById(source.id));
-    QCOMPARE(fixture.memory.preparedSleepChangeCount(staging.sessionId), 1);
-}
-
-void SleepCycleTests::processNextBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndStageChangeSet() {
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    const MemoryEntry source = addInbox(fixture.memory);
-    fixture.modelClient.replies.append(
-        {true, discardDecisionJson(source.id), {}, {}});
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
-    CancellationSource cancellation;
-    const CancellationToken token = cancellation.token();
-    StagingSession staging{QStringLiteral("sleep-daydream-route"),
-                           token.generation()};
-    bool completed = false;
-
-    adapter.consolidateAsync(
-        {kProfileId, staging.sessionId, 0, 1}, staging, token,
-        [&](Result<DaydreamChangeSet, DomainError> result) {
-            QVERIFY(result.isOk());
-            completed = true;
-        });
-
-    QVERIFY(completed);
-    QCOMPARE(fixture.modelClient.selectedRouteIds,
-             QList<QString>{QString::number(
-                 static_cast<int>(ModelRole::Daydream))});
-    QCOMPARE(adapter.preparedChangeCount(staging.sessionId), 1);
-}
-
-void SleepCycleTests::processNextBatch_whenModelUnavailable_shouldPreserveUntilRetry_data() {
-    QTest::addColumn<bool>("missingRouter");
-    QTest::newRow("model-request-failed") << false;
-    QTest::newRow("model-router-unavailable") << true;
-}
-
-void SleepCycleTests::processNextBatch_whenModelUnavailable_shouldPreserveUntilRetry() {
-    QFETCH(bool, missingRouter);
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    const MemoryEntry source = fixture.memory.addEntry(
-        MemoryExtractor().extractDaydreamImpression(
-            QStringLiteral("我决定换一份新工作了"), QStringLiteral("manual")));
-    QVERIFY(!source.id.isEmpty());
-    QCOMPARE(source.importance, 0.3);
-    QCOMPARE(source.mentionCount, 1);
-    QCOMPARE(source.emotionIntensity, 0.0);
-    fixture.modelClient.replies.append({false, {}, QStringLiteral("offline"), {}});
-    DaydreamSleepAdapter adapter(kProfileId, QStringLiteral("Milltina"),
-        &fixture.memory, missingRouter ? nullptr : &fixture.router);
-    CancellationSource cancellation;
-    const auto token = cancellation.token();
-    StagingSession staging{QStringLiteral("unavailable-model"), token.generation()};
-    bool completed = false;
-    adapter.consolidateAsync({kProfileId, staging.sessionId, 0, 1}, staging, token,
-        [&](Result<DaydreamChangeSet, DomainError> result) {
-            QVERIFY(result.isOk());
-            QCOMPARE(result.value().decisions.size(), 1);
-            QCOMPARE(result.value().decisions.first().action, DaydreamConsolidator::Action::Preserve);
-            completed = true;
-        });
-    QVERIFY(completed);
-    QVERIFY(adapter.finalizeSession(staging.sessionId).isOk());
-    QVERIFY(fixture.memory.load());
-    QCOMPARE(fixture.memory.all().size(), 1);
-    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Active);
-    QCOMPARE(fixture.memory.findById(source.id)->content, source.content);
-    QCOMPARE(DaydreamConsolidator(fixture.memory).pendingCount(), 1);
-
-    fixture.modelClient.replies.clear();
-    fixture.modelClient.replies.append({true, createDecisionJson({source}), {}, {}});
-    DaydreamSleepAdapter recovered = fixture.daydreamAdapter();
-    StagingSession retry{QStringLiteral("recovered-model"), token.generation()};
-    completed = false;
-    recovered.consolidateAsync({kProfileId, retry.sessionId, 0, 1}, retry, token,
-        [&](Result<DaydreamChangeSet, DomainError> result) {
-            QVERIFY(result.isOk());
-            QCOMPARE(result.value().decisions.first().action, DaydreamConsolidator::Action::Create);
-            completed = true;
-        });
-    QVERIFY(completed);
-    QVERIFY(recovered.finalizeSession(retry.sessionId).isOk());
-    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
-    QCOMPARE(DaydreamConsolidator(fixture.memory).pendingCount(), 0);
-}
-
-void SleepCycleTests::processNextBatch_whenCallbackArrivesAfterCancellation_shouldDiscardLateResult() {
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    addInbox(fixture.memory);
-    fixture.modelClient.replies.append({true, QStringLiteral("[]"), {}, {}});
-    fixture.modelClient.deferCallbacks = true;
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
-    CancellationSource cancellation;
-    const CancellationToken token = cancellation.token();
-    StagingSession staging{QStringLiteral("sleep-3"), token.generation()};
-    bool completed = false;
-    adapter.consolidateAsync({kProfileId, staging.sessionId, 0, 1}, staging,
-                             token, [&](Result<DaydreamChangeSet, DomainError> result) {
-        QVERIFY(!result.isOk());
-        QCOMPARE(result.error().code, QStringLiteral("SLEEP_CANCELLED"));
-        completed = true;
-    });
-    QVERIFY(!completed);
-    QCOMPARE(fixture.modelClient.selectedRouteIds,
-             QList<QString>{QString::number(
-                 static_cast<int>(ModelRole::Daydream))});
-    cancellation.cancel();
-    fixture.modelClient.finishNext();
-    QVERIFY(completed);
-    QCOMPARE(fixture.memory.preparedSleepChangeCount(staging.sessionId), 0);
-}
-
 void SleepCycleTests::runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -750,12 +671,12 @@ void SleepCycleTests::runNextDaydreamBatch_whenModelDecisionIsRequired_shouldReq
 
     TestIdentityState::runPreparedDaydreamBatch(brain);
 
-    QCOMPARE(modelClient.selectedRouteIds,
+    QTRY_COMPARE(modelClient.selectedRouteIds,
              QList<QString>{QString::number(
                  static_cast<int>(ModelRole::Daydream))});
-    QCOMPARE(finished.count(), 1);
+    QTRY_COMPARE(finished.count(), 1);
     QVERIFY(brain.memoryStore()->findById(source.id));
-    QCOMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Archived);
+    QTRY_COMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Archived);
 }
 
 void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldPreserveUntilRetry() {
@@ -781,21 +702,22 @@ void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldPreserve
 
     TestIdentityState::runPreparedDaydreamBatch(brain);
 
-    QCOMPARE(modelClient.selectedRouteIds,
+    QTRY_COMPARE(modelClient.selectedRouteIds,
              QList<QString>{QString::number(
                  static_cast<int>(ModelRole::Daydream))});
-    QCOMPARE(finished.count(), 1);
+    QTRY_COMPARE(finished.count(), 1);
     const QJsonObject summary = finished.first().first().toJsonObject();
     QCOMPARE(summary.value(QStringLiteral("fallbackBatches")).toInt(), 1);
     QVERIFY(brain.memoryStore()->findById(source.id));
-    QCOMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Active);
+    QTRY_COMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Active);
     QCOMPARE(brain.memoryStore()->all().size(), 1);
     QCOMPARE(DaydreamConsolidator(*brain.memoryStore()).pendingCount(), 1);
 
+    QVERIFY(brain.memoryStore()->deferDaydreamSources({source}, QDateTime::currentDateTimeUtc().addSecs(-1)));
     modelClient.replies.append({true, createDecisionJson({source}), {}, {}});
     TestIdentityState::runPreparedDaydreamBatch(brain);
-    QCOMPARE(finished.count(), 2);
-    QCOMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Consolidated);
+    QTRY_COMPARE(finished.count(), 2);
+    QTRY_COMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(brain.memoryStore()->all().size(), 2);
     QCOMPARE(DaydreamConsolidator(*brain.memoryStore()).pendingCount(), 0);
 }
@@ -862,7 +784,7 @@ void SleepCycleTests::finalizeSession_whenLegacySecondPrecisionChangeSetIsLoaded
     staged.operation = QStringLiteral("apply");
     staged.payload = legacy;
     QVERIFY(fixture.memory.stageSleepChange(staged));
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
 
     const auto finalized = adapter.finalizeSession(sessionId);
 
@@ -1183,45 +1105,13 @@ void SleepCycleTests::tryStart_whenTimeBasedTriggerEnabledBeforeBedtime_shouldNo
     QVERIFY(night.isOk());
 }
 
-void SleepCycleTests::tryStart_whenHippocampusBacklogHigh_shouldRelaxIdleThreshold() {
-    ReflectionFixture fixture;
-    QVERIFY(fixture.open());
-    SleepPolicy policy;   // minimumIdle=1800, relaxed=900, backlogThreshold=120
-    SleepCycleHooks hooks;
-    hooks.isBrainBusy = [] { return false; };
-    hooks.hasTaskDueBefore = [](const QDateTime&) { return false; };
-    hooks.userIdleSeconds = [] { return 900; };  // 只有 15 分钟空闲
-    hooks.sourceCutoffSequence = [] { return 12; };
-
-    // 无积压：900 < 1800 → 拒绝
-    hooks.hippocampusPendingCount = [] { return 50; };
-    {
-        SleepCycleCoordinator coordinator(
-            kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
-            &fixture.privateRepository, nullptr, nullptr, hooks);
-        const auto result = coordinator.tryStart({
-            SleepTriggerType::Bedtime, 900, QDateTime::currentDateTime(), kProfileId});
-        QVERIFY(!result.isOk());
-    }
-
-    // 积压 150 ≥ 120：门槛放宽到 900 → 允许
-    hooks.hippocampusPendingCount = [] { return 150; };
-    {
-        SleepCycleCoordinator coordinator(
-            kProfileId, policy, &fixture.sleepSessions, nullptr, nullptr,
-            &fixture.privateRepository, nullptr, nullptr, hooks);
-        const auto result = coordinator.tryStart({
-            SleepTriggerType::Bedtime, 900, QDateTime::currentDateTime(), kProfileId});
-        QVERIFY(result.isOk());
-    }
-}
-
-void SleepCycleTests::tryStart_whenAllParticipantsPrepared_shouldPersistCommitThenFinalizeAllStores() {
+void SleepCycleTests::tryStart_whenDiaryPrepared_shouldCommitWithoutOwningMemory() {
     ReflectionFixture fixture;
     QVERIFY(fixture.open());
     const MemoryEntry source = addInbox(fixture.memory);
     queueSleepReplies(fixture);
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    fixture.modelClient.replies.removeFirst(); // New sessions only call the diary model.
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     SleepPolicy policy;
     policy.bedtime = QTime(0, 0);
@@ -1242,9 +1132,10 @@ void SleepCycleTests::tryStart_whenAllParticipantsPrepared_shouldPersistCommitTh
     QCOMPARE(session.value()->state, SleepSessionState::Completed);
     QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
     QVERIFY(fixture.memory.findById(source.id));
-    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Consolidated);
-    QCOMPARE(fixture.memory.all().size(), 2);
-    QVERIFY(fixture.memory.loadRecentFromDatabase(1, QString(), true).first().partition != QLatin1String("hippocampus"));
+    QCOMPARE(fixture.memory.findById(source.id)->status, MemoryStatus::Active);
+    QCOMPARE(fixture.memory.all().size(), 1);
+    QCOMPARE(session.value()->participants, QStringList{QStringLiteral("private_psyche")});
+    QCOMPARE(adapter.preparedChangeCount(result.value()), 0);
 }
 
 void SleepCycleTests::tryStart_whenRestartFindsCommittedSession_shouldIdempotentlyFinishFinalize() {
@@ -1254,7 +1145,7 @@ void SleepCycleTests::tryStart_whenRestartFindsCommittedSession_shouldIdempotent
     const QString sessionId = QStringLiteral("restart-commit");
     QVERIFY(fixture.sleepSessions.createPending(
         SleepSessionRecord{sessionId, kProfileId, 0}).isOk());
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     QVERIFY(prepareSleepParticipants(fixture, sessionId, adapter, diary));
     QVERIFY(fixture.sleepSessions.decideCommit(sessionId).isOk());
@@ -1277,7 +1168,7 @@ void SleepCycleTests::cancel_whenDecisionPending_shouldAbortAllStagingAndPreserv
     const QString sessionId = QStringLiteral("cancel-pending");
     QVERIFY(fixture.sleepSessions.createPending(
         SleepSessionRecord{sessionId, kProfileId, 0}).isOk());
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     QVERIFY(prepareSleepParticipants(fixture, sessionId, adapter, diary));
     SleepCycleCoordinator coordinator(
@@ -1299,7 +1190,7 @@ void SleepCycleTests::cancel_whenDecisionCommitted_shouldKeepCommitAndFinishFina
     const QString sessionId = QStringLiteral("cancel-commit");
     QVERIFY(fixture.sleepSessions.createPending(
         SleepSessionRecord{sessionId, kProfileId, 0}).isOk());
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     QVERIFY(prepareSleepParticipants(fixture, sessionId, adapter, diary));
     QVERIFY(fixture.sleepSessions.decideCommit(sessionId).isOk());
@@ -1322,7 +1213,7 @@ void SleepCycleTests::recoverIncomplete_whenCommittedSessionExists_shouldFinaliz
     const QString sessionId = QStringLiteral("recover-before-start");
     QVERIFY(fixture.sleepSessions.createPending(
         SleepSessionRecord{sessionId, kProfileId, 0}).isOk());
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     QVERIFY(prepareSleepParticipants(fixture, sessionId, adapter, diary));
     QVERIFY(fixture.sleepSessions.decideCommit(sessionId).isOk());
@@ -1349,7 +1240,7 @@ void SleepCycleTests::recoverIncomplete_whenCommittedSessionExists_shouldFinaliz
              SleepSessionState::Committing);
 }
 
-void SleepCycleTests::start_whenCoordinatorTakesOwnership_shouldDisableLegacyDaydreamTimer() {
+void SleepCycleTests::start_whenDiaryCoordinatorStarts_shouldKeepSharedMemoryService() {
     ReflectionFixture fixture;
     QVERIFY(fixture.open());
     AIBrain brain;
@@ -1357,9 +1248,10 @@ void SleepCycleTests::start_whenCoordinatorTakesOwnership_shouldDisableLegacyDay
         kProfileId, SleepPolicy{}, &fixture.sleepSessions, nullptr, nullptr,
         &fixture.privateRepository, &brain, nullptr, {});
     coordinator.start();
-    QVERIFY(brain.isExternalSleepCoordinatorEnabled());
+    auto* service = brain.consolidationService();
+    QVERIFY(service);
     coordinator.stop();
-    QVERIFY(!brain.isExternalSleepCoordinatorEnabled());
+    QCOMPARE(brain.consolidationService(), service);
 }
 
 void SleepCycleTests::stop_whenCallbacksAreLate_shouldInvalidateGenerationAndPerformNoWrites() {
@@ -1369,7 +1261,7 @@ void SleepCycleTests::stop_whenCallbacksAreLate_shouldInvalidateGenerationAndPer
     fixture.modelClient.replies.append(
         {false, {}, QStringLiteral("late model failure"), {}});
     fixture.modelClient.deferCallbacks = true;
-    DaydreamSleepAdapter adapter = fixture.daydreamAdapter();
+    MemoryConsolidationService adapter = fixture.daydreamAdapter();
     DiaryService diary = fixture.diaryService();
     SleepPolicy policy;
     policy.bedtime = QTime(0, 0);
@@ -1422,7 +1314,6 @@ void SleepCycleTests::getSleepPolicy_whenConfigured_shouldReturnSanitizedPolicy(
     const SleepPolicy& policy = ConfigManager::instance().getSleepPolicy();
     QCOMPARE(policy.bedtime, QTime(22, 15));
     QCOMPARE(policy.minimumIdleSeconds, 900);
-    QCOMPARE(policy.maxItemsPerSession, 16);
 }
 
 void SleepCycleTests::getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults() {
@@ -1443,7 +1334,6 @@ void SleepCycleTests::getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults(
     const SleepPolicy& policy = ConfigManager::instance().getSleepPolicy();
     QCOMPARE(policy.bedtime, QTime(23, 30));
     QCOMPARE(policy.minimumIdleSeconds, 1800);
-    QCOMPARE(policy.maxItemsPerSession, 32);
 }
 
 // ========== Diary Fragments 端到端测试 ==========

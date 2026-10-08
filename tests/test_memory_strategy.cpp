@@ -165,8 +165,6 @@ private slots:
     void testConsolidationCooldownSurvivesRestartWithoutExpiringMemory();
     void testDaydreamTriggerPolicyAllConditions();
     void testDaydreamTriggerPolicyNegativeCases();
-    void testDaydreamTriggerPolicyNoDueTodoNonBlocking();
-    void testDaydreamTriggerPolicyContinuation();
     void testDaydreamTriggerPolicyUsesRuntimeConfig();
 #ifdef DESKTOP_PET_HAS_ORT
     void testOnnxEmbeddingProviderLoadsAndEmbeds();
@@ -4358,63 +4356,27 @@ void TestMemoryStrategy::testConsolidationCooldownSurvivesRestartWithoutExpiring
     QCOMPARE(DaydreamConsolidator(restarted).createSnapshot().size(), 1);
 }
 
-// DaydreamTriggerPolicy 复合判定：全条件满足才触发。
 void TestMemoryStrategy::testDaydreamTriggerPolicyAllConditions() {
     DaydreamTriggerPolicy policy;
-    // idle=600>=N1(300) && !busy && msToNext=1200000>=N2(600000) &&
-    // msSinceLast=1000000>=MIN_GAP(900000) && !interrupted && count=0<HOURLY_CAP(3)
-    QVERIFY(policy.shouldTrigger(600, false, 1200000, 1000000, false, 0));
-    // 刚好边界：idle=N1, msToNext=N2, msSinceLast=MIN_GAP
-    QVERIFY(policy.shouldTrigger(300, false, 600000, 900000, false, 0));
+    QVERIFY(policy.shouldTrigger(-1, 0));
+    QVERIFY(policy.shouldTrigger(900000, 0));
 }
-
 void TestMemoryStrategy::testDaydreamTriggerPolicyNegativeCases() {
     DaydreamTriggerPolicy policy;
-    const bool wasI = false;
-    // 任一条件不满足 → false
-    QVERIFY(!policy.shouldTrigger(299, false, 1200000, 1000000, wasI, 0)); // idle 不足
-    QVERIFY(!policy.shouldTrigger(600, true, 1200000, 1000000, wasI, 0));  // busy
-    QVERIFY(!policy.shouldTrigger(600, false, 599999, 1000000, wasI, 0));  // 待办近
-    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 899999, wasI, 0));  // 距上次不足
-    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 1000000, wasI, 3)); // 超每小时上限
-    QVERIFY(!policy.shouldTrigger(-1, false, 1200000, 1000000, wasI, 0));  // 平台不支持
-    //被打断需叠加 BACKOFF：MIN_GAP+BACKOFF=1500000，msSinceLast=1000000 不足
-    QVERIFY(!policy.shouldTrigger(600, false, 1200000, 1000000, true, 0));
-    QVERIFY(policy.shouldTrigger(600, false, 1200000, 1500000, true, 0));  // 退避过后
+    QVERIFY(!policy.shouldTrigger(899999, 0));
+    QVERIFY(policy.shouldTrigger(60000, 0, 64));
+    QVERIFY(!policy.shouldTrigger(60000, 3, 64));
+    QVERIFY(!policy.shouldTrigger(1000000, 3));
 }
-
-// 无待办(msToNextDue<0)不阻塞触发。
-void TestMemoryStrategy::testDaydreamTriggerPolicyNoDueTodoNonBlocking() {
-    DaydreamTriggerPolicy policy;
-    QVERIFY(policy.shouldTrigger(600, false, -1, 1000000, false, 0));
-}
-
-void TestMemoryStrategy::testDaydreamTriggerPolicyContinuation() {
-    DaydreamTriggerPolicy policy;
-    QVERIFY(policy.shouldContinue(300, false, 600000));
-    QVERIFY(policy.shouldContinue(600, false, -1));
-    QVERIFY(!policy.shouldContinue(299, false, 600000));
-    QVERIFY(!policy.shouldContinue(600, true, 600000));
-    QVERIFY(!policy.shouldContinue(600, false, 599999));
-}
-
 void TestMemoryStrategy::testDaydreamTriggerPolicyUsesRuntimeConfig() {
     DaydreamConfig config;
-    config.idleThresholdSec = 60;
-    config.dueSoonThresholdMs = 120000;
     config.minIntervalMs = 180000;
-    config.interruptionBackoffMs = 60000;
     config.hourlyLimit = 1;
     config.tickIntervalMs = 5000;
     DaydreamTriggerPolicy policy(config);
-
-    QVERIFY(policy.shouldTrigger(60, false, 120000, 180000, false, 0));
-    QVERIFY(!policy.shouldTrigger(59, false, 120000, 180000, false, 0));
-    QVERIFY(!policy.shouldTrigger(60, false, 119999, 180000, false, 0));
-    QVERIFY(!policy.shouldTrigger(60, false, 120000, 179999, false, 0));
-    QVERIFY(!policy.shouldTrigger(60, false, 120000, 180000, false, 1));
-    QVERIFY(policy.shouldTrigger(60, false, 120000, 240000, true, 0));
-    QCOMPARE(policy.requiredGapMs(true), qint64(240000));
+    QVERIFY(policy.shouldTrigger(180000, 0));
+    QVERIFY(!policy.shouldTrigger(179999, 0));
+    QVERIFY(!policy.shouldTrigger(180000, 1));
     QCOMPARE(policy.nextTickMs(-1), 5000);
 }
 

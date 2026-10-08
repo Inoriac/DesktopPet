@@ -6,7 +6,7 @@
 
 #include "ai/ai_brain.h"
 #include "ai/scheduler/agent_scheduler.h"
-#include "daydream_sleep_adapter.h"
+#include "memory_consolidation_service.h"
 #include "diary_service.h"
 #include "sleep_session_repository.h"
 #include "sqlite_private_psyche_repository.h"
@@ -23,7 +23,7 @@ SleepCycleCoordinator::SleepCycleCoordinator(
     QString profileId,
     SleepPolicy policy,
     SleepSessionRepository* sessions,
-    DaydreamSleepAdapter* daydream,
+    MemoryConsolidationService* daydream,
     DiaryService* diary,
     SqlitePrivatePsycheRepository* privateRepository,
     AIBrain* aiBrain,
@@ -77,15 +77,7 @@ bool SleepCycleCoordinator::isReady(const SleepTrigger& trigger) const {
         : (m_hooks.userIdleSeconds ? m_hooks.userIdleSeconds()
                                    : (m_aiBrain ? m_aiBrain->userIdleSeconds() : -1));
     if (trigger.type == SleepTriggerType::Manual) return true;
-    // 积压分级：Hippocampus 待巩固量超阈值时降低空闲门槛，
-    // 避免用户长期不进入长空闲导致永不整理。
-    int requiredIdle = m_policy.minimumIdleSeconds;
-    if (m_hooks.hippocampusPendingCount
-        && m_policy.hippocampusBacklogThreshold > 0
-        && m_hooks.hippocampusPendingCount() >= m_policy.hippocampusBacklogThreshold) {
-        requiredIdle = qMin(requiredIdle, m_policy.relaxedIdleSeconds);
-    }
-    return idle >= requiredIdle;
+    return idle >= m_policy.minimumIdleSeconds;
 }
 
 Result<QString, DomainError> SleepCycleCoordinator::tryStart(
@@ -120,6 +112,7 @@ Result<QString, DomainError> SleepCycleCoordinator::tryStart(
         }
         session.sourceCutoffSequence = cutoff.value();
     }
+    session.participants = QStringList{QStringLiteral("private_psyche")};
     session.state = SleepSessionState::Snapshotting;
     session.decision = SleepDecision::Pending;
     session.startedAt = QDateTime::currentDateTimeUtc();
@@ -129,43 +122,17 @@ Result<QString, DomainError> SleepCycleCoordinator::tryStart(
     }
     m_activeSessionId = session.sessionId;
 
-    if (!m_daydream || !m_diary) {
-        return Result<QString, DomainError>::success(session.sessionId);
-    }
-    const auto stateUpdated = m_sessions->updateState(
-        session.sessionId, SleepSessionState::Consolidating);
-    if (!stateUpdated.isOk()) {
-        failPending(session.sessionId);
-        return Result<QString, DomainError>::failure(stateUpdated.error());
-    }
-
-    const CancellationToken token = m_cancellation.token();
-    StagingSession staging{session.sessionId, token.generation()};
-    DaydreamRequest request;
-    request.profileId = m_profileId;
-    request.sessionId = session.sessionId;
-    request.sourceCutoffSequence = session.sourceCutoffSequence;
-    request.maxItems = m_policy.maxItemsPerSession;
-    const std::shared_ptr<std::atomic_bool> alive = m_alive;
-    m_daydream->consolidateAsync(
-        request, staging, token,
-        [this, alive, sessionId = session.sessionId, token]
-        (Result<DaydreamChangeSet, DomainError> result) mutable {
-            if (!alive->load(std::memory_order_acquire)) return;
-            continueAfterDaydream(sessionId, token, std::move(result));
-        });
+    // Memory maintenance has its own durable per-batch commits. Diary cancellation
+    // can no longer roll it back or prevent it from making progress.
+    if (m_aiBrain) m_aiBrain->requestManualDaydream();
+    if (m_diary) composeDiary(session.sessionId, m_cancellation.token());
     return Result<QString, DomainError>::success(session.sessionId);
 }
 
-void SleepCycleCoordinator::continueAfterDaydream(
+void SleepCycleCoordinator::composeDiary(
     const QString& sessionId,
-    const CancellationToken& token,
-    Result<DaydreamChangeSet, DomainError> result) {
+    const CancellationToken& token) {
     if (token.isCancelled() || sessionId != m_activeSessionId) return;
-    if (!result.isOk()) {
-        failPending(sessionId);
-        return;
-    }
     const auto stateUpdated = m_sessions->updateState(
         sessionId, SleepSessionState::Journaling);
     if (!stateUpdated.isOk()) {
@@ -226,7 +193,8 @@ Result<void, DomainError> SleepCycleCoordinator::finalizeCommitted(
                        QStringLiteral("sleep session has no Commit decision")));
     }
 
-    if (!session.value()->finalizedParticipants.contains(QStringLiteral("memory"))) {
+    if (session.value()->participants.contains(QStringLiteral("memory"))
+        && !session.value()->finalizedParticipants.contains(QStringLiteral("memory"))) {
         if (!m_daydream) {
             return Result<void, DomainError>::failure(
                 sleepError(QStringLiteral("MEMORY_STORE_UNAVAILABLE"),
@@ -361,7 +329,6 @@ void SleepCycleCoordinator::start() {
         return;
     }
     m_started = true;
-    if (m_aiBrain) m_aiBrain->setExternalSleepCoordinatorEnabled(true);
     if (m_hooks.publishCapability) m_hooks.publishCapability(true);
     if (m_policy.enabled) m_timer.start();
 }
@@ -383,7 +350,6 @@ void SleepCycleCoordinator::stop() {
             }
         }
     }
-    if (m_aiBrain) m_aiBrain->setExternalSleepCoordinatorEnabled(false);
     if (m_hooks.publishCapability) m_hooks.publishCapability(false);
     m_started = false;
     m_activeSessionId.clear();

@@ -71,7 +71,6 @@ class DaydreamConsolidator {
 public:
     static constexpr int SESSION_LIMIT = 32;
     static constexpr int BATCH_LIMIT = 8;
-    static constexpr int INBOX_LIMIT = 200;
 
     using Action = DaydreamAction;
     using Snapshot = DaydreamSnapshot;
@@ -107,8 +106,8 @@ public:
         const QList<RelationProposal>& relationProposals = {}) const;
     Stats applyChangeSet(const DaydreamChangeSet& changeSet);
 
-    // Applies a fully staged session in one short transaction. If any source was
-    // changed after snapshot creation, nothing is written and staleSnapshot=true.
+    // Applies one staged batch in a short transaction (or a historical session
+    // during recovery). Semantic/evidence conflicts reject only this unit.
     Stats applyDecisions(const Snapshot& snapshot,
                          const QList<Decision>& decisions);
 

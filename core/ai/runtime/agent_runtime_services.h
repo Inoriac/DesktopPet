@@ -13,7 +13,7 @@ class AgentBootstrap;
 class AgentScheduler;
 class ContextAssembler;
 class CancellationSource;
-class DaydreamSleepAdapter;
+class MemoryConsolidationService;
 class DiaryService;
 class DiaryFragmentService;
 class EmotionStateProvider;
@@ -136,7 +136,6 @@ private:
     std::unique_ptr<DiaryFragmentService> m_diaryFragmentService;
     std::unique_ptr<OwnerDiaryFacade> m_ownerDiaryFacade;
     std::unique_ptr<OwnerDiaryServer> m_ownerDiaryServer;
-    std::unique_ptr<DaydreamSleepAdapter> m_daydreamSleepAdapter;
     std::unique_ptr<SleepCycleCoordinator> m_sleepCycleCoordinator;
     std::unique_ptr<CancellationSource> m_reflectionCancellation;
 };

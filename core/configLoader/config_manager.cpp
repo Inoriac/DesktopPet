@@ -283,25 +283,17 @@ static ModelRoleConfig parseModelRoleConfig(ModelRole role,
 static DaydreamConfig parseDaydreamConfig(const QJsonObject& object) {
     DaydreamConfig cfg;
     cfg.enabled = object.value("enabled").toBool(true);
-    cfg.idleThresholdSec = clampInt(
-        object.value("idleThresholdSec").toInt(cfg.idleThresholdSec), 30, 24 * 60 * 60);
-    cfg.dueSoonThresholdMs = clampInt(
-        object.value("dueSoonThresholdMs").toInt(cfg.dueSoonThresholdMs), 0, 24 * 60 * 60 * 1000);
     cfg.minIntervalMs = clampInt(
         object.value("minIntervalMs").toInt(cfg.minIntervalMs), 60 * 1000, 24 * 60 * 60 * 1000);
-    cfg.interruptionBackoffMs = clampInt(
-        object.value("interruptionBackoffMs").toInt(cfg.interruptionBackoffMs), 0, 24 * 60 * 60 * 1000);
     cfg.hourlyLimit = clampInt(object.value("hourlyLimit").toInt(cfg.hourlyLimit), 1, 24);
     cfg.tickIntervalMs = clampInt(
         object.value("tickIntervalMs").toInt(cfg.tickIntervalMs), 5 * 1000, 5 * 60 * 1000);
 
-    cfg.sessionLimit = clampInt(object.value("sessionLimit").toInt(cfg.sessionLimit), 1, 128);
+    cfg.sessionLimit = clampInt(object.value("sessionLimit").toInt(cfg.sessionLimit), 1, 32);
     cfg.batchLimit = clampInt(
-        object.value("batchLimit").toInt(cfg.batchLimit), 1, std::min(cfg.sessionLimit, 32));
-    cfg.inboxLimit = clampInt(object.value("inboxLimit").toInt(cfg.inboxLimit), 1, 5000);
-    cfg.inboxLimit = std::max(cfg.inboxLimit, cfg.sessionLimit);
+        object.value("batchLimit").toInt(cfg.batchLimit), 1, std::min(cfg.sessionLimit, 8));
     cfg.relatedMemoryLimit = clampInt(
-        object.value("relatedMemoryLimit").toInt(cfg.relatedMemoryLimit), 0, 32);
+        object.value("relatedMemoryLimit").toInt(cfg.relatedMemoryLimit), 0, 8);
 
     return cfg;
 }
@@ -328,14 +320,8 @@ static SleepPolicy parseSleepPolicy(const QJsonObject& object) {
                    &policy.inactivityWindowSeconds);
     assignValidInt(QStringLiteral("maxActivityInWindowSeconds"), 0, 24 * 60 * 60,
                    &policy.maxActivityInWindowSeconds);
-    assignValidInt(QStringLiteral("hippocampusBacklogThreshold"), 0, 500,
-                   &policy.hippocampusBacklogThreshold);
-    assignValidInt(QStringLiteral("relaxedIdleSeconds"), 30, 24 * 60 * 60,
-                   &policy.relaxedIdleSeconds);
     assignValidInt(QStringLiteral("dueSoonThresholdSeconds"), 0, 24 * 60 * 60,
                    &policy.dueSoonThresholdSeconds);
-    assignValidInt(QStringLiteral("maxItemsPerSession"), 1, 128,
-                   &policy.maxItemsPerSession);
     assignValidInt(QStringLiteral("retryBackoffSeconds"), 0, 24 * 60 * 60,
                    &policy.retryBackoffSeconds);
     assignValidInt(QStringLiteral("tickIntervalSeconds"), 5, 60 * 60,

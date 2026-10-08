@@ -180,8 +180,8 @@ set(REFLECTION_SOURCES
     core/ai/reflection/sqlite_private_psyche_repository.cpp
     core/ai/reflection/inner_thought_service.h
     core/ai/reflection/inner_thought_service.cpp
-    core/ai/reflection/daydream_sleep_adapter.h
-    core/ai/reflection/daydream_sleep_adapter.cpp
+    core/ai/reflection/memory_consolidation_service.h
+    core/ai/reflection/memory_consolidation_service.cpp
     core/ai/reflection/diary_service.h
     core/ai/reflection/diary_service.cpp
     core/ai/reflection/diary_fragment_service.h

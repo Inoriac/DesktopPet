@@ -3,6 +3,7 @@
 //
 
 #include "ai_brain.h"
+#include "reflection/memory_consolidation_service.h"
 #include "memory/memory_metadata.h"
 
 #include <QJsonDocument>
@@ -79,6 +80,16 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
             this, [](const QString& message) {
                 qWarning() << "[AIBrain]" << message;
             });
+    m_consolidationService = std::make_unique<MemoryConsolidationService>(
+        QString(), QString(), &m_memoryStore, &m_modelRouter);
+    connect(m_chatSideEffectQueue.get(), &ChatSideEffectQueue::drained, this, [this](const QStringList& ids) {
+        for (const auto& id : ids) m_pendingMemoryRefreshIds.insert(id);
+        if (m_storageInitialized && m_chatSideEffectQueue->queueDepth() == 0) {
+            // Point reads only, and only after all optimistic writes have drained.
+            m_memoryStore.refreshEntries(QStringList(m_pendingMemoryRefreshIds.begin(), m_pendingMemoryRefreshIds.end()));
+            m_pendingMemoryRefreshIds.clear();
+        }
+    });
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
     setupTriggerTimers();
@@ -86,6 +97,8 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
 }
 
 AIBrain::~AIBrain() {
+    m_daydreamCancellation.cancel();
+    m_consolidationService.reset();
     if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(false);
     if (m_chatPreparationExecutor) m_chatPreparationExecutor->stop();
 }
@@ -178,6 +191,7 @@ void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
+    cancelDaydreamSession(QStringLiteral("runtime services changed"));
     stopCurrentResponse();
     ++m_requestGeneration;
     if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(true);
@@ -271,19 +285,6 @@ int AIBrain::userIdleSeconds() const {
     return queryUserIdleSeconds();
 }
 
-void AIBrain::setExternalSleepCoordinatorEnabled(bool enabled) {
-    if (m_externalSleepCoordinatorEnabled == enabled) return;
-    m_externalSleepCoordinatorEnabled = enabled;
-    if (enabled) {
-        if (m_daydreamRunning) {
-            cancelDaydreamSession(QStringLiteral("external sleep coordinator took ownership"));
-        }
-        m_daydreamTimer.stop();
-    } else if (m_running && m_daydreamConfig.enabled) {
-        armDaydreamTimer();
-    }
-}
-
 void AIBrain::start() {
     if (!m_enabled || !m_storageInitialized || m_running) {
         std::cerr << "[AIBrain] start skipped: enabled="
@@ -308,8 +309,11 @@ void AIBrain::start() {
     std::cerr << "[AIBrain] runtime loop started" << std::endl;
     scheduleTrigger("idle_action");
     scheduleTrigger("proactive_chat");
-    if (m_daydreamConfig.enabled && !m_externalSleepCoordinatorEnabled) {
-        armDaydreamTimer();
+    if (m_daydreamConfig.enabled) {
+        m_lastDaydreamAt = {};
+        m_daydreamCountThisHour = 0;
+        // Startup is a maintenance trigger even when the user is already chatting.
+        m_daydreamTimer.start(1000);
     }
 }
 
@@ -382,7 +386,7 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
 
 bool AIBrain::canStartProactiveChat() const {
     if (!automaticTextAllowed()) return false;
-    return m_enabled && m_storageInitialized && !m_busy && !m_daydreamRunning
+    return m_enabled && m_storageInitialized && !m_busy
         && (!m_conversationCooldown.isValid()
             || m_conversationCooldown.elapsed() >= (m_cooldownAfterProactive
                 ? proactiveChatTiming(m_proactiveBaseIntervalMs).cooldownMs : 60000));
@@ -418,14 +422,6 @@ void AIBrain::triggerThink(const QString& reason,
     }
     if (m_runtimeServices && userInitiated) {
         m_runtimeServices->cancelSleepForUserInteraction();
-    }
-    if (m_daydreamRunning) {
-        if (userInitiated) {
-            cancelDaydreamSession(QStringLiteral("user interaction"));
-        } else {
-            if (m_running) scheduleTrigger(triggerTag);
-            return;
-        }
     }
 
     auto rejectUserRequest = [this, userInitiated, &replyToId, &triggerTag](
@@ -896,17 +892,7 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
             break;
         }
         if (!staged) {
-            int pendingCount = 0;
-            for (const MemoryEntry& entry : m_memoryStore.all()) {
-                if (entry.status == MemoryStatus::Active
-                    && entry.partition == QLatin1String("hippocampus")) {
-                    ++pendingCount;
-                }
-            }
-            if (m_daydreamConfig.inboxLimit <= 0
-                || pendingCount < m_daydreamConfig.inboxLimit) {
-                m_memoryStore.stageEntry(impression, &mutations);
-            }
+            m_memoryStore.stageEntry(impression, &mutations);
         }
     }
     if (mutations.isEmpty()) return;
