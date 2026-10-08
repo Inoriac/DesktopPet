@@ -102,7 +102,7 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
         showBubbleInput();
     });
 
-    QAction* manualDaydreamAction = contextMenu->addAction(QStringLiteral("让我打个盹（整理记忆）"));
+    QAction* manualDaydreamAction = contextMenu->addAction(QStringLiteral("整理记忆"));
     connect(manualDaydreamAction, &QAction::triggered, this,
             &PetWindow::onManualDaydreamRequested);
 
