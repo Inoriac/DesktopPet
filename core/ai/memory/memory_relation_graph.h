@@ -2,6 +2,7 @@
 #define DESKTOP_PET_MEMORY_RELATION_GRAPH_H
 
 #include <QList>
+#include <functional>
 #include <QSet>
 #include <QString>
 
@@ -19,7 +20,9 @@ public:
     bool removeRelation(const QString& relationId);
     bool removeRelationsFor(const QString& memoryId);
 
-    QList<MemoryRelation> neighborsOf(const QString& memoryId, int limit = 20) const;
+    // Accept before applying the cap, so ineligible edges cannot hide usable ones.
+    QList<MemoryRelation> neighborsOf(const QString& memoryId, int limit = 20,
+        const std::function<bool(const MemoryRelation&)>& accept = {}) const;
     QList<MemoryRelation> neighborsOf(const QString& memoryId,
                                       MemoryRelationType type,
                                       int limit = 20) const;

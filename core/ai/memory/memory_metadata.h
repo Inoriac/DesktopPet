@@ -1,6 +1,7 @@
 #ifndef DESKTOP_PET_MEMORY_METADATA_H
 #define DESKTOP_PET_MEMORY_METADATA_H
 
+#include <algorithm>
 #include <QJsonArray>
 #include <QSet>
 
@@ -57,7 +58,13 @@ inline void recordSession(MemoryEntry& entry, const QString& sessionId) {
     entry.payload["session_ids"] = QJsonArray::fromStringList(ids);
 }
 
+inline QDateTime lastMentionTime(const MemoryEntry& entry) {
+    return entry.lastMentionedAt.isValid() ? entry.lastMentionedAt : entry.createdAt;
+}
+
 inline void mergeContext(MemoryEntry& target, const MemoryEntry& source) {
+    const auto latest = std::max(lastMentionTime(target), lastMentionTime(source));
+    if (latest.isValid()) target.lastMentionedAt = latest;
     for (const auto& id : sessionIds(source)) recordSession(target, id);
     // Copy only structural identifiers, not raw tool results or extraction defaults.
     for (const QString key : {QStringLiteral("task"), QStringLiteral("tool"),

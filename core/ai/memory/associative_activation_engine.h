@@ -55,7 +55,8 @@ public:
         const QHash<QString, double>& seedActivations,
         const MemoryRelationGraph& relationGraph,
         const TagCooccurrenceGraph* tagGraph = nullptr,
-        const QStringList& seedTags = {}) const;
+        const QStringList& seedTags = {},
+        const std::function<bool(const QString&)>& mayParticipate = {}) const;
     
     // Set random source for testing (nullptr = default QRandomGenerator)
     void setRandomSource(std::function<double()> randomFunc);
@@ -93,7 +94,9 @@ private:
     // Default parameters (design §11/§12)
     int m_maxHops = 2;
     int m_maxCandidates = 64;
-    double m_minDelta = 0.08;
+    // Default MentionedWith (.5 * .9) reaches ~.0115 at degree 20.
+    // Keep it usable while rejecting unsupported weak edges (~.0023).
+    double m_minDelta = 0.01;
     double m_hopDecay = 0.55;  // 0.55^hop
     
     // Personality exploration

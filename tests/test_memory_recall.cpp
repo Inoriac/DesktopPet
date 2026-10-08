@@ -1,5 +1,9 @@
 #include <QtTest>
 #include <limits>
+#include <algorithm>
+#include <QTemporaryDir>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 #include "core/ai/memory/active_memory_pool.h"
 #include "core/ai/memory/hippocampus_working_set.h"
 #include "core/ai/memory/memory_store.h"
@@ -16,6 +20,7 @@ private slots:
     void testHippocampusWorkingSetScan();
     void testHippocampusContentAndRecencyPriority();
     void testHippocampusMetadataDoesNotSelectSeeds();
+    void testMentionFreshnessAndPersistence();
 };
 
 void TestMemoryRecall::testActiveMemoryPoolBasics() {
@@ -229,8 +234,8 @@ void TestMemoryRecall::testHippocampusContentAndRecencyPriority() {
     };
     // Partial coverage is 4/9; matching both words must beat recency alone.
     add("partial-new", "jazz", 0);           // 0.8 * 4/9 + 0.2 * 1
-    add("full-old", "music jazz", 86400);    // 0.8 * 1 + 0.2 * 0 = .8
-    add("full-recent", "music jazz", 3600);  // .8 + .2 * 23/24
+    add("full-old", "music jazz", 86400);    // .8 + .2 * 6/7
+    add("full-recent", "music jazz", 3600);  // .8 + .2 * 167/168
     add("unrelated", "weather", -86400);
     HippocampusWorkingSet set(&store);
     QVERIFY(set.refresh());
@@ -281,6 +286,89 @@ void TestMemoryRecall::testHippocampusMetadataDoesNotSelectSeeds() {
     set.setCapacity(2);
     QVERIFY(set.refresh());
     for (const auto& item : set.items()) QVERIFY(item.id != QString("old-high"));
+}
+
+
+void TestMemoryRecall::testMentionFreshnessAndPersistence() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("mentions.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    const auto now = QDateTime::fromString("2026-10-08T00:00:00Z", Qt::ISODate);
+    MemoryEntry entry;
+    entry.id = "mentioned";
+    entry.type = MemoryType::ShortTerm;
+    entry.summary = "jazz music";
+    entry.createdAt = now.addDays(-30);
+    entry.updatedAt = now;
+    entry.lastMentionedAt = now.addDays(-2);
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    QCOMPARE(store.readForRecall(entry.id)->lastMentionedAt, entry.lastMentionedAt);
+    QCOMPARE(MemoryEntry::fromJson(entry.toJson()).lastMentionedAt, entry.lastMentionedAt);
+
+    HippocampusWorkingSet set(&store);
+    QVERIFY(qAbs(set.freshness(entry, now) - 5.0 / 7.0) < 1e-12);
+    const auto first = set.freshness(entry, now);
+    const auto second = set.freshness(entry, now.addDays(1));
+    const auto third = set.freshness(entry, now.addDays(2));
+    QVERIFY(qAbs((first - second) - (second - third)) < 1e-12);
+    QCOMPARE(set.freshness(entry, now.addDays(5)), 0.0);
+    QCOMPARE(set.freshness(entry, now.addDays(-3)), 1.0);
+    set.setFreshnessHorizonSeconds(4 * 86400);
+    QCOMPARE(set.freshness(entry, now), 0.5);
+    set.setFreshnessHorizonSeconds(0);
+
+    MemoryEntry legacy = entry;
+    legacy.id = "z-maintained";
+    legacy.updatedAt = now.addDays(1);
+    legacy.lastMentionedAt = {};
+    QVERIFY(!store.addEntry(legacy).id.isEmpty());
+    QCOMPARE(set.freshness(legacy, now), 0.0); // updatedAt is not a mention.
+    // Legacy JSON has no mention timestamp either.
+    auto json = entry.toJson();
+    json.remove("last_mentioned_at");
+    QCOMPARE(set.freshness(MemoryEntry::fromJson(json), now), 0.0);
+    set.setCapacity(1);
+    QVERIFY(set.refresh());
+    QCOMPARE(set.items().first().id, entry.id);
+    MemoryStore inMemory;
+    inMemory.addEntry(entry);
+    inMemory.addEntry(legacy);
+    HippocampusWorkingSet memoryWindow(&inMemory);
+    memoryWindow.setCapacity(1);
+    QVERIFY(memoryWindow.refresh());
+    QCOMPARE(memoryWindow.items().first().id, entry.id);
+    // A content match is still eligible after freshness reaches zero.
+    const auto scored = set.scanScored("jazz music");
+    QCOMPARE(scored.size(), 1);
+    QCOMPARE(scored.first().relevance, 1.0);
+    QVERIFY(scored.first().score >= 0.8);
+    set.setCapacity(2);
+    QVERIFY(set.refresh());
+    const auto oldHits = set.scanScored("jazz music");
+    QCOMPARE(oldHits.size(), 2);
+    const auto old = std::find_if(oldHits.cbegin(), oldHits.cend(),
+        [&](const auto& hit) { return hit.entry.id == legacy.id; });
+    QVERIFY(old != oldHits.cend());
+    QCOMPARE(old->recency, 0.0);
+    QCOMPARE(old->score, 0.8);
+
+    // Simulate a previous SQLite schema and reopen through the real migration.
+    const QString connection = "legacy_mentions_test";
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(directory.filePath("mentions.db"));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec("DROP INDEX idx_memory_recall_mentions"));
+        QVERIFY(query.exec("ALTER TABLE memory_items DROP COLUMN last_mentioned_at"));
+    }
+    QSqlDatabase::removeDatabase(connection);
+    MemoryStore migrated;
+    migrated.setDatabasePath(directory.filePath("mentions.db"));
+    QVERIFY(migrated.loadDatabaseOnly());
+    QVERIFY(!migrated.readForRecall(entry.id)->lastMentionedAt.isValid());
+    QCOMPARE(set.freshness(*migrated.readForRecall(entry.id), now), 0.0);
 }
 
 QTEST_MAIN(TestMemoryRecall)

@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 #include <QDateTime>
 #include <QHash>
@@ -23,11 +24,27 @@ namespace {
 bool containsType(const QList<MemoryType>& types, MemoryType type) {
     return std::find(types.cbegin(), types.cend(), type) != types.cend();
 }
-bool hasAllTags(const QStringList& entryTags, const QStringList& requiredTags) {
-    for (const QString& requiredTag : requiredTags) {
-        if (!entryTags.contains(requiredTag, Qt::CaseInsensitive)) return false;
+
+bool passesFilters(const MemoryEntry& entry, const MemoryQuery& query,
+                   const QDateTime& now) {
+    if (entry.status == MemoryStatus::Deleted || entry.status == MemoryStatus::Expired
+        || (entry.expiresAt.isValid() && entry.expiresAt <= now)) return false;
+    if (!query.includeInactive && entry.status != MemoryStatus::Active) return false;
+    if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) return false;
+    if (!query.requiredTags.isEmpty()) {
+        for (const QString& requiredTag : query.requiredTags) {
+            if (!entry.tags.contains(requiredTag, Qt::CaseInsensitive)) return false;
+        }
     }
     return true;
+}
+
+bool retrievedBefore(const RetrievedMemory& a, const RetrievedMemory& b) {
+    const double left = std::isfinite(a.score) ? a.score : -std::numeric_limits<double>::infinity();
+    const double right = std::isfinite(b.score) ? b.score : -std::numeric_limits<double>::infinity();
+    if (left != right) return left > right;
+    if (a.entry.updatedAt != b.entry.updatedAt) return a.entry.updatedAt > b.entry.updatedAt;
+    return a.entry.id < b.entry.id;
 }
 
 QString joinedSearchText(const MemoryEntry& entry) {
@@ -63,7 +80,6 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
     QList<RetrievedMemory> result;
     const QStringList tokens = tokenize(query.text);
     const int limit = query.limit <= 0 ? 8 : query.limit;
-
     const QDateTime now = QDateTime::currentDateTimeUtc();
     for (const WorkingMemoryItem& item : workingMemory) {
         if (item.expiresAt.isValid() && item.expiresAt <= now) continue;
@@ -85,7 +101,6 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
         synthetic.id = QStringLiteral("wm:") + item.id;
         synthetic.type = MemoryType::Working;
         synthetic.privacyLevel = item.privacyLevel;
-        if (!query.includeSensitive && item.privacyLevel == PrivacyLevel::Sensitive) continue;
         synthetic.status = MemoryStatus::Active;
         synthetic.summary = item.summary;
         synthetic.content = item.content;
@@ -93,30 +108,21 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
         synthetic.source = item.source;
         synthetic.importance = item.importance;
         synthetic.createdAt = item.createdAt;
+        synthetic.expiresAt = item.expiresAt;
+        if (!passesFilters(synthetic, query, now)) continue;
         QStringList reasons{QStringLiteral("working_memory")};
         const double score = scoreEntry(synthetic, query, tokens, &reasons) + 1.5;
         result.append({synthetic, score, reasons, false});
     }
 
     for (const MemoryEntry& entry : entries) {
-        if (!query.includeInactive && entry.status != MemoryStatus::Active) continue;
-        if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) continue;
-        if (!query.requiredTags.isEmpty()
-            && !hasAllTags(entry.tags, query.requiredTags)) {
-            continue;
-        }
+        if (!passesFilters(entry, query, now)) continue;
         QStringList reasons;
         const double score = scoreEntry(entry, query, tokens, &reasons);
         if (score > 0.0) result.append({entry, score, reasons, false});
     }
 
-    std::sort(result.begin(), result.end(), [](const RetrievedMemory& left,
-                                               const RetrievedMemory& right) {
-        if (std::abs(left.score - right.score) > 0.0001) {
-            return left.score > right.score;
-        }
-        return left.entry.updatedAt > right.entry.updatedAt;
-    });
+    std::sort(result.begin(), result.end(), retrievedBefore);
 
     QHash<QString, MemoryEntry> entriesById;
     for (const MemoryEntry& entry : entries) entriesById.insert(entry.id, entry);
@@ -143,11 +149,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
                 ? relation.toMemoryId : relation.fromMemoryId;
             if (seenIds.contains(neighborId) || !entriesById.contains(neighborId)) continue;
             const MemoryEntry& neighbor = entriesById[neighborId];
-            if (!query.includeInactive && neighbor.status != MemoryStatus::Active) continue;
-            if (!query.includeSensitive
-                && neighbor.privacyLevel == PrivacyLevel::Sensitive) {
-                continue;
-            }
+            if (!passesFilters(neighbor, query, now)) continue;
             RetrievedMemory memory;
             memory.entry = neighbor;
             memory.score = source.score * relation.weight * 0.5;
@@ -158,13 +160,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(
         }
     }
     result.append(expanded);
-    std::sort(result.begin(), result.end(), [](const RetrievedMemory& left,
-                                               const RetrievedMemory& right) {
-        if (std::abs(left.score - right.score) > 0.0001) {
-            return left.score > right.score;
-        }
-        return left.entry.updatedAt > right.entry.updatedAt;
-    });
+    std::sort(result.begin(), result.end(), retrievedBefore);
     while (result.size() > limit) result.removeLast();
     return result;
 }
@@ -176,6 +172,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
     QList<RetrievedMemory> result;
     const QStringList tokens = tokenize(query.text);
     const int limit = query.limit <= 0 ? 8 : query.limit;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
 
     // Phase 0: working memory candidates
     if (cache) {
@@ -203,6 +200,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
             synthetic.source = wm.source;
             synthetic.importance = wm.importance;
             synthetic.createdAt = wm.createdAt;
+            synthetic.privacyLevel = wm.privacyLevel;
+            synthetic.expiresAt = wm.expiresAt;
+            if (!passesFilters(synthetic, query, now)) continue;
 
             QStringList reasons = {QStringLiteral("working_memory")};
             double score = scoreEntry(synthetic, query, tokens, &reasons);
@@ -218,9 +218,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
 
     // Phase 1: score all direct candidates
     for (const MemoryEntry& entry : store.all()) {
-        if (!query.includeInactive && entry.status != MemoryStatus::Active) continue;
-        if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) continue;
-        if (!query.requiredTags.isEmpty() && !hasAllTags(entry.tags, query.requiredTags)) continue;
+        if (!passesFilters(entry, query, now)) continue;
 
         QStringList reasons;
         const double score = scoreEntry(entry, query, tokens, &reasons);
@@ -244,8 +242,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
             if (directIds.contains(er.memoryId)) continue;
             const MemoryEntry* entry = store.findById(er.memoryId);
             if (!entry) continue;
-            if (!query.includeInactive && entry->status != MemoryStatus::Active) continue;
-            if (!query.includeSensitive && entry->privacyLevel == PrivacyLevel::Sensitive) continue;
+            if (!passesFilters(*entry, query, now)) continue;
 
             RetrievedMemory memory;
             memory.entry = *entry;
@@ -256,9 +253,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
     }
 
     // Phase 2: sort to find top candidates for graph expansion
-    std::sort(result.begin(), result.end(), [](const RetrievedMemory& a, const RetrievedMemory& b) {
-        return a.score > b.score;
-    });
+    std::sort(result.begin(), result.end(), retrievedBefore);
 
     // Phase 3: graph expansion on top 3 candidates
     const MemoryRelationGraph& graph = store.relationGraph();
@@ -280,8 +275,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
 
             const MemoryEntry* neighbor = store.findById(neighborId);
             if (!neighbor) continue;
-            if (!query.includeInactive && neighbor->status != MemoryStatus::Active) continue;
-            if (!query.includeSensitive && neighbor->privacyLevel == PrivacyLevel::Sensitive) continue;
+            if (!passesFilters(*neighbor, query, now)) continue;
 
             RetrievedMemory expandedMem;
             expandedMem.entry = *neighbor;
@@ -296,8 +290,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieve(MemoryStore& store,
 
     // Phase 4: final sort
     std::sort(result.begin(), result.end(), [](const RetrievedMemory& a, const RetrievedMemory& b) {
-        if (std::abs(a.score - b.score) > 0.0001) return a.score > b.score;
-        return a.entry.updatedAt > b.entry.updatedAt;
+        if (a.score != b.score) return a.score > b.score;
+        if (a.entry.updatedAt != b.entry.updatedAt) return a.entry.updatedAt > b.entry.updatedAt;
+        return a.entry.id < b.entry.id;
     });
 
     // Phase 5: trim to limit
@@ -493,16 +488,6 @@ constexpr int kEmbeddingBudget = 32;
 constexpr int kKeywordBudget = 12;
 constexpr int kSeedBudget = 16;
 
-bool passesFilters(const MemoryEntry& entry, const MemoryQuery& query) {
-    if (!query.includeInactive && entry.status != MemoryStatus::Active) return false;
-    if (!query.includeSensitive && entry.privacyLevel == PrivacyLevel::Sensitive) return false;
-    if (!query.requiredTags.isEmpty()) {
-        for (const QString& requiredTag : query.requiredTags) {
-            if (!entry.tags.contains(requiredTag, Qt::CaseInsensitive)) return false;
-        }
-    }
-    return true;
-}
 
 }
 
@@ -590,7 +575,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveActivated(
     for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
         const auto entry = store.readForRecall(it.key());
         if (!entry) continue;
-        if (!passesFilters(*entry, query)) continue;
+        if (!passesFilters(*entry, query, QDateTime::currentDateTimeUtc())) continue;
 
         CandidateMemory candidate;
         candidate.entry = *entry;
@@ -648,6 +633,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     bool skipReinforcement) const {
 
     const int limit = query.limit <= 0 ? 8 : query.limit;
+    const QDateTime now = QDateTime::currentDateTimeUtc();
 
     // ---- 阶段 0：时间维护 ----
     if (channels.activePool) {
@@ -676,6 +662,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     QHash<QString, double> seedSemanticCue;
 
     QHash<QString, double> seedTextCue;
+    QHash<QString, double> seedHippocampusScore;
 
     // 通道 1: 激活池
     if (channels.activePool) {
@@ -691,9 +678,11 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
 
     // 通道 2: Hippocampus 工作集
     if (channels.workingSet && !channels.workingSet->isEmpty()) {
-        const QList<MemoryEntry> scanned = channels.workingSet->scan(
+        const auto scanned = channels.workingSet->scanScored(
             query.text, query.requiredTags, kWorkingSetBudget);
-        for (const MemoryEntry& entry : scanned) {
+        for (const auto& candidate : scanned) {
+            const auto& entry = candidate.entry;
+            seedHippocampusScore[entry.id] = candidate.score;
             if (!seedChannels[entry.id].contains(QLatin1String("hippocampus"))) {
                 seedChannels[entry.id].append(QStringLiteral("hippocampus"));
             }
@@ -722,25 +711,41 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         }
     }
 
+    QHash<QString, bool> eligibility;
+    const auto mayParticipate = [&](const QString& id) {
+        const auto known = eligibility.constFind(id);
+        if (known != eligibility.cend()) return known.value();
+        const auto entry = store.readForRecall(id);
+        const bool allowed = entry && passesFilters(*entry, query, now);
+        eligibility.insert(id, allowed);
+        return allowed;
+    };
+
     // Validate seeds against SQLite before any propagation. A stale HNSW label
     // must not turn an archived/private source into a bridge to other memories.
     QList<QString> validSeeds;
     for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
-        const auto entry = store.readForRecall(it.key());
-        if (entry && passesFilters(*entry, query)) validSeeds.append(it.key());
+        if (mayParticipate(it.key())) validSeeds.append(it.key());
     }
     std::sort(validSeeds.begin(), validSeeds.end(), [&](const QString& a, const QString& b) {
-        // Preserve the existing multi-channel priority before imposing the
-        // propagation budget; semantic-only hits must not crowd it out.
+        // Compare the strongest normalized channel first. Correlated lexical
+        // and tag hits count once; independent channels break equal-score ties.
+        const auto strength = [&](const QString& id) {
+            const auto unit = [](double score) {
+                return std::isfinite(score) ? std::clamp(score, 0.0, 1.0) : 0.0;
+            };
+            return std::max({unit(seedRuntimeActivation.value(id) / 2.0),
+                             unit(seedSemanticCue.value(id)), unit(seedTextCue.value(id)),
+                             unit(seedHippocampusScore.value(id))});
+        };
+        if (strength(a) != strength(b)) return strength(a) > strength(b);
         const auto evidenceCount = [&](const QString& id) {
             const auto channels = seedChannels.value(id);
             return channels.size() - (channels.contains(QStringLiteral("tag"))
                 && channels.contains(QStringLiteral("keyword")) ? 1 : 0);
         };
         if (evidenceCount(a) != evidenceCount(b)) return evidenceCount(a) > evidenceCount(b);
-        const double left = seedRuntimeActivation.value(a) + seedSemanticCue.value(a) + seedTextCue.value(a);
-        const double right = seedRuntimeActivation.value(b) + seedSemanticCue.value(b) + seedTextCue.value(b);
-        return left == right ? a < b : left > right;
+        return a < b;
     });
     const QSet<QString> retained(validSeeds.cbegin(), validSeeds.cbegin() + qMin(kSeedBudget, int(validSeeds.size())));
     for (auto it = seedChannels.begin(); it != seedChannels.end();) {
@@ -772,7 +777,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
                 propagationSeeds,
                 store.relationGraph(),
                 &store.tagCooccurrenceGraph(),
-                cue.knownTags
+                cue.knownTags,
+                mayParticipate
             );
 
         // Record graph activation and paths
@@ -805,7 +811,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     for (auto it = seedChannels.constBegin(); it != seedChannels.constEnd(); ++it) {
         const auto entry = store.readForRecall(it.key());
         if (!entry) continue;
-        if (!passesFilters(*entry, query)) continue;
+        if (!passesFilters(*entry, query, QDateTime::currentDateTimeUtc())) continue;
 
         CandidateMemory candidate;
         candidate.entry = *entry;
@@ -842,7 +848,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
             entry.strength = 0.6;
             entry.confidence = item.source == QLatin1String("screen_observation") ? 0.5 : 0.9;
             entry.createdAt = entry.updatedAt = item.createdAt;
-            if (!passesFilters(entry, query)) continue;
+            entry.expiresAt = item.expiresAt;
+            if (!passesFilters(entry, query, now)) continue;
             candidate.sourceChannels = {QStringLiteral("working_memory")};
             candidate.runtimeActivation = 1.0;
             candidates.append(candidate);

@@ -17,6 +17,7 @@
 #include "core/ai/memory/memory_keyword_index.h"
 #include "core/ai/memory/embedding_index.h"
 #include "core/ai/memory/hippocampus_working_set.h"
+#include "core/ai/memory/hybrid_graph_builder.h"
 
 class TestMemoryRecallPhase3 : public QObject {
     Q_OBJECT
@@ -29,6 +30,13 @@ private slots:
     void initTestCase();
     void cleanupTestCase();
 
+    void testExpiredActiveEntriesCannotRecall();
+    void testForbiddenIntermediate_data();
+    void testForbiddenIntermediate();
+    void testNonTraversableEdgesDoNotConsumeBudget();
+    void testDefaultBuilderEdgesPropagate_data();
+    void testDefaultBuilderEdgesPropagate();
+    void testHippocampusScoresSurviveSeedPruning();
     void testPropagationOneHop();
     void testPropagationTwoHops();
     void testLoopPrevention();
@@ -323,7 +331,8 @@ void TestMemoryRecallPhase3::testConvergingPathsAccumulateAtCapacity() {
     engine.setMaxCandidates(4);
     engine.setRandomSource(fixedRandomSource(0.99));
     const double first = (1.0 / (1.0 + std::exp(-1.0))) * 0.55 / std::sqrt(2.0);
-    const double second = (1.0 / (1.0 + std::exp(-first))) * 0.55 * 0.55 / std::sqrt(2.0);
+    // Only target remains traversable after removing the return to seed.
+    const double second = (1.0 / (1.0 + std::exp(-first))) * 0.55 * 0.55;
     const auto result = engine.propagate({{"seed", 1.0}}, graph);
     QCOMPARE(result.size(), 4);
     bool found = false;
@@ -347,7 +356,7 @@ void TestMemoryRecallPhase3::testConvergingPathsAccumulateAtCapacity() {
     const double firstA = (1.0 / (1.0 + std::exp(-1.0))) * 0.55;
     const double firstB = (1.0 / (1.0 + std::exp(-0.4))) * 0.55;
     const double expectedLeaf = (1.0 / (1.0 + std::exp(-firstA))
-        + 1.0 / (1.0 + std::exp(-firstB))) * 0.55 * 0.55 / std::sqrt(3.0);
+        + 1.0 / (1.0 + std::exp(-firstB))) * 0.55 * 0.55 / std::sqrt(2.0);
     const auto merged = engine.propagate({{"seed-a", 1.0}, {"seed-b", 0.4}}, graph);
     QCOMPARE(merged.size(), 4);
     bool leafFound = false;
@@ -609,7 +618,7 @@ void TestMemoryRecallPhase3::testMinDeltaThreshold() {
     QSqlDatabase db = QSqlDatabase::database("phase3_test_conn");
     QSqlQuery q(db);
     q.exec("DELETE FROM memory_relations");
-    // Weak edge: low weight + low confidence -> delta below 0.08
+    // Weak edge: low weight + low confidence -> delta below 0.01
     QVERIFY(graph.addRelation(makeRelation(
         "r1", "seed1", "weak_target", MemoryRelationType::MentionedWith, 0.1, 0.2)));
     // Strong edge: should propagate
@@ -630,7 +639,7 @@ void TestMemoryRecallPhase3::testMinDeltaThreshold() {
     }
 
     QVERIFY(foundIds.contains("strong_target"));
-    QVERIFY(!foundIds.contains("weak_target"));  // Below min delta 0.08
+    QVERIFY(!foundIds.contains("weak_target"));  // Below min delta 0.01
 }
 
 void TestMemoryRecallPhase3::testCandidateBudget() {
@@ -885,6 +894,217 @@ void TestMemoryRecallPhase3::testGraphRetrievalIntegration() {
     QVERIFY(ep2HasGraphChannel);
 
     QFile::remove(storeDbPath);
+}
+
+
+void TestMemoryRecallPhase3::testExpiredActiveEntriesCannotRecall() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("expired.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry entry;
+    entry.id = "expired-active";
+    entry.type = MemoryType::Semantic;
+    entry.summary = "needle";
+    entry.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-1);
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    ActiveMemoryPool pool;
+    pool.activate(entry.id, 1.0, "test");
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.activePool = &pool;
+    channels.graphPropagation = &engine;
+    MemoryRetriever retriever;
+    MemoryQuery query;
+    query.text = "needle";
+    query.includeInactive = true; // Expiration remains an absolute boundary.
+    QVERIFY(retriever.retrieve(store, query).isEmpty());
+    QVERIFY(retriever.retrieveActivated(store, query, channels).isEmpty());
+    QVERIFY(retriever.retrieveWithGraphPropagation(store, query, channels).isEmpty());
+    QCOMPARE(store.readForRecall(entry.id)->status, MemoryStatus::Active);
+    QCOMPARE(store.readForRecall(entry.id)->accessCount, 0);
+    // A candidate may expire after seed validation; the final read must check again.
+    entry.expiresAt = QDateTime::currentDateTimeUtc().addDays(1);
+    QVERIFY(store.updateEntryById(entry));
+    bool updated = false;
+    engine.setRandomSource([&]() {
+        entry.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-1);
+        updated = store.updateEntryById(entry);
+        return 0.99;
+    });
+    QVERIFY(retriever.retrieveWithGraphPropagation(store, query, channels).isEmpty());
+    QVERIFY(updated);
+    QCOMPARE(store.readForRecall(entry.id)->accessCount, 0);
+}
+
+void TestMemoryRecallPhase3::testForbiddenIntermediate_data() {
+    QTest::addColumn<QString>("boundary");
+    for (const auto& value : {"deleted", "expired-status", "archived", "sensitive", "expired-time", "missing", "tag", "allowed"})
+        QTest::newRow(value) << QString(value);
+}
+
+void TestMemoryRecallPhase3::testForbiddenIntermediate() {
+    QFETCH(QString, boundary);
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("boundary.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    for (const auto& id : {"a", "b", "c"}) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Semantic;
+        entry.summary = id;
+        entry.tags = {"allowed"};
+        if (entry.id == "b") {
+            if (boundary == "missing") continue;
+            if (boundary == "deleted") entry.status = MemoryStatus::Deleted;
+            if (boundary == "expired-status") entry.status = MemoryStatus::Expired;
+            if (boundary == "archived") entry.status = MemoryStatus::Archived;
+            if (boundary == "sensitive") entry.privacyLevel = PrivacyLevel::Sensitive;
+            if (boundary == "expired-time") entry.expiresAt = QDateTime::currentDateTimeUtc().addSecs(-1);
+            if (boundary == "tag") entry.tags.clear();
+        }
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    QVERIFY(store.relationGraph().addRelation(makeRelation("ab", "a", "b", MemoryRelationType::Related)));
+    QVERIFY(store.relationGraph().addRelation(makeRelation("bc", "b", "c", MemoryRelationType::Related)));
+    ActiveMemoryPool pool;
+    pool.activate("a", 0.8, "test");
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.activePool = &pool;
+    channels.graphPropagation = &engine;
+    MemoryQuery query;
+    query.requiredTags = {"allowed"};
+    query.limit = 64;
+    const auto hits = MemoryRetriever().retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QStringList ids;
+    for (const auto& hit : hits) ids.append(hit.entry.id);
+    QCOMPARE(ids.contains("a"), true);
+    QCOMPARE(ids.contains("b"), boundary == "allowed");
+    QCOMPARE(ids.contains("c"), boundary == "allowed");
+}
+
+void TestMemoryRecallPhase3::testNonTraversableEdgesDoNotConsumeBudget() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("neighbors.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    auto& graph = store.relationGraph();
+    // More than the 20-neighbor limit, with higher weights than usable edges.
+    for (int i = 0; i < 25; ++i) {
+        QVERIFY(graph.addRelation(makeRelation(QString("sup-%1").arg(i), "a",
+            QString("s-%1").arg(i), MemoryRelationType::Supersedes)));
+        QVERIFY(graph.addRelation(makeRelation(QString("bad-%1").arg(i), "a",
+            QString("x-%1").arg(i), MemoryRelationType::Related)));
+    }
+    QVERIFY(graph.addRelation(makeRelation("ab", "a", "b", MemoryRelationType::MentionedWith, 0.5, 0.9)));
+    QVERIFY(graph.addRelation(makeRelation("bc", "b", "c", MemoryRelationType::MentionedWith, 0.5, 0.9)));
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    const auto hits = engine.propagate({{"a", 0.8}}, graph, nullptr, {},
+        [](const QString& id) { return id == "a" || id == "b" || id == "c"; });
+    QCOMPARE(hits.size(), 3);
+    QHash<QString, double> activation;
+    for (const auto& hit : hits) activation[hit.memoryId] = hit.activation;
+    const double first = (1.0 / (1.0 + std::exp(-0.8))) * 0.5 * 0.9 * 0.3 * 0.55;
+    const double second = (1.0 / (1.0 + std::exp(-first))) * 0.5 * 0.9 * 0.3 * 0.55 * 0.55;
+    QVERIFY(qAbs(activation["b"] - first) < 1e-12);
+    // Returning to a is filtered before degree counting on the second hop.
+    QVERIFY(qAbs(activation["c"] - second) < 1e-12);
+}
+
+void TestMemoryRecallPhase3::testDefaultBuilderEdgesPropagate_data() {
+    QTest::addColumn<int>("degree");
+    QTest::newRow("single") << 1;
+    QTest::newRow("neighbor-limit") << 20;
+}
+
+void TestMemoryRecallPhase3::testDefaultBuilderEdgesPropagate() {
+    QFETCH(int, degree);
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath("defaults.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    HybridGraphBuilder builder(store.relationGraph());
+    MemoryEntry seed;
+    seed.id = "a";
+    seed.type = MemoryType::Episodic;
+    seed.summary = "anchor";
+    seed.payload["session_id"] = "session";
+    for (int i = 0; i < degree; ++i) {
+        MemoryEntry neighbor = seed;
+        neighbor.id = QString("b-%1").arg(i);
+        // Repeated real batches can raise degree above the per-batch cap of 8.
+        QCOMPARE(builder.buildForConsolidationBatch({seed, neighbor}), 1);
+    }
+    const auto edges = store.relationGraph().neighborsOf("a", 20);
+    QCOMPARE(edges.size(), degree);
+    for (const auto& edge : edges) {
+        QCOMPARE(edge.type, MemoryRelationType::MentionedWith);
+        QCOMPARE(edge.weight, 0.5);
+        QCOMPARE(edge.confidence, 0.9);
+    }
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    const auto hits = engine.propagate({{"a", 0.8}}, store.relationGraph());
+    QCOMPARE(hits.size(), degree + 1);
+    for (const auto& hit : hits) {
+        if (hit.memoryId == "a") continue;
+        QVERIFY(hit.activation >= 0.01);
+        QCOMPARE(hit.hopCount, 1);
+    }
+}
+
+void TestMemoryRecallPhase3::testHippocampusScoresSurviveSeedPruning() {
+    MemoryStore store;
+    class FixedIndex final : public EmbeddingIndex {
+    public:
+        QList<EmbeddingSearchResult> hits;
+        bool upsert(const QString&, const QString&) override { return false; }
+        bool remove(const QString&) override { return false; }
+        QList<EmbeddingSearchResult> search(const QString&, int limit) override { return hits.mid(0, limit); }
+    } index;
+    const auto now = QDateTime::currentDateTimeUtc();
+    for (int i = 0; i < 20; ++i) {
+        MemoryEntry entry;
+        entry.id = QString("a-weak-%1").arg(i);
+        entry.type = MemoryType::Semantic;
+        entry.summary = "jazz";
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+        index.hits.append({entry.id, 0.2});
+    }
+    // Lexical + semantic weak hits used to outrank every hippocampus-only hit.
+    MemoryKeywordIndex keywords;
+    keywords.rebuild(store.all());
+    for (int i = 0; i < 8; ++i) {
+        MemoryEntry entry;
+        entry.id = QString("z-strong-%1").arg(i);
+        entry.type = MemoryType::ShortTerm;
+        entry.summary = "jazz music";
+        entry.createdAt = now.addDays(-30);
+        entry.lastMentionedAt = now;
+        QVERIFY(!store.addEntry(entry).id.isEmpty());
+    }
+    HippocampusWorkingSet workingSet(&store);
+    QVERIFY(workingSet.refresh());
+    AssociativeActivationEngine engine;
+    engine.setRandomSource(fixedRandomSource(0.99));
+    ActivationChannels channels;
+    channels.embeddingIndex = &index;
+    channels.keywordIndex = &keywords;
+    channels.workingSet = &workingSet;
+    channels.graphPropagation = &engine;
+    MemoryQuery query;
+    query.text = "jazz music";
+    query.limit = 16;
+    const auto hits = MemoryRetriever().retrieveWithGraphPropagation(store, query, channels, nullptr, true);
+    QCOMPARE(hits.size(), 16);
+    int strong = 0;
+    for (const auto& hit : hits) if (hit.entry.id.startsWith("z-strong")) ++strong;
+    QCOMPARE(strong, 8);
 }
 
 QTEST_MAIN(TestMemoryRecallPhase3)

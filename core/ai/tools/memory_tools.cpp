@@ -5,6 +5,7 @@
 #include "memory_tools.h"
 
 #include "ai/memory/memory_relation.h"
+#include "ai/memory/memory_metadata.h"
 #include "ai/memory/memory_store.h"
 #include "ai/memory/partition_policy.h"
 
@@ -263,6 +264,8 @@ bool mergeDuplicateIntoCanonical(MemoryEntry* canonical, const MemoryEntry& dupl
     updated.importance = qMax(updated.importance, duplicate.importance);
     updated.strength = qMax(updated.strength, duplicate.strength);
     updated.confidence = qMax(updated.confidence, duplicate.confidence);
+    updated.lastMentionedAt = std::max(MemoryMetadata::lastMentionTime(updated),
+                                       MemoryMetadata::lastMentionTime(duplicate));
     updated.mentionCount += duplicate.mentionCount;
     updated.accessCount += duplicate.accessCount;
     updated.payload[QStringLiteral("merged_duplicate_count")] =
@@ -277,6 +280,7 @@ bool mergeDuplicateIntoCanonical(MemoryEntry* canonical, const MemoryEntry& dupl
         || !qFuzzyCompare(updated.importance + 1.0, canonical->importance + 1.0)
         || !qFuzzyCompare(updated.strength + 1.0, canonical->strength + 1.0)
         || !qFuzzyCompare(updated.confidence + 1.0, canonical->confidence + 1.0)
+        || updated.lastMentionedAt != canonical->lastMentionedAt
         || updated.mentionCount != canonical->mentionCount
         || updated.accessCount != canonical->accessCount
         || updated.payload != canonical->payload;

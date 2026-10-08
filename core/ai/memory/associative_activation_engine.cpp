@@ -4,6 +4,7 @@
 #include <QSet>
 #include <QtMath>
 #include <algorithm>
+#include <cmath>
 #include <queue>
 
 #include "memory_relation_graph.h"
@@ -162,11 +163,13 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
     const QHash<QString, double>& seedActivations,
     const MemoryRelationGraph& relationGraph,
     const TagCooccurrenceGraph* tagGraph,
-    const QStringList& seedTags) const {
+    const QStringList& seedTags,
+    const std::function<bool(const QString&)>& mayParticipate) const {
     
     // Initialize result set with seeds
     QHash<QString, PropagatedMemory> results;
     for (auto it = seedActivations.constBegin(); it != seedActivations.constEnd(); ++it) {
+        if (mayParticipate && !mayParticipate(it.key())) continue;
         PropagatedMemory mem;
         mem.memoryId = it.key();
         mem.seedActivation = it.value();
@@ -185,6 +188,7 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
     
     // Initialize frontier with seeds
     for (auto it = seedActivations.constBegin(); it != seedActivations.constEnd(); ++it) {
+        if (!results.contains(it.key())) continue;
         FrontierNode node;
         node.memoryId = it.key();
         node.activation = it.value();
@@ -255,7 +259,16 @@ QList<PropagatedMemory> AssociativeActivationEngine::propagate(
         }
         
         // Get neighbors from relation graph
-        const QList<MemoryRelation> neighbors = relationGraph.neighborsOf(current.memoryId);
+        const QList<MemoryRelation> neighbors = relationGraph.neighborsOf(
+            current.memoryId, 20, [&](const MemoryRelation& edge) {
+                if (edge.type == MemoryRelationType::Supersedes
+                    || !std::isfinite(edge.weight) || edge.weight <= 0.0
+                    || !std::isfinite(edge.confidence) || edge.confidence <= 0.0) return false;
+                const QString target = edge.fromMemoryId == current.memoryId
+                    ? edge.toMemoryId : edge.fromMemoryId;
+                return !current.path.contains(target)
+                    && (!mayParticipate || mayParticipate(target));
+            });
         
         for (const MemoryRelation& edge : neighbors) {
 

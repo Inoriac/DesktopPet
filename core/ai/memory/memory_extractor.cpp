@@ -96,6 +96,8 @@ MemoryCandidate makeWriteCandidate(MemoryType type,
     entry.confidence = explicitRequest ? 0.98 : 0.78;
     entry.importance = explicitRequest ? 0.72 : 0.55;
     entry.strength = entry.importance;
+    entry.lastMentionedAt = QDateTime::currentDateTimeUtc();
+    entry.mentionCount = 1;
     entry.evidence = {sourceText};
     entry.tags = {scope, triggerTag};
 
@@ -229,6 +231,7 @@ MemoryEntry MemoryExtractor::extractDaydreamImpression(const QString& input,
     entry.importance = 0.3;
     entry.strength = 0.3;
     entry.mentionCount = 1;
+    entry.lastMentionedAt = QDateTime::currentDateTimeUtc();
     entry.evidence = {bounded};
     entry.payload[QStringLiteral("extractor")] = QStringLiteral("daydream_impression_v1");
     entry.payload[QStringLiteral("source_tags")] = QJsonArray::fromStringList(entry.tags);

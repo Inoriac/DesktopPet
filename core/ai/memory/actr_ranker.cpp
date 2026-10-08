@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 
 namespace {
 
@@ -77,9 +78,11 @@ QList<CandidateMemory> ACTRRanker::rank(const QList<CandidateMemory>& candidates
     
     std::sort(ranked.begin(), ranked.end(),
         [](const CandidateMemory& a, const CandidateMemory& b) {
-            if (std::abs(a.finalScore - b.finalScore) > 0.0001) {
-                return a.finalScore > b.finalScore;
-            }
+            const double left = std::isfinite(a.finalScore) ? a.finalScore
+                : -std::numeric_limits<double>::infinity();
+            const double right = std::isfinite(b.finalScore) ? b.finalScore
+                : -std::numeric_limits<double>::infinity();
+            if (left != right) return left > right;
             if (a.entry.updatedAt != b.entry.updatedAt)
                 return a.entry.updatedAt > b.entry.updatedAt;
             return a.entry.id < b.entry.id;

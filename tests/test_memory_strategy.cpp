@@ -49,6 +49,7 @@ private slots:
     void testExtractorCreatesDaydreamImpressionForSelfDisclosure();
     void testExtractorRejectsUnsafeDaydreamImpressions();
     void testPolicyWritesAndSkipsDuplicate();
+    void testMentionClockAdvancesOnlyOnSourceMention();
     void testPolicyRejectsSensitiveMemory();
     void testPolicyMarksMatchedMemoryDeleted();
     void stageCandidates_whenWriteSupersedesAndForget_shouldKeepGuiCacheAheadOfPersistence();
@@ -236,6 +237,34 @@ void TestMemoryStrategy::testExtractorRejectsUnsafeDaydreamImpressions() {
         QStringLiteral("user_request")).content.isEmpty());
     QVERIFY(MemoryExtractor::isLikelySensitiveContent(
         QStringLiteral("我的银行卡是 6222 1234 5678 9012")));
+}
+
+
+void TestMemoryStrategy::testMentionClockAdvancesOnlyOnSourceMention() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    MemoryExtractor extractor;
+    auto candidates = extractor.extractFromUserInput(QStringLiteral("我喜欢爵士乐"), "manual");
+    QCOMPARE(candidates.size(), 1);
+    QVERIFY(candidates.first().entry.lastMentionedAt.isValid());
+    const auto initial = QDateTime::currentDateTimeUtc().addDays(-3);
+    candidates.first().entry.createdAt = initial;
+    candidates.first().entry.lastMentionedAt = initial;
+    MemoryPolicy policy;
+    QCOMPARE(policy.applyCandidates(candidates, &store).written, 1);
+    const auto id = store.all().first().id;
+    store.reinforceEntries({id});
+    QCOMPARE(store.readForRecall(id)->lastMentionedAt, initial);
+    const auto mentioned = initial.addDays(2);
+    candidates.first().entry.lastMentionedAt = mentioned;
+    QCOMPARE(policy.applyCandidates(candidates, &store).skipped, 1);
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.readForRecall(id)->lastMentionedAt, mentioned);
+    QCOMPARE(store.readForRecall(id)->mentionCount, 2);
+    store.reinforceEntries({id});
+    QVERIFY(store.load());
+    QCOMPARE(store.findById(id)->lastMentionedAt, mentioned);
 }
 
 void TestMemoryStrategy::testPolicyWritesAndSkipsDuplicate() {
@@ -1600,6 +1629,7 @@ void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCrea
         QSqlQuery query(database);
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_items_partition")));
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_recall_inbox")));
+        QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_recall_mentions")));
         QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_eligibility")));
         QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_replace")));
         QVERIFY(query.exec(QStringLiteral(
@@ -3592,6 +3622,7 @@ void TestMemoryStrategy::testDaydreamCreatePreservesSourceContext() {
     setupStoreWithDb(store, directory);
     MemoryEntry source = MemoryExtractor().extractDaydreamImpression(
         QStringLiteral("我今天学习了 Qt 的模型视图"), QStringLiteral("manual"));
+    source.lastMentionedAt = QDateTime::currentDateTimeUtc().addDays(-3);
     source.payload[QStringLiteral("session_id")] = QStringLiteral("session-latest");
     const QJsonArray sessions{QStringLiteral("session-earlier"), QStringLiteral("session-latest")};
     source.payload[QStringLiteral("session_ids")] = sessions;
@@ -3616,6 +3647,7 @@ void TestMemoryStrategy::testDaydreamCreatePreservesSourceContext() {
         QCOMPARE(result.payload.value(key), source.payload.value(key));
     }
     QCOMPARE(result.sourceMemoryIds, QStringList{source.id});
+    QCOMPARE(result.lastMentionedAt, source.lastMentionedAt);
     QCOMPARE(store.findById(source.id)->status, MemoryStatus::Consolidated);
 }
 

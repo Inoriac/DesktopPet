@@ -149,6 +149,8 @@ struct MemoryEntry {
     int accessCount = 0;
     QDateTime createdAt;
     QDateTime updatedAt;
+    // Real source mention only; reads and maintenance must not advance this clock.
+    QDateTime lastMentionedAt;
     QDateTime lastAccessedAt;
     QDateTime expiresAt;
     QStringList evidence;

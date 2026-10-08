@@ -10,8 +10,8 @@
 
 namespace {
 
-bool hasDuplicateActiveMemory(const MemoryStore* store, const MemoryCandidate& candidate) {
-    if (!store || candidate.operation != MemoryCandidateOperation::Write) return false;
+std::optional<MemoryEntry> duplicateActiveMemory(const MemoryStore* store, const MemoryCandidate& candidate) {
+    if (!store || candidate.operation != MemoryCandidateOperation::Write) return std::nullopt;
 
     const MemoryEntry& target = candidate.entry;
     for (const MemoryEntry& entry : store->all()) {
@@ -19,10 +19,10 @@ bool hasDuplicateActiveMemory(const MemoryStore* store, const MemoryCandidate& c
         if (entry.type == target.type
             && !target.summary.trimmed().isEmpty()
             && entry.summary.compare(target.summary, Qt::CaseInsensitive) == 0) {
-            return true;
+            return entry;
         }
     }
-    return false;
+    return std::nullopt;
 }
 
 int countSharedTags(const QStringList& tagsA, const QStringList& tagsB) {
@@ -205,7 +205,14 @@ StagedMemoryPolicyResult MemoryPolicy::stageCandidates(
             continue;
         }
 
-        if (hasDuplicateActiveMemory(store, candidate)) {
+        if (const auto duplicate = duplicateActiveMemory(store, candidate)) {
+            if (candidate.entry.lastMentionedAt.isValid()) {
+                MemoryEntry updated = *duplicate;
+                MemoryMetadata::mergeContext(updated, candidate.entry);
+                updated.mentionCount = qMax(1, updated.mentionCount) + 1;
+                updated.updatedAt = QDateTime::currentDateTimeUtc();
+                store->stageEntryUpdate(updated, &staged.mutations);
+            }
             ++report.skipped;
             report.notes.append(QStringLiteral("跳过重复记忆：%1").arg(candidate.entry.summary));
             continue;

@@ -539,12 +539,14 @@ void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySo
     QVERIFY(first != firstEntries.cend());
     QCOMPARE(first->partition, QStringLiteral("hippocampus"));
     QCOMPARE(first->mentionCount, 1);
+    QVERIFY(first->lastMentionedAt.isValid());
     const QString memoryId = first->id;
     const QString firstSessionId = first->payload.value(QStringLiteral("session_id")).toString();
     const QString firstRequestId = first->payload.value(QStringLiteral("request_id")).toString();
     QVERIFY(!firstSessionId.isEmpty());
     QVERIFY(!firstRequestId.isEmpty());
 
+    const auto secondMentionStarted = QDateTime::currentDateTimeUtc();
     brain.triggerThink(input, QStringLiteral("user_request"), QStringLiteral("walk-second"));
     QTRY_COMPARE_WITH_TIMEOUT(responseFinished.size(), 2, 2000);
     QTRY_VERIFY_WITH_TIMEOUT(([&]() {
@@ -556,6 +558,8 @@ void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySo
     QCOMPARE(responseStarted.at(1).at(1).toString(), QStringLiteral("walk-second"));
     const auto merged = persistedMemory(brain.memoryStore()->databasePath(), memoryId);
     QVERIFY(merged.has_value());
+    QVERIFY(merged->lastMentionedAt >= secondMentionStarted);
+    QVERIFY(merged->lastMentionedAt >= first->lastMentionedAt);
     const QString latestSessionId = merged->payload.value(QStringLiteral("session_id")).toString();
     const QString latestRequestId = merged->payload.value(QStringLiteral("request_id")).toString();
     QVERIFY(!latestSessionId.isEmpty());

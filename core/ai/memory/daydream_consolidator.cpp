@@ -100,7 +100,8 @@ bool sameRevision(const MemoryEntry& current, const MemoryEntry& snapshot) {
         && current.updatedAt == snapshot.updatedAt
         && current.content == snapshot.content
         && current.summary == snapshot.summary
-        && current.mentionCount == snapshot.mentionCount;
+        && current.mentionCount == snapshot.mentionCount
+        && current.lastMentionedAt == snapshot.lastMentionedAt;
 }
 
 double relevanceScore(const MemoryEntry& candidate, const QList<MemoryEntry>& batch) {
@@ -128,6 +129,8 @@ QJsonObject memoryEntryToJson(const MemoryEntry& entry,
     };
     setTimestamp(QStringLiteral("created_at"), entry.createdAt);
     setTimestamp(QStringLiteral("updated_at"), entry.updatedAt);
+    if (entry.lastMentionedAt.isValid())
+        setTimestamp(QStringLiteral("last_mentioned_at"), entry.lastMentionedAt);
     setTimestamp(QStringLiteral("last_accessed_at"), entry.lastAccessedAt);
     setTimestamp(QStringLiteral("expires_at"), entry.expiresAt);
     return object;

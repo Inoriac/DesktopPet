@@ -166,25 +166,30 @@ bool MemoryRelationGraph::removeRelationsFor(const QString& memoryId) {
     return query.exec();
 }
 
-QList<MemoryRelation> MemoryRelationGraph::neighborsOf(const QString& memoryId, int limit) const {
+QList<MemoryRelation> MemoryRelationGraph::neighborsOf(
+    const QString& memoryId, int limit,
+    const std::function<bool(const MemoryRelation&)>& accept) const {
     QList<MemoryRelation> results;
-    if (!QSqlDatabase::contains(m_connectionName)) return results;
+    if (limit <= 0 || !QSqlDatabase::contains(m_connectionName)) return results;
     QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
     if (!db.isOpen()) return results;
 
     QSqlQuery query(db);
-    query.prepare(QStringLiteral(
+    QString sql = QStringLiteral(
         "SELECT * FROM memory_relations "
         "WHERE from_memory_id = :id1 OR to_memory_id = :id2 "
-        "ORDER BY weight DESC LIMIT :limit"
-    ));
+        "ORDER BY weight DESC, confidence DESC, id ASC"
+    );
+    if (!accept) sql += QStringLiteral(" LIMIT :limit");
+    query.prepare(sql);
+    if (!accept) query.bindValue(QStringLiteral(":limit"), limit);
     query.bindValue(QStringLiteral(":id1"), memoryId);
     query.bindValue(QStringLiteral(":id2"), memoryId);
-    query.bindValue(QStringLiteral(":limit"), limit);
 
     if (query.exec()) {
-        while (query.next()) {
-            results.append(readRelation(query));
+        while (results.size() < limit && query.next()) {
+            const auto edge = readRelation(query);
+            if (!accept || accept(edge)) results.append(edge);
         }
     }
     return results;

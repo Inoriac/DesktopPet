@@ -26,7 +26,7 @@ bool HippocampusWorkingSet::refresh() {
     
     if (!m_store) return false;
     
-    // Read only the bounded, newest Hippocampus inbox rows from SQLite. The
+    // Read a bounded window ordered by actual mentions, not maintenance writes. The
     // worker and long-running recall paths must not rescan the full history.
     QList<MemoryEntry> candidates = m_store->loadRecentFromDatabase(
         m_capacity, QStringLiteral("hippocampus"), true);
@@ -51,8 +51,8 @@ bool HippocampusWorkingSet::refresh() {
     // importance, mentions or emotion remove candidates before a query exists.
     std::sort(candidates.begin(), candidates.end(),
         [](const MemoryEntry& a, const MemoryEntry& b) {
-            const auto left = a.updatedAt.isValid() ? a.updatedAt : a.createdAt;
-            const auto right = b.updatedAt.isValid() ? b.updatedAt : b.createdAt;
+            const auto left = MemoryMetadata::lastMentionTime(a);
+            const auto right = MemoryMetadata::lastMentionTime(b);
             return left != right ? left > right : a.id > b.id;
         });
     
@@ -66,16 +66,25 @@ bool HippocampusWorkingSet::refresh() {
 }
 
 QList<MemoryEntry> HippocampusWorkingSet::scan(const QString& queryText,
-                                                const QStringList& requiredTags,
-                                                int limit) const {
+                                             const QStringList& requiredTags,
+                                             int limit) const {
+    QList<MemoryEntry> results;
+    for (const auto& candidate : scanScored(queryText, requiredTags, limit))
+        results.append(candidate.entry);
+    return results;
+}
+
+QList<HippocampusCandidate> HippocampusWorkingSet::scanScored(
+    const QString& queryText, const QStringList& requiredTags, int limit) const {
     if (limit <= 0) return {};
     const QString normalizedQuery = RecallText::normalize(queryText);
     const QStringList queryTokens = RecallText::tokens(normalizedQuery);
     const QDateTime now = QDateTime::currentDateTimeUtc();
-    struct ScoredEntry { MemoryEntry entry; double priority; };
-    QList<ScoredEntry> candidates;
+    QList<HippocampusCandidate> candidates;
     
     for (const MemoryEntry& entry : m_items) {
+        if (entry.status != MemoryStatus::Active
+            || (entry.expiresAt.isValid() && entry.expiresAt <= now)) continue;
         // Tag filter
         if (!requiredTags.isEmpty()) {
             bool hasAllTags = true;
@@ -109,26 +118,25 @@ QList<MemoryEntry> HippocampusWorkingSet::scan(const QString& queryText,
             if (relevance <= 0.0) continue;
         }
 
-        candidates.append({entry, computePriority(entry, relevance, now)});
+        const double recency = freshness(entry, now);
+        candidates.append({entry, relevance, recency, 0.8 * relevance + 0.2 * recency});
     }
 
     std::sort(candidates.begin(), candidates.end(), [](const auto& a, const auto& b) {
-        if (a.priority != b.priority) return a.priority > b.priority;
+        if (a.score != b.score) return a.score > b.score;
         return a.entry.id < b.entry.id;
     });
-    QList<MemoryEntry> results;
-    for (int i = 0; i < std::min(limit, int(candidates.size())); ++i)
-        results.append(candidates[i].entry);
-    return results;
+    candidates = candidates.mid(0, limit);
+    return candidates;
 }
 
-double HippocampusWorkingSet::computePriority(const MemoryEntry& entry,
-                                               double relevance,
-                                               const QDateTime& now) const {
-    double recency = 0.0;
-    // Keep the 24-hour creation-time window, bounded even for future dates.
-    if (entry.createdAt.isValid() && now.isValid()) {
-        recency = std::clamp(1.0 - entry.createdAt.secsTo(now) / 86400.0, 0.0, 1.0);
-    }
-    return 0.8 * std::clamp(relevance, 0.0, 1.0) + 0.2 * recency;
+void HippocampusWorkingSet::setFreshnessHorizonSeconds(qint64 seconds) {
+    m_freshnessSeconds = seconds > 0 ? seconds : DEFAULT_FRESHNESS_SECONDS;
+}
+
+double HippocampusWorkingSet::freshness(const MemoryEntry& entry,
+                                       const QDateTime& now) const {
+    const auto mentionedAt = MemoryMetadata::lastMentionTime(entry);
+    if (!mentionedAt.isValid() || !now.isValid()) return 0.0;
+    return std::clamp(1.0 - mentionedAt.msecsTo(now) / (1000.0 * m_freshnessSeconds), 0.0, 1.0);
 }

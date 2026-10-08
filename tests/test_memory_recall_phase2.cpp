@@ -1,4 +1,5 @@
 #include <QtTest>
+#include <algorithm>
 #include <QTemporaryDir>
 #include <QSqlDatabase>
 #include <QSqlQuery>
@@ -29,6 +30,7 @@ private slots:
     void testACTRCueMatch();
     void testACTRSemanticCueAffectsRanking();
     void testACTRFullRanking();
+    void testACTRNearlyEqualScoresAreStrictlyOrdered();
     void testConsolidatedEvidenceAndSingleEmotionScore();
     void testActivatedRetrievalIntegration();
 };
@@ -473,6 +475,33 @@ void TestMemoryRecallPhase2::testActivatedRetrievalIntegration() {
         }
     }
     QVERIFY(foundWeather);
+}
+
+
+void TestMemoryRecallPhase2::testACTRNearlyEqualScoresAreStrictlyOrdered() {
+    ACTRRanker ranker;
+    ranker.setWeights(0.0, 0.0, 0.0, 0.0, 1.0);
+    const auto now = QDateTime::currentDateTimeUtc();
+    QList<CandidateMemory> candidates;
+    for (int i = 0; i < 3; ++i) {
+        CandidateMemory candidate;
+        candidate.entry.id = QString::number(i);
+        candidate.entry.updatedAt = now.addSecs(-i); // Opposes score order.
+        candidate.graphActivation = 0.5 + i * 0.000075;
+        candidates.append(candidate);
+    }
+    QList<int> order{0, 1, 2};
+    do {
+        const auto ranked = ranker.rank({candidates[order[0]], candidates[order[1]], candidates[order[2]]}, {});
+        QCOMPARE(ranked[0].entry.id, QString("2"));
+        QCOMPARE(ranked[1].entry.id, QString("1"));
+        QCOMPARE(ranked[2].entry.id, QString("0"));
+    } while (std::next_permutation(order.begin(), order.end()));
+    for (auto& candidate : candidates) candidate.graphActivation = 0.5;
+    QCOMPARE(ranker.rank(candidates, {}).first().entry.id, QString("0"));
+    for (auto& candidate : candidates) candidate.entry.updatedAt = now;
+    std::reverse(candidates.begin(), candidates.end());
+    QCOMPARE(ranker.rank(candidates, {}).first().entry.id, QString("0"));
 }
 
 QTEST_MAIN(TestMemoryRecallPhase2)

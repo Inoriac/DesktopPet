@@ -9,15 +9,25 @@
 
 class MemoryStore;
 
+struct HippocampusCandidate {
+    MemoryEntry entry;
+    double relevance = 0.0;
+    double recency = 0.0;
+    double score = 0.0;
+};
+
 class HippocampusWorkingSet {
 public:
     static constexpr int DEFAULT_CAPACITY = 200;
+    static constexpr qint64 DEFAULT_FRESHNESS_SECONDS = 7 * 24 * 60 * 60;
     
     explicit HippocampusWorkingSet(MemoryStore* store = nullptr);
     
     void setStore(MemoryStore* store);
     void setCapacity(int capacity);
     int capacity() const { return m_capacity; }
+    void setFreshnessHorizonSeconds(qint64 seconds);
+    double freshness(const MemoryEntry& entry, const QDateTime& now) const;
     
     // Reload a bounded recency window; quality/emotion do not select its rows.
     bool refresh();
@@ -32,14 +42,16 @@ public:
                             const QStringList& requiredTags = {},
                             int limit = 8) const;
     
+    QList<HippocampusCandidate> scanScored(const QString& queryText,
+                                          const QStringList& requiredTags = {},
+                                          int limit = 8) const;
+
     int totalPendingCount() const { return m_totalPendingCount; }
     
 private:
-    double computePriority(const MemoryEntry& entry, double relevance,
-                           const QDateTime& now) const;
-    
     MemoryStore* m_store = nullptr;
     int m_capacity = DEFAULT_CAPACITY;
+    qint64 m_freshnessSeconds = DEFAULT_FRESHNESS_SECONDS;
     QList<MemoryEntry> m_items;
     int m_totalPendingCount = 0;
 };

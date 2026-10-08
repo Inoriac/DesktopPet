@@ -105,6 +105,8 @@ QJsonObject MemoryEntry::toJson() const {
     obj["access_count"] = accessCount;
     obj["created_at"] = dateTimeToString(createdAt);
     obj["updated_at"] = dateTimeToString(updatedAt);
+    // Omit absent timestamps so persisted legacy change-set hashes stay valid.
+    if (lastMentionedAt.isValid()) obj["last_mentioned_at"] = dateTimeToString(lastMentionedAt);
     obj["last_accessed_at"] = dateTimeToString(lastAccessedAt);
     obj["expires_at"] = dateTimeToString(expiresAt);
     obj["evidence"] = stringListToJson(evidence);
@@ -142,6 +144,7 @@ MemoryEntry MemoryEntry::fromJson(const QJsonObject& object) {
     entry.accessCount = object.value("access_count").toInt(0);
     entry.createdAt = dateTimeFromString(object.value("created_at").toString());
     entry.updatedAt = dateTimeFromString(object.value("updated_at").toString());
+    entry.lastMentionedAt = dateTimeFromString(object.value("last_mentioned_at").toString());
     entry.lastAccessedAt = dateTimeFromString(object.value("last_accessed_at").toString());
     entry.expiresAt = dateTimeFromString(object.value("expires_at").toString());
     entry.evidence = stringListFromJson(object.value("evidence").toArray());

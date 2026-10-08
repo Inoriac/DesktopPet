@@ -1576,6 +1576,8 @@ add_desktop_pet_cpp_test(memory_recall_phase2_tests MemoryRecallPhase2Tests
 add_desktop_pet_cpp_test(memory_recall_phase3_tests MemoryRecallPhase3Tests
     SOURCES
         tests/test_memory_recall_phase3.cpp
+        core/ai/memory/hybrid_graph_builder.h
+        core/ai/memory/hybrid_graph_builder.cpp
         core/ai/memory/memory_types.h
         core/ai/memory/associative_activation_engine.h
         core/ai/memory/associative_activation_engine.cpp

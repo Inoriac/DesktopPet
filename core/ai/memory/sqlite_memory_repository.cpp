@@ -192,6 +192,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "  access_count INTEGER DEFAULT 0,"
             "  created_at TEXT,"
             "  updated_at TEXT,"
+            "  last_mentioned_at TEXT,"
             "  last_accessed_at TEXT,"
             "  expires_at TEXT,"
             "  payload_json TEXT"
@@ -412,6 +413,29 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
     }
 
+    // Old records have no trustworthy mention clock: leave NULL and use
+    // created_at at read time, never updated_at (which recall can change).
+    {
+        bool hasLastMention = false;
+        if (!query.exec(QStringLiteral("PRAGMA table_info(memory_items)"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        while (query.next()) hasLastMention |= query.value(1).toString() == QLatin1String("last_mentioned_at");
+        query.finish();
+        if (!hasLastMention && !query.exec(QStringLiteral(
+                "ALTER TABLE memory_items ADD COLUMN last_mentioned_at TEXT"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+        if (!query.exec(QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_recall_mentions "
+                                       "ON memory_items(partition, status, "
+                                       "COALESCE(NULLIF(last_mentioned_at, ''), created_at) DESC, id DESC)"))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
     // Preserve display tags and add a normalized, indexed key for full-history
     // concept recall. Existing databases are backfilled without rewriting tags.
     {
@@ -617,14 +641,14 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
         "  scope, source, importance, strength, confidence,"
         "  emotion, emotion_intensity, emotion_confidence,"
         "  mention_count, access_count,"
-        "  created_at, updated_at, last_accessed_at, expires_at,"
+        "  created_at, updated_at, last_mentioned_at, last_accessed_at, expires_at,"
         "  payload_json"
         ") VALUES ("
         "  :id, :type, :status, :privacy_level, :partition, :key, :summary, :content,"
         "  :scope, :source, :importance, :strength, :confidence,"
         "  :emotion, :emotion_intensity, :emotion_confidence,"
         "  :mention_count, :access_count,"
-        "  :created_at, :updated_at, :last_accessed_at, :expires_at,"
+        "  :created_at, :updated_at, :last_mentioned_at, :last_accessed_at, :expires_at,"
         "  :payload_json"
         ")"
     ));
@@ -657,6 +681,7 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     query.bindValue(QStringLiteral(":access_count"), entry.accessCount);
     query.bindValue(QStringLiteral(":created_at"), dateTimeToString(entry.createdAt));
     query.bindValue(QStringLiteral(":updated_at"), dateTimeToString(entry.updatedAt));
+    query.bindValue(QStringLiteral(":last_mentioned_at"), dateTimeToString(entry.lastMentionedAt));
     query.bindValue(QStringLiteral(":last_accessed_at"), dateTimeToString(entry.lastAccessedAt));
     query.bindValue(QStringLiteral(":expires_at"), dateTimeToString(entry.expiresAt));
     query.bindValue(QStringLiteral(":payload_json"), jsonObjectToString(payload));
@@ -759,6 +784,7 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadQuery(QSqlQuery& query) {
         entry.accessCount = query.value(QStringLiteral("access_count")).toInt();
         entry.createdAt = dateTimeFromString(query.value(QStringLiteral("created_at")).toString());
         entry.updatedAt = dateTimeFromString(query.value(QStringLiteral("updated_at")).toString());
+        entry.lastMentionedAt = dateTimeFromString(query.value(QStringLiteral("last_mentioned_at")).toString());
         entry.lastAccessedAt = dateTimeFromString(query.value(QStringLiteral("last_accessed_at")).toString());
         entry.expiresAt = dateTimeFromString(query.value(QStringLiteral("expires_at")).toString());
 
@@ -820,7 +846,9 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
     if (!partition.trimmed().isEmpty()) predicates.append(QStringLiteral("partition = :partition"));
     if (activeOnly) predicates.append(QStringLiteral("status = 'active'"));
     if (!predicates.isEmpty()) sql += QStringLiteral(" WHERE ") + predicates.join(QStringLiteral(" AND "));
-    sql += QStringLiteral(" ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT :limit");
+    sql += partition == QLatin1String("hippocampus")
+        ? QStringLiteral(" ORDER BY COALESCE(NULLIF(last_mentioned_at, ''), created_at) DESC, id DESC LIMIT :limit")
+        : QStringLiteral(" ORDER BY COALESCE(updated_at, created_at) DESC, id DESC LIMIT :limit");
     query.prepare(sql);
     if (!partition.trimmed().isEmpty()) query.bindValue(QStringLiteral(":partition"), partition);
     query.bindValue(QStringLiteral(":limit"), limit);
