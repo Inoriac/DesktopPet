@@ -1,243 +1,102 @@
-# Daydream — 桌宠空闲记忆整理设计
+# 后台记忆整理（Daydream）
 
-> 从 `memory_improvement_plan.md` 拆出。基本记忆框架（Embedding 检索 / RRF 融合 / 自适应遗忘 / 分区迁移）先行落地，Daydream 作为第二阶段独立实现。本文为 Daydream 的完整设计。
+2026-10-08 修订。本文替代此前“空闲小憩、被聊天打断、整次回滚”的设计。
 
-> 2026-08-16 设计审计修订：全 session 原子性改为“快照 + 内存 staging + 最终短事务提交”。异步 LLM 等待期间不得持有 SQLite 写事务；用户交互产生的新 inbox 项也不属于当前快照。
+## 职责与唯一入口
 
----
+`MemoryConsolidationService` 负责海马区印象的模型分类、去重、合并和长期巩固。
+AIBrain 仅负责触发和生命周期；启动、定时、积压检查、右键“整理记忆”及睡眠触发都复用它。
+对话与整理可同时请求模型，整理自身每次最多一个模型请求。模型分析不持有数据库事务。
 
-## 一、定位与边界：Daydream ≠ 写日记
+睡眠协调器的新任务只提交日记，取消日记不会撤销已完成的记忆整理。
+旧版已决定 Commit 的双参与者睡眠事务仍按原记录恢复 memory 与 private_psyche；
+只保留旧结果的 finalize/abort，不保留旧的模型分析流程。
 
-Daydream 是作者提出的桌宠**空闲时刻自主记忆整理**机制。它**不是写日记**：
+## 新鲜度与持久生命周期
 
-- **写日记 = 录入**：把当天发生的事条目化记下来，输出是「更多的记忆条目」。
-- **Daydream = 消化**：对已在 Working Memory / Hippocampus 待巩固区的碎片印象做**分类、去重、冲突合并、重要性再评估**，沉淀成关于用户/偏好/事实的结构化长期认知，输出是「更少但更结构化的长期记忆」，inbox 被清空。
+`freshness = max(0, 1 - max(0, now - lastMentionedAt) / 3h)`。
+真实提及会刷新 `lastMentionedAt`；缺失的旧数据回退到 `createdAt`。
+查询、访问强化、整理和重启均不刷新提及时间，离线时间也参与衰减。
 
-不是"记录今天发生了什么"，而是"把白天碎片化的交互印象，琢磨成关于用户/偏好/事实的结构化长期认知"。桌宠可以在用户不交互的空闲时段"自己琢磨"。
+新鲜度仅影响候选评分，降到零不会删除未巩固信息。海马区持久数据没有 200 条硬截断；
+200 是召回工作集窗口，积压必须留在 SQLite 中等待整理。显式到期、删除和敏感信息仍遵循资格过滤。
 
-| 维度 | 写日记（录入） | Daydream（消化） |
-|------|--------------|----------------|
-| 输入 | 当天原始事件流 | 已在 Hippocampus 待巩固区的碎片印象 |
-| 动作 | 新增条目 | 分类/去重/合并/再评估 |
-| 输出 | 更多的记忆条目 | 更少但更结构化的长期记忆（inbox 被清空） |
-| 触发 | 主动记录 | 空闲异步 |
-| LLM 角色 | 可无 | 核心（分类+冲突决策） |
+普通自述经提取规则进入海马区。显式“记住/忘记”和明确偏好继续使用 MemoryPolicy，
+可直接影响长期记忆；整理必须同时校验源记录及模型拟更新的长期目标。
+assistant 回复不进入用户印象，TaskShadow 不交给模型整理。
 
-## 二、现状校正
+## 快照、分批与原子提交
 
-当前分支已有 Daydream 的全局空闲触发器、Hippocampus 快照、异步批量 LLM 决策、失败保留待重试和最终短事务提交。检索路径已只读，不再同步巩固。运行开关、触发阈值、容量、批次和独立轻量模型均已配置化；标签共现图也已落 SQLite 并纳入最终短事务。尚需继续用真实模型输出做兼容性验证。
+1. 在现有 `ChatSideEffectQueue` 的数据库线程读取已提交数据，固定最多 32 个源 ID。
+   批次选择保留最老记录的机会；源记录依然 Active、可召回。
+2. 将本轮源 ID 的有界占用写入既有 `sleep_staged_change` 表，不新增另一套作业数据库。
+   占用默认 10 分钟，崩溃后自动变为可重试。每批最多 8 条。
+3. 模型看到不可变内容、创建时间和最近提及时间。相对日期必须按原始记录解释。
+4. 模型结果先写入同一暂存表，再逐批用短事务应用。事务内重新从 SQLite 读取并检查源和目标。
+5. 长期结果、源状态、DerivedFrom、图关系、索引 outbox 和 Finalized 标记同事务提交。
+   一批失败不撤销其他已提交批次；本批相关源保留，等待重试。
 
-## 三、触发设计：大概率空闲 + 解耦 + 可中断
-
-### 3.1「大概率空闲」复合判定
-
-不靠单一信号，满足以下**全部**条件才视为空闲，触发一次 Daydream session：
-
-- **系统级全局空闲 ≥ N₁ 分钟**——即"距离上次键鼠输入的时间"≥ N₁，复用现有 `get_user_idle_state`（core/ai/tools/environment_tools.cpp）能力，**不是 pet 窗口输入**。关键区分：只看 pet 交互会把"用户没理桌宠但正在全力工作"误判为空闲、在最该安静时触发，所以必须用全局空闲。该能力注释已写明"不读取屏幕、窗口标题或输入内容"，隐私面已收口。N₁ 初拟 5 min。
-- `AIBrain::m_busy == false`（无进行中的 LLM 对话）
-- 无待办 ScheduledTask 即将到期（`AgentScheduler` 距最近 due > N₂ min，初拟 10 min）
-- 距上次 Daydream ≥ 间隔下限（初拟 15 min，防止连续触发）；若上次是被打断退出，额外退避 ≥ 10 min（防抖动：反复触发又打断）
-
-任一条件不满足则不触发；触发后**运行期间持续监测**，一旦从空闲滑入非空闲（用户开始输入 / 新对话开始 / 待办即将到点）→ 触发**协作式中断**（见第五节）。监测 tick 频率初拟每 30s 复查一次 `get_user_idle_state` 的 idle_seconds 跳变为 active 即判滑入非空闲——不必毫秒轮询，也无需等当前 LLM 批跑完（中断可发生在批之间）。
-
-### 3.2 平台降级（macOS 空闲缺口）
-
-现有 `get_user_idle_state` 仅 Windows 实现（`GetLastInputInfo`），macOS/Linux 返回 `supported=false`。Daydream 触发依赖该能力：
-
-- **macOS 须补实现**（`CGEventSourceSecondsSinceLastEventType(kCGEventSourceStateCombinedSessionState, ...)`，只读时长、不读内容、无需辅助功能权限），与 Windows 对齐。
-- Linux 可后置（X11 `XScreenSaverQueryInfo` 或 D-Bus）。
-- 平台不支持 / 触发失败时**默认不触发**（宁可不 daydream 也不误触发抢资源），退化为仅 `m_busy=false` + 距上次对话 ≥ dwell + 无待办的可选降级判定；该降级默认关闭，需配置显式开启。
-
-### 3.3 从检索路径解耦
-
-删除 `retrieveMemoryHints`（ai_brain_router.cpp:272）里的同步 `cleanup()` 调用，检索路径只读不整理；整理由 Daydream 异步执行，避免把 LLM 巩固延迟压到用户提问。
-
-### 3.4 节流
-
-单 session 总量上限为 32 条待巩固印象，分批每批 ≤8。触发时取得带 revision 的快照；处理期间不锁待巩固区，新写入项留给下次 session。最终提交前若快照内任一源条目已变化，则拒绝整次提交并在下轮重算。
-
-每小时 Daydream 上限 ≤3 次（防一直空想）。
-
-## 四、整理流程（对齐 hebb-mind ConsolidationAgent）
-
-```
-空闲触发
-  → 收集 Hippocampus / 到期 Working 中待巩固记忆（按时间/turn 排序）
-  → 召回相关历史记忆（排除 Hippocampus，供冲突对比）
-  → LLM 决策（批量）：
-      1. 目标分区分类（Semantic/Episodic/Preference/Procedural）
-      2. 冲突检测（与历史记忆对比）
-      3. 标签提取（3-5 个有意义标签）
-      4. 重要性评分（0-10）
-  → 冲突解决：update（合并）/ keep_both（并存）/ discard（丢弃）
-  → 写入目标分区，删除源记忆（清空 Hippocampus inbox）
-```
-
-### LLM Prompt 模板
-
-```
-你是桌宠的记忆整理模块（Daydream）。请把以下待巩固的碎片印象「消化」为结构化长期认知，
-并与相关历史记忆做冲突对比。注意：你不是在写日记记录事件，而是在归类合并印象。
-
-【待巩固印象】（一批）
-内容：{content}
-当前标签：{tags}
-来源：{source}
-
-【相关历史记忆】（供冲突检测）
-{related_memories_json}
-
-请对每条印象决策（输出 JSON 数组）：
-{
-  "target_partition": "Semantic|Episodic|Preference|Procedural",
-  "action": "create|update|keep_both|discard",
-  "merged_content": "合并后内容（仅 update）",
-  "quality_score": 0-10,
-  "new_tags": ["tag1", "tag2"],
-  "reason": "简短理由"
-}
-```
-
-### 会话级批量巩固
-
-```cpp
-void Daydream::consolidateBatch(const std::vector<Memory>& memories) {
-    auto snapshot = takeSnapshot(memories, 32); // 不开写事务
-    std::vector<Decision> staged;
-
-    constexpr int CHUNK_SIZE = 8;
-    for (size_t i = 0; i < snapshot.size(); i += CHUNK_SIZE) {
-        if (cancelled()) return;            // staging 尚未落库，直接丢弃
-        auto chunk = slice(snapshot, i, CHUNK_SIZE);
-        staged += co_await callLLM(chunk);  // 网络等待期间 SQLite 可正常写
-    }
-    if (cancelled()) return;
-    commitIfSnapshotCurrent(snapshot, staged); // 一个很短的本地事务
-}
-```
-
-**Token 成本估算：** 每 8 条印象一次调用，单次约 1000-2000 token；空闲触发、低频、可配置开关。
-
-## 五、中断、快照与事务原子性（核心需求）
-
-作者要求：Daydream 运行中一旦滑入非空闲，**打断操作并保持触发前的用户可见记忆状态**，杜绝图残留和迟到回调写入。设计审计后，这映射为**不可变快照 + 内存 staging + generation 取消 + 最终短事务**，而不是跨异步网络调用长期持有 SQLite 写锁。
-
-### 5.1 快照与最终短事务（全 session 原子语义）
-
-触发时按创建时间取得最多 32 条 Active Hippocampus 项及 revision 快照。多个 LLM 批次只把决策暂存在内存，不修改数据库。全部批次完成、空闲条件仍成立且快照未变时，才开启一个短事务，将删源、写目标分区、更新历史记忆和关系图作为一个原子提交。
-
-```cpp
-auto snapshot = store.snapshotHippocampus(/*limit=*/32); // 无事务
-auto generation = sessionGeneration;
-for (auto chunk : chunks(snapshot, 8)) {
-    auto decisions = co_await callLLM(chunk);
-    if (generation != sessionGeneration) return;         // 丢弃 staging
-    staged.append(validate(decisions));
-}
-if (!idleStillValid() || !snapshotStillCurrent(snapshot)) return;
-
-db.transaction();                                        // 只包本地写入
-if (applyAll(staged, db)) db.commit();
-else db.rollback();
-```
-
-- **关系图无残留**：`memory_relations` 与 `tag_cooccurrences` 均复用 MemoryStore 的 SQLite 连接，并与记忆写入处于最终同一短事务。共现权重表示标签对被 create/update 巩固确认的事件次数。
-- **新 inbox 不被误删**：快照建立后到达的新项不属于当前 session；下次再处理。
-- **源项变化时拒绝提交**：若同 key 的再次提及更新了 mentionCount/content/revision，旧 LLM 决策已失效，整 session 不落库。
-- **无批级可见状态**：批次只产生 staging 结果，不逐批提交，因此中断不会留下已完成批。
-
-### 5.2 generation 协作式取消（防迟到回调残留）
-
-LLM 调用走 `ChatService::requestAsync` 异步回调，强杀网络请求不现实。每个 session 捕获 generation；用户交互、待办临近、空闲结束或 AIBrain stop 都递增 generation 并清空 staging：
-
-- **回调丢弃**：回调先比较 generation，不匹配则直接返回。
-- **提交前复查**：最后一个批次后再次复查全局空闲、AIBrain busy、待办距离和快照 revision。
-- **异常回滚**：只有最终本地 apply 已开启事务后发生写失败时才需要 `ROLLBACK`。
-
-这使“用户可见状态全 session 原子”与“用户对话不等待远程 LLM/SQLite 长写锁”同时成立。
-
-### 5.3 并发写行为
-
-LLM 运行期间没有 Daydream 写事务，日常对话可以正常写入 Hippocampus 和长期记忆。最终 apply 在 Qt 所属线程执行，事务仅覆盖本地校验后的有限写操作。用户输入事件若恰好与最终 apply 同时到达，最多等待这段短本地提交，不等待网络请求。
-
-## 六、Working Memory → Hippocampus 改造
-
-Hippocampus 的持久输入必须是“关于用户的待判断印象”，不能是桌宠刚刚生成的 assistant reply，否则 Daydream 会把自己的措辞误当成用户事实，实质退化为写日记。当前入口规则：
-
-- 显式“记住/忘记”继续走确定性的 MemoryPolicy，立即生效，不重复进入 inbox。
-- 普通用户输入只有在包含自述信号、长度有界且未命中敏感信息规则时，才以 `Personal` ShortTerm impression 进入 inbox。
-- 完全相同的自述按稳定 key 合并并增加 mentionCount，而不是创建重复行。
-- inbox 设 200 条硬上限；达到上限后仍允许更新已存在的同 key 印象，但不继续无界增长。
-- assistant response 不进入持久 Hippocampus；工具结果可留在易失 WorkingMemoryCache 供当前上下文使用。
-
-| 维度 | 当前 WorkingMemoryCache | 改造后 Hippocampus |
-|------|------------------------|-------------------|
-| 定位 | TTL 过期的临时缓存 | 工作记忆收件箱 + 分类暂存 |
-| 过期策略 | 固定 TTL（30/15/60/20 min，按 source 分流） | 基于 Daydream 巩固决策 + 容量上限 |
-| 巩固触发 | 检索路径同步 cleanup，硬编码 mentionCount≥2 或 emotion≥0.7 | Daydream 异步 LLM 分类决策 |
-| 容量管理 | importance 最低淘汰（trimToCapacity） | FIFO + 重要性优先保留 |
-| 输出目标 | 固定写 Episodic（混合） | 明确分区（Semantic/Episodic/Preference/Procedural） |
-
-ShortTerm/TaskShadow 存量分流：都先进 Hippocampus inbox，由 LLM 判定再分，不预先硬分流。
-
-## 七、空输出与异常处理
-
-| 场景 | 处理 |
-|------|------|
-| LLM 判定无价值（如纯闲聊）→ 返回 discard/空 | 删除源印象，清空 inbox（对齐 hebb `consolidation_drain_empty_sources`） |
-| LLM 输出解析失败 | 保留源印象 → 下轮 Daydream 再处理 |
-| LLM 调用超时或模型不可用 | 有效源印象保持 Active，等待后续模型成功决策，不使用暂存评分推断升格或丢弃 |
-| **运行中滑入非空闲** | generation 失效 → 丢弃在途/迟到回调和内存 staging；此时尚未写库，无需等待或回滚 |
-| 最终 apply 写失败 | 短事务 `ROLLBACK`，随后从 SQLite 重载内存镜像 |
-| 快照源条目在 LLM 期间变化 | 拒绝整 session 提交，保留最新源条目供下轮重算 |
-
-2026-10-05 起移除硬编码质量/分类兜底。模型失败时有效用户印象返回 Preserve；默认重要性、提及次数和情绪不替代内容评估。旧的无效 assistant inbox 项仍可按来源规则归档。
-
-## 八、风险
-
-| 风险 | 影响 | 应对 |
-|------|------|------|
-| Daydream LLM 巩固增加 token 消耗 | 成本上升 | 空闲低频触发（每批 ≤8 条），可配置开关 |
-| 检索路径解耦后遗漏清理 | inbox 堆积 | Daydream 必须有兜底定时触发，不能只依赖空闲 |
-| 空闲检测误判（如用户离开但进程未空闲） | 巩固抢资源/频繁打断 | 复合判定（全局空闲+m_busy+待办）+ 最小空闲时长 + session 总量上限 + 打断后退避 |
-| macOS/Linux 无全局空闲实现 | 非平台无法触发 Daydream | macOS 补 `CGEventSource`（Daydream 前）；Linux 后置；不支持时默认不触发，可选降级判定 |
-| Daydream 中断留下图/回调残留 | 半修改状态污染图谱、漏写 | LLM 阶段只 staging；generation 丢弃迟到回调；最终记忆与图写入同一短事务 |
-| SQLite 长事务持锁 | 阻塞日常对话写入 | 禁止跨 LLM 持事务；最多 32 条快照，全部决策完成后才短事务 apply |
-| 把 assistant reply 当用户记忆 | 形成自我引用和伪用户事实 | inbox 仅接收过滤后的用户自述 impression；显式记忆仍走确定性策略 |
-
-## 九、已定决策
-
-- **Daydream 输入口径**：用**系统级全局空闲**（`get_user_idle_state`，即日常使用输入，非 pet 窗口输入）；macOS 补 `CGEventSource`，Linux 后置，不支持时默认不触发。理由：只看 pet 输入会把"用户忙碌工作"误判为空闲、在最该安静时触发。
-- **Daydream 原子性**：不可变快照 + 内存 staging + generation 取消 + 最终短 SQLite 事务。语义仍是“全 session 无部分可见结果”，但网络等待期间不占写锁。
-- **Daydream 输入归属**：只消化用户自述 impression，不持久化 assistant response。显式记忆/遗忘请求不等待 Daydream。
-
-## 十、运行配置（推荐默认值已落地）
-
-配置位于当前 AI profile 的 `daydream` 对象，例如 `aiSettings.profiles.default.daydream`。模型字段留空时复用 profile 的主模型；`enabled=false` 时不启动空闲监测，也不收集新的 Daydream inbox 印象。所有数值在读取时都会限制到安全范围。
-
-| 配置项 | 默认值 | 语义 |
+| 决策 | 源记录 | 长期结果 |
 |---|---|---|
-| `enabled` | `true` | 总开关 |
-| `idleThresholdSec` / `dueSoonThresholdMs` | `300` / `600000` | 全局空闲阈值 / 待办保护窗口 |
-| `minIntervalMs` / `interruptionBackoffMs` | `900000` / `600000` | 最小间隔 / 打断后的额外退避 |
-| `hourlyLimit` / `tickIntervalMs` | `3` / `30000` | 每小时 session 上限 / 空闲复查周期 |
-| `sessionLimit` / `batchLimit` / `inboxLimit` | `32` / `8` / `200` | 单次、单批和收件箱容量 |
-| `relatedMemoryLimit` | `8` | 每批提供给模型的历史候选上限 |
-| `model` / `maxTokens` / `temperature` | 空 / `1200` / `0.2` | 独立模型及推理参数 |
+| create / keep_both | Consolidated，保存 consolidated_into | 新建 |
+| update | Consolidated，保存 consolidated_into | 更新校验通过的目标 |
+| discard | Archived | 无 |
+| preserve / 失败 / 冲突 | Active | 不强行落入长期区 |
 
-平台不支持全局空闲检测时仍默认不触发；LLM 请求失败时保留有效源印象待后续重试。被用户交互打断时 generation 立即失效，新对话不等待 Daydream。
+源记录不物理删除。整理期间新写入的 ID 不在快照中，留给下轮。
+后台分析与聊天持久化复用同一个写入队列；没有第二个整理写线程。
+定时任务投影、显式工具写入等保留既有接口，但整行更新必须读数据库当前值并校验、合并。
 
-## 十一、路线图（Daydream 部分，属主文档 Phase 2）
+## 并发更新规则
 
-基本框架（主文档 Phase 1：Embedding/RRF/遗忘/分区迁移）先行，Daydream 在 Phase 2：
+冲突版本比较涵盖内容、类型、状态、隐私、有效期、标签、证据等语义字段。
+标签和证据按集合比较，不把 SQLite 返回顺序当作修改。
+`updatedAt`、访问次数、强度、提及时间/次数和会话归属不单独使模型决策失效；
+提交使用当前记录中的这些信息，不能回写模型开始时的整行快照。
 
-| 任务 | 交付物 | 验收标准 |
-|------|--------|---------|
-| Hippocampus 改造 | `HippocampusCache` 替换 `WorkingMemoryCache` | inbox 语义，待巩固暂存 |
-| 检索路径解耦 | 删除 retrieveMemoryHints 同步 cleanup | 检索只读不整理，无 LLM 延迟压入 |
-| macOS 空闲补齐 | `get_user_idle_state` macOS 分支（`CGEventSource`） | macOS 可取全局空闲时长 |
-| Daydream 新建 | 空闲复合判定 + 快照/staging + generation 取消 + 最终短事务 + LLM Prompt | 空闲异步分类巩固；中断无写入、迟到回调无效、stale snapshot 不提交、正常完成原子清理当前快照 |
+聊天队列的更新按 before/after 增量合并当前访问和提及信息。删除、隐私或内容冲突拒绝旧写入。
+用户的排队遗忘请求仍优先生效：即使源刚被巩固，也删除源及其对应的巩固结果。
+若提及到达时源已经 Consolidated，且源的内容与资格未另行改变，新提及形成新的待整理印象，
+原始源保持 Consolidated，不被恢复成 Active。相关索引任务跟随实际写入的 ID。
 
----
+## 恢复与重试
 
-*本文从 `memory_improvement_plan.md` 拆出，涵盖 Daydream 的定位、触发、中断回滚、巩固流程、改造与决策。基本记忆框架先行落地后再进入 Daydream 实现。*
+- 自动整理结果使用 `session_id=maintenance`、`target_type=daydream_maintenance`。
+  启动时重放 Prepared 结果；Finalized 标记保证幂等。
+- 每条源的占用/冷却复用同表的 `maintenance-retry` / `daydream_retry` 记录。
+  不确定或失败后默认冷却 30 分钟；语义证据改变可重新评估。
+- 旧睡眠暂存结果不由自动整理直接重放，必须先有旧协调器的 Commit 决定。
+- 停机、关闭 AI 或切换运行时会使取消 token 失效。迟到的模型结果不再提交；
+  已完成的小批次保留，已持久暂存结果下次可恢复。
+- 用户交流、键鼠活动和提醒临近不会取消整理，没有“打断后额外退避”。
+
+## 调度与配置
+
+启动后安排后台检查；默认每 30 秒检查一次，距上次整理至少 15 分钟，每小时最多 3 次。
+积压达到 64 条时，最短间隔缩至 1 分钟，仍受小时限额约束。手动入口可主动发起一次，
+同一时刻已有整理则复用“正在整理”的状态，不创建并行整理任务。
+
+有效配置位于当前 AI profile 的 `daydream`：
+
+| 配置 | 默认 | 范围/含义 |
+|---|---|---|
+| enabled | true | 自动整理和普通印象收集开关 |
+| minIntervalMs | 900000 | 普通触发最短间隔 |
+| hourlyLimit | 3 | 自动触发限额 |
+| tickIntervalMs | 30000 | 检查周期 |
+| sessionLimit | 32 | 1–32 条冻结源 |
+| batchLimit | 8 | 1–8 条，且不超过 sessionLimit |
+| relatedMemoryLimit | 8 | 0–8 条长期候选 |
+
+旧的 idleThresholdSec、dueSoonThresholdMs、interruptionBackoffMs、inboxLimit 不再使用，
+旧配置包含它们时会被忽略。睡眠配置中的 maxItemsPerSession、hippocampusBacklogThreshold、
+relaxedIdleSeconds 也已移除，避免重复控制记忆整理。模型仍经 ModelRole::Daydream 路由。
+
+## 用户体验与验证
+
+界面入口为“整理记忆”，提示可以继续聊天。取消只表达技术生命周期，
+不再产生悲伤情绪、“小憩被打断”记忆或相关人格事件。
+
+回归覆盖真实 AIBrain 对话与整理并发、逐批进展、迟到取消、持久结果重放、
+新旧记忆隔离、提及/访问合并、资格冲突、冷却跨重启以及旧睡眠事务恢复。
+macOS 构建保持 ONNX Runtime 关闭；Windows 的真实模型链路仍需在 Windows 环境验收。
