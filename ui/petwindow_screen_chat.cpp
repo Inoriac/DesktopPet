@@ -347,6 +347,7 @@ void PetWindow::requestVisionSummary(const QString& screenshotPath,
     const QString prompt = QStringLiteral(
         "你是桌宠的视觉观察模块，只描述环境，不替桌宠回复。"
         "识别用户当前活动及值得自然搭话的具体细节，不臆测看不清的内容。"
+        "忽略密码、密钥、验证码、证件号、银行卡号等敏感内容，不转录或猜测其具体值，只概括相关活动。"
         "与上次观察比较，忽略时钟、光标、滚动位置等无关变化；"
         "新内容、新进展或有趣的细节才算有意义的变化。"
         "仅输出JSON：{\"main_content\":\"不超过200字的观察\","

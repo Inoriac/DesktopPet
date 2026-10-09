@@ -620,11 +620,13 @@ void StreamingDialogueTests::screenObservation_shouldRemainTemporaryAndAvailable
     AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
     QVERIFY(initializeBrain(brain, directory));
     brain.rememberScreenObservation(QStringLiteral("正在浏览旧的新闻页面"));
-    brain.rememberScreenObservation(QStringLiteral("绘画软件里有一幅蓝色海边插画"));
+    // Technical vocabulary should not hide the entire observation from follow-up recall.
+    brain.rememberScreenObservation(QStringLiteral("正在阅读 token 用量说明，旁边有一幅蓝色海边插画"));
     brain.triggerThink(QStringLiteral("我刚才在干什么？"), QStringLiteral("user_request"));
     QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 1, 2000);
     const auto context = client.messageBatches.first().last().content;
     QVERIFY(context.contains(QStringLiteral("蓝色海边插画")));
+    QVERIFY(context.contains(QStringLiteral("token 用量说明")));
     QVERIFY(!context.contains(QStringLiteral("旧的新闻页面")));
     for (const auto& entry : brain.memoryStore()->all()) {
         QVERIFY(!entry.content.contains(QStringLiteral("蓝色海边插画")));

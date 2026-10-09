@@ -407,9 +407,6 @@ void AIBrain::rememberScreenObservation(const QString& observation) {
     WorkingMemoryItem item;
     item.summary = QStringLiteral("屏幕观察（可能不准确）：") + observation.left(600);
     item.content = item.summary;
-    if (MemoryExtractor::isLikelySensitiveContent(item.content)) {
-        item.privacyLevel = PrivacyLevel::Sensitive;
-    }
     item.source = QStringLiteral("screen_observation");
     item.createdAt = QDateTime::currentDateTimeUtc();
     item.expiresAt = item.createdAt.addSecs(5 * 60);
