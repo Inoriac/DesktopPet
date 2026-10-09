@@ -20,7 +20,6 @@
 #include "runtime/agent_runtime_services.h"
 #include "tools/runtime/tool_policy.h"
 #include "memory/working_memory_cache.h"
-#include "skill/skill_matcher.h"
 
 namespace {
 QString reminderTime(const QJsonObject& task) {
@@ -377,60 +376,6 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
     wm.source = QStringLiteral("tool_result");
     wm.importance = 0.2;
     m_workingMemoryCache.add(wm);
-}
-
-QList<ChatMessage> AIBrain::buildBaseMessages(const QString& reason,
-                                              const QString& triggerTag,
-                                              const QString& sessionId) {
-    QList<ChatMessage> messages;
-
-    std::optional<PersonaProjection> personaProjection;
-    if (m_runtimeServices && !sessionId.isEmpty()) {
-        const auto session = m_runtimeSessions.constFind(sessionId);
-        if (session != m_runtimeSessions.constEnd()
-            && session->runtimeSnapshot().has_value()) {
-            personaProjection = m_runtimeServices->projectPersona(
-                *session->runtimeSnapshot(),
-                {m_petName, QDateTime::currentDateTimeUtc()});
-        }
-    }
-
-    ChatMessage systemMessage;
-    systemMessage.role = "system";
-    systemMessage.content = m_contextBuilder.buildSystemPrompt(
-        m_petName, personaProjection);
-    messages.append(systemMessage);
-
-    for (const ChatMessage& memoryMsg : m_memory) {
-        const bool conversationalRole = memoryMsg.role == QLatin1String("user")
-            || memoryMsg.role == QLatin1String("assistant");
-        if (conversationalRole && memoryMsg.toolCallId.isEmpty()
-            && memoryMsg.toolCalls.isEmpty()) {
-            messages.append(memoryMsg);
-        }
-    }
-
-    ChatMessage contextMessage;
-    contextMessage.role = "user";
-    const std::optional<EmotionSnapshot> legacyEmotion = personaProjection.has_value()
-        ? std::nullopt : currentEmotionSnapshot();
-    contextMessage.content = m_contextBuilder.buildRuntimeContext(
-        m_petName,
-        reason,
-        "Idle",
-        triggerTag,
-        allowedActionsForTrigger(triggerTag),
-        legacyEmotion
-    );
-    const QList<MatchedSkill> matchedSkills = m_skillMatcher.match(m_skillStore, reason, 2);
-    if (!matchedSkills.isEmpty()) {
-        const QStringList skillHints = m_skillMatcher.formatForContext(matchedSkills);
-        contextMessage.content += "\n已学习的相关技能（可参考但不必严格遵循，按实际情况灵活运用）：\n"
-                                  + skillHints.join("\n") + "\n";
-    }
-    messages.append(contextMessage);
-
-    return messages;
 }
 
 void AIBrain::restoreConversationHistory(const QList<ChatHistoryEntry>& history) {

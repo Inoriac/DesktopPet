@@ -7,6 +7,7 @@
 #include <QSignalSpy>
 
 #include "ai/ai_brain.h"
+#include "ai/identity/persona_projector.h"
 #include "ai/tools/companion_tools.h"
 #include "ai/tools/schedule_tools.h"
 #include "ai/event/event_ledger.h"

@@ -130,6 +130,7 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems_data();
     void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems();
     void proactiveRecall_shouldUseRecentTopicAndEmotionAlongsidePersona();
     void personality_shouldChangeAssociationStrengthInWorkerRecall();
@@ -156,13 +157,26 @@ private slots:
     void retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation();
 };
 
+void ChatPreparationExecutorTests::workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems_data() {
+    QTest::addColumn<bool>("persistentStore");
+    QTest::newRow("persistent-store") << true;
+    QTest::newRow("temporary-only") << false;
+}
+
 void ChatPreparationExecutorTests::workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems() {
+    QFETCH(bool, persistentStore);
     QTemporaryDir directory;
     MemoryStore store;
-    store.setDatabasePath(environmentFor(directory).memoryDatabasePath);
-    QVERIFY(store.loadDatabaseOnly());
+    auto environment = environmentFor(directory);
+    if (persistentStore) {
+        store.setDatabasePath(environment.memoryDatabasePath);
+        QVERIFY(store.loadDatabaseOnly());
+    } else {
+        // A directory cannot be opened as a SQLite database.
+        environment.memoryDatabasePath = directory.path();
+    }
     ChatPreparationExecutor executor;
-    QVERIFY(executor.start(environmentFor(directory)).isOk());
+    QVERIFY(executor.start(environment).isOk());
     auto request = requestFor(QStringLiteral("刚才查询的结果是什么？"));
     WorkingMemoryItem item;
     item.id = QStringLiteral("tool-weather");
@@ -187,7 +201,7 @@ void ChatPreparationExecutorTests::workingMemory_shouldReachPromptWithoutPersist
     QVERIFY(context.contains(QStringLiteral("23摄氏度")));
     QVERIFY(!context.contains(QStringLiteral("不应看到")));
     QVERIFY(result.reinforcementIds.isEmpty());
-    QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
+    if (persistentStore) QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
     QVERIFY(store.all().isEmpty());
 }
 
@@ -455,6 +469,7 @@ submit_whenRuntimeMetadataIsProvided_shouldReturnCompleteSnapshot() {
     QCOMPARE(snapshot.personalityVersion, std::optional<qint64>(1));
     QCOMPARE(snapshot.relationshipVersion, std::optional<qint64>(1));
     QCOMPARE(snapshot.selfModelVersion, std::optional<QString>(selfModel.versionId));
+    QVERIFY(result.messages.first().content.contains(selfModel.narrative));
 }
 
 void ChatPreparationExecutorTests::
@@ -502,10 +517,16 @@ retrieve_whenNeighborOnlyMatchesThroughRelation_shouldExpandGraphWithoutReinforc
     relation.weight = 1.0;
     MemoryQuery query;
     query.text = QStringLiteral("爵士乐");
-    query.preferredTypes = {MemoryType::Preference};
 
-    MemoryRetriever retriever;
-    const auto retrieved = retriever.retrieve({source, neighbor}, query, {}, {relation});
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath(QStringLiteral("memory.db")));
+    QVERIFY(store.loadDatabaseOnly());
+    QVERIFY(!store.addEntry(source).id.isEmpty());
+    QVERIFY(!store.addEntry(neighbor).id.isEmpty());
+    store.relationGraph().addRelation(relation);
+    const auto retrieved = retrieveWithGraphPropagationForWorker(
+        store.databasePath(), query).memories;
 
     const auto expanded = std::find_if(
         retrieved.cbegin(), retrieved.cend(), [&neighbor](const RetrievedMemory& memory) {
@@ -710,10 +731,9 @@ retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation()
     store.addEntry(matchingMemory());
     MemoryQuery query;
     query.text = QStringLiteral("爵士乐");
-    query.preferredTypes = {MemoryType::Preference};
 
-    MemoryRetriever retriever;
-    const auto retrieved = retriever.retrieve(store.all(), query, {});
+    const auto retrieved = retrieveWithGraphPropagationForWorker(
+        store.databasePath(), query).memories;
 
     QCOMPARE(retrieved.size(), 1);
     QCOMPARE(retrieved.first().entry.id, QStringLiteral("memory-jazz"));

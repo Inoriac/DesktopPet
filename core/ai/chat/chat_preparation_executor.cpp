@@ -79,20 +79,9 @@ MemoryQuery memoryQueryFor(const ChatPreparationRequest& request,
         query.currentEmotion = request.emotion->active;
         query.currentEmotionIntensity = request.emotion->intensity;
     }
-    if (request.triggerTag == QLatin1String("user_request")
-        || request.triggerTag == QLatin1String("manual")) {
-        query.preferredTypes = {
-            MemoryType::Preference, MemoryType::Semantic,
-            MemoryType::Procedural, MemoryType::TaskShadow,
-            MemoryType::Core, MemoryType::Relationship,
-            MemoryType::Episodic
-        };
-    } else if (request.triggerTag == QLatin1String("proactive_chat")) {
-        query.preferredTypes = {
-            MemoryType::Preference, MemoryType::Relationship, MemoryType::Core
-        };
-    } else {
-        query.preferredTypes = {MemoryType::Preference, MemoryType::Core};
+    if (request.triggerTag != QLatin1String("user_request")
+        && request.triggerTag != QLatin1String("manual")
+        && request.triggerTag != QLatin1String("proactive_chat")) {
         query.limit = 4;
     }
     return query;
@@ -451,7 +440,13 @@ private:
         refreshRecallCache(false);
         WorkerRecallResult result;
         if (!m_recallStore) {
-            result.memories = MemoryRetriever().retrieve({}, query, workingMemory);
+            // No persistent store is available. Use the same bounded ACT-R path
+            // with only temporary observations; no database is opened or written.
+            MemoryStore transientStore;
+            ActivationChannels channels;
+            channels.workingMemory = &workingMemory;
+            result.memories = MemoryRetriever().retrieveWithGraphPropagation(
+                transientStore, query, channels, nullptr, /*skipReinforcement=*/true);
             return result;
         }
         return retrieveWithGraphPropagationForWorker(

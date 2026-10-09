@@ -27,7 +27,6 @@ public:
     explicit LiquidGlassChatBubble(QWidget* parent = nullptr);
 
     void setMessage(const QString& message);
-    void setLayoutReserveText(const QString& text);
     void setHasMorePages(bool hasMore);
     void setInputAutoFadeEnabled(bool enabled);
     void setInputSubmissionEnabled(bool enabled);
@@ -88,7 +87,6 @@ private:
 
 private:
     QString m_text;
-    QString m_layoutReserveText;
     QString m_activityText;
     QString m_messageId;
     bool m_inputMode = false;

@@ -108,7 +108,7 @@ void PetWindow::contextMenuEvent(QContextMenuEvent *event) {
 
     openChatHistoryAction = contextMenu->addAction("在 Launcher 中打开聊天");
     connect(openChatHistoryAction, &QAction::triggered, this, [this]() {
-        openChatHistoryWindow();
+        openLauncherChat();
     });
 
     debugCaptureOnlyAction = contextMenu->addAction("仅截图并保存到log(调试)");

@@ -109,7 +109,7 @@ public:
     const TagCooccurrenceGraph& tagCooccurrenceGraph() const { return m_tagCooccurrenceGraph; }
 
     // 底层 SQLite 连接名（与 SqliteMemoryRepository 共用），供需同库的组件复用
-    // （如 SqliteEmbeddingIndex 写 memory_embeddings 表）。
+    // （如 HnswEmbeddingIndex 写 memory_embeddings 表）。
     QString databaseConnectionName() const;
 
     // 事务原子性，供整理的小批次提交和旧事务恢复使用。事务内所有写入（含

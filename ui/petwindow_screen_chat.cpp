@@ -93,7 +93,7 @@ void PetWindow::setupScreenChat() {
     connect(outputBubble, &LiquidGlassChatBubble::openConversationRequested,
             this, [this](const QString& messageId) {
                 Q_UNUSED(messageId)
-                openChatHistoryWindow();
+                openLauncherChat();
             });
     connect(bubblePlaybackController.get(),
             &BubblePlaybackController::pageChanged,

@@ -1,3 +1,4 @@
+#include "memory/actr_ranker.h"
 #include <QtTest>
 #include <algorithm>
 #include <cmath>
@@ -226,7 +227,8 @@ void TestMemoryRecallPhase3::testFullCandidatePoolReachesRanker() {
     MemoryQuery semanticQuery;
     semanticQuery.text = "query";
     semanticQuery.limit = 64;
-    QCOMPARE(retriever.retrieveActivated(store, semanticQuery, semanticOnly).size(), 32);
+    QCOMPARE(retriever.retrieveWithGraphPropagation(
+        store, semanticQuery, semanticOnly, nullptr, true).size(), 16);
     query.limit = 8;
     const auto top = retriever.retrieveWithGraphPropagation(store, query, channels, nullptr, true);
     QCOMPARE(top.size(), 8);
@@ -919,8 +921,6 @@ void TestMemoryRecallPhase3::testExpiredActiveEntriesCannotRecall() {
     MemoryQuery query;
     query.text = "needle";
     query.includeInactive = true; // Expiration remains an absolute boundary.
-    QVERIFY(retriever.retrieve(store, query).isEmpty());
-    QVERIFY(retriever.retrieveActivated(store, query, channels).isEmpty());
     QVERIFY(retriever.retrieveWithGraphPropagation(store, query, channels).isEmpty());
     QCOMPARE(store.readForRecall(entry.id)->status, MemoryStatus::Active);
     QCOMPARE(store.readForRecall(entry.id)->accessCount, 0);

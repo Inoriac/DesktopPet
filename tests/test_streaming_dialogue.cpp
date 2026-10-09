@@ -950,14 +950,13 @@ void StreamingDialogueTests::proactiveReply_shouldUseContextAndStartSharedCooldo
     QVERIFY(initializeBrain(brain, directory));
     QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
     QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
-    QSignalSpy replies(&brain, &AIBrain::proactiveResponseReady);
-    QSignalSpy spoken(&brain, &AIBrain::assistantResponseReady);
+    QSignalSpy replies(&brain, &AIBrain::assistantResponseReady);
     brain.triggerThink(QStringLiteral("屏幕观察：用户正在画一幅暖色插画"),
                        QStringLiteral("proactive_chat"), {}, QStringLiteral("screenChat"));
     QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 2000);
     QCOMPARE(started.size(), 1);
     QCOMPARE(replies.size(), 1);
-    QCOMPARE(spoken.first().at(1).toString(), QStringLiteral("screenChat"));
+    QCOMPARE(replies.first().at(1).toString(), QStringLiteral("screenChat"));
     QVERIFY(!brain.canStartProactiveChat());
     bool hasObservation = false;
     for (const ChatMessage& message : client.messageBatches.first()) {

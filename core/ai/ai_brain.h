@@ -23,7 +23,8 @@
 #include "chat/chat_side_effect_queue.h"
 #include "chat/chat_types.h"
 #include "domain/domain_result.h"
-#include "context_builder.h"
+#include "identity/identity_baseline.h"
+#include "prompt/prompt_template_types.h"
 #include "emotion/emotion_types.h"
 #include "llm/llm_chat_service.h"
 #include "llm/llm_chat_model_client.h"
@@ -47,7 +48,6 @@ struct ChatPreparationEnvironment;
 struct ChatPreparationRequest;
 struct ChatPreparationResult;
 #include "router/intent_router.h"
-#include "skill/skill_matcher.h"
 #include "skill/skill_store.h"
 #include "tool_registry.h"
 #include "tools/runtime/tool_runtime.h"
@@ -57,7 +57,6 @@ class MemoryConsolidationService;
 class AIBrain : public QObject {
     Q_OBJECT
 
-    friend class TestIdentityState;
     friend class TestModuleConnectivity;
 
 public:
@@ -78,7 +77,7 @@ public:
     void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
     void setEmotionSnapshotProvider(EmotionSnapshotProvider provider);
 
-    // 注入通用提示词模版与独立身份基线（转发给 ContextBuilder）。
+    // 注入通用提示词模版与独立身份基线（由聊天准备线程构建上下文）。
     void setIdentityBaseline(const IdentityBaseline& baseline);
     void setPromptTemplate(const PromptTemplate& templ);
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
@@ -136,7 +135,6 @@ signals:
     void thinkRequestRejected(const QString& replyToId,
                               const QString& errorMessage);
     void assistantResponseReady(const QString& content, const QString& voiceSource);
-    void proactiveResponseReady(const QString& content);
     void assistantResponseStarted(const QString& messageId,
                                   const QString& replyToId,
                                   const QString& triggerTag);
@@ -218,17 +216,12 @@ private:
                                 const QString& sessionId);
     std::optional<EmotionSnapshot> currentEmotionSnapshot() const;
     void annotateMemoryEntry(MemoryEntry& entry) const;
-    // Legacy persona-only helper; production recall runs in ChatPreparationExecutor.
-    QList<ChatMessage> buildBaseMessages(const QString& reason,
-                                         const QString& triggerTag,
-                                         const QString& sessionId = QString());
     void appendToMemory(const ChatMessage& message);
     bool appendRuntimeEvent(const QString& type,
                             const QString& sessionId,
                             const QJsonObject& payload,
                             const QString& requestId = {},
                             quint64 generation = 0);
-    QString beginRuntimeSession(const QString& reason, const QString& triggerTag);
     void finishRuntimeSession(const QString& sessionId, quint64 generation);
     void setupTriggerTimers();
     void scheduleTrigger(const QString& triggerTag);
@@ -260,7 +253,6 @@ private:
     ToolRegistry* m_toolRegistry = nullptr; // non-owning
     AgentRuntimeServices* m_runtimeServices = nullptr; // non-owning
 
-    ContextBuilder m_contextBuilder;
     IdentityBaseline m_identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy m_personalityPolicy;
     PromptTemplate m_promptTemplate;
@@ -279,7 +271,6 @@ private:
     MemoryPolicy m_memoryPolicy;
     WorkingMemoryCache m_workingMemoryCache;
     SkillStore m_skillStore;
-    SkillMatcher m_skillMatcher;
 
     QTimer m_idleTriggerTimer;
     QTimer m_chatTriggerTimer;

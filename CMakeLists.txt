@@ -66,18 +66,6 @@ endif()
 
 # 收集所有源文件
 set(UI_SOURCES
-    ui/animated_combo_box.cpp
-    ui/animated_combo_box.h
-    ui/animated_scrollbar.cpp
-    ui/animated_scrollbar.h
-    ui/card_widget.cpp
-    ui/card_widget.h
-    ui/navigation_widget.cpp
-    ui/navigation_widget.h
-    ui/round_slider.cpp
-    ui/round_slider.h
-    ui/switch_button.cpp
-    ui/switch_button.h
     ui/theme_manager.cpp
     ui/theme_manager.h
     ui/chat_conversation_model.cpp
@@ -102,8 +90,6 @@ set(UI_SOURCES
     ui/petwindow_native.cpp
     ui/petwindow_snap.cpp
     ui/petwindow.h
-    ui/trayicon.cpp
-    ui/trayicon.h
 )
 
 set(EVENT_LEDGER_SOURCES
@@ -223,14 +209,8 @@ set(CORE_SOURCES
     core/configLoader/config_manager.cpp
     core/configLoader/config_manager.h
 
-    core/eventHandler/event_handler.cpp
-    core/eventHandler/event_handler.h
-
     core/controller/pet_controller.cpp
     core/controller/pet_controller.h
-
-    core/reminder/pet_reminder_manager.cpp
-    core/reminder/pet_reminder_manager.h
 
     core/voice/voice_synthesis_service.cpp
     core/voice/voice_synthesis_service.h
@@ -319,8 +299,6 @@ set(CORE_SOURCES
     core/ai/memory/memory_repository.h
     core/ai/memory/sqlite_memory_repository.h
     core/ai/memory/sqlite_memory_repository.cpp
-    core/ai/memory/memory_json_codec.h
-    core/ai/memory/memory_json_codec.cpp
     core/ai/memory/memory_relation.h
     core/ai/memory/memory_relation_graph.h
     core/ai/memory/memory_relation_graph.cpp
@@ -352,8 +330,6 @@ set(CORE_SOURCES
     core/ai/memory/embedding_index.h
     core/ai/memory/noop_embedding_index.h
     core/ai/memory/partition_policy.h
-    core/ai/memory/sqlite_embedding_index.h
-    core/ai/memory/sqlite_embedding_index.cpp
     core/ai/memory/hnsw_embedding_index.h
     core/ai/memory/hnsw_embedding_index.cpp
     core/ai/memory/memory_index_worker.h
@@ -388,8 +364,6 @@ set(CORE_SOURCES
     core/ai/skill/skill_types.cpp
     core/ai/skill/skill_store.h
     core/ai/skill/skill_store.cpp
-    core/ai/skill/skill_matcher.h
-    core/ai/skill/skill_matcher.cpp
     core/ai/skill/skill_tools.h
     core/ai/skill/skill_tools.cpp
 
@@ -406,16 +380,12 @@ set(ENGINE_SOURCES
     engine/model_loader_geometry.cpp
     engine/model_loader_skeleton.cpp
     engine/model_loader.h
-    engine/platform_utils.cpp
-    engine/platform_utils.h
     engine/render_engine.cpp
     engine/render_engine_resources.cpp
     engine/render_engine_interaction.cpp
     engine/render_engine.h
     engine/shader_manager.cpp
     engine/shader_manager.h
-    engine/sound_engine.cpp
-    engine/sound_engine.h
     engine/render_viewport.cpp
     engine/render_viewport.h
 )
@@ -425,7 +395,6 @@ set(INCLUDE_SOURCES
     include/global_types.h
     include/macros.h
     include/animation_types.h
-    include/pet_reminder_types.h
     include/material_types.h
     include/model_types.h
     include/render_types.h
@@ -441,8 +410,6 @@ set(TINYGLTF_SOURCES
 set(ENTITY_SOURCES
         entity/pet.cpp
         entity/pet.h
-        entity/pet_personality.cpp
-        entity/pet_personality.h
 )
 
 set(STATISTIC_SOURCES
@@ -548,7 +515,6 @@ endfunction()
 
 set(TEST_SOURCES
 #        tests/test_statistic_manager.cpp
-#        tests/test_pet_reminder_manager.cpp
 #        tests/test_animation_importer.cpp
         tests/test_animation_player.cpp
 )
@@ -789,8 +755,6 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/skill/skill_types.cpp
     core/ai/skill/skill_store.h
     core/ai/skill/skill_store.cpp
-    core/ai/skill/skill_matcher.h
-    core/ai/skill/skill_matcher.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
     core/emotion/emotion_types.h
@@ -851,8 +815,6 @@ add_desktop_pet_cpp_test(identity_state_tests IdentityStateTests
     SOURCES
         tests/test_identity_state.cpp
         ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
-        entity/pet_personality.h
-        entity/pet_personality.cpp
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -1149,30 +1111,6 @@ add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
         Qt::Test
 )
 
-# ---- Fluent chat history window tests (no ONNX dependency) ----
-add_desktop_pet_cpp_test(chat_history_window_tests ChatHistoryWindowTests
-    SOURCES
-        tests/test_chat_history_window.cpp
-        ui/chat_history_window.h
-        ui/chat_history_window.cpp
-        ui/chat_conversation_model.h
-        ui/chat_conversation_model.cpp
-        ui/theme_manager.h
-        ui/theme_manager.cpp
-        core/ai/chat/chat_types.h
-        core/ai/chat/chat_types.cpp
-        core/ai/chat/profile_chat_history_store.h
-        core/ai/chat/profile_chat_history_store.cpp
-    INCLUDE_DIRS
-        ${CMAKE_CURRENT_SOURCE_DIR}
-        ${CMAKE_CURRENT_SOURCE_DIR}/core
-    LIBRARIES
-        Qt::Core
-        Qt::Gui
-        Qt::Widgets
-        Qt::Test
-)
-
 # ---- Streaming desktop bubble pagination tests (no ONNX dependency) ----
 add_desktop_pet_cpp_test(streaming_text_paginator_tests StreamingTextPaginatorTests
     SOURCES
@@ -1368,8 +1306,6 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/memory_repository.h
         core/ai/memory/sqlite_memory_repository.h
         core/ai/memory/sqlite_memory_repository.cpp
-        core/ai/memory/memory_json_codec.h
-        core/ai/memory/memory_json_codec.cpp
         core/ai/memory/memory_relation.h
         core/ai/memory/memory_relation_graph.h
         core/ai/memory/memory_relation_graph.cpp
@@ -1383,8 +1319,6 @@ add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
         core/ai/memory/embedding_index.h
         core/ai/memory/noop_embedding_index.h
         core/ai/memory/partition_policy.h
-        core/ai/memory/sqlite_embedding_index.h
-        core/ai/memory/sqlite_embedding_index.cpp
         core/ai/memory/hnsw_embedding_index.h
         core/ai/memory/hnsw_embedding_index.cpp
         core/ai/memory/memory_index_worker.h
@@ -1429,8 +1363,6 @@ add_executable(memory_hnsw_benchmark
     core/ai/memory/memory_repository.h
     core/ai/memory/sqlite_memory_repository.h
     core/ai/memory/sqlite_memory_repository.cpp
-    core/ai/memory/memory_json_codec.h
-    core/ai/memory/memory_json_codec.cpp
     core/ai/memory/memory_relation.h
     core/ai/memory/memory_relation_graph.h
     core/ai/memory/memory_relation_graph.cpp
@@ -1469,8 +1401,6 @@ add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
         core/ai/memory/memory_repository.h
         core/ai/memory/sqlite_memory_repository.h
         core/ai/memory/sqlite_memory_repository.cpp
-        core/ai/memory/memory_json_codec.h
-        core/ai/memory/memory_json_codec.cpp
         core/ai/memory/memory_relation.h
         core/ai/memory/memory_relation_graph.h
         core/ai/memory/memory_relation_graph.cpp
@@ -1505,8 +1435,6 @@ add_desktop_pet_cpp_test(hybrid_graph_builder_tests HybridGraphBuilderTests
         core/ai/memory/memory_repository.h
         core/ai/memory/sqlite_memory_repository.h
         core/ai/memory/sqlite_memory_repository.cpp
-        core/ai/memory/memory_json_codec.h
-        core/ai/memory/memory_json_codec.cpp
         core/ai/memory/memory_relation.h
         core/ai/memory/memory_relation_graph.h
         core/ai/memory/memory_relation_graph.cpp
@@ -1551,8 +1479,6 @@ add_desktop_pet_cpp_test(memory_recall_phase2_tests MemoryRecallPhase2Tests
         core/ai/memory/memory_repository.h
         core/ai/memory/sqlite_memory_repository.h
         core/ai/memory/sqlite_memory_repository.cpp
-        core/ai/memory/memory_json_codec.h
-        core/ai/memory/memory_json_codec.cpp
         core/ai/memory/memory_relation.h
         core/ai/memory/memory_relation_graph.h
         core/ai/memory/memory_relation_graph.cpp
@@ -1600,8 +1526,6 @@ add_desktop_pet_cpp_test(memory_recall_phase3_tests MemoryRecallPhase3Tests
         core/ai/memory/memory_repository.h
         core/ai/memory/sqlite_memory_repository.h
         core/ai/memory/sqlite_memory_repository.cpp
-        core/ai/memory/memory_json_codec.h
-        core/ai/memory/memory_json_codec.cpp
         core/ai/memory/memory_relation.h
         core/ai/memory/memory_relation_graph.h
         core/ai/memory/memory_relation_graph.cpp

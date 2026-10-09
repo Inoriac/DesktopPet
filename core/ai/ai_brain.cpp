@@ -67,7 +67,6 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
                     modelClient ? modelClient : &m_modelClient) {
     m_identityBaseline = ConfigManager::instance().getIdentityBaseline();
     m_personalityPolicy = ConfigManager::instance().getPersonalityPolicy();
-    m_contextBuilder.setIdentityBaseline(m_identityBaseline);
     m_chatPreparationExecutor = std::make_unique<ChatPreparationExecutor>();
     connect(m_chatPreparationExecutor.get(), &ChatPreparationExecutor::prepared,
             this, &AIBrain::continuePreparedThink);
@@ -178,7 +177,6 @@ Result<void, DomainError> AIBrain::startChatSideEffectQueue() {
 
 void AIBrain::setIdentityBaseline(const IdentityBaseline& baseline) {
     m_identityBaseline = baseline;
-    m_contextBuilder.setIdentityBaseline(baseline);
     if (m_chatPreparationEnvironment) {
         m_chatPreparationEnvironment->identityBaseline = baseline;
     }
@@ -186,7 +184,6 @@ void AIBrain::setIdentityBaseline(const IdentityBaseline& baseline) {
 
 void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
     m_promptTemplate = templ;
-    m_contextBuilder.setPromptTemplate(templ);
     if (m_chatPreparationEnvironment) {
         m_chatPreparationEnvironment->promptTemplate = templ;
     }
@@ -758,9 +755,6 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
     if (status == ChatMessageStatus::Complete
         && !finished.visibleContent.isEmpty()) {
         emit assistantResponseReady(finished.visibleContent, finished.voiceSource);
-        if (finished.triggerTag == QLatin1String("proactive_chat")) {
-            emit proactiveResponseReady(finished.visibleContent);
-        }
     }
     if (finished.announced) {
         emit thinkingFinished(status == ChatMessageStatus::Complete, errorMessage);
@@ -806,20 +800,6 @@ void AIBrain::cancelActiveResponse() {
     m_pendingToolConfirmations.clear();
     finishActiveResponse(ChatMessageStatus::Stopped,
                          QStringLiteral("LLM_REQUEST_CANCELLED"));
-}
-
-QString AIBrain::beginRuntimeSession(const QString& reason,
-                                     const QString& triggerTag) {
-    if (!m_runtimeServices) return QString();
-    AgentSession session = AgentSession::create(reason, triggerTag);
-    const QString sessionId = session.id();
-    const RuntimeSnapshot snapshot = m_runtimeServices->captureSnapshot(
-        sessionId, QStringLiteral("owner"));
-    if (snapshot.sessionId.isEmpty() || !session.bindRuntimeSnapshot(snapshot).isOk()) {
-        return QString();
-    }
-    m_runtimeSessions.insert(sessionId, std::move(session));
-    return sessionId;
 }
 
 void AIBrain::finishRuntimeSession(const QString& sessionId, quint64 generation) {

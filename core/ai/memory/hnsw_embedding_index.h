@@ -88,7 +88,7 @@ public:
     QString connectionName() const { return m_connectionName; }
     EmbeddingProvider* provider() const { return m_provider; }
 
-    // 与 SqliteEmbeddingIndex 相同的内容哈希规则（sha1-hex），Worker/生产者共用。
+    // 内容哈希规则为 sha1-hex，Worker/生产者共用。
     static QString contentHash(const QString& text);
 
 private:

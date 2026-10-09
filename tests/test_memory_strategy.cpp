@@ -19,12 +19,15 @@
 #include "memory/memory_relation.h"
 #include "memory/memory_relation_graph.h"
 #include "memory/memory_retriever.h"
+#include "memory/hippocampus_working_set.h"
+#include "memory/active_memory_pool.h"
+#include "memory/memory_keyword_index.h"
+#include "memory/associative_activation_engine.h"
 #include "memory/memory_store.h"
 #include "memory/memory_metadata.h"
 #include "memory/working_memory_cache.h"
 #include "memory/noop_embedding_index.h"
 #include "memory/partition_policy.h"
-#include "memory/sqlite_embedding_index.h"
 #include "memory/hnsw_embedding_index.h"
 #include "memory/memory_index_worker.h"
 #include "memory/semantic_index_service.h"
@@ -39,6 +42,30 @@
 #include "memory/onnx_embedding_provider.h"
 #include <cmath>
 #endif
+
+namespace {
+
+// Exercise the production channel selection and ACT-R ranking on a small fixture.
+QList<RetrievedMemory> recallFromStore(MemoryStore& store, const MemoryQuery& query,
+                                      const WorkingMemoryCache* cache = nullptr,
+                                      EmbeddingIndex* embeddingIndex = nullptr) {
+    HippocampusWorkingSet workingSet(&store);
+    workingSet.refresh();
+    MemoryKeywordIndex keywordIndex;
+    keywordIndex.rebuild(store.all());
+    AssociativeActivationEngine graph;
+    graph.setRandomSource([] { return 0.99; });
+    const auto workingMemory = cache ? cache->all() : QList<WorkingMemoryItem>{};
+    ActivationChannels channels;
+    channels.workingSet = &workingSet;
+    channels.keywordIndex = &keywordIndex;
+    channels.embeddingIndex = embeddingIndex;
+    channels.graphPropagation = &graph;
+    channels.workingMemory = &workingMemory;
+    return MemoryRetriever().retrieveWithGraphPropagation(store, query, channels);
+}
+
+} // namespace
 
 class TestMemoryStrategy : public QObject {
     Q_OBJECT
@@ -59,7 +86,7 @@ private slots:
     void testRepositoryClearRollsBackOnFailure();
     void testSkillStoreDoesNotMutateWhenPersistenceFails();
     void testStoreUpdateStatusByIdIsExact();
-    void testRetrieverRanksKeywordAndPreferredType();
+    void testRetrieverRanksMatchingKeyword();
     void testRetrieverFiltersSensitiveByDefault();
     void testRetrieverFormatsContextLines();
     void testPolicyCreatesSupersedes();
@@ -69,7 +96,7 @@ private slots:
     void testPolicyDoesNotRelateSourceTags();
     void testPolicyCreatesMentionedWith();
     void testPolicyFirstOfScopeImportanceBoost();
-    void testRetrieverDecayCurve();
+    void testRetrieverRecentAccessRanksAboveOldAccess();
     void testRetrieverEmotionBoost();
     void testRetrieverReinforcement();
     void testRetrieverReinforcementPersists();
@@ -91,7 +118,7 @@ private slots:
     void testPartitionPersistedAndBackfilled();
     void testLegacySchemaWithoutPartitionMigratesBeforeIndexCreation();
     void testForgettingSweepExpiresStaleAndSparesImportant();
-    void testSqliteEmbeddingIndexSearch();
+    void testHnswEmbeddingCandidatesReachRecall();
     void testHnswEmbeddingIndexSearchAndPersistence();
     void testMemoryIndexWorkerProcessesOutbox();
     void testMemoryIndexWorkerDurableCompletion();
@@ -570,7 +597,7 @@ void TestMemoryStrategy::testStoreUpdateStatusByIdIsExact() {
     QCOMPARE(secondAfter->payload.value(QStringLiteral("reason")).toString(), QStringLiteral("test"));
 }
 
-void TestMemoryStrategy::testRetrieverRanksKeywordAndPreferredType() {
+void TestMemoryStrategy::testRetrieverRanksMatchingKeyword() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
 
@@ -601,13 +628,11 @@ void TestMemoryStrategy::testRetrieverRanksKeywordAndPreferredType() {
     cppFact.strength = 0.7;
     store.addEntry(cppFact);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("你记得我喜欢 Java 吗");
-    query.preferredTypes = {MemoryType::Preference};
     query.limit = 2;
 
-    const QList<RetrievedMemory> result = retriever.retrieve(store, query);
+    const QList<RetrievedMemory> result = recallFromStore(store, query);
     QVERIFY(result.size() >= 1);
     QCOMPARE(result.first().entry.type, MemoryType::Preference);
     QVERIFY(result.first().entry.summary.contains(QStringLiteral("Java")));
@@ -628,17 +653,22 @@ void TestMemoryStrategy::testRetrieverFiltersSensitiveByDefault() {
     sensitive.privacyLevel = PrivacyLevel::Sensitive;
     sensitive.importance = 1.0;
     sensitive.confidence = 1.0;
-    store.addEntry(sensitive);
+    const auto stored = store.addEntry(sensitive);
+    // Sensitive memories are intentionally absent from the keyword index.
+    // A seeded point read exercises the final privacy gate in both modes.
+    ActiveMemoryPool pool;
+    pool.activate(stored.id, 1.0, QStringLiteral("test"));
+    ActivationChannels channels;
+    channels.activePool = &pool;
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("token");
     query.limit = 5;
 
-    QVERIFY(retriever.retrieve(store, query).isEmpty());
+    QVERIFY(MemoryRetriever().retrieveWithGraphPropagation(store, query, channels).isEmpty());
 
     query.includeSensitive = true;
-    QCOMPARE(retriever.retrieve(store, query).size(), 1);
+    QCOMPARE(MemoryRetriever().retrieveWithGraphPropagation(store, query, channels).size(), 1);
 }
 
 void TestMemoryStrategy::testRetrieverFormatsContextLines() {
@@ -659,13 +689,11 @@ void TestMemoryStrategy::testRetrieverFormatsContextLines() {
     preference.strength = 0.9;
     store.addEntry(preference);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("技术方案怎么讲");
-    query.preferredTypes = {MemoryType::Preference};
     query.limit = 1;
 
-    const QStringList lines = retriever.formatForContext(retriever.retrieve(store, query));
+    const QStringList lines = MemoryRetriever().formatForContext(recallFromStore(store, query));
     QCOMPARE(lines.size(), 1);
     QVERIFY(lines.first().startsWith(QStringLiteral("1. [preference/高置信度/communication]")));
     QVERIFY(lines.first().contains(QStringLiteral("先讲架构")));
@@ -908,7 +936,7 @@ void TestMemoryStrategy::testPolicyFirstOfScopeImportanceBoost() {
 
 // ---- Phase 4: Decay / Emotion / Reinforcement tests ----
 
-void TestMemoryStrategy::testRetrieverDecayCurve() {
+void TestMemoryStrategy::testRetrieverRecentAccessRanksAboveOldAccess() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
 
@@ -924,6 +952,8 @@ void TestMemoryStrategy::testRetrieverDecayCurve() {
     recent.confidence = 0.8;
     recent.strength = 0.8;
     recent.updatedAt = QDateTime::currentDateTimeUtc();
+    recent.lastAccessedAt = recent.updatedAt;
+    recent.accessCount = 3;
     store.addEntry(recent);
 
     MemoryEntry old;
@@ -936,14 +966,14 @@ void TestMemoryStrategy::testRetrieverDecayCurve() {
     old.strength = 0.8;
     old.updatedAt = QDateTime::currentDateTimeUtc().addDays(-60);
     old.lastAccessedAt = old.updatedAt;
+    old.accessCount = 3;
     store.addEntry(old);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("alpha");
     query.limit = 2;
 
-    const QList<RetrievedMemory> result = retriever.retrieve(store, query);
+    const QList<RetrievedMemory> result = recallFromStore(store, query);
     QCOMPARE(result.size(), 2);
     QCOMPARE(result.first().entry.key, QStringLiteral("recent:event"));
 }
@@ -965,6 +995,7 @@ void TestMemoryStrategy::testRetrieverEmotionBoost() {
     happy.strength = 0.5;
     happy.emotion = EmotionType::Joy;
     happy.emotionIntensity = 0.9;
+    happy.emotionConfidence = 0.9;
     store.addEntry(happy);
 
     MemoryEntry sad;
@@ -977,16 +1008,16 @@ void TestMemoryStrategy::testRetrieverEmotionBoost() {
     sad.strength = 0.5;
     sad.emotion = EmotionType::Sadness;
     sad.emotionIntensity = 0.9;
+    sad.emotionConfidence = 0.9;
     store.addEntry(sad);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("beta");
     query.limit = 2;
     query.currentEmotion = EmotionType::Joy;
     query.currentEmotionIntensity = 0.8;
 
-    const QList<RetrievedMemory> result = retriever.retrieve(store, query);
+    const QList<RetrievedMemory> result = recallFromStore(store, query);
     QCOMPARE(result.size(), 2);
     QCOMPARE(result.first().entry.key, QStringLiteral("happy:event"));
     const double scoreDifference = result.first().score - result.last().score;
@@ -1012,12 +1043,11 @@ void TestMemoryStrategy::testRetrieverReinforcement() {
     entry.accessCount = 0;
     const MemoryEntry stored = store.addEntry(entry);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("gamma");
     query.limit = 1;
 
-    retriever.retrieve(store, query);
+    recallFromStore(store, query);
 
     const MemoryEntry* reinforced = store.findById(stored.id);
     QVERIFY(reinforced);
@@ -1043,11 +1073,10 @@ void TestMemoryStrategy::testRetrieverReinforcementPersists() {
     entry.strength = 0.5;
     const MemoryEntry stored = store.addEntry(entry);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("theta");
     query.limit = 1;
-    retriever.retrieve(store, query);
+    recallFromStore(store, query);
 
     MemoryStore reloaded;
     setupStoreWithDb(reloaded, tempDir);
@@ -1161,13 +1190,11 @@ void TestMemoryStrategy::testRetrieverGraphExpansion() {
     rel.weight = 0.8;
     store.relationGraph().addRelation(rel);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("delta");
-    query.preferredTypes = {MemoryType::Preference};
     query.limit = 5;
 
-    const QList<RetrievedMemory> result = retriever.retrieve(store, query);
+    const QList<RetrievedMemory> result = recallFromStore(store, query);
     QVERIFY(result.size() >= 2);
 
     bool foundExpanded = false;
@@ -1431,12 +1458,11 @@ void TestMemoryStrategy::testWorkingMemoryRetrieverIntegration() {
     wm.importance = 0.5;
     cache.add(wm);
 
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("epsilon");
     query.limit = 5;
 
-    const QList<RetrievedMemory> result = retriever.retrieve(store, query, &cache);
+    const QList<RetrievedMemory> result = recallFromStore(store, query, &cache);
     QCOMPARE(result.size(), 1);
     QVERIFY(result.first().entry.id.startsWith(QStringLiteral("wm:")));
     QVERIFY(result.first().reasons.contains(QStringLiteral("working_memory")));
@@ -1462,13 +1488,12 @@ void TestMemoryStrategy::testNoopEmbeddingIndexDoesNotAffectRetrieval() {
     store.addEntry(entry);
 
     NoopEmbeddingIndex noopIndex;
-    MemoryRetriever retriever;
     MemoryQuery query;
     query.text = QStringLiteral("zeta");
     query.limit = 5;
 
-    const QList<RetrievedMemory> withoutEmbed = retriever.retrieve(store, query);
-    const QList<RetrievedMemory> withEmbed = retriever.retrieve(store, query, nullptr, &noopIndex);
+    const QList<RetrievedMemory> withoutEmbed = recallFromStore(store, query);
+    const QList<RetrievedMemory> withEmbed = recallFromStore(store, query, nullptr, &noopIndex);
 
     QCOMPARE(withoutEmbed.size(), withEmbed.size());
     QVERIFY(!withoutEmbed.isEmpty());
@@ -1744,9 +1769,8 @@ public:
     }
 };
 
-// SqliteEmbeddingIndex：upsert 写向量到 memory_embeddings，search 余弦 top-k，
-// remove 删行。复用 MemoryStore 同一 DB 连接。注入 retriever 后语义命中排名前列。
-void TestMemoryStrategy::testSqliteEmbeddingIndexSearch() {
+// HNSW 向量通道的写入、删除和召回连接；使用 Fake provider，无需 ONNX。
+void TestMemoryStrategy::testHnswEmbeddingCandidatesReachRecall() {
     QTemporaryDir tempDir;
     QVERIFY(tempDir.isValid());
     MemoryStore store;
@@ -1765,7 +1789,7 @@ void TestMemoryStrategy::testSqliteEmbeddingIndexSearch() {
     const MemoryEntry storedJava = store.addEntry(java);
 
     FakeEmbeddingProvider provider;
-    SqliteEmbeddingIndex index(store.databaseConnectionName(), &provider);
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, tempDir.path());
 
     // upsert：cpp 用 c++ 文本，java 用 java 文本
     QVERIFY(index.upsert(storedCpp.id, QStringLiteral("c++ programming language")));
@@ -1785,13 +1809,11 @@ void TestMemoryStrategy::testSqliteEmbeddingIndexSearch() {
     }
 
     // 注入 retriever：embedding 通道产出候选且打 "embedding" reason。
-// 用与记忆正文不重叠的 query token（"rust"），使 Phase1 关键词关闸（return 0）→
-// 直接候选为空 → embedding 候选进入，带 "embedding" reason。
-MemoryRetriever retriever;
+    // 用正文不包含的 rust 查询，验证向量通道可独立提供候选。
     MemoryQuery query;
     query.text = QStringLiteral("rust");
     query.limit = 5;
-    const QList<RetrievedMemory> withIndex = retriever.retrieve(store, query, nullptr, &index);
+    const QList<RetrievedMemory> withIndex = recallFromStore(store, query, nullptr, &index);
     bool hasEmbeddingReason = false;
     for (const RetrievedMemory& m : withIndex) {
         if (m.reasons.contains(QStringLiteral("embedding"))) hasEmbeddingReason = true;

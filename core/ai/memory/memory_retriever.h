@@ -7,11 +7,8 @@
 #include <QMap>
 
 #include "memory_types.h"
-#include "memory_relation.h"
-#include "actr_ranker.h"
 
 class MemoryStore;
-class WorkingMemoryCache;
 class EmbeddingIndex;
 class ActiveMemoryPool;
 class HippocampusWorkingSet;
@@ -22,7 +19,6 @@ struct WorkingMemoryItem;
 
 struct MemoryQuery {
     QString text;
-    QList<MemoryType> preferredTypes;
     QStringList requiredTags;
     int limit = 8;
     bool includeSensitive = false;
@@ -57,34 +53,15 @@ struct ActivationChannels {
     HippocampusWorkingSet* workingSet = nullptr;
     const MemoryKeywordIndex* keywordIndex = nullptr;
     EmbeddingIndex* embeddingIndex = nullptr;
-    AssociativeActivationEngine* graphPropagation = nullptr;  // Phase 3
+    AssociativeActivationEngine* graphPropagation = nullptr;
     const QList<WorkingMemoryItem>* workingMemory = nullptr;
 };
 
 class MemoryRetriever {
 public:
-    QList<RetrievedMemory> retrieve(
-        const QList<MemoryEntry>& entries,
-        const MemoryQuery& query,
-        const QList<WorkingMemoryItem>& workingMemory = {},
-        const QList<MemoryRelation>& relations = {}) const;
-
-    QList<RetrievedMemory> retrieve(MemoryStore& store,
-                                    const MemoryQuery& query,
-                                    const WorkingMemoryCache* cache = nullptr,
-                                    EmbeddingIndex* embeddingIndex = nullptr) const;
-
-    // 类人激活式召回（设计 §1/§6/§7，Phase 2：无图谱传播）。
-    // 固定候选预算：激活池 12 + 工作集 8 + embedding 32 + 关键词/标签 12，
-    // 合并去重后最多 64 个候选进 ACT-R 精排，输出最多 query.limit 条。
-    // 不扫描 MemoryStore::all()；只强化最终输出的记忆。
-    QList<RetrievedMemory> retrieveActivated(MemoryStore& store,
-                                             const MemoryQuery& query,
-                                             const ActivationChannels& channels,
-                                             MemoryCueExtractor* cueExtractor = nullptr) const;
-
-    // Phase 3 完整版：含图谱传播（两跳扩展 + 人格化探索）。
-    // 种子预算同上，图谱传播候选预算 64，合并后 ACT-R 精排，输出最多 query.limit。
+    // 统一召回入口：激活池 12、海马区 8、向量 32、关键词/标签 12；
+    // 合并后最多 16 个种子，两跳图传播最多 64 个候选，ACT-R 输出最多 query.limit。
+    // 缺失通道自动跳过；workingMemory 可独立运行，无需打开持久化存储。
     // skipReinforcement: 若为 true，跳过自动 store.reinforceEntries()，由调用方自行处理强化。
     QList<RetrievedMemory> retrieveWithGraphPropagation(
         MemoryStore& store,
@@ -94,19 +71,6 @@ public:
         bool skipReinforcement = false) const;
 
     QStringList formatForContext(const QList<RetrievedMemory>& memories) const;
-
-private:
-    QStringList tokenize(const QString& text) const;
-
-    double scoreEntry(const MemoryEntry& entry,
-                      const MemoryQuery& query,
-                      const QStringList& tokens,
-                      QStringList* reasons) const;
-
-    double computeEffectiveStrength(const MemoryEntry& entry) const;
-    double computeEmotionBoost(const MemoryEntry& entry,
-                               const MemoryQuery& query) const;
-    double decayLambda(MemoryType type) const;
 
 };
 

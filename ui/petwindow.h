@@ -116,12 +116,8 @@ private:
     void showChatErrorNotification();
     QPointer<QMessageBox> chatErrorNotification;
     bool showToolBubbleMessage(const QString& message, int durationMs);
-    void showBubbleMessageNow(const QString& message, int durationMs = -1, bool forceRefreshGlass = true);
-    void showBubbleMessageAnimated(const QString& message, int durationMs = -1);
     void showBubbleInput();
     void hideBubbleMessage();
-    void startThinkingBubble(const QString& reason);
-    void stopThinkingBubble(bool keepCurrentBubble = false);
     void updateThinkingBubble();
     void onManualDaydreamRequested();
     void beginStreamingBubble(const QString& messageId);
@@ -133,13 +129,9 @@ private:
                                ChatMessageStatus status);
     void applyBubblePaginationUpdate(const PaginationUpdate& update);
     void scheduleFinishedBubbleHide();
-    void stopTypewriterBubble();
-    void updateTypewriterBubble();
-    QStringList splitBubbleTextIntoPages(const QString& message) const;
     bool hasMoreBubblePages() const;
-    void showCurrentBubblePageAnimated(int durationMs = -1);
     void showNextBubblePage();
-    void openChatHistoryWindow();
+    void openLauncherChat();
     void appendChatHistoryMessage(const QString& role,
                                   const QString& content,
                                   const QDateTime& timestamp = QDateTime::currentDateTime(),
@@ -237,13 +229,10 @@ private:
     int screenChatBaseIntervalMs = 480000;
     QTimer* bubbleHideTimer = nullptr;
     QTimer* thinkingBubbleTimer = nullptr;
-    QTimer* typewriterBubbleTimer = nullptr;
     QPointer<LiquidGlassChatBubble> outputBubble;
     QPointer<LiquidGlassChatBubble> inputBubble;
     bool screenChatBusy = false;
     QString lastScreenObservation;
-    bool thinkingBubbleActive = false;
-    bool thinkingHadAssistantResponse = false;
     bool streamingBubbleHasText = false;
     bool streamingBubbleFinished = false;
     QString streamingBubbleMessageId;
@@ -255,14 +244,6 @@ private:
     int pendingBubblePageIndex = 0;
     int pendingBubblePageTotal = 0;
     bool pendingBubblePageDraft = false;
-    int thinkingDotCount = 1;
-    QString thinkingBubbleTextBase;
-    bool typewriterBubbleActive = false;
-    QString typewriterTargetText;
-    int typewriterVisibleChars = 0;
-    int typewriterFinalDurationMs = -1;
-    QStringList bubblePages;
-    int bubblePageIndex = 0;
 
     struct NativeWindowEntry {
         void* hwnd = nullptr;

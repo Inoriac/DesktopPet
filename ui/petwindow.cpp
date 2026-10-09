@@ -169,25 +169,6 @@ PetWindow::PetWindow(PetProfile profile,
         }
         return emotionEngine->snapshot(QDateTime::currentDateTimeUtc());
     });
-    connect(aiBrain.get(), &AIBrain::thinkingStarted, this, [this](const QString& reason) {
-        qDebug() << "[AIBrain] thinking started:" << reason;
-        startThinkingBubble(reason);
-    });
-    connect(aiBrain.get(), &AIBrain::thinkingFinished, this, [this](bool success, const QString& errorMessage) {
-        qDebug() << "[AIBrain] thinking finished, success:" << success << "error:" << errorMessage;
-        const bool wasThinkingBubbleVisible = thinkingBubbleActive;
-        if (wasThinkingBubbleVisible && !thinkingHadAssistantResponse) {
-            stopThinkingBubble(true);
-            if (!success) {
-                return;
-            }
-            const QString fallbackText = QStringLiteral("我还没想好怎么说呢。");
-            showBubbleMessage(fallbackText, 3200);
-            speakPetReply(fallbackText, QStringLiteral("fallback"));
-            return;
-        }
-        stopThinkingBubble(true);
-    });
     connect(aiBrain.get(), &AIBrain::thinkRequestRejected, this,
             [this](const QString& replyToId, const QString& errorMessage) {
                 qWarning() << "[AIBrain] chat request could not start:" << errorMessage;
@@ -201,21 +182,8 @@ PetWindow::PetWindow(PetProfile profile,
             });
     connect(aiBrain.get(), &AIBrain::assistantResponseReady, this, [this](const QString& content, const QString& voiceSource) {
         qDebug() << "[AIBrain] assistant response:" << content;
-        thinkingHadAssistantResponse = true;
-        if (thinkingBubbleActive) {
-            stopThinkingBubble(true);
-        }
-        showBubbleMessageAnimated(content);
+        showBubbleMessage(content);
         speakPetReply(content, voiceSource);
-    });
-    connect(aiBrain.get(), &AIBrain::proactiveResponseReady, this, [this](const QString& content) {
-        qDebug() << "[AIBrain] proactive response:" << content;
-        if (!thinkingHadAssistantResponse) {
-            if (!thinkingBubbleActive) {
-                showBubbleMessageAnimated(content);
-                speakPetReply(content, QStringLiteral("proactive"));
-            }
-        }
     });
     connect(aiBrain.get(), &AIBrain::assistantResponseStarted,
             conversationModel.get(),
@@ -325,9 +293,6 @@ PetWindow::~PetWindow() {
     }
     if (thinkingBubbleTimer) {
         thinkingBubbleTimer->stop();
-    }
-    if (typewriterBubbleTimer) {
-        typewriterBubbleTimer->stop();
     }
     if (outputBubble) {
         outputBubble->close();
@@ -581,7 +546,7 @@ void PetWindow::setupLauncherChatBridge() {
               << profileMigration.profileId.toStdString() << std::endl;
 }
 
-void PetWindow::openChatHistoryWindow() {
+void PetWindow::openLauncherChat() {
     if (launcherChatServer && launcherChatServer->isListening()) {
         launcherChatServer->requestOpenInLauncher();
         return;

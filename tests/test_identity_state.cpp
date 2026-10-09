@@ -13,6 +13,7 @@
 #include "ai/event/runtime_unit_of_work.h"
 #include "ai/event/sqlite_event_repository.h"
 #include "ai/identity/personality_service.h"
+#include "ai/identity/persona_projector.h"
 #include "ai/identity/relationship_service.h"
 #include "ai/identity/self_model_service.h"
 #include "ai/identity/sqlite_identity_repository.h"
@@ -21,7 +22,6 @@
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "configLoader/config_manager.h"
-#include "entity/pet_personality.h"
 
 namespace {
 
@@ -202,12 +202,10 @@ private slots:
     void evolve_whenNarrativeReferencesOnlyItself_shouldRejectCircularEvidence();
     void project_whenSessionSnapshotIsValid_shouldMergeBaselineRelationshipAndBoundedSlots();
     void project_whenNullEmotionProviderUsed_shouldOmitEmotionPromptAndPrivateInternals();
-    void project_whenReminderPersonalityExists_shouldNotReadOrMutateReminderSettings();
     void getPersonalityPolicy_whenConfigured_shouldReturnSanitizedLimits();
     void getPersonalityPolicy_whenMissing_shouldUseSafeDefaults();
     void start_whenIdentityDependenciesAreValid_shouldExposeServicesAndRegisterPersonalityEvent();
     void captureSnapshot_whenIdentityVersionsExist_shouldPinSubjectSpecificCommittedVersions();
-    void buildBaseMessages_whenRuntimeSnapshotIsBound_shouldUseProjectedPersonaWithoutNumericEmotion();
 };
 
 void TestIdentityState::
@@ -436,25 +434,6 @@ project_whenNullEmotionProviderUsed_shouldOmitEmotionPromptAndPrivateInternals()
 }
 
 void TestIdentityState::
-project_whenReminderPersonalityExists_shouldNotReadOrMutateReminderSettings() {
-    PetPersonality reminder;
-    reminder.name = QStringLiteral("reminder-only");
-    reminder.forgetProbability = 0.42;
-    reminder.randomVariance = 17;
-    reminder.reminderPhrases = {QStringLiteral("该休息了")};
-    const QJsonObject before = reminder.toJson();
-    NullEmotionStateProvider emotion;
-    PersonaProjector projector(
-        IdentityBaseline::defaults(), PersonalityPolicy{}, nullptr, &emotion);
-    RuntimeSnapshot snapshot;
-    snapshot.profileId = kProfileId;
-    snapshot.subjectId = QStringLiteral("owner");
-
-    Q_UNUSED(projector.project(snapshot, {QStringLiteral("Milltina"), kWindowEnd}))
-    QCOMPARE(reminder.toJson(), before);
-}
-
-void TestIdentityState::
 getPersonalityPolicy_whenConfigured_shouldReturnSanitizedLimits() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
@@ -561,31 +540,6 @@ captureSnapshot_whenIdentityVersionsExist_shouldPinSubjectSpecificCommittedVersi
     const RuntimeSnapshot unknown = fixture.services.captureSnapshot(
         QStringLiteral("session-2"), QStringLiteral("unknown"));
     QVERIFY(!unknown.relationshipVersion.has_value());
-}
-
-void TestIdentityState::
-buildBaseMessages_whenRuntimeSnapshotIsBound_shouldUseProjectedPersonaWithoutNumericEmotion() {
-    RuntimeFixture fixture;
-    QVERIFY(fixture.ready());
-    fixture.brain.setPetName(QStringLiteral("Milltina"));
-    fixture.brain.setIdentityBaseline(IdentityBaseline::defaults());
-    fixture.brain.setEmotionSnapshotProvider([&fixture]() -> std::optional<EmotionSnapshot> {
-        return fixture.emotion.snapshot.value;
-    });
-
-    const QString sessionId = fixture.brain.beginRuntimeSession(
-        QStringLiteral("hello"), QStringLiteral("manual"));
-    const QList<ChatMessage> messages = fixture.brain.buildBaseMessages(
-        QStringLiteral("hello"), QStringLiteral("manual"), sessionId);
-
-    QVERIFY(!sessionId.isEmpty());
-    QVERIFY(!messages.isEmpty());
-    const QString prompt = messages.first().content + QStringLiteral("\n")
-        + messages.last().content;
-    QVERIFY(prompt.contains(QStringLiteral("愉快")));
-    QVERIFY(!prompt.contains(QStringLiteral("mood_valence")));
-    QVERIFY(!prompt.contains(QStringLiteral("emotion_intensity")));
-    QVERIFY(!prompt.contains(QStringLiteral("0.80")));
 }
 
 QTEST_MAIN(TestIdentityState)

@@ -5,7 +5,6 @@
 #include <QString>
 
 class QApplication;
-class QWidget;
 
 class ThemeManager : public QObject {
     Q_OBJECT
@@ -24,8 +23,6 @@ public:
     void setTheme(Theme theme);
     void toggleTheme();
     void applyTo(QApplication* app);
-    void applyHeroPalette(QWidget* hero) const;
-    QString comboArrowColor() const;
 
 signals:
     void themeChanged(Theme theme);

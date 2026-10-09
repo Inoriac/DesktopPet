@@ -462,7 +462,7 @@ void TestMemoryRecallPhase2::testActivatedRetrievalIntegration() {
     query.text = "weather";
     query.limit = 5;
     
-    QList<RetrievedMemory> results = retriever.retrieveActivated(store, query, channels);
+    QList<RetrievedMemory> results = retriever.retrieveWithGraphPropagation(store, query, channels);
     
     // Should find weather-related memories
     QVERIFY(results.size() > 0);

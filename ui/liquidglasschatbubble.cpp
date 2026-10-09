@@ -121,13 +121,6 @@ void LiquidGlassChatBubble::setMessage(const QString& message) {
     update();
 }
 
-void LiquidGlassChatBubble::setLayoutReserveText(const QString& text) {
-    m_layoutReserveText = text.trimmed();
-    resize(sizeHint());
-    updateInputGeometry();
-    update();
-}
-
 void LiquidGlassChatBubble::setHasMorePages(bool hasMore) {
     if (m_hasMorePages == hasMore) {
         return;
@@ -162,7 +155,6 @@ void LiquidGlassChatBubble::showMessage(const QString& message) {
 
 void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInput) {
     m_text.clear();
-    m_layoutReserveText.clear();
     m_inputMode = true;
     m_streamingMode = false;
     m_messageId.clear();
@@ -189,7 +181,6 @@ void LiquidGlassChatBubble::showInput(const QString& placeholder, bool focusInpu
 void LiquidGlassChatBubble::showStreamingMessage(const QString& messageId) {
     m_messageId = messageId;
     m_text.clear();
-    m_layoutReserveText.clear();
     m_activityText.clear();
     m_inputMode = false;
     m_streamingMode = true;
@@ -291,7 +282,7 @@ QSize LiquidGlassChatBubble::sizeHint() const {
     f.setPointSize(m_fontSize);
     f.setWeight(QFont::DemiBold);
     const QFontMetrics fm(f);
-    QString layoutText = m_layoutReserveText.isEmpty() ? m_text : m_layoutReserveText;
+    QString layoutText = m_text;
     if (layoutText.isEmpty()) layoutText = m_activityText;
     const QRect textRect = fm.boundingRect(QRect(0, 0, contentWidth(), 1000),
                                            Qt::TextWordWrap | Qt::AlignCenter,
