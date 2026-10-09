@@ -4,6 +4,7 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QJsonDocument>
+#include <QJsonArray>
 #include <QJsonObject>
 #include <QLockFile>
 #include <QSaveFile>
@@ -69,6 +70,8 @@ QByteArray encodeEntry(const ChatHistoryEntry& entry) {
     if (!entry.replyToId.isEmpty()) {
         object.insert(QStringLiteral("replyToId"), entry.replyToId);
     }
+    if (!entry.sourceMessageIds.isEmpty())
+        object.insert(QStringLiteral("sourceMessageIds"), QJsonArray::fromStringList(entry.sourceMessageIds));
     if (!entry.errorMessage.isEmpty()) {
         object.insert(QStringLiteral("errorMessage"), entry.errorMessage);
     }
@@ -83,6 +86,10 @@ std::optional<ChatHistoryEntry> decodeVersionTwo(const QJsonObject& object) {
     entry.id = object.value(QStringLiteral("id")).toString();
     entry.role = object.value(QStringLiteral("role")).toString();
     entry.replyToId = object.value(QStringLiteral("replyToId")).toString();
+    for (const auto& id : object.value(QStringLiteral("sourceMessageIds")).toArray()) {
+        if (id.isString() && !id.toString().isEmpty() && !entry.sourceMessageIds.contains(id.toString()))
+            entry.sourceMessageIds.append(id.toString());
+    }
     entry.content = object.value(QStringLiteral("content")).toString();
     entry.errorMessage = object.value(QStringLiteral("errorMessage")).toString();
     entry.timestamp = QDateTime::fromString(

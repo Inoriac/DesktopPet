@@ -99,6 +99,11 @@ public:
     QString proactiveStatePath() const { return m_proactiveStatePath; }
     Result<bool, DomainError> requestManualDaydream();
     bool canAcceptUserMessage() const;
+    Result<void, DomainError> submitUserMessage(const QString& text,
+                                               const QString& messageId,
+                                               bool rememberInput = true);
+    int pendingUserMessageCount() const { return m_pendingUserMessages.size(); }
+    QStringList activeUserMessageIds() const;
     quint64 interactionRevision() const { return m_interactionRevision; }
     int userIdleSeconds() const;
     ModelRoleRegistry* modelRoleRegistry() { return &m_modelRoleRegistry; }
@@ -125,6 +130,7 @@ public:
     const SkillStore* skillStore() const { return &m_skillStore; }
 
 signals:
+    void pendingUserMessagesChanged();
     void thinkingStarted(const QString& reason);
     void thinkingFinished(bool success, const QString& errorMessage);
     void thinkRequestRejected(const QString& replyToId,
@@ -152,6 +158,18 @@ signals:
     void chatPreparationTimingsObserved(ChatPreparationTimings timings);
 
 private:
+    struct PendingUserMessage {
+        QString text;
+        QString id;
+        QDateTime receivedAt;
+        bool rememberInput = true;
+    };
+    void schedulePendingUserMessages();
+    void dispatchPendingUserMessages();
+    void cancelActiveResponse();
+    QTimer m_userMessageDispatchTimer;
+    QList<PendingUserMessage> m_pendingUserMessages;
+    QList<PendingUserMessage> m_dispatchingUserMessages;
     QString m_proactiveStatePath;
     static bool isAutomaticTrigger(const QString& triggerTag);
     bool automaticTextAllowed() const;
@@ -300,6 +318,9 @@ private:
         QString voiceSource;
         QString preparationRequestId;
         QStringList reinforcementIds;
+        QStringList sourceMessageIds;
+        QDateTime inputMentionedAt;
+        bool rememberInput = true;
         QString visibleContent;
         QList<ChatMessage> priorConversation;
         ChatMessageStatus status = ChatMessageStatus::Pending;

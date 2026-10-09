@@ -222,7 +222,8 @@ PetWindow::PetWindow(PetProfile profile,
             [this](const QString& messageId,
                    const QString& replyToId,
                    const QString&) {
-                conversationModel->beginAssistantMessage(messageId, replyToId);
+                conversationModel->beginAssistantMessage(messageId, replyToId,
+                    QDateTime::currentDateTime(), aiBrain->activeUserMessageIds());
             });
     connect(aiBrain.get(), &AIBrain::assistantResponseStageChanged,
             conversationModel.get(),
@@ -455,7 +456,8 @@ void PetWindow::setupLauncherChatBridge() {
             {QStringLiteral("petName"), modelName},
             {QStringLiteral("profileId"), profileMigration.profileId},
             {QStringLiteral("aiEnabled"), aiBrain && aiBrain->isEnabled()},
-            {QStringLiteral("busy"), aiBrain && !aiBrain->canAcceptUserMessage()},
+            {QStringLiteral("busy"), aiBrain && (aiBrain->isBusy() || aiBrain->pendingUserMessageCount() > 0)},
+            {QStringLiteral("pendingMessageCount"), aiBrain ? aiBrain->pendingUserMessageCount() : 0},
             {QStringLiteral("messages"), messageArray},
             {QStringLiteral("statistics"), launcherChatStatistics(modelName)}
         };
@@ -481,7 +483,7 @@ void PetWindow::setupLauncherChatBridge() {
         if (!aiBrain->canAcceptUserMessage()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_BUSY"),
-                QStringLiteral("上一条消息仍在处理中。")));
+                QStringLiteral("等待中的消息过多，请稍后再试。")));
         }
         const QString userMessageId = conversationModel->appendUserMessage(text);
         if (userMessageId.isEmpty()) {
@@ -490,7 +492,8 @@ void PetWindow::setupLauncherChatBridge() {
                 QStringLiteral("消息无法加入聊天记录。")));
         }
         if (petController) petController->recordExplicitFeedbackText(text);
-        aiBrain->triggerThink(text, QStringLiteral("user_request"), userMessageId);
+        const auto submitted = aiBrain->submitUserMessage(text, userMessageId);
+        if (!submitted.isOk()) return Result<QJsonObject, DomainError>::failure(submitted.error());
         return Result<QJsonObject, DomainError>::success({
             {QStringLiteral("messageId"), userMessageId}
         });
@@ -498,6 +501,7 @@ void PetWindow::setupLauncherChatBridge() {
     callbacks.retryMessage = [this](const QString& assistantMessageId)
         -> Result<QJsonObject, DomainError> {
         if (!conversationModel || !aiBrain || !aiBrain->isEnabled()
+            || aiBrain->isBusy() || aiBrain->pendingUserMessageCount() > 0
             || !aiBrain->canAcceptUserMessage()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_BUSY"),
@@ -517,18 +521,11 @@ void PetWindow::setupLauncherChatBridge() {
                 QStringLiteral("CHAT_MESSAGE_NOT_FOUND"),
                 QStringLiteral("找不到可重试的回复。")));
         }
-        const auto source = std::find_if(
-            messages.cbegin(), messages.cend(),
-            [&assistant](const ChatHistoryEntry& entry) {
-                return entry.id == assistant->replyToId
-                    && entry.role == QLatin1String("user");
-            });
-        if (source == messages.cend()) {
+        const QString text = conversationModel->sourceInputForReply(assistantMessageId);
+        if (text.isEmpty()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("CHAT_MESSAGE_NOT_FOUND"),
-                QStringLiteral("找不到原始用户消息。")));
+                QStringLiteral("CHAT_MESSAGE_NOT_FOUND"), QStringLiteral("找不到完整的原始用户消息。")));
         }
-        const QString text = source->content;
         const QString newUserId = conversationModel->appendUserMessage(text);
         if (newUserId.isEmpty()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
@@ -536,13 +533,14 @@ void PetWindow::setupLauncherChatBridge() {
                 QStringLiteral("消息无法加入聊天记录。")));
         }
         if (petController) petController->recordExplicitFeedbackText(text);
-        aiBrain->triggerThink(text, QStringLiteral("user_request"), newUserId);
+        const auto submitted = aiBrain->submitUserMessage(text, newUserId, false);
+        if (!submitted.isOk()) return Result<QJsonObject, DomainError>::failure(submitted.error());
         return Result<QJsonObject, DomainError>::success({
             {QStringLiteral("messageId"), newUserId}
         });
     };
     callbacks.stopResponse = [this]() -> Result<void, DomainError> {
-        if (aiBrain && aiBrain->isBusy()) aiBrain->stopCurrentResponse();
+        if (aiBrain) aiBrain->stopCurrentResponse();
         return Result<void, DomainError>::success();
     };
 
@@ -568,6 +566,7 @@ void PetWindow::setupLauncherChatBridge() {
             this, [notifyChanged](int, const QString&) { notifyChanged(); });
     connect(conversationModel.get(), &ChatConversationModel::messageChanged,
             this, [notifyChanged](int, const QString&) { notifyChanged(); });
+    connect(aiBrain.get(), &AIBrain::pendingUserMessagesChanged, this, notifyChanged);
     connect(aiBrain.get(), &AIBrain::thinkingStarted,
             this, [notifyChanged](const QString&) { notifyChanged(); });
     connect(aiBrain.get(), &AIBrain::thinkingFinished,

@@ -314,24 +314,18 @@ class LauncherChatTests(unittest.TestCase):
         self.settle()
         self.assertEqual(bar.value(), bar.maximum())
 
-    def test_enter_busy_stops_then_sends_draft_once_when_idle(self):
+    def test_enter_busy_sends_each_message_without_stopping_stream(self):
         client = StubChatClient()
         client.busy = True
         page = self.page()
         page.set_client(client)
-        page.input_edit.setPlainText("我的新问题")
-        QTest.keyClick(page.input_edit, Qt.Key_Return)
-        self.assertEqual(client.stop_calls, 1)
-        self.assertEqual(client.sent, [])
-        self.assertEqual(page.input_edit.toPlainText(), "我的新问题")
-        client.busy = False
-        client.revision += 1
-        page.poll_once()
-        page.poll_once()
-        self.assertEqual(client.sent, ["我的新问题"])
-        self.assertEqual(page.input_edit.toPlainText(), "")
-        QTest.keyClick(page.input_edit, Qt.Key_Return)
-        self.assertEqual(client.stop_calls, 1)
+        for text in ("我明天", "要去上海出差", "待两天"):
+            page.input_edit.setPlainText(text)
+            QTest.keyClick(page.input_edit, Qt.Key_Return)
+            self.assertEqual(page.input_edit.toPlainText(), "")
+        self.assertEqual(client.stop_calls, 0)
+        self.assertEqual(client.sent, ["我明天", "要去上海出差", "待两天"])
+        self.assertTrue(page.stop_button.isEnabled())
 
     def test_failed_send_preserves_draft_and_uses_notice_not_bubble(self):
         client = StubChatClient()

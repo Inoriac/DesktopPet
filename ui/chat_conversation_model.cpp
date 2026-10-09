@@ -134,7 +134,8 @@ QString ChatConversationModel::appendUserMessage(const QString& text,
 
 void ChatConversationModel::beginAssistantMessage(const QString& messageId,
                                                   const QString& replyToId,
-                                                  const QDateTime& timestamp) {
+                                                  const QDateTime& timestamp,
+                                                  const QStringList& sourceMessageIds) {
     if (!m_initialized || messageId.trimmed().isEmpty()
         || m_messageIndexes.contains(messageId)) {
         if (m_initialized) warnUnknownMessage();
@@ -153,12 +154,28 @@ void ChatConversationModel::beginAssistantMessage(const QString& messageId,
     entry.id = messageId;
     entry.role = QStringLiteral("assistant");
     entry.replyToId = replyToId;
+    entry.sourceMessageIds = sourceMessageIds;
     entry.timestamp = timestamp.isValid() ? timestamp : QDateTime::currentDateTime();
     entry.status = ChatMessageStatus::Pending;
     const int index = m_messages.size();
     m_messages.append(entry);
     m_messageIndexes.insert(entry.id, index);
     emit messageInserted(index, entry.id);
+}
+
+QString ChatConversationModel::sourceInputForReply(const QString& assistantMessageId) const {
+    const int index = indexOf(assistantMessageId);
+    if (index < 0 || m_messages.at(index).role != QLatin1String("assistant")) return {};
+    const auto& assistant = m_messages.at(index);
+    const QStringList ids = assistant.sourceMessageIds.isEmpty()
+        ? QStringList{assistant.replyToId} : assistant.sourceMessageIds;
+    QStringList fragments;
+    for (const auto& id : ids) {
+        const int source = indexOf(id);
+        if (source < 0 || m_messages.at(source).role != QLatin1String("user")) return {};
+        fragments.append(m_messages.at(source).content);
+    }
+    return fragments.join('\n');
 }
 
 void ChatConversationModel::appendAssistantDelta(const QString& messageId,

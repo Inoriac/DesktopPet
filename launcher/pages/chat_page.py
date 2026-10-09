@@ -104,7 +104,6 @@ class ChatPage(QWidget):
         self._known_statuses: dict[str, str] | None = None
         self._pending_text: str | None = None
         self._send_inflight = False
-        self._waiting_to_send = False
         self._last_error = ""
         self._diagnostic_events: list[str] = []
 
@@ -213,7 +212,7 @@ class ChatPage(QWidget):
         self._open_request_id = 0
         self._known_statuses = None
         self._pending_text = None
-        self._send_inflight = self._waiting_to_send = False
+        self._send_inflight = False
         self._busy = self._ai_enabled = False
         self._visible_count = self.PAGE_SIZE
         self._follow_bottom = True
@@ -252,8 +251,10 @@ class ChatPage(QWidget):
         self.title_label.setText(f"与 {state.get('petName') or '桌宠'} 聊天")
         self._busy = bool(state.get("busy"))
         self._ai_enabled = bool(state.get("aiEnabled"))
-        self.status_label.setText("正在回复…" if self._busy else (
-            "已连接" if self._ai_enabled else "AI 未启用"))
+        pending_count = int(state.get("pendingMessageCount") or 0)
+        self.status_label.setText(
+            f"已接收，等待处理 {pending_count} 条消息" if pending_count else
+            "正在回复…" if self._busy else ("已连接" if self._ai_enabled else "AI 未启用"))
         statistics = state.get("statistics") or {}
         for label, key, title in (
                 (self.call_count_label, "callCount", "调用"),
@@ -281,9 +282,6 @@ class ChatPage(QWidget):
                                    str(failed.get("errorMessage") or ""),
                                    str(failed.get("id") or ""))
         self._sync_controls()
-        if self._waiting_to_send and not self._busy:
-            self._waiting_to_send = False
-            self._send_pending()
 
     @staticmethod
     def _visible_message(message: dict) -> bool:
@@ -420,11 +418,7 @@ class ChatPage(QWidget):
             return
         self._last_error = ""
         self._pending_text = text
-        if self._busy:
-            self._waiting_to_send = True
-            self._client.stop_response()
-        else:
-            self._send_pending()
+        self._send_pending()
         self._sync_controls()
 
     def _send_pending(self) -> None:
@@ -437,7 +431,6 @@ class ChatPage(QWidget):
 
     def _stop(self) -> None:
         if self._client is not None and self._client.is_connected:
-            self._waiting_to_send = False
             if not self._send_inflight:
                 self._pending_text = None
             self._client.stop_response()
@@ -457,7 +450,7 @@ class ChatPage(QWidget):
     def _operation_failed(self, operation: str, detail: str) -> None:
         if operation in {"send_message", "stop_response"}:
             self._pending_text = None
-            self._send_inflight = self._waiting_to_send = False
+            self._send_inflight = False
         title = "发送失败" if operation == "send_message" else "连接暂时不可用"
         self._show_problem(title, "请检查桌宠和模型服务的连接后重试，草稿已保留。", detail)
         self._sync_controls()
@@ -515,7 +508,7 @@ class ChatPage(QWidget):
         self._poll_timer.stop()
         self._busy = self._ai_enabled = False
         self._pending_text = None
-        self._send_inflight = self._waiting_to_send = False
+        self._send_inflight = False
         self.status_label.setText("离线")
         self._sync_controls()
 
@@ -526,7 +519,7 @@ class ChatPage(QWidget):
                                       and self._pending_text is None)
         self.action_button.setText("发送中…" if self._pending_text else "发送")
         self.stop_button.setVisible(self._busy and connected)
-        self.stop_button.setEnabled(not self._waiting_to_send)
+        self.stop_button.setEnabled(connected)
 
     def refresh_theme(self) -> None:
         dark = isDarkTheme()

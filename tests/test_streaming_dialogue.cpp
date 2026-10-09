@@ -275,6 +275,14 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void bufferedInput_dispatchesWithoutWaitingForMoreInput();
+    void bufferedInput_keepsStreamingAndCombinesPendingMessages();
+    void bufferedInput_stopClearsPendingAndIgnoresLateCompletion();
+    void bufferedInput_failureStillDrainsPending();
+    void bufferedInput_disableClearsWaitingMessages();
+    void bufferedInput_retryDoesNotRefreshMemoryMention();
+    void bufferedInput_boundsQueueAndSplitsOversizedBatch();
+    void bufferedInput_startsPendingBatchWithoutQuietPeriod();
     void conversation_shouldKeepUserAndAssistantWithoutDuplicatingCurrentMessage();
     void conversation_shouldRestorePersistedHistoryAndKeepProfileIsolation();
     void conversation_shouldTrimOldTurnsAndIgnoreFailedHistory();
@@ -328,6 +336,180 @@ private slots:
     void stop_whenSideEffectsArePending_shouldNotDeliverCallbacksToDestroyedState();
     void messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillisecondTimerToAdvance();
 };
+
+void StreamingDialogueTests::bufferedInput_dispatchesWithoutWaitingForMoreInput() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse("回复"), {}, true}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QVERIFY(brain.submitUserMessage("我明天要去上海出差", "first").isOk());
+    QCOMPARE(started.count(), 0); // Asynchronous dispatch keeps the receive call short.
+    QCoreApplication::processEvents();
+    QCOMPARE(started.count(), 1); // No clock advance or second input is required.
+    QCOMPARE(brain.activeUserMessageIds(), QStringList({"first"}));
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+    QVERIFY(brain.isBusy());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    brain.stopCurrentResponse();
+}
+
+void StreamingDialogueTests::bufferedInput_keepsStreamingAndCombinesPendingMessages() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse("第一轮完整回复"), {}, true},
+                       {{delta("合并回答")}, true, textResponse("合并回答"), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QSignalSpy deltas(&brain, &AIBrain::assistantResponseDelta);
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("先讨论旅行计划", "first").isOk());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    client.publishPending(delta("第一轮"));
+    QTRY_VERIFY(!deltas.isEmpty()); // Visible before the provider has completed.
+    QVERIFY(brain.submitUserMessage("我还想了解上海", "second").isOk());
+    QVERIFY(brain.submitUserMessage("附近的博物馆", "third").isOk());
+    QCOMPARE(brain.pendingUserMessageCount(), 2);
+    QVERIFY(brain.canAcceptUserMessage());
+    QVERIFY(!client.handles.first()->cancelled);
+    QCOMPARE(client.messageBatches.size(), 1);
+    client.finishPendingEvenIfCancelled();
+    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 2, 3000);
+    QCOMPARE(client.messageBatches.size(), 2);
+    QVERIFY(!client.handles.first()->cancelled);
+    bool foundCombined = false, foundPriorReply = false;
+    for (const auto& msg : client.messageBatches.last()) {
+        foundCombined |= msg.content.contains("我还想了解上海\n附近的博物馆");
+        foundPriorReply |= msg.role == "assistant" && msg.content.contains("第一轮");
+    }
+    QVERIFY(foundCombined);
+    QVERIFY(foundPriorReply);
+}
+
+void StreamingDialogueTests::bufferedInput_stopClearsPendingAndIgnoresLateCompletion() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse("迟到回复"), {}, true}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QVERIFY(brain.submitUserMessage("分析我的旅行计划", "first").isOk());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    QVERIFY(brain.submitUserMessage("补充旅行信息", "second").isOk());
+    brain.stopCurrentResponse();
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+    QVERIFY(client.handles.first()->cancelled);
+    QSignalSpy deltas(&brain, &AIBrain::assistantResponseDelta);
+    client.finishPendingEvenIfCancelled();
+    QTest::qWait(1100);
+    QCOMPARE(client.messageBatches.size(), 1);
+    QCOMPARE(deltas.count(), 0);
+    QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::bufferedInput_failureStillDrainsPending() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, false, {}, "provider failed", true},
+                       {{delta("后续回复")}, true, textResponse("后续回复"), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("分析旅行计划", "first").isOk());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    QVERIFY(brain.submitUserMessage("继续讨论博物馆", "second").isOk());
+    client.finishPendingEvenIfCancelled();
+    QTRY_COMPARE_WITH_TIMEOUT(finished.count(), 2, 3000);
+    QCOMPARE(client.messageBatches.size(), 2);
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+}
+
+void StreamingDialogueTests::bufferedInput_disableClearsWaitingMessages() {
+    FakeStreamingClient client;
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QVERIFY(brain.submitUserMessage("分析旅行计划", "first").isOk());
+    brain.setEnabled(false);
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+    QVERIFY(!brain.submitUserMessage("继续", "second").isOk());
+    brain.setEnabled(true);
+    QTest::qWait(1100);
+    QCOMPARE(client.messageBatches.size(), 0);
+}
+
+void StreamingDialogueTests::bufferedInput_boundsQueueAndSplitsOversizedBatch() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse("第一批"), {}, true},
+                       {{}, true, textResponse("第二批"), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    const QString longInput(5000, QChar('x'));
+    QVERIFY(brain.submitUserMessage(longInput, "first").isOk());
+    QVERIFY(brain.submitUserMessage(longInput, "second").isOk());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    QCOMPARE(brain.activeUserMessageIds(), QStringList({"first"}));
+    QCOMPARE(brain.pendingUserMessageCount(), 1);
+    client.finishPendingEvenIfCancelled();
+    QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 2, 3000);
+    QTRY_VERIFY(!brain.isBusy());
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+    for (int i = 0; i < 64; ++i)
+        QVERIFY(brain.submitUserMessage("消息", QString::number(i)).isOk());
+    QVERIFY(!brain.canAcceptUserMessage());
+    QVERIFY(!brain.submitUserMessage("第 65 条", "overflow").isOk());
+    QCOMPARE(brain.pendingUserMessageCount(), 64);
+    brain.stopCurrentResponse();
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+}
+
+void StreamingDialogueTests::bufferedInput_startsPendingBatchWithoutQuietPeriod() {
+    FakeStreamingClient client;
+    client.attempts = {{{}, true, textResponse("第一轮回复"), {}, true},
+                       {{}, true, textResponse("第二轮回复"), {}, true}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    QVERIFY(initializeBrain(brain, dir));
+    QSignalSpy started(&brain, &AIBrain::assistantResponseStarted);
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("先讨论旅行计划", "first").isOk());
+    QTRY_VERIFY_WITH_TIMEOUT(client.pending.has_value(), 3000);
+    QVERIFY(brain.submitUserMessage("我还想了解上海", "second").isOk());
+    QVERIFY(brain.submitUserMessage("附近的博物馆", "third").isOk());
+    client.finishPendingEvenIfCancelled();
+    QTRY_COMPARE(finished.count(), 1);
+    QCoreApplication::processEvents();
+    QCOMPARE(started.count(), 2); // Even freshly received inputs start without a quiet window.
+    QCOMPARE(brain.activeUserMessageIds(), QStringList({"second", "third"}));
+    QCOMPARE(brain.pendingUserMessageCount(), 0);
+    brain.stopCurrentResponse();
+}
+
+void StreamingDialogueTests::bufferedInput_retryDoesNotRefreshMemoryMention() {
+    FakeStreamingClient client;
+    client.attempts = {{{delta("知道了")}, true, textResponse("知道了"), {}, false},
+                       {{delta("再答一次")}, true, textResponse("再答一次"), {}, false}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir dir;
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(dir, &brain, bridge.get())).isOk());
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    const QString input = "我最近在学习绘画";
+    QVERIFY(brain.submitUserMessage(input, "first").isOk());
+    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 3000);
+    QString memoryId;
+    for (const auto& entry : brain.memoryStore()->all())
+        if (entry.content == input) memoryId = entry.id;
+    QVERIFY(!memoryId.isEmpty());
+    const auto before = *brain.memoryStore()->findById(memoryId);
+    QVERIFY(brain.submitUserMessage(input, "retry", false).isOk());
+    QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 2, 3000);
+    const auto after = *brain.memoryStore()->findById(memoryId);
+    QCOMPARE(after.mentionCount, before.mentionCount);
+    QCOMPARE(after.lastMentionedAt, before.lastMentionedAt);
+}
 
 void StreamingDialogueTests::conversation_shouldKeepUserAndAssistantWithoutDuplicatingCurrentMessage() {
     FakeStreamingClient client;

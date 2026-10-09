@@ -155,7 +155,15 @@ void PetWindow::setupScreenChat() {
                 QStringLiteral("AI 当前没有启用，暂时不能回复。"));
             return;
         }
-        aiBrain->triggerThink(text, "user_request", userMessageId);
+        const auto submitted = aiBrain->submitUserMessage(text, userMessageId);
+        if (!submitted.isOk()) {
+            qWarning() << "[Chat] message could not be queued:" << submitted.error().message;
+            const QString assistantId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            conversationModel->beginAssistantMessage(assistantId, userMessageId);
+            conversationModel->finishAssistantMessage(
+                assistantId, ChatMessageStatus::Failed, submitted.error().message);
+            showChatErrorNotification();
+        }
     });
 
     // setupScreenChat runs before the model and AIBrain are constructed.

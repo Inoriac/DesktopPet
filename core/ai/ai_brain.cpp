@@ -92,6 +92,9 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     });
     m_daydreamConfig = ConfigManager::instance().getDaydreamConfig();
     m_daydreamPolicy.configure(m_daydreamConfig);
+    m_userMessageDispatchTimer.setSingleShot(true);
+    connect(&m_userMessageDispatchTimer, &QTimer::timeout,
+            this, &AIBrain::dispatchPendingUserMessages);
     setupTriggerTimers();
     m_skillStore.load();
 }
@@ -338,8 +341,63 @@ void AIBrain::stop() {
 }
 
 bool AIBrain::canAcceptUserMessage() const {
-    return !m_busy || (m_activeDialogueResponse
-        && isAutomaticTrigger(m_activeDialogueResponse->triggerTag));
+    return m_enabled && m_storageInitialized && m_pendingUserMessages.size() < 64;
+}
+
+Result<void, DomainError> AIBrain::submitUserMessage(
+    const QString& text, const QString& messageId, bool rememberInput) {
+    const QString input = text.trimmed();
+    if (input.isEmpty() || input.size() > 8000 || messageId.isEmpty()) {
+        return Result<void, DomainError>::failure(domainError(
+            QStringLiteral("CHAT_MESSAGE_INVALID"), QStringLiteral("消息为空或超过 8000 个字符。")));
+    }
+    if (!canAcceptUserMessage()) {
+        return Result<void, DomainError>::failure(domainError(
+            QStringLiteral("CHAT_UNAVAILABLE"), QStringLiteral("聊天尚未就绪或等待中的消息过多，请稍后再试。")));
+    }
+    // UI history owns durable original messages; this queue only schedules turns.
+    // An active provider request keeps its immutable context and continues streaming.
+    m_pendingUserMessages.append({input, messageId, QDateTime::currentDateTimeUtc(),
+                                  rememberInput});
+    ++m_interactionRevision;
+    m_unansweredProactiveChats = 0;
+    m_cooldownAfterProactive = false;
+    m_conversationCooldown.start();
+    if (m_runtimeServices) m_runtimeServices->cancelSleepForUserInteraction();
+    emit pendingUserMessagesChanged();
+    schedulePendingUserMessages();
+    return Result<void, DomainError>::success();
+}
+
+QStringList AIBrain::activeUserMessageIds() const {
+    return m_activeDialogueResponse ? m_activeDialogueResponse->sourceMessageIds : QStringList{};
+}
+
+void AIBrain::schedulePendingUserMessages() {
+    if (m_busy || !m_enabled || m_pendingUserMessages.isEmpty()) return;
+    // Dispatch on the next event-loop turn, without waiting for more input.
+    // This also avoids recursive turns when a local reply completes synchronously.
+    if (!m_userMessageDispatchTimer.isActive()) m_userMessageDispatchTimer.start(0);
+}
+
+void AIBrain::dispatchPendingUserMessages() {
+    if (m_busy || !m_enabled || m_pendingUserMessages.isEmpty()) return;
+    QStringList fragments;
+    qsizetype characters = 0;
+    const bool rememberInput = m_pendingUserMessages.first().rememberInput;
+    while (!m_pendingUserMessages.isEmpty()) {
+        const auto& next = m_pendingUserMessages.first();
+        if (!fragments.isEmpty() && (characters + 1 + next.text.size() > 8000
+                                    || next.rememberInput != rememberInput)) break;
+        characters += next.text.size() + (fragments.isEmpty() ? 0 : 1);
+        fragments.append(next.text);
+        m_dispatchingUserMessages.append(m_pendingUserMessages.takeFirst());
+    }
+    const QString replyToId = m_dispatchingUserMessages.last().id;
+    triggerThink(fragments.join('\n'), QStringLiteral("user_request"), replyToId);
+    m_dispatchingUserMessages.clear();
+    emit pendingUserMessagesChanged();
+    schedulePendingUserMessages();
 }
 
 bool AIBrain::isAutomaticTrigger(const QString& triggerTag) {
@@ -359,7 +417,7 @@ bool AIBrain::suppressMutedAutomaticResponse() {
         || automaticTextAllowed()) {
         return false;
     }
-    stopCurrentResponse();
+    cancelActiveResponse();
     return true;
 }
 
@@ -386,7 +444,7 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
 
 bool AIBrain::canStartProactiveChat() const {
     if (!automaticTextAllowed()) return false;
-    return m_enabled && m_storageInitialized && !m_busy
+    return m_enabled && m_storageInitialized && !m_busy && m_pendingUserMessages.isEmpty()
         && (!m_conversationCooldown.isValid()
             || m_conversationCooldown.elapsed() >= (m_cooldownAfterProactive
                 ? proactiveChatTiming(m_proactiveBaseIntervalMs).cooldownMs : 60000));
@@ -397,6 +455,10 @@ void AIBrain::triggerThink(const QString& reason,
                            const QString& replyToId,
                            const QString& voiceSource) {
     const qint64 triggerStartedAt = monotonicMilliseconds();
+    if (isAutomaticTrigger(triggerTag) && !m_pendingUserMessages.isEmpty()) {
+        scheduleTrigger(triggerTag);
+        return;
+    }
     const bool userInitiated = triggerTag == QLatin1String("manual")
         || triggerTag == QLatin1String("user_request")
         || triggerTag == QLatin1String("screen_chat")
@@ -417,7 +479,7 @@ void AIBrain::triggerThink(const QString& reason,
         // A user's message takes priority over an unannounced background thought.
         if (m_activeDialogueResponse
             && isAutomaticTrigger(m_activeDialogueResponse->triggerTag)) {
-            stopCurrentResponse();
+            cancelActiveResponse();
         }
     }
     if (m_runtimeServices && userInitiated) {
@@ -604,6 +666,13 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
     response.generation = m_requestGeneration;
     response.acceptedAtMonotonicMs = monotonicMilliseconds();
     response.priorConversation = m_memory;
+    if (m_dispatchingUserMessages.isEmpty()) {
+        if (!replyToId.isEmpty()) response.sourceMessageIds.append(replyToId);
+    } else {
+        for (const auto& message : m_dispatchingUserMessages) response.sourceMessageIds.append(message.id);
+        response.inputMentionedAt = m_dispatchingUserMessages.last().receivedAt;
+        response.rememberInput = m_dispatchingUserMessages.first().rememberInput;
+    }
     m_activeDialogueResponse.emplace(std::move(response));
     if (isAutomaticTrigger(triggerTag)) return;
     m_activeDialogueResponse->announced = true;
@@ -697,9 +766,19 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
         emit thinkingFinished(status == ChatMessageStatus::Complete, errorMessage);
         emit assistantResponseFinished(finished.messageId, status, errorMessage);
     }
+    schedulePendingUserMessages();
 }
 
 void AIBrain::stopCurrentResponse() {
+    m_userMessageDispatchTimer.stop();
+    if (!m_pendingUserMessages.isEmpty()) {
+        m_pendingUserMessages.clear();
+        emit pendingUserMessagesChanged();
+    }
+    cancelActiveResponse();
+}
+
+void AIBrain::cancelActiveResponse() {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     const QString sessionId = m_activeDialogueResponse->sessionId;
     const quint64 generation = m_activeDialogueResponse->generation;
@@ -848,12 +927,19 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
     if (!shouldUseLocalRouter(triggerTag)) {
         return;
     }
+    if (m_activeDialogueResponse && !m_activeDialogueResponse->rememberInput) return;
+    const auto annotateInput = [this](MemoryEntry& entry) {
+        if (!m_activeDialogueResponse) return;
+        if (m_activeDialogueResponse->inputMentionedAt.isValid())
+            entry.lastMentionedAt = m_activeDialogueResponse->inputMentionedAt;
+    };
 
     QList<MemoryCandidate> candidates = m_memoryExtractor.extractFromUserInput(input, triggerTag);
     if (!candidates.isEmpty()) {
         for (MemoryCandidate& candidate : candidates) {
             if (candidate.operation == MemoryCandidateOperation::Write) {
                 annotateMemoryEntry(candidate.entry);
+                annotateInput(candidate.entry);
                 MemoryMetadata::recordSession(candidate.entry, sessionId);
                 candidate.entry.payload[QStringLiteral("request_id")] = requestId;
             }
@@ -864,6 +950,7 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
         impression = m_memoryExtractor.extractDaydreamImpression(input, triggerTag);
         if (!impression.content.isEmpty()) {
             annotateMemoryEntry(impression);
+            annotateInput(impression);
             MemoryMetadata::recordSession(impression, sessionId);
             impression.payload[QStringLiteral("request_id")] = requestId;
         }

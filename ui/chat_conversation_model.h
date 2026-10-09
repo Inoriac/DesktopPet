@@ -23,7 +23,9 @@ public:
     void beginAssistantMessage(
         const QString& messageId,
         const QString& replyToId = {},
-        const QDateTime& timestamp = QDateTime::currentDateTime());
+        const QDateTime& timestamp = QDateTime::currentDateTime(),
+        const QStringList& sourceMessageIds = {});
+    QString sourceInputForReply(const QString& assistantMessageId) const;
     void appendAssistantDelta(const QString& messageId, const QString& delta);
     void setAssistantStage(const QString& messageId, ChatActivityStage stage);
     void finishAssistantMessage(const QString& messageId,

@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QString>
+#include <QStringList>
 
 #include <optional>
 
@@ -16,6 +17,7 @@ struct ChatHistoryEntry {
     QDateTime timestamp;
     ChatMessageStatus status = ChatMessageStatus::Complete;
     QString errorMessage;
+    QStringList sourceMessageIds;
 };
 
 bool isTerminalChatMessageStatus(ChatMessageStatus status);

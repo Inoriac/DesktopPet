@@ -48,6 +48,7 @@ class TestChatConversationModel : public QObject {
     Q_OBJECT
 
 private slots:
+    void groupedReply_shouldRestoreAllSourceMessagesForRetry();
     void initTestCase();
     void cleanup();
     void appendUserMessage_whenTextIsValid_shouldInsertPersistAndReturnStableId();
@@ -65,6 +66,25 @@ private slots:
 private:
     std::unique_ptr<QTemporaryDir> m_settingsDirectory;
 };
+
+void TestChatConversationModel::groupedReply_shouldRestoreAllSourceMessagesForRetry() {
+    QTemporaryDir dir;
+    const auto options = optionsFor(dir);
+    ChatConversationModel model;
+    QString error;
+    QVERIFY(model.initialize(options, &error));
+    const auto one = model.appendUserMessage("我明天");
+    const auto two = model.appendUserMessage("去上海");
+    const auto three = model.appendUserMessage("待两天");
+    model.beginAssistantMessage("reply", three, QDateTime::currentDateTime(), {one, two, three});
+    model.finishAssistantMessage("reply", ChatMessageStatus::Failed, "provider failed");
+    ChatConversationModel restored;
+    QVERIFY(restored.initialize(options, &error));
+    QCOMPARE(restored.sourceInputForReply("reply"), QString("我明天\n去上海\n待两天"));
+    const auto last = restored.appendUserMessage("另一条消息");
+    restored.beginAssistantMessage("legacy", last);
+    QCOMPARE(restored.sourceInputForReply("legacy"), QString("另一条消息"));
+}
 
 void TestChatConversationModel::initTestCase() {
     m_settingsDirectory = std::make_unique<QTemporaryDir>();
