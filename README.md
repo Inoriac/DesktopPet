@@ -90,8 +90,6 @@
 
 模型分工新增 `agencyDecision`、`taskExecution`、`personalityEvolution`，缺省复用对话服务。活动模型配置的 `taskOrchestration` 可设置预算，参见配置示例。私密日记与内心活动会交给对应角色配置的模型服务商处理；切换连接档案会改变接收方。“私密”约束存储与披露，不表示仅在本地运算。缺少加密或密钥链依赖时，事实经历仍保存，私密感受保留待处理，绝不降级为明文。
 
-实现与 Windows 验收记录见 [实现总结](.evo/tasks/personality-task-orchestration/实现总结.md)。
-
 ---
 
 ## 🛠️ 技术栈
@@ -161,5 +159,3 @@ Desktop-Pet/
 * `memory_improvement_plan.md`：记忆框架改进方案与实施进度
 * `daydream.md`：桌宠空闲记忆整理（Daydream）设计
 * `前端修改计划.md`：Python 前端改造方案
-* `.evo/tasks/desktop-pet-self-evolution/桌宠自主迭代-桌面端系分.md`：自主迭代总体技术设计
-* `.evo/tasks/desktop-pet-self-evolution/桌宠自主迭代-桌面端-impl-plan.md`：Task 1A–5 实现与静态验收记录

@@ -47,6 +47,7 @@ assets/models/*
 **/.DS_Store
 
 # IDE / local generated files
+/.evo/
 .vscode/
 .idea/
 cmake-build-*/
