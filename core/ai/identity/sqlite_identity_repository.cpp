@@ -6,8 +6,11 @@
 #include <QSqlDatabase>
 #include <QSqlError>
 #include <QSqlQuery>
+#include <QSet>
 #include <QUuid>
 #include <QVariant>
+
+#include <algorithm>
 
 namespace {
 
@@ -83,6 +86,18 @@ Result<TraitEvidence, DomainError> evidenceFromQuery(const QSqlQuery& query) {
     evidence.status = *status;
     evidence.createdAt = dateFromStorage(
         query.value(QStringLiteral("created_at")).toString());
+    evidence.originalSourceId = query.value(QStringLiteral("original_source_id")).toString();
+    evidence.sourceCategory = query.value(QStringLiteral("source_category")).toString();
+    const auto category = traitEvidenceCategoryFromString(query.value(QStringLiteral("category")).toString());
+    if (!category.has_value()) {
+        return Result<TraitEvidence, DomainError>::failure(
+            identityStoreError(QStringLiteral("trait evidence category is invalid")));
+    }
+    evidence.category = *category;
+    evidence.originalOccurredAt = dateFromStorage(query.value(QStringLiteral("original_occurred_at")).toString());
+    evidence.sourceSequence = query.value(QStringLiteral("source_sequence")).toLongLong();
+    evidence.consumedVersion = query.value(QStringLiteral("consumed_version")).toLongLong();
+    evidence.revision = query.value(QStringLiteral("revision")).toLongLong();
     return Result<TraitEvidence, DomainError>::success(std::move(evidence));
 }
 
@@ -107,10 +122,20 @@ Result<PersonalitySnapshot, DomainError> personalityFromQuery(
     snapshot.version = query.value(QStringLiteral("version")).toLongLong();
     snapshot.baseline = IdentityBaseline::fromJson(baselineJson.value());
     const QJsonObject state = tendencyJson.value();
+    snapshot.parentVersion = state.value(QStringLiteral("parentVersion")).toVariant().toLongLong();
+    snapshot.behaviorStyleSummary = state.value(QStringLiteral("behaviorStyleSummary")).toString();
+    snapshot.selfNarrativeSummary = state.value(QStringLiteral("selfNarrativeSummary")).toString();
+    const auto revisions = state.value(QStringLiteral("sourceEvidenceRevisions")).toObject();
+    for (auto it = revisions.begin(); it != revisions.end(); ++it)
+        snapshot.sourceEvidenceRevisions.insert(it.key(), it.value().toInteger());
     snapshot.tendencies = numericMapFromJson(
         state.value(QStringLiteral("tendencies")).isObject()
             ? state.value(QStringLiteral("tendencies")).toObject()
             : state);
+    for (auto it = snapshot.tendencies.begin(); it != snapshot.tendencies.end();) {
+        if (traitConsolidationLimit(it.key()) <= 0.0) it = snapshot.tendencies.erase(it);
+        else { it.value() = std::clamp(it.value(), -0.30, 0.30); ++it; }
+    }
     const QJsonArray sources = state.value(
         QStringLiteral("sourceEvidenceIds")).toArray();
     for (const QJsonValue& source : sources) {
@@ -236,6 +261,46 @@ Result<void, DomainError> SqliteIdentityRepository::open(
             return Result<void, DomainError>::failure(error);
         }
     }
+    // Additive identity migration: legacy evidence keeps its original event and date.
+    QSet<QString> columns;
+    QSqlQuery fields(database);
+    if (!fields.exec(QStringLiteral("PRAGMA table_info(trait_evidence)"))) {
+        return Result<void, DomainError>::failure(identityStoreError(
+            QStringLiteral("failed to inspect evidence schema"), fields.lastError()));
+    }
+    while (fields.next()) columns.insert(fields.value(1).toString());
+    fields.finish();
+    if (!database.transaction()) {
+        return Result<void, DomainError>::failure(identityStoreError(
+            QStringLiteral("failed to begin evidence migration"), database.lastError()));
+    }
+    const QMap<QString, QString> additions{
+        {QStringLiteral("original_source_id"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("source_category"), QStringLiteral("TEXT NOT NULL DEFAULT 'interaction'")},
+        {QStringLiteral("category"), QStringLiteral("TEXT NOT NULL DEFAULT 'fact'")},
+        {QStringLiteral("original_occurred_at"), QStringLiteral("TEXT NOT NULL DEFAULT ''")},
+        {QStringLiteral("source_sequence"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("consumed_version"), QStringLiteral("INTEGER NOT NULL DEFAULT 0")},
+        {QStringLiteral("revision"), QStringLiteral("INTEGER NOT NULL DEFAULT 1")}
+    };
+    for (auto it = additions.cbegin(); it != additions.cend(); ++it) {
+        if (columns.contains(it.key())) continue;
+        QSqlQuery migration(database);
+        if (!migration.exec(QStringLiteral("ALTER TABLE trait_evidence ADD COLUMN %1 %2").arg(it.key(), it.value()))) {
+            database.rollback();
+            return Result<void, DomainError>::failure(identityStoreError(
+                QStringLiteral("failed to migrate evidence provenance"), migration.lastError()));
+        }
+    }
+    QSqlQuery migration(database);
+    if (!migration.exec(QStringLiteral("UPDATE trait_evidence SET original_source_id=COALESCE(source_event_id,evidence_id) WHERE original_source_id=''"))
+        || !migration.exec(QStringLiteral("UPDATE trait_evidence SET original_occurred_at=created_at WHERE original_occurred_at=''"))
+        || !migration.exec(QStringLiteral("CREATE UNIQUE INDEX IF NOT EXISTS idx_trait_original ON trait_evidence(profile_id,trait,original_source_id)"))
+        || !database.commit()) {
+        database.rollback();
+        return Result<void, DomainError>::failure(identityStoreError(
+            QStringLiteral("failed to commit evidence provenance migration"), migration.lastError()));
+    }
     m_databasePath = QFileInfo(databasePath).absoluteFilePath();
     return Result<void, DomainError>::success();
 }
@@ -269,24 +334,69 @@ Result<void, DomainError> SqliteIdentityRepository::insertEvidence(
     if (!evidence.sourceEventId.isEmpty()) {
         QSqlQuery existing(database);
         existing.prepare(QStringLiteral(
-            "SELECT evidence_id FROM trait_evidence "
-            "WHERE profile_id=? AND trait=? AND source_event_id=? LIMIT 1"));
+            "SELECT * FROM trait_evidence "
+            "WHERE profile_id=? AND trait=? AND original_source_id=? LIMIT 1"));
         existing.addBindValue(evidence.profileId);
         existing.addBindValue(evidence.trait);
-        existing.addBindValue(evidence.sourceEventId);
+        existing.addBindValue(evidence.originalSourceId);
         if (!existing.exec()) {
             return Result<void, DomainError>::failure(identityStoreError(
                 QStringLiteral("failed to check duplicate trait evidence"),
                 existing.lastError()));
         }
-        if (existing.next()) return Result<void, DomainError>::success();
+        if (existing.next()) {
+            const auto parsed = evidenceFromQuery(existing);
+            if (!parsed.isOk()) return Result<void, DomainError>::failure(parsed.error());
+            const auto previous = parsed.value();
+            existing.finish();
+            if (previous.status == TraitEvidenceStatus::Consumed)
+                return Result<void, DomainError>::success();
+            // A new interpretation can change meaning, never the original event's
+            // time or known ledger position. Legacy zero positions may be enriched.
+            if (previous.originalOccurredAt != evidence.originalOccurredAt
+                || (previous.sourceSequence > 0 && evidence.sourceSequence > 0
+                    && previous.sourceSequence != evidence.sourceSequence)) {
+                return Result<void, DomainError>::failure(domainError(
+                    QStringLiteral("IDENTITY_EVIDENCE_INVALID"),
+                    QStringLiteral("evidence revision cannot change original provenance")));
+            }
+            const qint64 sequence = previous.sourceSequence > 0 ? previous.sourceSequence : evidence.sourceSequence;
+            if (previous.direction == evidence.direction && previous.weight == evidence.weight
+                && previous.confidence == evidence.confidence && previous.contextKey == evidence.contextKey
+                && previous.category == evidence.category && previous.sourceCategory == evidence.sourceCategory
+                && previous.sourceEventId == evidence.sourceEventId && previous.status == evidence.status
+                && previous.sourceSequence == sequence) return Result<void, DomainError>::success();
+            QSqlQuery update(database);
+            update.prepare(QStringLiteral(
+                "UPDATE trait_evidence SET direction=?,weight=?,confidence=?,context_key=?,category=?,"
+                "source_category=?,source_event_id=?,status=?,source_sequence=?,revision=revision+1 "
+                "WHERE evidence_id=? AND profile_id=? AND status IN ('Pending','Rejected') AND revision=?"));
+            update.addBindValue(evidence.direction);
+            update.addBindValue(evidence.weight);
+            update.addBindValue(evidence.confidence);
+            update.addBindValue(evidence.contextKey);
+            update.addBindValue(traitEvidenceCategoryToString(evidence.category));
+            update.addBindValue(evidence.sourceCategory);
+            update.addBindValue(evidence.sourceEventId);
+            update.addBindValue(traitEvidenceStatusToString(evidence.status));
+            update.addBindValue(sequence);
+            update.addBindValue(previous.evidenceId);
+            update.addBindValue(evidence.profileId);
+            update.addBindValue(previous.revision);
+            if (!update.exec()) return Result<void, DomainError>::failure(identityStoreError(
+                QStringLiteral("failed to revise pending evidence"), update.lastError()));
+            if (update.numRowsAffected() != 1) return Result<void, DomainError>::failure(
+                versionConflict(QStringLiteral("evidence changed during revision")));
+            return Result<void, DomainError>::success();
+        }
     }
 
     QSqlQuery insert(database);
     insert.prepare(QStringLiteral(
         "INSERT INTO trait_evidence(evidence_id,profile_id,trait,source_event_id,"
-        "direction,weight,confidence,context_key,status,created_at) "
-        "VALUES(?,?,?,?,?,?,?,?,?,?)"));
+        "direction,weight,confidence,context_key,status,created_at,original_source_id,"
+        "source_category,category,original_occurred_at,source_sequence,consumed_version) "
+        "VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)"));
     insert.addBindValue(evidence.evidenceId);
     insert.addBindValue(evidence.profileId);
     insert.addBindValue(evidence.trait);
@@ -297,6 +407,12 @@ Result<void, DomainError> SqliteIdentityRepository::insertEvidence(
     insert.addBindValue(evidence.contextKey);
     insert.addBindValue(traitEvidenceStatusToString(evidence.status));
     insert.addBindValue(dateToStorage(evidence.createdAt));
+    insert.addBindValue(evidence.originalSourceId);
+    insert.addBindValue(evidence.sourceCategory);
+    insert.addBindValue(traitEvidenceCategoryToString(evidence.category));
+    insert.addBindValue(dateToStorage(evidence.originalOccurredAt));
+    insert.addBindValue(evidence.sourceSequence);
+    insert.addBindValue(evidence.consumedVersion);
     if (!insert.exec()) {
         return Result<void, DomainError>::failure(identityStoreError(
             QStringLiteral("failed to insert trait evidence"), insert.lastError()));
@@ -344,7 +460,7 @@ SqliteIdentityRepository::pendingEvidence(
     QSqlQuery query(QSqlDatabase::database(m_connectionName));
     query.prepare(QStringLiteral(
         "SELECT * FROM trait_evidence WHERE profile_id=? AND status='Pending' "
-        "AND created_at>=? AND created_at<=? ORDER BY created_at,evidence_id"));
+        "AND original_occurred_at>=? AND original_occurred_at<=? ORDER BY original_occurred_at,evidence_id"));
     query.addBindValue(profileId);
     query.addBindValue(dateToStorage(from));
     query.addBindValue(dateToStorage(to));
@@ -495,15 +611,23 @@ Result<void, DomainError> SqliteIdentityRepository::appendPersonalityState(
         return Result<void, DomainError>::failure(identityStoreError(
             QStringLiteral("failed to read personality CAS version"), current.lastError()));
     }
-    if (current.value(0).toLongLong() != snapshot.version - 1) {
+    if (current.value(0).toLongLong() != snapshot.parentVersion
+        || snapshot.version != snapshot.parentVersion + 1) {
         return Result<void, DomainError>::failure(
             versionConflict(QStringLiteral("personality version changed")));
     }
 
     QJsonArray sources;
     for (const QString& source : snapshot.sourceEvidenceIds) sources.append(source);
+    QJsonObject evidenceRevisions;
+    for (auto it = snapshot.sourceEvidenceRevisions.cbegin(); it != snapshot.sourceEvidenceRevisions.cend(); ++it)
+        evidenceRevisions.insert(it.key(), it.value());
     const QJsonObject tendencyState{
         {QStringLiteral("tendencies"), numericMapToJson(snapshot.tendencies)},
+        {QStringLiteral("parentVersion"), static_cast<double>(snapshot.parentVersion)},
+        {QStringLiteral("behaviorStyleSummary"), snapshot.behaviorStyleSummary},
+        {QStringLiteral("selfNarrativeSummary"), snapshot.selfNarrativeSummary},
+        {QStringLiteral("sourceEvidenceRevisions"), evidenceRevisions},
         {QStringLiteral("sourceEvidenceIds"), sources}
     };
     QSqlQuery insert(database);
@@ -527,14 +651,18 @@ Result<void, DomainError> SqliteIdentityRepository::appendPersonalityState(
     for (const QString& evidenceId : consumedEvidenceIds) {
         QSqlQuery consume(database);
         consume.prepare(QStringLiteral(
-            "UPDATE trait_evidence SET status='Consumed' "
-            "WHERE evidence_id=? AND profile_id=? AND status='Pending'"));
+            "UPDATE trait_evidence SET status='Consumed',consumed_version=? "
+            "WHERE evidence_id=? AND profile_id=? AND status='Pending' AND revision=?"));
+        consume.addBindValue(snapshot.version);
         consume.addBindValue(evidenceId);
         consume.addBindValue(snapshot.profileId);
-        if (!consume.exec() || consume.numRowsAffected() != 1) {
+        consume.addBindValue(snapshot.sourceEvidenceRevisions.value(evidenceId));
+        if (!consume.exec()) {
             return Result<void, DomainError>::failure(identityStoreError(
                 QStringLiteral("failed to consume trait evidence"), consume.lastError()));
         }
+        if (consume.numRowsAffected() != 1) return Result<void, DomainError>::failure(
+            versionConflict(QStringLiteral("trait evidence changed before publication")));
     }
     return Result<void, DomainError>::success();
 }

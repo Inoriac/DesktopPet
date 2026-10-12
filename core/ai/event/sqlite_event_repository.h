@@ -17,7 +17,7 @@ public:
     const QString& databasePath() const { return m_databasePath; }
     const QString& connectionName() const { return m_connectionName; }
 
-    Result<EventRecord, DomainError> append(const EventDraft& draft);
+    Result<EventRecord, DomainError> append(const EventDraft& draft, bool idempotent = false);
     Result<QList<EventRecord>, DomainError> readAfter(
         qint64 sequence, const EventFilter& filter, int limit) const;
     Result<qint64, DomainError> currentCheckpoint(const QString& consumerId) const;

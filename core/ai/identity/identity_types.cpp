@@ -11,17 +11,17 @@ PersonalityPolicy sanitizePersonalityPolicy(const PersonalityPolicy& policy) {
         sanitized.minimumIndependentEvidence = defaults.minimumIndependentEvidence;
     } else {
         sanitized.minimumIndependentEvidence = std::min(
-            sanitized.minimumIndependentEvidence, 64);
+            std::max(sanitized.minimumIndependentEvidence, 3), 64);
     }
     if (sanitized.minimumContextKeys < 1) {
         sanitized.minimumContextKeys = defaults.minimumContextKeys;
     } else {
-        sanitized.minimumContextKeys = std::min(sanitized.minimumContextKeys, 16);
+        sanitized.minimumContextKeys = std::clamp(sanitized.minimumContextKeys, 2, 16);
     }
     if (sanitized.minimumWindowDays < 1) {
         sanitized.minimumWindowDays = defaults.minimumWindowDays;
     } else {
-        sanitized.minimumWindowDays = std::min(sanitized.minimumWindowDays, 365);
+        sanitized.minimumWindowDays = std::clamp(sanitized.minimumWindowDays, 14, 365);
     }
     if (!std::isfinite(sanitized.maxDeltaPerWindow)
         || sanitized.maxDeltaPerWindow <= 0.0) {
@@ -37,6 +37,52 @@ PersonalityPolicy sanitizePersonalityPolicy(const PersonalityPolicy& policy) {
             sanitized.maxPromptSlotChars, 64, 4096);
     }
     return sanitized;
+}
+
+QString traitEvidenceCategoryToString(TraitEvidenceCategory category) {
+    switch (category) {
+    case TraitEvidenceCategory::Fact: return QStringLiteral("fact");
+    case TraitEvidenceCategory::Feeling: return QStringLiteral("feeling");
+    case TraitEvidenceCategory::Speculation: return QStringLiteral("speculation");
+    }
+    return QStringLiteral("speculation");
+}
+
+std::optional<TraitEvidenceCategory> traitEvidenceCategoryFromString(const QString& value) {
+    if (value == QLatin1String("fact")) return TraitEvidenceCategory::Fact;
+    if (value == QLatin1String("feeling")) return TraitEvidenceCategory::Feeling;
+    if (value == QLatin1String("speculation")) return TraitEvidenceCategory::Speculation;
+    return std::nullopt;
+}
+
+double traitConsolidationLimit(const QString& trait) {
+    if (trait == QLatin1String("initiative") || trait == QLatin1String("sociability")
+        || trait == QLatin1String("persistence")) return 0.04;
+    if (trait == QLatin1String("openness")) return 0.05;
+    if (trait == QLatin1String("caution") || trait == QLatin1String("autonomy")) return 0.03;
+    if (trait == QLatin1String("helpfulness")) return 0.02;
+    return 0.0;
+}
+
+QMap<QString, double> PersonalitySnapshot::effectiveTraits() const {
+    QMap<QString, double> values = IdentityBaseline::defaults().traits;
+    for (auto it = values.begin(); it != values.end(); ++it) {
+        it.value() = std::clamp(baseline.traits.value(it.key(), it.value())
+            + std::clamp(tendencies.value(it.key()), -0.30, 0.30), 0.05, 0.95);
+    }
+    return values;
+}
+
+QMap<QString, double> relationshipDefaults() {
+    return {{QStringLiteral("affinity"), 0.50}, {QStringLiteral("trust"), 0.45},
+            {QStringLiteral("familiarity"), 0.10}, {QStringLiteral("boundaryRespect"), 0.60}};
+}
+
+double RelationshipSnapshot::favorability() const {
+    return 0.4 * tendencies.value(QStringLiteral("affinity"), 0.50)
+        + 0.3 * tendencies.value(QStringLiteral("trust"), 0.45)
+        + 0.2 * tendencies.value(QStringLiteral("familiarity"), 0.10)
+        + 0.1 * tendencies.value(QStringLiteral("boundaryRespect"), 0.60);
 }
 
 QString traitEvidenceStatusToString(TraitEvidenceStatus status) {
@@ -120,6 +166,7 @@ QJsonObject relationshipSnapshotStateToJson(
     }
     return {
         {QStringLiteral("tendencies"), numericMapToJson(snapshot.tendencies)},
+        {QStringLiteral("dailyAbsoluteChanges"), numericMapToJson(snapshot.dailyAbsoluteChanges)},
         {QStringLiteral("sourceEvidenceIds"), sources}
     };
 }
@@ -127,8 +174,12 @@ QJsonObject relationshipSnapshotStateToJson(
 RelationshipSnapshot relationshipSnapshotStateFromJson(
     const QJsonObject& object) {
     RelationshipSnapshot snapshot;
-    snapshot.tendencies = numericMapFromJson(
-        object.value(QStringLiteral("tendencies")).toObject());
+    const auto stored = numericMapFromJson(object.value(QStringLiteral("tendencies")).toObject());
+    for (auto it = snapshot.tendencies.begin(); it != snapshot.tendencies.end(); ++it) {
+        it.value() = std::clamp(stored.value(it.key(), it.value()), 0.0, 1.0);
+    }
+    snapshot.dailyAbsoluteChanges = numericMapFromJson(
+        object.value(QStringLiteral("dailyAbsoluteChanges")).toObject());
     const QJsonArray sources = object.value(
         QStringLiteral("sourceEvidenceIds")).toArray();
     for (const QJsonValue& source : sources) {

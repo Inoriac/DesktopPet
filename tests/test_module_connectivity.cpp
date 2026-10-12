@@ -16,9 +16,12 @@
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "ai/reflection/diary_fragment_service.h"
+#include "ai/reflection/cancellation_token.h"
 #include "ai/reflection/private_key_provider.h"
 #include "ai/reflection/private_psyche_crypto.h"
 #include "ai/reflection/sqlite_private_psyche_repository.h"
+#include "ai/task/task_orchestrator.h"
+#include "ai/task/task_experience_adapter.h"
 
 namespace {
 const QString profileId = QStringLiteral("11111111-1111-4111-8111-111111111111");
@@ -28,12 +31,17 @@ class FakeClient : public ModelCompletionClient {
 public:
     bool deferred = false;
     QString content = QStringLiteral("收到，我会记得你的偏好。");
+    QStringList systemPrompts;
+    QList<QJsonObject> jsonInputs;
+    std::function<QString(const QList<ChatMessage>&)> responder;
     LlmCompletionHandler pending;
-    void completeOnce(const ModelRouteConfig&, const QList<ChatMessage>&, const QJsonArray&,
+    void completeOnce(const ModelRouteConfig&, const QList<ChatMessage>& messages, const QJsonArray&,
                       LlmCompletionHandler callback, const QString&) override {
+        systemPrompts.append(messages.isEmpty() ? QString() : messages.first().content);
+        if (messages.size() > 1) jsonInputs.append(QJsonDocument::fromJson(messages.last().content.toUtf8()).object());
         if (deferred) { pending = std::move(callback); return; }
         LlmResponse response;
-        response.content = content;
+        response.content = responder ? responder(messages) : content;
         callback(true, response, {});
     }
 };
@@ -48,7 +56,8 @@ QList<ModelRoleConfig> roles() {
     route.llm.model = QStringLiteral("fake");
     route.llm.timeoutMs = 1000;
     QList<ModelRoleConfig> result;
-    for (auto role : {ModelRole::Dialogue, ModelRole::Daydream, ModelRole::Diary}) {
+    for (auto role : {ModelRole::Dialogue, ModelRole::Daydream, ModelRole::Diary,
+                      ModelRole::AgencyDecision, ModelRole::TaskExecution}) {
         ModelRoleConfig config;
         config.role = role;
         config.routes = {route};
@@ -60,9 +69,11 @@ QList<ModelRoleConfig> roles() {
 class BubbleTool : public AITool {
 public:
     bool succeeds = true;
+    int executions = 0;
     BubbleTool() : AITool("show_chat_bubble", "test reminder", ToolCategory::Action) {}
     QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
     ToolResult execute(const QJsonObject&) override {
+        ++executions;
         return succeeds ? ToolResult::ok() : ToolResult::fail("display failed");
     }
 };
@@ -136,11 +147,17 @@ private slots:
     void structurallyInvalidSchedulesArePreserved();
     void chatFeedsRelationshipAndGrowthSurvivesRestart();
     void growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests();
+    void relationshipUpdatesRequireRelevantEvidenceAndRespectSubjectScope();
     void manualDaydreamAndChatCompleteConcurrently();
     void startupMaintenanceDoesNotWaitForChatIdle();
     void hippocampusBacklogDoesNotDropNewImpressions();
     void runtimeStopsFragmentsBeforeTheirRepository();
     void fragmentSynchronousCompletionAndDeletionDuringRequest();
+    void ordinaryChatBypassesAgencyAndComplexTaskVerifies();
+    void taskStopRejectsLateAgencyAndReleasesChat();
+    void taskCannotDispatchAfterReentrantPause();
+    void shutdownAndToolRegistrationPreserveRecoveredTask();
+    void disabledAiCancelsAndDoesNotRestartTaskReflection();
 };
 
 void TestModuleConnectivity::proactiveModeControlsBrainAndExpires() {
@@ -380,7 +397,7 @@ void TestModuleConnectivity::chatFeedsRelationshipAndGrowthSurvivesRestart() {
     QVERIFY(restarted.processIdentityEvents().isOk());
     QCOMPARE(restarted.captureSnapshot("after-restart").relationshipVersion, relationshipVersion);
     QVERIFY(restarted.projectPersona(restarted.captureSnapshot("projection"), {"TestPet", {}})
-        .promptSlots.value("persona_traits").contains(QStringLiteral("更乐于交流")));
+        .promptSlots.value("persona_traits").contains(QStringLiteral("逐渐了解彼此")));
 }
 
 void TestModuleConnectivity::growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests() {
@@ -399,19 +416,84 @@ void TestModuleConnectivity::growthWaitsForRealEvidenceWindowAndIgnoresTemporary
     }
     QVERIFY(runtime.services.processIdentityEvents(now.addSecs(1)).isOk());
     auto snapshot = runtime.services.captureSnapshot("initial");
-    QCOMPARE(snapshot.relationshipVersion.value_or(0), 3);
+    QCOMPARE(snapshot.relationshipVersion.value_or(0), 7);
     QVERIFY(!snapshot.personalityVersion.has_value());
     QVERIFY(runtime.services.processIdentityEvents(now.addDays(15)).isOk());
     snapshot = runtime.services.captureSnapshot("grown");
-    QCOMPARE(snapshot.personalityVersion.value_or(0), 1);
-    QVERIFY(snapshot.selfModelVersion.has_value());
-    QVERIFY(runtime.services.projectPersona(snapshot, {"TestPet", now})
-        .promptSlots.value("persona_traits").contains(QStringLiteral("长期表达")));
-    const auto self = snapshot.selfModelVersion;
+    // Reading the same one-day experiences later cannot manufacture a 14-day
+    // evidence span, and runtime event processing never publishes personality.
+    QVERIFY(!snapshot.personalityVersion.has_value());
+    QVERIFY(!snapshot.selfModelVersion.has_value());
+    SqliteIdentityRepository repository;
+    QVERIFY(repository.open(runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath).isOk());
+    const auto pending = repository.pendingEvidence(profileId, now.addDays(-1), now.addDays(1));
+    QVERIFY(pending.isOk());
+    QCOMPARE(pending.value().size(), 3);
+    for (const auto& item : pending.value()) {
+        QCOMPARE(item.trait, QStringLiteral("sociability"));
+        QVERIFY(!item.originalSourceId.isEmpty());
+        QCOMPARE(item.category, TraitEvidenceCategory::Fact);
+    }
+    const auto relationshipVersion = snapshot.relationshipVersion;
     QVERIFY(runtime.services.processIdentityEvents(now.addDays(15)).isOk());
     snapshot = runtime.services.captureSnapshot("replayed");
-    QCOMPARE(snapshot.personalityVersion.value_or(0), 1);
-    QCOMPARE(snapshot.selfModelVersion, self);
+    QVERIFY(!snapshot.personalityVersion.has_value());
+    QCOMPARE(snapshot.relationshipVersion, relationshipVersion);
+}
+
+void TestModuleConnectivity::relationshipUpdatesRequireRelevantEvidenceAndRespectSubjectScope() {
+    Runtime runtime;
+    QVERIFY(runtime.ready);
+    SqliteIdentityRepository repository;
+    QVERIFY(repository.open(runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath).isOk());
+    const auto appendUser = [&](const QString& text) {
+        EventDraft event;
+        event.profileId = profileId;
+        event.type = QStringLiteral("UserMessageReceived");
+        event.source = QStringLiteral("test");
+        event.payload = {{QStringLiteral("text"), text}, {QStringLiteral("triggerTag"), QStringLiteral("user_request")}};
+        return runtime.services.eventLedger()->append(event).isOk();
+    };
+    QVERIFY(appendUser(QStringLiteral("我今天在练习水彩")));
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    auto relationship = repository.currentRelationship(profileId, QStringLiteral("owner"));
+    QVERIFY(relationship.isOk() && relationship.value().has_value());
+    QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("familiarity")), 0.102);
+    QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("trust")), 0.45);
+    QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("affinity")), 0.50);
+    QVERIFY(appendUser(QStringLiteral("你说得很准确")));
+    QVERIFY(appendUser(QStringLiteral("你可以拒绝")));
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    relationship = repository.currentRelationship(profileId, QStringLiteral("owner"));
+    QVERIFY(relationship.isOk() && relationship.value().has_value());
+    QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("trust")), 0.462);
+    QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("boundaryRespect")), 0.612);
+    const auto ownerVersion = relationship.value()->version;
+    const auto appendTask = [&](const QString& status) {
+        EventDraft event;
+        event.profileId = profileId;
+        event.type = QStringLiteral("TaskExperienceRecorded");
+        event.source = QStringLiteral("test");
+        event.payload = {{QStringLiteral("task_id"), QStringLiteral("task-") + status},
+            {QStringLiteral("goal"), QStringLiteral("整理旅行方案")}, {QStringLiteral("status"), status},
+            {QStringLiteral("feedback_status"), QStringLiteral("unknown")}, {QStringLiteral("subject_id"), QStringLiteral("guest")}};
+        return runtime.services.eventLedger()->append(event).isOk();
+    };
+    QVERIFY(appendTask(QStringLiteral("Failed")));
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    auto guest = repository.currentRelationship(profileId, QStringLiteral("guest"));
+    QVERIFY(guest.isOk() && guest.value().has_value());
+    QCOMPARE(guest.value()->tendencies.value(QStringLiteral("familiarity")), 0.105);
+    QCOMPARE(guest.value()->tendencies.value(QStringLiteral("trust")), 0.45);
+    const auto guestVersion = guest.value()->version;
+    QVERIFY(appendTask(QStringLiteral("Declined")));
+    QVERIFY(runtime.services.processIdentityEvents(QDateTime::currentDateTimeUtc().addDays(30)).isOk());
+    guest = repository.currentRelationship(profileId, QStringLiteral("guest"));
+    QVERIFY(guest.isOk() && guest.value().has_value());
+    QCOMPARE(guest.value()->version, guestVersion);
+    relationship = repository.currentRelationship(profileId, QStringLiteral("owner"));
+    QVERIFY(relationship.isOk() && relationship.value().has_value());
+    QCOMPARE(relationship.value()->version, ownerVersion);
 }
 
 void TestModuleConnectivity::manualDaydreamAndChatCompleteConcurrently() {
@@ -540,6 +622,147 @@ void TestModuleConnectivity::fragmentSynchronousCompletionAndDeletionDuringReque
     LlmResponse late;
     late.content = client.content;
     client.pending(true, late, {}); // Late completion owns no dangling stack references.
+}
+
+void TestModuleConnectivity::ordinaryChatBypassesAgencyAndComplexTaskVerifies() {
+    Runtime runtime;
+    QVERIFY(runtime.ready);
+    runtime.brain.triggerThink(QStringLiteral("我最近在学习绘画，聊聊配色原理吧"), "user_request");
+    QTRY_VERIFY(!runtime.brain.isBusy());
+    QVERIFY(runtime.brain.taskSnapshot().isEmpty());
+    QVERIFY(std::none_of(runtime.client.systemPrompts.begin(), runtime.client.systemPrompts.end(),
+        [](const QString& prompt) { return prompt.contains("subjective agency"); }));
+    runtime.client.systemPrompts.clear();
+    MemoryEntry preference;
+    preference.type = MemoryType::Preference;
+    preference.summary = preference.content = "PUBLIC_WALKING_PREFERENCE";
+    preference.privacyLevel = PrivacyLevel::Personal;
+    QVERIFY(!runtime.brain.memoryStore()->addEntry(preference).id.isEmpty());
+    preference.id.clear(); preference.key = "sensitive";
+    preference.summary = preference.content = "PRIVATE_ONLY_MARKER";
+    preference.privacyLevel = PrivacyLevel::Sensitive;
+    QVERIFY(!runtime.brain.memoryStore()->addEntry(preference).id.isEmpty());
+    runtime.client.responder = [](const QList<ChatMessage>& messages) {
+        const auto prompt = messages.first().content;
+        QJsonObject response;
+        if (prompt.contains("subjective agency"))
+            response = {{"decision", "accept"}, {"reason", "精力充足"}, {"message", "我来整理。"}};
+        else if (prompt.contains("Independently verify"))
+            response = {{"complete", true}, {"supported", true}, {"contradictions", QJsonArray{}},
+                {"unresolved", QJsonArray{}}, {"evidence", QJsonArray{"user_input"}}, {"result", "一、先看资料；二、列出重点。"}};
+        else response = {{"plan", "整理给定文字"}, {"completion_criteria", "覆盖原文两项内容"},
+            {"candidate_answer", "一、先看资料；二、列出重点。"}};
+        return QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact));
+    };
+    runtime.brain.triggerThink(QStringLiteral("/task 请为以下文字列提纲：先看资料，然后列出重点。"), "user_request");
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Completed"));
+    QTRY_VERIFY(!runtime.brain.isBusy());
+    QCOMPARE(std::count_if(runtime.client.systemPrompts.begin(), runtime.client.systemPrompts.end(),
+        [](const QString& prompt) { return prompt.contains("subjective agency") || prompt.contains("Plan one next step")
+            || prompt.contains("Independently verify"); }), 3);
+    QVERIFY(runtime.client.systemPrompts.at(0).contains("subjective agency"));
+    QVERIFY(runtime.client.systemPrompts.at(2).contains("Independently verify"));
+    QVERIFY(runtime.brain.m_taskModelRequests.isEmpty());
+    const QString memories = runtime.client.jsonInputs.last().value("memory_material").toString();
+    QVERIFY(memories.contains("PUBLIC_WALKING_PREFERENCE"));
+    QVERIFY(!memories.contains("PRIVATE_ONLY_MARKER"));
+    QVERIFY(memories.size() <= 4000);
+}
+
+void TestModuleConnectivity::taskStopRejectsLateAgencyAndReleasesChat() {
+    Runtime runtime; QVERIFY(runtime.ready);
+    runtime.client.deferred = true;
+    runtime.brain.triggerThink(QStringLiteral("/task 请梳理我提供的文字"), "user_request");
+    QVERIFY(runtime.brain.isTaskActive());
+    QVERIFY(bool(runtime.client.pending));
+    auto late = std::move(runtime.client.pending);
+    runtime.brain.stopCurrentResponse();
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
+    QVERIFY(!runtime.brain.isBusy());
+    LlmResponse response;
+    response.content = R"({"decision":"accept","reason":"ready","message":"continue"})";
+    late(true, response, {});
+    QCoreApplication::processEvents();
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
+    QCOMPARE(runtime.client.systemPrompts.size(), 1);
+}
+
+void TestModuleConnectivity::taskCannotDispatchAfterReentrantPause() {
+    Runtime runtime; QVERIFY(runtime.ready);
+    ToolRegistry registry;
+    auto bubble = std::make_unique<BubbleTool>();
+    auto* controlled = bubble.get();
+    registry.registerTool(std::move(bubble));
+    runtime.brain.setToolRegistry(&registry);
+    runtime.client.responder = [](const QList<ChatMessage>& messages) {
+        const QJsonObject response = messages.first().content.contains("subjective agency")
+            ? QJsonObject{{"decision", "accept"}, {"reason", "ready"}, {"message", "开始"}}
+            : QJsonObject{{"plan", "展示内容"}, {"completion_criteria", "内容已经显示"},
+                {"tool", QJsonObject{{"name", "show_chat_bubble"}, {"arguments", QJsonObject{{"text", "test"}}}}}};
+        return QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact));
+    };
+    QSignalSpy toolCalls(&runtime.brain, &AIBrain::toolExecuted);
+    connect(&runtime.brain, &AIBrain::taskProgressChanged, &runtime.brain, [&](const QJsonObject& task) {
+        if (task.value("status").toString() == "Executing") runtime.brain.pauseTask();
+    });
+    runtime.brain.triggerThink(QStringLiteral("/task 分两步向我展示内容"), "user_request");
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
+    QCoreApplication::processEvents();
+    QVERIFY(!runtime.brain.isBusy());
+    QCOMPARE(toolCalls.size(), 0);
+    QCOMPARE(controlled->executions, 0);
+    runtime.brain.stopTask();
+    runtime.brain.setToolRegistry(nullptr);
+}
+
+void TestModuleConnectivity::shutdownAndToolRegistrationPreserveRecoveredTask() {
+    Runtime runtime; QVERIFY(runtime.ready);
+    runtime.client.deferred = true;
+    runtime.brain.triggerThink(QStringLiteral("/task 请梳理我提供的文字"), "user_request");
+    const auto started = runtime.brain.taskSnapshot();
+    QVERIFY(runtime.brain.isTaskActive());
+    runtime.brain.stop(); // Window close uses shutdown semantics, not user cancellation.
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
+    QVERIFY(!runtime.brain.isBusy());
+    const auto paused = runtime.brain.taskSnapshot();
+    runtime.brain.shutdownTaskRuntime();
+    runtime.brain.initializeTaskRuntime();
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+    QCOMPARE(runtime.brain.taskSnapshot().value("id"), started.value("id"));
+    QCOMPARE(runtime.brain.taskSnapshot().value("personality_snapshot"), started.value("personality_snapshot"));
+    QCOMPARE(runtime.brain.taskSnapshot().value("active_ms"), paused.value("active_ms"));
+    ToolRegistry registry;
+    registry.registerTool(std::make_unique<BubbleTool>());
+    runtime.brain.setToolRegistry(&registry); // Production attaches tools after bootstrap.
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+    runtime.brain.setToolRegistry(nullptr);
+    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+}
+
+void TestModuleConnectivity::disabledAiCancelsAndDoesNotRestartTaskReflection() {
+    Runtime runtime; QVERIFY(runtime.ready);
+    QVERIFY(runtime.services.m_personalityCancellation);
+    const auto evolutionToken = runtime.services.m_personalityCancellation->token();
+    QVERIFY(runtime.brain.m_taskExperienceTimer.isActive());
+    auto* adapter = runtime.brain.m_taskExperienceAdapter.get();
+    QVERIFY(adapter);
+    QSignalSpy drained(adapter, &TaskExperienceAdapter::drained);
+    adapter->drain();
+    QVERIFY(adapter->busy());
+    runtime.brain.setEnabled(false);
+    QVERIFY(evolutionToken.isCancelled());
+    QVERIFY(!runtime.brain.m_taskExperienceTimer.isActive());
+    QVERIFY(!adapter->busy());
+    QCoreApplication::processEvents(); // Includes the previously queued startup drain.
+    QVERIFY(!adapter->busy());
+    QCOMPARE(drained.size(), 0);
+    QVERIFY(runtime.client.systemPrompts.isEmpty());
+    runtime.brain.setEnabled(true);
+    runtime.brain.start();
+    QVERIFY(runtime.brain.m_taskExperienceTimer.isActive());
+    QTRY_VERIFY(drained.size() >= 1);
+    runtime.brain.stop();
+    QVERIFY(!runtime.brain.m_taskExperienceTimer.isActive());
 }
 
 QTEST_GUILESS_MAIN(TestModuleConnectivity)

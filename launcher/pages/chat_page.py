@@ -106,6 +106,9 @@ class ChatPage(QWidget):
         self._send_inflight = False
         self._last_error = ""
         self._diagnostic_events: list[str] = []
+        self._task: dict = {}
+        self._task_action_pending = False
+        self._task_feedback = ""
 
         root = QVBoxLayout(self)
         root.setContentsMargins(24, 20, 24, 20)
@@ -121,6 +124,41 @@ class ChatPage(QWidget):
         self.debug_button.setToolTip("查看调用统计与技术诊断")
         header.addWidget(self.debug_button)
         root.addLayout(header)
+
+        self.task_card = QFrame(self)
+        task_layout = QVBoxLayout(self.task_card)
+        task_layout.setContentsMargins(12, 10, 12, 10)
+        self.task_title = StrongBodyLabel("当前任务", self.task_card)
+        self.task_title.setTextFormat(Qt.PlainText)
+        self.task_title.setWordWrap(True)
+        self.task_detail = QLabel(self.task_card)
+        self.task_detail.setTextFormat(Qt.PlainText)
+        self.task_detail.setWordWrap(True)
+        self.task_detail.setTextInteractionFlags(Qt.TextSelectableByMouse)
+        task_layout.addWidget(self.task_title)
+        task_layout.addWidget(self.task_detail)
+        task_controls = QHBoxLayout()
+        self.task_continue = PushButton("继续任务", self.task_card)
+        self.task_continue.setToolTip("可先在下方输入补充说明，再继续任务")
+        self.task_continue.clicked.connect(lambda: self._task_action("resume_task"))
+        self.task_extend = PushButton("增加额度并继续", self.task_card)
+        self.task_extend.setToolTip("增加 12 次工具使用、2 次方案调整和 5 分钟处理时间")
+        self.task_extend.clicked.connect(lambda: self._task_action("resume_task", extend_budget=True))
+        self.task_pause = PushButton("暂停", self.task_card)
+        self.task_pause.clicked.connect(lambda: self._task_action("pause_task"))
+        self.task_stop = PushButton("停止任务", self.task_card)
+        self.task_stop.clicked.connect(lambda: self._task_action("stop_task"))
+        self.task_confirm_done = PushButton("确认动作已完成", self.task_card)
+        self.task_confirm_done.clicked.connect(lambda: self._task_action("resolve_task_call", succeeded=True))
+        self.task_confirm_absent = PushButton("确认动作未发生", self.task_card)
+        self.task_confirm_absent.clicked.connect(lambda: self._task_action("resolve_task_call", succeeded=False))
+        for button in (self.task_continue, self.task_extend, self.task_pause,
+                       self.task_confirm_done, self.task_confirm_absent, self.task_stop):
+            task_controls.addWidget(button)
+        task_controls.addStretch(1)
+        task_layout.addLayout(task_controls)
+        self.task_card.hide()
+        root.addWidget(self.task_card)
 
         self.message_area = QScrollArea(self)
         self.message_area.setWidgetResizable(True)
@@ -214,6 +252,10 @@ class ChatPage(QWidget):
         self._pending_text = None
         self._send_inflight = False
         self._busy = self._ai_enabled = False
+        self._task = {}
+        self._task_action_pending = False
+        self._task_feedback = ""
+        self.task_card.hide()
         self._visible_count = self.PAGE_SIZE
         self._follow_bottom = True
         self._last_error = ""
@@ -251,6 +293,7 @@ class ChatPage(QWidget):
         self.title_label.setText(f"与 {state.get('petName') or '桌宠'} 聊天")
         self._busy = bool(state.get("busy"))
         self._ai_enabled = bool(state.get("aiEnabled"))
+        self._task = state.get("task") if isinstance(state.get("task"), dict) else {}
         pending_count = int(state.get("pendingMessageCount") or 0)
         self.status_label.setText(
             f"已接收，等待处理 {pending_count} 条消息" if pending_count else
@@ -436,8 +479,44 @@ class ChatPage(QWidget):
             self._client.stop_response()
             self._sync_controls()
 
+    def _unknown_task_call(self) -> dict:
+        for step in self._task.get("steps") or []:
+            if isinstance(step, dict) and step.get("status") == "unknown" \
+                    and not step.get("read_only", True):
+                return step
+        return {}
+
+    def _task_action(self, action: str, extend_budget: bool = False,
+                     succeeded: bool = False) -> None:
+        if self._client is None or not self._client.is_connected \
+                or self._task_action_pending or not self._task.get("id"):
+            return
+        self._task_action_pending = True
+        self._sync_controls()
+        task_id = str(self._task["id"])
+        if action == "resume_task":
+            self._task_feedback = self.input_edit.toPlainText().strip()
+            self._client.resume_task(task_id, self._task_feedback, extend_budget)
+        elif action == "resolve_task_call":
+            call = self._unknown_task_call()
+            if call:
+                self._client.resolve_task_call(task_id, str(call["id"]), succeeded)
+            else:
+                self._task_action_pending = False
+                self._sync_controls()
+        elif action == "pause_task":
+            self._client.pause_task(task_id)
+        elif action == "stop_task":
+            self._client.stop_task(task_id)
+
     def _operation_finished(self, operation: str, _result: dict) -> None:
         self._last_error = ""
+        if operation in {"resume_task", "pause_task", "stop_task", "resolve_task_call"}:
+            self._task_action_pending = False
+            if operation == "resume_task" and self._task_feedback \
+                    and self.input_edit.toPlainText().strip() == self._task_feedback:
+                self.input_edit.clear()
+            self._task_feedback = ""
         if operation == "send_message":
             if self.input_edit.toPlainText().strip() == self._pending_text:
                 self.input_edit.clear()
@@ -448,6 +527,13 @@ class ChatPage(QWidget):
         self.poll_once()
 
     def _operation_failed(self, operation: str, detail: str) -> None:
+        if operation in {"resume_task", "pause_task", "stop_task", "resolve_task_call"}:
+            self._task_action_pending = False
+            self._task_feedback = ""
+            self._show_problem("任务暂时无法继续", detail or "请查看任务进度后重试。")
+            self._sync_controls()
+            self.poll_once()
+            return
         if operation in {"send_message", "stop_response"}:
             self._pending_text = None
             self._send_inflight = False
@@ -509,6 +595,7 @@ class ChatPage(QWidget):
         self._busy = self._ai_enabled = False
         self._pending_text = None
         self._send_inflight = False
+        self._task_action_pending = False
         self.status_label.setText("离线")
         self._sync_controls()
 
@@ -520,6 +607,44 @@ class ChatPage(QWidget):
         self.action_button.setText("发送中…" if self._pending_text else "发送")
         self.stop_button.setVisible(self._busy and connected)
         self.stop_button.setEnabled(connected)
+        self._sync_task_card(connected)
+
+    def _sync_task_card(self, connected: bool) -> None:
+        task = self._task
+        self.task_card.setVisible(bool(task.get("id")))
+        if not task.get("id"):
+            return
+        status = str(task.get("status") or "")
+        names = {"Received": "已收到", "Assessing": "正在考虑任务", "Planning": "正在安排步骤",
+                 "Executing": "正在处理", "Observing": "正在整理资料", "Verifying": "正在核实结果",
+                 "Replanning": "正在调整方案", "WaitingForUser": "等待你的回应", "Paused": "已暂停",
+                 "Completed": "已完成", "Declined": "暂不受理", "Failed": "未能完成", "Cancelled": "已停止"}
+        self.task_title.setText(f"{names.get(status, '任务')} · {task.get('goal') or ''}")
+        terminal = status in {"Completed", "Declined", "Failed", "Cancelled"}
+        waiting = status in {"WaitingForUser", "Paused"}
+        unknown = self._unknown_task_call()
+        detail = str(task.get("reason") or "") if waiting or terminal else str(task.get("plan") or "正在准备…")
+        if terminal and task.get("result"):
+            result = str(task["result"])
+            detail = result if status == "Completed" or not detail else detail + "\n\n" + result
+        if waiting and not unknown:
+            detail += "\n可在下方补充说明，然后点击继续任务。"
+        if unknown:
+            detail += "\n请核对上一次提醒或播放等动作的实际结果，再确认是否发生。"
+        self.task_detail.setText(detail[:1600])
+        self.task_continue.setVisible(waiting and not unknown)
+        budget = task.get("budget") or {}
+        exhausted = (self._count(task.get("tool_calls")) >= self._count(budget.get("max_tool_calls", 12))
+                     or self._count(task.get("replans")) >= self._count(budget.get("max_replans", 2))
+                     or self._count(task.get("active_ms")) >= self._count(budget.get("max_active_ms", 300000)))
+        self.task_extend.setVisible(waiting and exhausted and not unknown)
+        self.task_pause.setVisible(not waiting and not terminal)
+        self.task_stop.setVisible(not terminal)
+        self.task_confirm_done.setVisible(waiting and bool(unknown))
+        self.task_confirm_absent.setVisible(waiting and bool(unknown))
+        for button in (self.task_continue, self.task_extend, self.task_pause, self.task_stop,
+                       self.task_confirm_done, self.task_confirm_absent):
+            button.setEnabled(connected and self._ai_enabled and not self._task_action_pending)
 
     def refresh_theme(self) -> None:
         dark = isDarkTheme()
@@ -536,6 +661,9 @@ class ChatPage(QWidget):
         self.input_edit.setStyleSheet(
             f"QPlainTextEdit {{ color: {fg}; background: {bg}; border: 1px solid {thumb};"
             "border-radius: 8px; padding: 10px; selection-background-color: #2585E6; }")
+        self.task_card.setStyleSheet(
+            f"QFrame {{ background: {bg}; border-radius: 8px; }}"
+            f"QLabel {{ color: {fg}; background: transparent; }}")
         self.jump_button.setStyleSheet(
             f"QPushButton {{ background: {'#3A3D44' if dark else '#FFFFFF'}; color: {fg};"
             f"border: 1px solid {thumb}; border-radius: 16px; }}")

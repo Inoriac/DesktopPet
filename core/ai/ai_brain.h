@@ -40,6 +40,7 @@
 #include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
 #include "model/model_router.h"
+#include "task/task_types.h"
 
 class AgentScheduler;
 class AgentRuntimeServices;
@@ -53,6 +54,10 @@ struct ChatPreparationResult;
 #include "tools/runtime/tool_runtime.h"
 
 class MemoryConsolidationService;
+class TaskStore;
+class TaskOrchestrator;
+class TaskToolExecutor;
+class TaskExperienceAdapter;
 
 class AIBrain : public QObject {
     Q_OBJECT
@@ -117,6 +122,12 @@ public:
                       const QString& replyToId = {},
                       const QString& voiceSource = {});
     void stopCurrentResponse();
+    QJsonObject taskSnapshot() const;
+    bool resumeTask(const QString& feedback = {}, const TaskBudgetExtension& extension = {});
+    void pauseTask();
+    void stopTask();
+    bool resolveTaskUnknownCall(const QString& callId, bool succeeded);
+    bool isTaskActive() const;
     void onUserInteraction(const QString& eventName, const QString& detail = QString());
 
     void clearMemory();
@@ -129,6 +140,7 @@ public:
     const SkillStore* skillStore() const { return &m_skillStore; }
 
 signals:
+    void taskProgressChanged(const QJsonObject& task);
     void pendingUserMessagesChanged();
     void thinkingStarted(const QString& reason);
     void thinkingFinished(bool success, const QString& errorMessage);
@@ -156,6 +168,17 @@ signals:
     void chatPreparationTimingsObserved(ChatPreparationTimings timings);
 
 private:
+    void initializeTaskRuntime();
+    void shutdownTaskRuntime();
+    bool tryHandleComplexTask(const QString& text, const QString& triggerTag);
+    void finishTaskResponse();
+    std::unique_ptr<TaskStore> m_taskStore;
+    std::unique_ptr<TaskOrchestrator> m_taskOrchestrator;
+    std::unique_ptr<TaskToolExecutor> m_taskToolExecutor;
+    std::unique_ptr<TaskExperienceAdapter> m_taskExperienceAdapter;
+    QHash<QString, std::shared_ptr<LlmRequestHandle>> m_taskModelRequests;
+    bool m_taskResponse = false;
+    QTimer m_taskExperienceTimer;
     struct PendingUserMessage {
         QString text;
         QString id;

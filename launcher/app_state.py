@@ -11,7 +11,8 @@ from typing import Any, Dict
 
 
 MODEL_ROLES = (
-    "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream")
+    "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream",
+    "agencyDecision", "taskExecution", "personalityEvolution")
 DEFAULT_ANTHROPIC_VERSION = "2023-06-01"
 
 

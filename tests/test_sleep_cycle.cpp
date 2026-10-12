@@ -22,6 +22,7 @@
 #include "ai/reflection/diary_fragment_service.h"
 #include "ai/reflection/diary_service.h"
 #include "ai/reflection/inner_thought_service.h"
+#include "ai/reflection/personality_consolidation_stage.h"
 #include "ai/reflection/private_key_provider.h"
 #include "ai/reflection/private_psyche_crypto.h"
 #include "ai/reflection/sleep_cycle_coordinator.h"
@@ -108,6 +109,19 @@ private:
         response.content = reply.content;
         response.reasoningContent = reply.reasoning;
         callback(reply.success, response, reply.error);
+    }
+};
+
+class DeferredEvolution final : public PersonalityConsolidationStage {
+public:
+    DeferredEvolution()
+        : PersonalityConsolidationStage(kProfileId, nullptr, nullptr, nullptr, nullptr, {}) {}
+    PersonalityEvolutionRequest request;
+    PersonalityEvolutionHandler completion;
+    void consolidateAsync(const PersonalityEvolutionRequest& value,
+                          const CancellationToken&, PersonalityEvolutionHandler handler) override {
+        request = value;
+        completion = std::move(handler);
     }
 };
 
@@ -462,7 +476,7 @@ QString writeConfig(QTemporaryDir& directory, const QJsonObject& root) {
 
 } // namespace
 
-class TestIdentityState {
+class TestModuleConnectivity {
 public:
     static void runPreparedDaydreamBatch(AIBrain& brain) {
         brain.m_chatPreparationRuntimeMetadata.profileId = kProfileId;
@@ -481,6 +495,7 @@ private slots:
     void createAsync_whenHighValueEventCompletes_shouldStageShortPrivateSummaryWithoutBlockingReply();
     void createAsync_whenCallbackArrivesAfterCancellation_shouldDiscardResult();
     void createAsync_whenModelReturnsReasoningTrace_shouldPersistOnlyRequestedSummaryFields();
+    void createAsync_whenSourceIsRetried_shouldReuseOneEncryptedThought();
 
 
     void runNextDaydreamBatch_whenModelDecisionIsRequired_shouldRequestDaydreamRoleAndApplyDecision();
@@ -514,12 +529,102 @@ private slots:
     void recoverIncomplete_whenCommittedSessionExists_shouldFinalizeBeforePublishingCapability();
     void start_whenDiaryCoordinatorStarts_shouldKeepSharedMemoryService();
     void stop_whenCallbacksAreLate_shouldInvalidateGenerationAndPerformNoWrites();
+    void evolutionRunsBeforeDiaryAndFailureDoesNotAbortDiary();
+    void cancelledEvolutionCannotStartDiary();
 
     void getSleepPolicy_whenConfigured_shouldReturnSanitizedPolicy();
     void getSleepPolicy_whenMissingOrInvalid_shouldUseSafeDefaults();
 
     void testDiaryFragmentsDetectOrphanAndRecover();
 };
+
+void SleepCycleTests::createAsync_whenSourceIsRetried_shouldReuseOneEncryptedThought() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    fixture.modelClient.replies.append({true, innerThoughtJson(), {}, {}});
+    auto service = fixture.innerThoughtService();
+    CancellationSource cancellation;
+    QString first;
+    service.createAsync(innerRequest(), cancellation.token(), [&](auto result) {
+        QVERIFY(result.isOk());
+        first = result.value();
+    });
+    QVERIFY(!first.isEmpty());
+    QString retry;
+    service.createAsync(innerRequest(), cancellation.token(), [&](auto result) {
+        QVERIFY(result.isOk());
+        retry = result.value();
+    });
+    QCOMPARE(retry, first);
+    QCOMPARE(fixture.privateRepository.innerThoughtCount(kProfileId), 1);
+    QCOMPARE(fixture.modelClient.requests.size(), 1);
+}
+
+void SleepCycleTests::evolutionRunsBeforeDiaryAndFailureDoesNotAbortDiary() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    auto generated = QJsonDocument::fromJson(diaryJson().toUtf8()).object();
+    generated.insert(QStringLiteral("index"), QJsonObject{{QStringLiteral("originalSourceIds"),
+        QJsonArray{QStringLiteral("model-invented-source")}}});
+    fixture.modelClient.replies.append({true, QString::fromUtf8(QJsonDocument(generated).toJson()), {}, {}});
+    auto diary = fixture.diaryService();
+    DeferredEvolution evolution;
+    SleepCycleHooks hooks;
+    hooks.isBrainBusy = [] { return false; };
+    hooks.sourceCutoffSequence = [] { return 42; };
+    hooks.diarySourceEvents = [](qint64 cutoff, const QDate&) {
+        EventRecord source;
+        source.profileId = kProfileId;
+        source.eventId = QStringLiteral("committed-original-event");
+        source.sequence = cutoff;
+        source.type = QStringLiteral("UserMessageReceived");
+        source.payload = {{QStringLiteral("text"), QStringLiteral("一次值得记录的经历")}};
+        return Result<QList<EventRecord>, DomainError>::success({source});
+    };
+    SleepCycleCoordinator coordinator(kProfileId, SleepPolicy{}, &fixture.sleepSessions,
+        nullptr, &diary, &fixture.privateRepository, nullptr, nullptr, hooks);
+    coordinator.setPersonalityStage(&evolution);
+    const auto started = coordinator.tryStart({SleepTriggerType::Manual, 3600,
+        QDateTime::currentDateTime(), kProfileId});
+    QVERIFY(started.isOk());
+    QCOMPARE(evolution.request.sourceCutoffSequence, 42);
+    QVERIFY(fixture.modelClient.requests.isEmpty());
+    QCOMPARE(fixture.sleepSessions.find(started.value()).value()->state,
+             SleepSessionState::Consolidating);
+    evolution.completion(Result<PersonalitySnapshot, DomainError>::failure(
+        domainError(QStringLiteral("MODEL_PROVIDER_ERROR"), QStringLiteral("unavailable"))));
+    QCOMPARE(fixture.modelClient.requests.size(), 1);
+    QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 1);
+    const auto stored = fixture.privateRepository.committedDiaryForDate(kProfileId,
+        QDateTime::currentDateTime().date());
+    QVERIFY(stored.isOk() && stored.value().has_value());
+    QCOMPARE(stored.value()->index.value(QStringLiteral("originalSourceIds")).toArray(),
+        QJsonArray{QStringLiteral("committed-original-event")});
+    QCOMPARE(fixture.sleepSessions.find(started.value()).value()->state,
+             SleepSessionState::Completed);
+}
+
+void SleepCycleTests::cancelledEvolutionCannotStartDiary() {
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    auto diary = fixture.diaryService();
+    DeferredEvolution evolution;
+    SleepCycleHooks hooks;
+    hooks.isBrainBusy = [] { return false; };
+    hooks.sourceCutoffSequence = [] { return 42; };
+    SleepCycleCoordinator coordinator(kProfileId, SleepPolicy{}, &fixture.sleepSessions,
+        nullptr, &diary, &fixture.privateRepository, nullptr, nullptr, hooks);
+    coordinator.setPersonalityStage(&evolution);
+    const auto started = coordinator.tryStart({SleepTriggerType::Manual, 3600,
+        QDateTime::currentDateTime(), kProfileId});
+    QVERIFY(started.isOk());
+    QVERIFY(coordinator.cancelActive(SleepCancelReason::UserInteraction).isOk());
+    evolution.completion(Result<PersonalitySnapshot, DomainError>::success(PersonalitySnapshot{}));
+    QVERIFY(fixture.modelClient.requests.isEmpty());
+    QCOMPARE(fixture.privateRepository.diaryCount(kProfileId), 0);
+    QCOMPARE(fixture.sleepSessions.find(started.value()).value()->state,
+             SleepSessionState::RolledBack);
+}
 
 void SleepCycleTests::maintenanceCommitsSmallBatchesAndRetainsProgressAfterCancellation() {
     ReflectionFixture fixture;
@@ -669,7 +774,7 @@ void SleepCycleTests::runNextDaydreamBatch_whenModelDecisionIsRequired_shouldReq
         {true, discardDecisionJson(source.id), {}, {}});
     QSignalSpy finished(&brain, &AIBrain::daydreamFinished);
 
-    TestIdentityState::runPreparedDaydreamBatch(brain);
+    TestModuleConnectivity::runPreparedDaydreamBatch(brain);
 
     QTRY_COMPARE(modelClient.selectedRouteIds,
              QList<QString>{QString::number(
@@ -700,7 +805,7 @@ void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldPreserve
         {false, {}, QStringLiteral("all Daydream routes failed"), {}});
     QSignalSpy finished(&brain, &AIBrain::daydreamFinished);
 
-    TestIdentityState::runPreparedDaydreamBatch(brain);
+    TestModuleConnectivity::runPreparedDaydreamBatch(brain);
 
     QTRY_COMPARE(modelClient.selectedRouteIds,
              QList<QString>{QString::number(
@@ -715,7 +820,7 @@ void SleepCycleTests::runNextDaydreamBatch_whenDaydreamRoutesFail_shouldPreserve
 
     QVERIFY(brain.memoryStore()->deferDaydreamSources({source}, QDateTime::currentDateTimeUtc().addSecs(-1)));
     modelClient.replies.append({true, createDecisionJson({source}), {}, {}});
-    TestIdentityState::runPreparedDaydreamBatch(brain);
+    TestModuleConnectivity::runPreparedDaydreamBatch(brain);
     QTRY_COMPARE(finished.count(), 2);
     QTRY_COMPARE(brain.memoryStore()->findById(source.id)->status, MemoryStatus::Consolidated);
     QCOMPARE(brain.memoryStore()->all().size(), 2);
@@ -913,6 +1018,10 @@ void SleepCycleTests::readForSelf_whenDiaryRoleHasEntryScope_shouldDecryptSelect
     const auto result = service.readForSelf(entryId);
     QVERIFY(result.isOk());
     QCOMPARE(result.value().body, QStringLiteral("今天和主人聊了喝茶的事。"));
+    auto evolutionReader = fixture.diaryService(ModelRole::PersonalityEvolution);
+    const auto forEvolution = evolutionReader.readForSelf(entryId);
+    QVERIFY(forEvolution.isOk());
+    QCOMPARE(forEvolution.value().body, result.value().body);
 }
 
 void SleepCycleTests::readForSelf_whenDialogueScopeRequestsEntry_shouldReturnScopeDenied() {

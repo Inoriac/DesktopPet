@@ -35,6 +35,9 @@ ROLE_LABELS = {
     "consolidation": ("记忆整理", "记忆合并与归档"),
     "diary": ("日记生成", "私人日记内容生成"),
     "daydream": ("Daydream", "可选择独立的轻量模型"),
+    "agencyDecision": ("任务受理", "结合性格、关系与当前情绪判断任务"),
+    "taskExecution": ("任务执行", "规划、资料检索与结果验证"),
+    "personalityEvolution": ("人格反思", "读取相关经历、私密日记与内心活动，提出长期变化"),
 }
 
 
@@ -187,6 +190,7 @@ class AiPage(ScrollPage):
 
     def _build_role_section(self, on_save) -> None:
         section = Section("模型分工", self)
+        section.addRow("材料处理", "反思和日记会发送给对应角色配置的模型服务商；切换连接档案会改变接收方。", QWidget(section))
         endpoint_ids = list(self.state.model_endpoints)
         for role in MODEL_ROLES:
             role_state = self.state.model_roles[role]

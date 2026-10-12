@@ -281,6 +281,26 @@ QJsonObject LauncherChatServer::handleRequest(
         notifyStateChanged();
         return ownerDiarySuccessResponse(requestId, {});
     }
+    if (action == QLatin1String("resume_task") || action == QLatin1String("pause_task")
+        || action == QLatin1String("stop_task") || action == QLatin1String("resolve_task_call")) {
+        if (!m_callbacks.taskAction) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("ACTION_UNSUPPORTED"),
+                                          QStringLiteral("当前版本不支持任务控制。"));
+        }
+        if (payload.value("taskId").toString().trimmed().isEmpty()
+            || (payload.contains("feedback") && (!payload.value("feedback").isString()
+                || payload.value("feedback").toString().size() > 8000))
+            || (payload.contains("extendBudget") && !payload.value("extendBudget").isBool())
+            || (action == QLatin1String("resolve_task_call")
+                && (payload.value("callId").toString().isEmpty() || !payload.value("succeeded").isBool()))) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("TASK_REQUEST_INVALID"),
+                                          QStringLiteral("任务控制请求无效，请刷新后重试。"));
+        }
+        const auto result = m_callbacks.taskAction(action, payload);
+        if (!result.isOk()) return resultError(requestId, result.error());
+        notifyStateChanged();
+        return ownerDiarySuccessResponse(requestId, {});
+    }
     return ownerDiaryErrorResponse(
         requestId, QStringLiteral("ACTION_UNSUPPORTED"),
         QStringLiteral("Launcher chat action is unsupported"));

@@ -37,6 +37,14 @@ Result<EventRecord, DomainError> SqliteEventLedger::append(const EventDraft& dra
     return m_repository->append(finalDraft);
 }
 
+Result<EventRecord, DomainError> SqliteEventLedger::appendIdempotent(const EventDraft& draft) {
+    if (!m_repository || !m_schemas || draft.profileId != m_profileId || draft.eventId.isEmpty())
+        return Result<EventRecord, DomainError>::failure(domainError("EVT_SCHEMA_INVALID", "Stable event identity is required"));
+    auto validation = m_schemas->validate(draft);
+    if (!validation.isOk()) return Result<EventRecord, DomainError>::failure(validation.error());
+    return m_repository->append(draft, true);
+}
+
 Result<QList<EventRecord>, DomainError> SqliteEventLedger::readAfter(
     qint64 sequence, const EventFilter& filter, int limit) const {
     if (!m_repository || !m_schemas

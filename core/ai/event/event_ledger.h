@@ -12,6 +12,7 @@ class EventLedger {
 public:
     virtual ~EventLedger() = default;
     virtual Result<EventRecord, DomainError> append(const EventDraft& draft) = 0;
+    virtual Result<EventRecord, DomainError> appendIdempotent(const EventDraft& draft) { return append(draft); }
     virtual Result<QList<EventRecord>, DomainError> readAfter(
         qint64 sequence, const EventFilter& filter, int limit) const = 0;
 };
@@ -31,6 +32,7 @@ public:
                       QString profileId);
 
     Result<EventRecord, DomainError> append(const EventDraft& draft) override;
+    Result<EventRecord, DomainError> appendIdempotent(const EventDraft& draft) override;
     Result<QList<EventRecord>, DomainError> readAfter(
         qint64 sequence, const EventFilter& filter, int limit) const override;
 

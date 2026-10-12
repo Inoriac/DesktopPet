@@ -52,6 +52,20 @@ class LauncherChatClient(OwnerDiaryClient):
     def stop_response(self) -> dict:
         return self._chat_exchange("stop_response", {})
 
+    def resume_task(self, task_id: str, feedback: str = "", extend_budget: bool = False) -> dict:
+        return self._chat_exchange("resume_task", {"taskId": task_id, "feedback": feedback,
+                                                    "extendBudget": bool(extend_budget)})
+
+    def pause_task(self, task_id: str) -> dict:
+        return self._chat_exchange("pause_task", {"taskId": task_id})
+
+    def stop_task(self, task_id: str) -> dict:
+        return self._chat_exchange("stop_task", {"taskId": task_id})
+
+    def resolve_task_call(self, task_id: str, call_id: str, succeeded: bool) -> dict:
+        return self._chat_exchange("resolve_task_call", {"taskId": task_id, "callId": call_id,
+                                                         "succeeded": bool(succeeded)})
+
     def _chat_exchange(self, action: str, payload: dict) -> dict:
         try:
             return self._authenticated_exchange(action, payload)
@@ -134,6 +148,20 @@ class AsyncLauncherChatClient(QObject):
 
     def stop_response(self) -> None:
         self._queue_operation("stop_response", {})
+
+    def resume_task(self, task_id: str, feedback: str = "", extend_budget: bool = False) -> None:
+        self._queue_operation("resume_task", {"taskId": task_id, "feedback": feedback,
+                                                "extendBudget": bool(extend_budget)})
+
+    def pause_task(self, task_id: str) -> None:
+        self._queue_operation("pause_task", {"taskId": task_id})
+
+    def stop_task(self, task_id: str) -> None:
+        self._queue_operation("stop_task", {"taskId": task_id})
+
+    def resolve_task_call(self, task_id: str, call_id: str, succeeded: bool) -> None:
+        self._queue_operation("resolve_task_call", {"taskId": task_id, "callId": call_id,
+                                                     "succeeded": bool(succeeded)})
 
     def close(self) -> None:
         self._generation += 1

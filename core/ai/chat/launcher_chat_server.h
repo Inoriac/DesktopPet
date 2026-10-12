@@ -20,6 +20,7 @@ struct LauncherChatCallbacks {
     std::function<Result<QJsonObject, DomainError>(const QString&)> sendMessage;
     std::function<Result<QJsonObject, DomainError>(const QString&)> retryMessage;
     std::function<Result<void, DomainError>()> stopResponse;
+    std::function<Result<void, DomainError>(const QString&, const QJsonObject&)> taskAction;
 };
 
 class LauncherChatServer final : public QObject {

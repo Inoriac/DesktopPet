@@ -28,6 +28,10 @@
 #include "event/event_ledger.h"
 #include "identity/persona_projector.h"
 #include "tools/environment_tools.h"
+#include "task/task_orchestrator.h"
+#include "task/task_store.h"
+#include "task/task_experience_adapter.h"
+#include "tools/runtime/task_tool_executor.h"
 
 namespace {
 
@@ -99,6 +103,7 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
 }
 
 AIBrain::~AIBrain() {
+    shutdownTaskRuntime();
     m_daydreamCancellation.cancel();
     m_consolidationService.reset();
     if (m_chatSideEffectQueue) m_chatSideEffectQueue->stop(false);
@@ -191,6 +196,7 @@ void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
+    shutdownTaskRuntime();
     cancelDaydreamSession(QStringLiteral("runtime services changed"));
     stopCurrentResponse();
     ++m_requestGeneration;
@@ -203,6 +209,7 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     m_chatPreparationRuntimeMetadata = services
         ? services->chatPreparationRuntimeMetadata()
         : ChatPreparationRuntimeMetadata{};
+    if (services) initializeTaskRuntime();
     if (services && m_storageInitialized) {
         const auto started = startChatSideEffectQueue();
         if (!started.isOk()) {
@@ -249,7 +256,15 @@ void AIBrain::setPetName(const QString& petName) {
 
 void AIBrain::setToolRegistry(ToolRegistry* registry) {
     if (m_toolRegistry != registry) {
-        stopCurrentResponse();
+        // Tool registration also happens after startup recovery. A capability
+        // change must preserve the waiting task, not act as a user's Stop.
+        if (isTaskActive()) pauseTask();
+        m_userMessageDispatchTimer.stop();
+        if (!m_pendingUserMessages.isEmpty()) {
+            m_pendingUserMessages.clear();
+            emit pendingUserMessagesChanged();
+        }
+        cancelActiveResponse();
         ++m_requestGeneration;
         m_pendingToolConfirmations.clear();
         m_runtimeSessions.clear();
@@ -296,6 +311,13 @@ void AIBrain::start() {
     }
 
     m_running = true;
+    if (m_taskExperienceAdapter) {
+        m_taskExperienceTimer.start();
+        QTimer::singleShot(0, this, [this]() {
+            if (m_enabled && m_taskExperienceTimer.isActive() && !m_busy && m_taskExperienceAdapter)
+                m_taskExperienceAdapter->drain();
+        });
+    }
     const auto preparationStarted = startChatPreparationExecutor();
     if (!preparationStarted.isOk()) {
         qWarning() << "[AIBrain] unable to restart chat preparation executor:"
@@ -318,10 +340,17 @@ void AIBrain::start() {
 }
 
 void AIBrain::stop() {
+    if (m_runtimeServices) m_runtimeServices->cancelSleepForUserInteraction();
+    m_taskExperienceTimer.stop();
+    if (m_taskExperienceAdapter) m_taskExperienceAdapter->cancel();
+    // Closing preserves a resumable checkpoint instead of cancelling the task.
+    if (m_taskOrchestrator) m_taskOrchestrator->shutdown();
     if (m_daydreamRunning) {
         cancelDaydreamSession(QStringLiteral("AI brain stopped"));
     }
-    stopCurrentResponse();
+    m_userMessageDispatchTimer.stop();
+    m_pendingUserMessages.clear();
+    cancelActiveResponse();
     ++m_requestGeneration;
     m_running = false;
     m_idleTriggerTimer.stop();
@@ -353,6 +382,7 @@ Result<void, DomainError> AIBrain::submitUserMessage(
             QStringLiteral("CHAT_UNAVAILABLE"), QStringLiteral("聊天尚未就绪或等待中的消息过多，请稍后再试。")));
     }
     // UI history owns durable original messages; this queue only schedules turns.
+    if (isTaskActive()) pauseTask();
     // An active provider request keeps its immutable context and continues streaming.
     m_pendingUserMessages.append({input, messageId, QDateTime::currentDateTimeUtc(),
                                   rememberInput});
@@ -539,7 +569,10 @@ void AIBrain::triggerThink(const QString& reason,
     }
     if (m_activeDialogueResponse) {
         m_activeDialogueResponse->sessionId = sessionId;
+        m_activeDialogueResponse->reason = reason;
     }
+    // Multi-step tasks take precedence over any single-command local match.
+    if (tryHandleComplexTask(reason, triggerTag)) return;
     if (shouldUseLocalRouter(triggerTag)) {
         const IntentRoute route = m_intentRouter.route(reason, triggerTag);
         if (route.type != IntentRouteType::NeedLLM) {
@@ -733,7 +766,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
             QStringLiteral("AssistantResponseProduced"), finished.sessionId,
             {{QStringLiteral("text"), finished.visibleContent},
              {QStringLiteral("triggerTag"), finished.triggerTag},
-             {QStringLiteral("modelRole"), QStringLiteral("dialogue")}},
+             {QStringLiteral("modelRole"), m_taskResponse ? QStringLiteral("task_execution") : QStringLiteral("dialogue")}},
             finished.preparationRequestId, finished.generation);
         ChatMessage assistantMessage;
         assistantMessage.role = QStringLiteral("assistant");
@@ -764,6 +797,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
 }
 
 void AIBrain::stopCurrentResponse() {
+    stopTask();
     m_userMessageDispatchTimer.stop();
     if (!m_pendingUserMessages.isEmpty()) {
         m_pendingUserMessages.clear();

@@ -32,7 +32,10 @@ QList<ModelRoleConfig> AIBrain::configuredModelRoles() {
         config.getModelRoleConfig(ModelRole::Consolidation),
         config.getModelRoleConfig(ModelRole::Diary),
         config.getModelRoleConfig(ModelRole::Vision),
-        config.getModelRoleConfig(ModelRole::Daydream)
+        config.getModelRoleConfig(ModelRole::Daydream),
+        config.getModelRoleConfig(ModelRole::AgencyDecision),
+        config.getModelRoleConfig(ModelRole::TaskExecution),
+        config.getModelRoleConfig(ModelRole::PersonalityEvolution)
     };
 }
 

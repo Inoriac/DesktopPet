@@ -29,6 +29,7 @@
 #include "ai/reflection/sleep_cycle_coordinator.h"
 #include "ai/reflection/sleep_session_repository.h"
 #include "ai/reflection/sqlite_private_psyche_repository.h"
+#include "ai/reflection/personality_consolidation_stage.h"
 #include "runtime_ui_bridge.h"
 
 AgentRuntimeServices::AgentRuntimeServices() {
@@ -60,6 +61,7 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
     m_identityBaseline = request.identityBaseline;
     m_personalityPolicy = sanitizePersonalityPolicy(request.personalityPolicy);
     m_aiBrain = request.aiBrain;
+    m_agentScheduler = request.agentScheduler;
     m_uiBridge = request.uiBridge;
     m_started = true;
 
@@ -191,11 +193,16 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
                     });
                 m_diaryFragmentService->start();
                 m_diaryService->setFragmentService(m_diaryFragmentService.get());
+                SleepCycleHooks sleepHooks;
+                sleepHooks.isBrainBusy = [brain = request.aiBrain]() {
+                    return brain && (!brain->isEnabled() || brain->isBusy() || brain->isTaskActive()
+                                     || brain->pendingUserMessageCount() > 0);
+                };
                 m_sleepCycleCoordinator = std::make_unique<SleepCycleCoordinator>(
                     m_profileId, request.sleepPolicy, m_sleepSessionRepository.get(),
                     request.aiBrain->consolidationService(), m_diaryService.get(),
                     m_privateRepository.get(), request.aiBrain,
-                    request.agentScheduler, SleepCycleHooks{});
+                    request.agentScheduler, std::move(sleepHooks));
                 m_sleepCycleCoordinator->start();
                 if (m_sleepCycleCoordinator->isStarted()) {
                     report.capabilities.privateReflection = true;
@@ -249,12 +256,12 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
             m_privateRepository.reset();
             m_privateCrypto.reset();
             m_privateKeyProvider.reset();
-            m_agentScheduler = nullptr;
         }
     } else if (report.capabilities.profileGrowth) {
         report.diagnostics.append(QStringLiteral(
             "private reflection dependencies are unavailable; background memory maintenance remains available"));
     }
+    if (report.capabilities.profileGrowth) initializePersonalityStage(request.sleepPolicy);
     report.mode = report.capabilities.profileGrowth
         ? RuntimeMode::Running
         : RuntimeMode::Degraded;
@@ -425,6 +432,8 @@ void AgentRuntimeServices::reflectOnCompletedSession(const QString& sessionId) {
 }
 
 void AgentRuntimeServices::cancelSleepForUserInteraction() {
+    if (m_personalityCancellation) m_personalityCancellation->cancel();
+    m_evolutionPending = false;
     if (m_sleepCycleCoordinator) {
         m_sleepCycleCoordinator->cancelActive(SleepCancelReason::UserInteraction);
     }
@@ -432,7 +441,12 @@ void AgentRuntimeServices::cancelSleepForUserInteraction() {
 
 void AgentRuntimeServices::stop() {
     m_identityTimer.stop();
+    m_personalityTimer.stop();
+    m_personalityTimer.disconnect();
+    if (m_personalityCancellation) m_personalityCancellation->cancel();
     if (!m_started && !m_eventSchemas && !m_eventRepository) return;
+    // Stop task callbacks before the event/private repositories they reference.
+    if (m_aiBrain) m_aiBrain->setRuntimeServices(nullptr);
     if (m_ownerDiaryServer) m_ownerDiaryServer->stop();
     m_ownerDiaryServer.reset();
     m_ownerDiaryFacade.reset();
@@ -442,6 +456,11 @@ void AgentRuntimeServices::stop() {
     if (m_sleepCycleCoordinator) m_sleepCycleCoordinator->stop();
     if (m_reflectionCancellation) m_reflectionCancellation->cancel();
     m_sleepCycleCoordinator.reset();
+    m_personalityStage.reset();
+    m_personalityContextAssembler.reset();
+    m_personalityCancellation.reset();
+    m_evolutionPending = false;
+    m_lastEvolutionDate = {};
     m_diaryService.reset();
     m_innerThoughtService.reset();
     m_reflectionCancellation.reset();

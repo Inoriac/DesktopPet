@@ -8,7 +8,7 @@ REPOSITORY_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPOSITORY_ROOT, "launcher"))
 
 import config_loader  # noqa: E402
-from app_state import ModelEndpointState, ModelRoleState  # noqa: E402
+from app_state import AppState, MODEL_ROLES, ModelEndpointState, ModelRoleState  # noqa: E402
 
 
 def endpoint(provider, base_url, api_key, version="2023-06-01"):
@@ -21,6 +21,30 @@ def endpoint(provider, base_url, api_key, version="2023-06-01"):
 
 
 class LauncherModelRoleConfigTests(unittest.TestCase):
+    def test_new_cognitive_roles_keep_independent_routes_after_save_and_reload(self):
+        roles = ("agencyDecision", "taskExecution", "personalityEvolution")
+        endpoints = {"DEFAULT": endpoint(
+            "openai-compatible", "https://default.example/v1", "default-key")}
+        role_settings = {}
+        for index, role in enumerate(roles):
+            endpoint_id = f"COGNITIVE_{index}"
+            endpoints[endpoint_id] = endpoint(
+                "openai-compatible", f"https://role-{index}.example/v1", f"key-{index}")
+            role_settings[role] = ModelRoleState(endpoint_id, f"model-{index}")
+
+        output = config_loader.apply_settings(
+            {"aiSettings": {"activeProfile": "default", "profiles": {"default": {}}}},
+            {"modelEndpoints": endpoints, "modelRoles": role_settings},
+        )
+        restored = AppState.from_config(output)
+
+        self.assertEqual(config_loader.MODEL_ROLES, MODEL_ROLES)
+        for index, role in enumerate(roles):
+            with self.subTest(role=role):
+                self.assertEqual(restored.model_roles[role], role_settings[role])
+                endpoint_id = f"COGNITIVE_{index}"
+                self.assertEqual(restored.model_endpoints[endpoint_id], endpoints[endpoint_id])
+
     def test_apply_model_endpoint_settings_whenDefaultChanges_shouldKeepRoleModelsAndReferences(self):
         profile = {
             "modelEndpoints": {

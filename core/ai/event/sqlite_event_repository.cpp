@@ -315,10 +315,16 @@ Result<EventRecord, DomainError> SqliteEventRepository::insertEvent(
         return Result<EventRecord, DomainError>::failure(
             sqliteError(QStringLiteral("failed to read inserted event"), select.lastError()));
     }
-    return recordFromQuery(select);
+    auto record = recordFromQuery(select);
+    if (record.isOk() && idempotent
+        && eventDraftToJson(record.value()) != eventDraftToJson(draft)) {
+        return Result<EventRecord, DomainError>::failure(
+            domainError("EVT_ID_CONFLICT", "Stable event ID already belongs to different content"));
+    }
+    return record;
 }
 
-Result<EventRecord, DomainError> SqliteEventRepository::append(const EventDraft& draft) {
+Result<EventRecord, DomainError> SqliteEventRepository::append(const EventDraft& draft, bool idempotent) {
     if (!isOpen()) {
         return Result<EventRecord, DomainError>::failure(
             sqliteError(QStringLiteral("runtime event repository is closed")));
@@ -329,7 +335,7 @@ Result<EventRecord, DomainError> SqliteEventRepository::append(const EventDraft&
             sqliteError(QStringLiteral("failed to begin event append transaction"),
                         database.lastError()));
     }
-    auto inserted = insertEvent(database, draft, false);
+    auto inserted = insertEvent(database, draft, idempotent);
     if (!inserted.isOk() || !database.commit()) {
         const DomainError error = inserted.isOk()
             ? sqliteError(QStringLiteral("failed to commit event append"), database.lastError())

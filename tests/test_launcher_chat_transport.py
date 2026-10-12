@@ -192,6 +192,23 @@ class AsyncLauncherChatTests(unittest.TestCase):
         self.assertEqual(self.server.requests[-1]["payload"]["afterRevision"], 49)
         self.assertEqual(self.errors, [])
 
+    def test_task_controls_use_authenticated_serial_transport_and_explicit_extension(self):
+        self.connect_client()
+        self.client.resume_task("task-1", "补充说明")
+        self.client.pause_task("task-1")
+        self.client.resume_task("task-1", extend_budget=True)
+        self.client.resolve_task_call("task-1", "call-1", True)
+        self.client.stop_task("task-1")
+        self.wait_for(lambda: len(self.finished) == 5)
+        requests = self.server.requests[1:]
+        self.assertEqual([r["action"] for r in requests], [
+            "resume_task", "pause_task", "resume_task", "resolve_task_call", "stop_task"])
+        self.assertFalse(requests[0]["payload"]["extendBudget"])
+        self.assertTrue(requests[2]["payload"]["extendBudget"])
+        self.assertEqual(requests[3]["payload"]["callId"], "call-1")
+        self.assertTrue(all(r["payload"]["sessionToken"] == TOKEN for r in requests))
+        self.assertTrue(all(r["payload"]["taskId"] == "task-1" for r in requests))
+
     def test_close_and_reconnect_ignore_previous_socket_callbacks(self):
         self.connect_client()
         self.server.stall.add("get_chat_state")

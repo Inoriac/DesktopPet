@@ -162,6 +162,7 @@ private slots:
     void append_whenPrivateReferenceIsValid_shouldPersistReferenceWithoutBody();
     void append_whenPrivatePayloadContainsBody_shouldRejectWithoutPartialRow();
     void append_whenSchemaInvalid_shouldRejectWithoutPartialRow();
+    void appendIdempotent_preservesOriginalAndRejectsConflictingReplay();
 
     void commit_whenExpectedSequenceMatches_shouldAdvanceCheckpoint();
     void commit_whenExpectedSequenceConflicts_shouldPreserveCurrentCheckpoint();
@@ -230,6 +231,27 @@ void TestEventLedger::append_whenDraftIsValid_shouldPersistAndReturnSequencedEve
     QVERIFY(!result.value().eventId.isEmpty());
     QCOMPARE(scalar(fixture.databasePath,
                     QStringLiteral("SELECT COUNT(*) FROM event_log")).toInt(), 1);
+}
+
+void TestEventLedger::appendIdempotent_preservesOriginalAndRejectsConflictingReplay() {
+    EventFixture fixture;
+    QVERIFY(fixture.ready());
+    auto draft = userMessageDraft();
+    draft.eventId = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+    draft.occurredAt = QDateTime::currentDateTimeUtc();
+    const auto first = fixture.ledger->appendIdempotent(draft);
+    QVERIFY(first.isOk());
+    const auto replay = fixture.ledger->appendIdempotent(draft);
+    QVERIFY(replay.isOk());
+    QCOMPARE(replay.value().sequence, first.value().sequence);
+    QCOMPARE(replay.value().createdAt, first.value().createdAt);
+    draft.payload.insert(QStringLiteral("text"), QStringLiteral("different result"));
+    const auto conflicting = fixture.ledger->appendIdempotent(draft);
+    QVERIFY(!conflicting.isOk());
+    QCOMPARE(conflicting.error().code, QStringLiteral("EVT_ID_CONFLICT"));
+    QCOMPARE(scalar(fixture.databasePath, QStringLiteral("SELECT COUNT(*) FROM event_log")).toInt(), 1);
+    QCOMPARE(scalar(fixture.databasePath, QStringLiteral("SELECT payload_json FROM event_log")).toString(),
+        QString::fromUtf8(QJsonDocument(first.value().payload).toJson(QJsonDocument::Compact)));
 }
 
 void TestEventLedger::append_whenOccurredAtMissing_shouldUseUtcClock() {

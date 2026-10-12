@@ -28,12 +28,31 @@ QString traitDescription(const QString& name, double value) {
             : value > 0.66 ? QStringLiteral("开放好奇")
                            : QStringLiteral("稳健开放");
     }
+    if (name == QLatin1String("persistence")) {
+        return value >= 0.5 ? QStringLiteral("愿意坚持尝试") : QStringLiteral("适时调整方向");
+    }
+    if (name == QLatin1String("caution")) {
+        return value >= 0.5 ? QStringLiteral("重视证据与不确定性") : QStringLiteral("愿意尝试后核验");
+    }
+    if (name == QLatin1String("autonomy")) {
+        return value >= 0.5 ? QStringLiteral("坦诚表达边界") : QStringLiteral("温和协商");
+    }
+    if (name == QLatin1String("helpfulness")) {
+        return value >= 0.5 ? QStringLiteral("愿意理解并帮助用户") : QStringLiteral("尊重独立处理的空间");
+    }
     return {};
 }
 
 QString tendencyDescription(const QString& name, double value, bool relationship) {
     if (std::abs(value) < 1e-9) return {};
     const QString prefix = relationship ? QStringLiteral("面对主人时") : QString();
+    if (relationship) {
+        if (name == QLatin1String("affinity")) return value >= 0.6 ? QStringLiteral("相处亲近自然") : QStringLiteral("温和建立亲近感");
+        if (name == QLatin1String("trust")) return value >= 0.6 ? QStringLiteral("相互信任") : QStringLiteral("通过真实互动积累信任");
+        if (name == QLatin1String("familiarity")) return value >= 0.5 ? QStringLiteral("已有较多共同经历") : QStringLiteral("仍在逐渐了解彼此");
+        if (name == QLatin1String("boundaryRespect")) return value >= 0.5 ? QStringLiteral("尊重彼此边界") : QStringLiteral("清楚说明相处边界");
+        return {};
+    }
     if (name == QStringLiteral("sociability")) {
         return prefix + (value > 0.0 ? QStringLiteral("更乐于交流")
                                     : QStringLiteral("更偏内敛"));
@@ -91,6 +110,7 @@ PersonaProjection PersonaProjector::project(
     IdentityBaseline effectiveBaseline = m_baseline;
     QStringList dynamicDescriptions;
     QString selfNarrative;
+    QString behaviorStyle;
 
     if (m_repository && !snapshot.profileId.isEmpty()) {
         if (snapshot.personalityVersion.has_value()) {
@@ -99,11 +119,11 @@ PersonaProjection PersonaProjector::project(
             if (personality.isOk() && personality.value().has_value()) {
                 const PersonalitySnapshot& state = *personality.value();
                 effectiveBaseline = state.baseline;
+                effectiveBaseline.traits = state.effectiveTraits();
+                behaviorStyle = state.behaviorStyleSummary;
+                selfNarrative = state.selfNarrativeSummary;
                 for (auto it = state.tendencies.cbegin();
                      it != state.tendencies.cend(); ++it) {
-                    const double baselineValue = effectiveBaseline.traits.value(it.key(), 0.5);
-                    effectiveBaseline.traits.insert(
-                        it.key(), std::clamp(baselineValue + it.value(), 0.0, 1.0));
                     appendDescription(
                         dynamicDescriptions,
                         tendencyDescription(it.key(), it.value(), false));
@@ -125,7 +145,7 @@ PersonaProjection PersonaProjector::project(
                 }
             }
         }
-        if (snapshot.selfModelVersion.has_value()) {
+        if (selfNarrative.isEmpty() && snapshot.selfModelVersion.has_value()) {
             const auto selfModel = m_repository->selfModelAt(
                 snapshot.profileId, *snapshot.selfModelVersion);
             if (selfModel.isOk() && selfModel.value().has_value()) {
@@ -150,6 +170,9 @@ PersonaProjection PersonaProjector::project(
 
     PersonaProjection projection = projectBaseline(
         effectiveBaseline, context.petName);
+    if (!behaviorStyle.isEmpty()) {
+        projection.promptSlots.insert(QStringLiteral("speaking_style"), behaviorStyle);
+    }
     QString traits = projection.promptSlots.value(QStringLiteral("persona_traits"));
     if (!dynamicDescriptions.isEmpty()) {
         traits += QStringLiteral("当前倾向：%1。").arg(
@@ -163,7 +186,7 @@ PersonaProjection PersonaProjector::project(
          it != effectiveBaseline.traits.cend(); ++it) {
         if (std::isfinite(it.value())) {
             projection.behaviorParameters.insert(
-                it.key(), std::clamp(it.value(), 0.0, 1.0));
+                it.key(), std::clamp(it.value(), 0.05, 0.95));
         }
     }
     for (auto it = projection.promptSlots.begin();
@@ -186,7 +209,7 @@ PersonaProjection PersonaProjector::projectBaseline(const IdentityBaseline& base
         if (!std::isfinite(it.value())) {
             continue;
         }
-        const QString description = traitDescription(it.key(), std::clamp(it.value(), 0.0, 1.0));
+        const QString description = traitDescription(it.key(), std::clamp(it.value(), 0.05, 0.95));
         if (!description.isEmpty()) {
             descriptions.append(description);
         }

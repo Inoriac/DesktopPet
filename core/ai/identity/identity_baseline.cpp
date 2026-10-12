@@ -33,7 +33,11 @@ IdentityBaseline IdentityBaseline::defaults() {
     baseline.traits = {
         {QStringLiteral("initiative"), 0.35},
         {QStringLiteral("openness"), 0.60},
-        {QStringLiteral("sociability"), 0.45}
+        {QStringLiteral("sociability"), 0.45},
+        {QStringLiteral("persistence"), 0.55},
+        {QStringLiteral("caution"), 0.60},
+        {QStringLiteral("autonomy"), 0.50},
+        {QStringLiteral("helpfulness"), 0.70}
     };
     baseline.speakingStyle = QStringLiteral("自然、简短、重视真实经历");
     return baseline;

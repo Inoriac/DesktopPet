@@ -8,7 +8,8 @@ QList<ContextPartition> allowedPartitions(ModelRole role) {
     switch (role) {
     case ModelRole::Dialogue:
         return {ContextPartition::CurrentInput, ContextPartition::Persona,
-                ContextPartition::RelevantMemory, ContextPartition::SkillSummary};
+                ContextPartition::RelevantMemory, ContextPartition::SkillSummary,
+                ContextPartition::PrivateReflectionExcerpt};
     case ModelRole::FastExtract:
         return {ContextPartition::CurrentInput};
     case ModelRole::Consolidation:
@@ -21,6 +22,16 @@ QList<ContextPartition> allowedPartitions(ModelRole role) {
     case ModelRole::Daydream:
         return {ContextPartition::EvidenceWindow,
                 ContextPartition::RelevantMemory};
+    case ModelRole::AgencyDecision:
+    case ModelRole::TaskExecution:
+        return {ContextPartition::CurrentInput, ContextPartition::Persona,
+                ContextPartition::RelevantMemory,
+                ContextPartition::PrivateReflectionExcerpt};
+    case ModelRole::PersonalityEvolution:
+        return {ContextPartition::CurrentInput, ContextPartition::Persona,
+                ContextPartition::EvidenceWindow, ContextPartition::RelevantMemory,
+                ContextPartition::DiaryProjection, ContextPartition::InnerThought,
+                ContextPartition::PrivateReflectionExcerpt};
     }
     return {};
 }

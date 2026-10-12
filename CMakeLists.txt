@@ -115,6 +115,7 @@ set(AGENT_RUNTIME_SOURCES
     core/ai/runtime/agent_runtime_services.h
     core/ai/runtime/agent_runtime_services.cpp
     core/ai/runtime/agent_runtime_growth.cpp
+    core/ai/runtime/agent_runtime_personality.cpp
     core/ai/runtime/agent_bootstrap.h
     core/ai/runtime/agent_bootstrap.cpp
 )
@@ -154,6 +155,8 @@ set(IDENTITY_STATE_SOURCES
 )
 
 set(REFLECTION_SOURCES
+    core/ai/reflection/personality_consolidation_stage.h
+    core/ai/reflection/personality_consolidation_stage.cpp
     core/ai/reflection/reflection_types.h
     core/ai/reflection/reflection_types.cpp
     core/ai/reflection/cancellation_token.h
@@ -187,7 +190,27 @@ set(OWNER_DIARY_SOURCES
     core/ai/owner/owner_diary_server.cpp
 )
 
+set(TASK_ORCHESTRATION_SOURCES
+    core/ai/task/task_types.h
+    core/ai/task/task_types.cpp
+    core/ai/task/task_store.h
+    core/ai/task/task_store.cpp
+    core/ai/task/agency_decision_service.h
+    core/ai/task/agency_decision_service.cpp
+    core/ai/task/task_orchestrator.h
+    core/ai/task/task_orchestrator.cpp
+)
+set(TASK_INTEGRATION_SOURCES
+    ${TASK_ORCHESTRATION_SOURCES}
+    core/ai/ai_brain_tasks.cpp
+    core/ai/task/task_experience_adapter.h
+    core/ai/task/task_experience_adapter.cpp
+    core/ai/tools/runtime/task_tool_executor.h
+    core/ai/tools/runtime/task_tool_executor.cpp
+)
+
 set(CORE_SOURCES
+    ${TASK_INTEGRATION_SOURCES}
     core/animation/animation_manager.cpp
     core/animation/animation_manager.h
     core/animation/animation_importer.cpp
@@ -639,6 +662,10 @@ add_desktop_pet_cpp_test(event_ledger_tests EventLedgerTests
 
 # ---- Agent bootstrap and runtime service composition test support ----
 set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
+    ${TASK_INTEGRATION_SOURCES}
+    core/ai/tools/web_tools.cpp
+    core/ai/tools/file_tools.cpp
+    core/ai/tools/life_tools.cpp
     core/ai/tools/companion_tools.cpp
     core/ai/tools/companion_tools.h
     ${EVENT_LEDGER_SOURCES}
@@ -1919,3 +1946,25 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
                 COMMENT "Running windeployqt for emotion_runtime_tests...")
     endif ()
 endif ()
+
+# Personality evolution and bounded complex tasks.
+add_desktop_pet_cpp_test(task_orchestrator_tests TaskOrchestratorTests
+    SOURCES tests/test_task_orchestrator.cpp ${TASK_ORCHESTRATION_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES Qt::Core Qt::Sql Qt::Test)
+add_desktop_pet_cpp_test(personality_consolidation_tests PersonalityConsolidationTests
+    SOURCES tests/test_personality_consolidation.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
+add_desktop_pet_cpp_test(task_experience_tests TaskExperienceTests
+    SOURCES tests/test_task_experience.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
+if(WIN32 AND EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
+    foreach(task_test task_orchestrator_tests personality_consolidation_tests task_experience_tests)
+        add_custom_command(TARGET ${task_test} POST_BUILD
+            COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe" --no-translations --no-system-d3d-compiler "$<TARGET_FILE:${task_test}>")
+    endforeach()
+endif()

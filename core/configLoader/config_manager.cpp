@@ -101,6 +101,9 @@ static QString modelRoleConfigKey(ModelRole role) {
     case ModelRole::Diary: return QStringLiteral("diary");
     case ModelRole::Vision: return QStringLiteral("vision");
     case ModelRole::Daydream: return QStringLiteral("daydream");
+    case ModelRole::AgencyDecision: return QStringLiteral("agencyDecision");
+    case ModelRole::TaskExecution: return QStringLiteral("taskExecution");
+    case ModelRole::PersonalityEvolution: return QStringLiteral("personalityEvolution");
     }
     return QString();
 }
@@ -108,7 +111,8 @@ static QString modelRoleConfigKey(ModelRole role) {
 static QList<ModelRole> allModelRoles() {
     return {ModelRole::Dialogue, ModelRole::FastExtract,
             ModelRole::Consolidation, ModelRole::Diary, ModelRole::Vision,
-            ModelRole::Daydream};
+            ModelRole::Daydream, ModelRole::AgencyDecision,
+            ModelRole::TaskExecution, ModelRole::PersonalityEvolution};
 }
 
 static QJsonObject parseStringHeaders(const QJsonValue& value,
@@ -424,6 +428,17 @@ ModelRoleConfig ConfigManager::getModelRoleConfig(ModelRole role) const {
 
     ModelRoleConfig compatible;
     compatible.role = role;
+    if (role == ModelRole::AgencyDecision || role == ModelRole::TaskExecution
+        || role == ModelRole::PersonalityEvolution) {
+        compatible = getModelRoleConfig(ModelRole::Dialogue);
+        compatible.role = role;
+        for (auto& route : compatible.routes) {
+            route.llm.retryCount = 0;
+            route.llm.maxTokens = qMax(route.llm.maxTokens,
+                role == ModelRole::AgencyDecision ? 512 : 2048);
+        }
+        return compatible;
+    }
     if (role != ModelRole::Dialogue && role != ModelRole::Vision) {
         return compatible;
     }
@@ -573,6 +588,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     screenChatConfig = ScreenChatConfig{};
     daydreamConfig = DaydreamConfig{};
     sleepPolicy = SleepPolicy{};
+    taskBudget = TaskBudget{};
     emotionConfig = EmotionConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};
@@ -770,6 +786,14 @@ bool ConfigManager::loadConfig(const QString& configPath) {
             daydreamConfig = parseDaydreamConfig(aiRaw.value("daydream").toObject());
         }
 
+        if (aiRaw.value(QStringLiteral("taskOrchestration")).isObject()) {
+            const auto budget = aiRaw.value(QStringLiteral("taskOrchestration")).toObject();
+            taskBudget.maxToolCalls = clampInt(budget.value("maxToolCalls").toInt(12), 1, 100);
+            taskBudget.maxReplans = clampInt(budget.value("maxReplans").toInt(2), 0, 10);
+            taskBudget.maxActiveMs = clampInt(budget.value("maxActiveMs").toInt(300000), 1000, 3600000);
+            taskBudget.modelTimeoutMs = clampInt(budget.value("modelTimeoutMs").toInt(60000), 1000, 300000);
+            taskBudget.toolTimeoutMs = clampInt(budget.value("toolTimeoutMs").toInt(30000), 1000, 120000);
+        }
         if (aiRaw.contains(QStringLiteral("sleepPolicy"))
             && aiRaw.value(QStringLiteral("sleepPolicy")).isObject()) {
             sleepPolicy = parseSleepPolicy(

@@ -17,6 +17,7 @@ class MemoryConsolidationService;
 class DiaryService;
 class SleepSessionRepository;
 class SqlitePrivatePsycheRepository;
+class PersonalityConsolidationStage;
 
 struct SleepCycleHooks {
     std::function<bool()> isBrainBusy;
@@ -25,6 +26,7 @@ struct SleepCycleHooks {
     std::function<qint64()> sourceCutoffSequence;
     std::function<void(bool)> publishCapability;
     std::function<void()> playSleepAnimation;
+    std::function<Result<QList<EventRecord>, DomainError>(qint64, const QDate&)> diarySourceEvents;
 };
 
 class SleepCycleCoordinator {
@@ -41,6 +43,14 @@ public:
         SleepCycleHooks hooks);
     ~SleepCycleCoordinator();
 
+    void setPersonalityStage(PersonalityConsolidationStage* stage) {
+        m_personalityStage = stage;
+    }
+    void setDiarySourceReader(
+        std::function<Result<QList<EventRecord>, DomainError>(qint64, const QDate&)> reader) {
+        m_hooks.diarySourceEvents = std::move(reader);
+    }
+
     Result<void, DomainError> recoverIncomplete();
     void start();
     void stop();
@@ -54,6 +64,8 @@ public:
 
 private:
     bool isReady(const SleepTrigger& trigger) const;
+    void consolidatePersonality(const QString& sessionId,
+                                const CancellationToken& token);
     void composeDiary(
         const QString& sessionId,
         const CancellationToken& token);
@@ -71,6 +83,7 @@ private:
     SleepSessionRepository* m_sessions = nullptr;
     MemoryConsolidationService* m_daydream = nullptr;
     DiaryService* m_diary = nullptr;
+    PersonalityConsolidationStage* m_personalityStage = nullptr;
     SqlitePrivatePsycheRepository* m_privateRepository = nullptr;
     AIBrain* m_aiBrain = nullptr;
     AgentScheduler* m_scheduler = nullptr;

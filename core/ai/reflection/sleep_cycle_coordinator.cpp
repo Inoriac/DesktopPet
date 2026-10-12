@@ -1,6 +1,7 @@
 #include "sleep_cycle_coordinator.h"
 
 #include <QUuid>
+#include <QJsonDocument>
 
 #include <utility>
 
@@ -8,6 +9,7 @@
 #include "ai/scheduler/agent_scheduler.h"
 #include "memory_consolidation_service.h"
 #include "diary_service.h"
+#include "personality_consolidation_stage.h"
 #include "sleep_session_repository.h"
 #include "sqlite_private_psyche_repository.h"
 
@@ -125,8 +127,37 @@ Result<QString, DomainError> SleepCycleCoordinator::tryStart(
     // Memory maintenance has its own durable per-batch commits. Diary cancellation
     // can no longer roll it back or prevent it from making progress.
     if (m_aiBrain) m_aiBrain->requestManualDaydream();
-    if (m_diary) composeDiary(session.sessionId, m_cancellation.token());
+    if (m_personalityStage) consolidatePersonality(session.sessionId, m_cancellation.token());
+    else if (m_diary) composeDiary(session.sessionId, m_cancellation.token());
     return Result<QString, DomainError>::success(session.sessionId);
+}
+
+void SleepCycleCoordinator::consolidatePersonality(
+    const QString& sessionId, const CancellationToken& token) {
+    if (token.isCancelled() || sessionId != m_activeSessionId) return;
+    const auto session = m_sessions->find(sessionId);
+    if (!session.isOk() || !session.value().has_value()
+        || !m_sessions->updateState(sessionId, SleepSessionState::Consolidating).isOk()) {
+        failPending(sessionId);
+        return;
+    }
+    PersonalityEvolutionRequest request;
+    request.profileId = m_profileId;
+    request.sessionId = sessionId;
+    request.sourceCutoffSequence = session.value()->sourceCutoffSequence;
+    request.now = session.value()->startedAt;
+    const auto alive = m_alive;
+    m_personalityStage->consolidateAsync(request, token,
+        [this, alive, sessionId, token](Result<PersonalitySnapshot, DomainError> result) {
+            Q_UNUSED(result)
+            if (!alive->load(std::memory_order_acquire)
+                || token.isCancelled() || sessionId != m_activeSessionId) return;
+            // Evolution has its own identity transaction. Failure keeps the old
+            // version and pending evidence, and never rolls back memory batches.
+            // The current diary is composed afterwards, excluding circular proof.
+            if (m_diary) composeDiary(sessionId, token);
+            else abortPending(sessionId);
+        });
 }
 
 void SleepCycleCoordinator::composeDiary(
@@ -150,6 +181,24 @@ void SleepCycleCoordinator::composeDiary(
     request.sessionId = sessionId;
     request.localDate = QDateTime::currentDateTime().date();
     request.sourceCutoffSequence = session.value()->sourceCutoffSequence;
+    if (m_hooks.diarySourceEvents) {
+        const auto sources = m_hooks.diarySourceEvents(request.sourceCutoffSequence, request.localDate);
+        if (!sources.isOk()) {
+            failPending(sessionId);
+            return;
+        }
+        for (const auto& event : sources.value()) {
+            if (request.originalSourceIds.size() >= 64) break;
+            if (event.profileId != m_profileId || event.sequence <= 0
+                || event.sequence > request.sourceCutoffSequence
+                || request.originalSourceIds.contains(event.eventId)) continue;
+            request.originalSourceIds.append(event.eventId);
+            request.eventSummaries.append(QString::fromUtf8(QJsonDocument(QJsonObject{
+                {QStringLiteral("originalSourceId"), event.eventId},
+                {QStringLiteral("type"), event.type},
+                {QStringLiteral("facts"), event.payload}}).toJson(QJsonDocument::Compact)));
+        }
+    }
     StagingSession staging{sessionId, token.generation()};
     const std::shared_ptr<std::atomic_bool> alive = m_alive;
     m_diary->composeAsync(
@@ -334,7 +383,7 @@ void SleepCycleCoordinator::start() {
 }
 
 void SleepCycleCoordinator::stop() {
-    if (!m_started && !m_timer.isActive()) {
+    if (!m_started && !m_timer.isActive() && m_activeSessionId.isEmpty()) {
         m_cancellation.cancel();
         return;
     }

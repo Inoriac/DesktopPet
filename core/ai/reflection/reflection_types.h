@@ -48,6 +48,9 @@ struct DiaryRequest {
     QString petName;
     // 补写模式：启动恢复时对历史日期的孤儿便签补写日记（人格化叙事）
     bool recovery = false;
+    // Exact committed experiences actually supplied to this diary. The model
+    // cannot introduce provenance; legacy/recovery entries may have none.
+    QStringList originalSourceIds;
 };
 
 struct DiaryEntry {

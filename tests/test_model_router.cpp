@@ -154,6 +154,9 @@ class ModelRouterTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void cognitiveRolesInheritDialogueAndRespectExplicitDisable();
+    void evolutionCanReadPrivateMaterialWithoutOwnerAccess();
+    void configExposesCognitiveRoleOverrides();
     void resolve_whenPrimaryRouteMeetsConstraints_shouldReturnPrimary();
     void resolve_whenPrimaryIsOpenCircuit_shouldReturnConfiguredFallback();
     void resolve_whenNoRouteSupportsVision_shouldReturnRoleUnavailable();
@@ -894,6 +897,59 @@ void ModelRouterTests::completeOnce_whenRouteIsValid_shouldDisableServiceLevelRe
     QVERIFY(callbackCalled);
     QCOMPARE(transport->configs.size(), 1);
     QCOMPARE(transport->configs.first().retryCount, 0);
+}
+
+void ModelRouterTests::cognitiveRolesInheritDialogueAndRespectExplicitDisable() {
+    const auto dialogue = roleConfig(ModelRole::Dialogue, {route("shared", "shared-model")});
+    ModelRoleRegistry registry({dialogue, roleConfig(ModelRole::TaskExecution, {})});
+    const auto agency = registry.configFor(ModelRole::AgencyDecision);
+    const auto evolution = registry.configFor(ModelRole::PersonalityEvolution);
+    QVERIFY(agency.isOk()); QVERIFY(evolution.isOk());
+    QCOMPARE(agency.value().role, ModelRole::AgencyDecision);
+    QCOMPARE(evolution.value().routes.first().llm.model, QString("shared-model"));
+    QVERIFY(evolution.value().routes.first().llm.maxTokens >= 2048);
+    QVERIFY(registry.configFor(ModelRole::TaskExecution).value().routes.isEmpty());
+}
+
+void ModelRouterTests::evolutionCanReadPrivateMaterialWithoutOwnerAccess() {
+    ContextAssembler assembler;
+    ContextRequest request;
+    request.requestedPartitions = {ContextPartition::DiaryProjection, ContextPartition::InnerThought};
+    request.projections = {projection(ContextPartition::DiaryProjection, "private diary"),
+        projection(ContextPartition::InnerThought, "private feeling")};
+    const auto result = assembler.assemble(ModelRole::PersonalityEvolution, request);
+    QVERIFY(result.isOk()); QCOMPARE(result.value().size(), 2);
+    QVERIFY(!assembler.assemble(ModelRole::TaskExecution, request).isOk());
+    request.requestedPartitions = {ContextPartition::PrivateReflectionExcerpt};
+    request.projections = {projection(ContextPartition::PrivateReflectionExcerpt, "selected excerpt")};
+    QVERIFY(assembler.assemble(ModelRole::Dialogue, request).isOk());
+    QVERIFY(assembler.assemble(ModelRole::AgencyDecision, request).isOk());
+    request.requestedPartitions = {ContextPartition::OwnerAccess};
+    QVERIFY(!assembler.assemble(ModelRole::PersonalityEvolution, request).isOk());
+}
+
+void ModelRouterTests::configExposesCognitiveRoleOverrides() {
+    QTemporaryDir directory;
+    const QJsonObject shared{{"routeId", "dialogue"}, {"enabled", true},
+        {"provider", "openai-compatible"}, {"baseUrl", "https://shared.example/v1"},
+        {"apiKey", "test-key"}, {"model", "shared-model"}};
+    auto root = configWithDialogueRoute(shared);
+    QVERIFY(ConfigManager::instance().loadConfig(writeConfig(directory, root)));
+    QCOMPARE(ConfigManager::instance().getModelRoleConfig(ModelRole::AgencyDecision).routes.first().llm.model,
+        QString("shared-model"));
+    auto settings = root.value("aiSettings").toObject();
+    auto profiles = settings.value("profiles").toObject();
+    auto profile = profiles.value("default").toObject();
+    auto roles = profile.value("modelRoles").toObject();
+    auto independent = shared; independent["model"] = "reflection-model";
+    roles["personalityEvolution"] = QJsonObject{{"routes", QJsonArray{independent}}};
+    roles["taskExecution"] = QJsonObject{{"routes", QJsonArray{}}};
+    profile["modelRoles"] = roles; profiles["default"] = profile;
+    settings["profiles"] = profiles; root["aiSettings"] = settings;
+    QVERIFY(ConfigManager::instance().loadConfig(writeConfig(directory, root)));
+    QCOMPARE(ConfigManager::instance().getModelRoleConfig(ModelRole::PersonalityEvolution).routes.first().llm.model,
+        QString("reflection-model"));
+    QVERIFY(ConfigManager::instance().getModelRoleConfig(ModelRole::TaskExecution).routes.isEmpty());
 }
 
 QTEST_MAIN(ModelRouterTests)

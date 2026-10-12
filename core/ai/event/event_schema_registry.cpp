@@ -188,6 +188,13 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     diaryStored.type = QStringLiteral("DiaryStored");
     definitions.append(diaryStored);
 
+    EventSchemaDefinition taskExperience;
+    taskExperience.type = QStringLiteral("TaskExperienceRecorded");
+    taskExperience.requiredFields = {{QStringLiteral("task_id"), EventFieldType::String},
+        {QStringLiteral("goal"), EventFieldType::String}, {QStringLiteral("status"), EventFieldType::String},
+        {QStringLiteral("feedback_status"), EventFieldType::String}};
+    definitions.append(taskExperience);
+
     for (const EventSchemaDefinition& definition : definitions) {
         Result<void, DomainError> result = registry.registerSchema(definition);
         if (!result.isOk()) return result;

@@ -15,7 +15,7 @@ import re
 import tempfile
 from typing import Any, Dict
 
-from app_state import DEFAULT_ANTHROPIC_VERSION
+from app_state import DEFAULT_ANTHROPIC_VERSION, MODEL_ROLES
 
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -23,8 +23,6 @@ TEMPLATE_PATH = os.path.join(
     "default_common_config.example.json",
 )
 SAVED_CONFIG_NAME = "launch_config.json"
-MODEL_ROLES = (
-    "dialogue", "vision", "fastExtract", "consolidation", "diary", "daydream")
 ENDPOINT_ID_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_-]{0,63}$")
 INLINE_CONNECTION_FIELDS = (
     "provider", "baseUrl", "apiKey", "anthropicVersion", "extraHeaders")

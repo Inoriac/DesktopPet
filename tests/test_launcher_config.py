@@ -47,6 +47,7 @@ class LauncherConfigTests(unittest.TestCase):
         self.assertEqual(set(state.model_roles), {
             "dialogue", "vision", "fastExtract", "consolidation", "diary",
             "daydream",
+            "agencyDecision", "taskExecution", "personalityEvolution",
         })
         self.assertEqual(state.model_roles["dialogue"].model, "dialogue-model")
 

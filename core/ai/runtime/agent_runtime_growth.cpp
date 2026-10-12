@@ -6,7 +6,6 @@
 #include "ai/event/event_ledger.h"
 #include "ai/identity/personality_service.h"
 #include "ai/identity/relationship_service.h"
-#include "ai/identity/self_model_service.h"
 #include "ai/identity/sqlite_identity_repository.h"
 
 namespace {
@@ -36,6 +35,25 @@ std::optional<Feedback> explicitFeedback(const QString& input) {
     }
     return std::nullopt;
 }
+
+QList<QPair<QString, double>> explicitRelationshipFeedback(const QString& input) {
+    const QString text = input.simplified().left(512);
+    QList<QPair<QString, double>> result;
+    const auto matches = [&text](const QString& expression) {
+        return QRegularExpression(expression).match(text).hasMatch();
+    };
+    if (matches(QStringLiteral("^(?:我)?(?:很)?(?:喜欢和你聊天|喜欢你主动|喜欢你尝试新)|^(?:谢谢你|你做得好|做得好|你很棒|干得好)[！!。 ，,]*$")))
+        result.append({QStringLiteral("affinity"), 1.0});
+    if (matches(QStringLiteral("^(?:我(?:很)?信任你|你说得(?:对|很准确)|你的回答很可靠)[！!。 ，,]*$")))
+        result.append({QStringLiteral("trust"), 1.0});
+    if (matches(QStringLiteral("^(?:你说错了|你弄错了|这个答案错了|你的回答不准确)[！!。 ，,]*$")))
+        result.append({QStringLiteral("trust"), -1.0});
+    if (matches(QStringLiteral("^(?:你可以休息|你可以拒绝|我尊重你的边界|没关系，你先休息)[！!。 ，,]*$")))
+        result.append({QStringLiteral("boundaryRespect"), 1.0});
+    if (matches(QStringLiteral("^(?:你不许拒绝|你必须听我的|你没有权利拒绝)[！!。 ，,]*$")))
+        result.append({QStringLiteral("boundaryRespect"), -1.0});
+    return result;
+}
 }
 
 Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDateTime& now) {
@@ -50,21 +68,48 @@ Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDat
     const auto authorization = authorizationFor(QStringLiteral("identity"));
     if (!authorization.isOk()) return Result<void, DomainError>::failure(authorization.error());
     const auto events = m_eventLedger->readAfter(checkpoint.value(),
-        {{QStringLiteral("UserMessageReceived")}, {}, authorization.value()}, 64);
+        {{QStringLiteral("UserMessageReceived"), QStringLiteral("TaskExperienceRecorded")}, {}, authorization.value()}, 64);
     if (!events.isOk()) return Result<void, DomainError>::failure(events.error());
     qint64 sequence = checkpoint.value();
     for (const auto& event : events.value()) {
         const QString trigger = event.payload.value(QStringLiteral("triggerTag")).toString();
-        const auto feedback = (trigger == QLatin1String("manual") || trigger == QLatin1String("user_request"))
-            && event.privacy == EventPrivacy::Normal
-            ? explicitFeedback(event.payload.value(QStringLiteral("text")).toString()) : std::nullopt;
+        const bool interaction = event.type == QLatin1String("UserMessageReceived")
+            && (trigger == QLatin1String("manual") || trigger == QLatin1String("user_request"))
+            && !event.payload.value(QStringLiteral("task_related")).toBool()
+            && event.privacy == EventPrivacy::Normal;
+        const bool taskExperience = event.type == QLatin1String("TaskExperienceRecorded")
+            && event.privacy == EventPrivacy::Normal;
+        const QString text = interaction ? event.payload.value(QStringLiteral("text")).toString() : QString();
+        const auto feedback = interaction ? explicitFeedback(text) : std::nullopt;
+        const QString subject = event.payload.value(QStringLiteral("subject_id")).toString(QStringLiteral("owner"));
+        const auto updateRelationship = [&](const QString& dimension, double direction, double weight) {
+            return m_relationshipService->applyEvidence(subject,
+                {dimension, direction, weight, 1.0, event.eventId, event.occurredAt});
+        };
         if (feedback) {
-            const TraitEvidenceDraft evidence{feedback->trait, feedback->direction, 0.5, 1.0,
+            TraitEvidenceDraft evidence{feedback->trait, feedback->direction, 0.5, 1.0,
                 feedback->context, event.eventId, event.occurredAt};
+            evidence.sourceSequence = event.sequence;
+            evidence.sourceCategory = QStringLiteral("explicit_feedback");
+            evidence.originalSourceId = event.eventId;
+            evidence.originalOccurredAt = event.occurredAt;
             const auto stored = m_personalityService->recordEvidence(evidence);
             if (!stored.isOk()) return stored;
-            const auto relationship = m_relationshipService->applyEvidence(QStringLiteral("owner"),
-                {feedback->trait, feedback->direction, 0.2, 1.0, event.eventId, event.occurredAt});
+        }
+        // Shared interactions build familiarity, without interpreting silence or
+        // a task's technical outcome as approval, dislike, or a trust judgment.
+        const QString taskStatus = event.payload.value(QStringLiteral("status")).toString();
+        if ((interaction && text.simplified().size() >= 2)
+            || (taskExperience && (taskStatus == QLatin1String("Completed")
+                || taskStatus == QLatin1String("Failed") || taskStatus == QLatin1String("Cancelled")))) {
+            const auto relationship = updateRelationship(QStringLiteral("familiarity"), 1.0, taskExperience ? 0.25 : 0.10);
+            if (!relationship.isOk()) return Result<void, DomainError>::failure(relationship.error());
+        }
+        const QString explicitText = interaction ? text
+            : taskExperience && event.payload.value(QStringLiteral("feedback_status")).toString() == QLatin1String("provided")
+                ? event.payload.value(QStringLiteral("user_feedback")).toString() : QString();
+        for (const auto& [dimension, direction] : explicitRelationshipFeedback(explicitText)) {
+            const auto relationship = updateRelationship(dimension, direction, 0.60);
             if (!relationship.isOk()) return Result<void, DomainError>::failure(relationship.error());
         }
         const auto committed = m_checkpointStore->commit(consumer, sequence, event.sequence);
@@ -72,48 +117,6 @@ Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDat
         sequence = event.sequence;
     }
 
-    auto personality = m_identityRepository->currentPersonality(m_profileId);
-    if (!personality.isOk()) return Result<void, DomainError>::failure(personality.error());
-    const auto pending = m_identityRepository->pendingEvidence(m_profileId,
-        QDateTime::fromSecsSinceEpoch(0, Qt::UTC), now.toUTC());
-    if (!pending.isOk()) return Result<void, DomainError>::failure(pending.error());
-    if (!pending.value().isEmpty()) {
-        QDateTime first = now;
-        for (const auto& evidence : pending.value()) if (evidence.createdAt < first) first = evidence.createdAt;
-        const bool windowElapsed = first.addDays(m_personalityPolicy.minimumWindowDays) <= now;
-        const bool nextWindow = !personality.value()
-            || personality.value()->effectiveAt.addDays(m_personalityPolicy.minimumWindowDays) <= now;
-        if (windowElapsed && nextWindow) {
-            const auto consolidated = m_personalityService->consolidate({m_profileId, first, now,
-                personality.value() ? int(personality.value()->version) : 0});
-            if (!consolidated.isOk()) return Result<void, DomainError>::failure(consolidated.error());
-            personality = m_identityRepository->currentPersonality(m_profileId);
-            if (!personality.isOk()) return Result<void, DomainError>::failure(personality.error());
-        }
-    }
-    if (!personality.value()) return Result<void, DomainError>::success();
-    const auto self = m_identityRepository->currentSelfModel(m_profileId);
-    if (!self.isOk()) return Result<void, DomainError>::failure(self.error());
-    const auto& state = *personality.value();
-    if (self.value()) {
-        for (const auto& evidence : self.value()->evidence.items)
-            if (evidence.sourceType == EvidenceSourceType::PersonalityVersion && evidence.referenceId == state.stateId)
-                return Result<void, DomainError>::success();
-    }
-    QStringList tendencies;
-    for (auto it = state.tendencies.cbegin(); it != state.tendencies.cend(); ++it) {
-        if (qAbs(it.value()) < 1e-9) continue;
-        if (it.key() == QLatin1String("initiative")) tendencies << (it.value() > 0 ? QStringLiteral("更主动地陪伴") : QStringLiteral("给主人更多安静空间"));
-        if (it.key() == QLatin1String("sociability")) tendencies << (it.value() > 0 ? QStringLiteral("更愿意交流") : QStringLiteral("交流更克制"));
-        if (it.key() == QLatin1String("openness")) tendencies << (it.value() > 0 ? QStringLiteral("更愿意探索新事物") : QStringLiteral("做事更稳妥"));
-    }
-    if (tendencies.isEmpty()) return Result<void, DomainError>::success();
-    SelfModelProposal proposal;
-    proposal.narrative = QStringLiteral("根据主人长期表达的相处偏好，我在学习%1；仍会尊重当下的意愿。").arg(tendencies.join(QStringLiteral("、")));
-    if (self.value()) proposal.parentVersionId = self.value()->versionId;
-    proposal.proposedAt = now;
-    const auto evolved = m_selfModelService->evolve(proposal,
-        {{{state.stateId, EvidenceSourceType::PersonalityVersion, true}}});
-    if (!evolved.isOk()) return Result<void, DomainError>::failure(evolved.error());
+    // Personality publication is exclusively scheduled by the sleep evolution stage.
     return Result<void, DomainError>::success();
 }

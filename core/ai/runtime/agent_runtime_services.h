@@ -38,6 +38,7 @@ class SqlitePrivatePsycheRepository;
 class QtKeychainPrivateKeyProvider;
 class SqliteIdentityRepository;
 class SqliteEventRepository;
+class PersonalityConsolidationStage;
 
 class AgentRuntimeServices {
 public:
@@ -87,12 +88,20 @@ public:
     }
 #endif
     void cancelSleepForUserInteraction();
+    QJsonObject taskIdentityContext(const QString& petName) const;
     bool isStarted() const { return m_started; }
     void stop();
 
 private:
     friend class TestModuleConnectivity;
     QTimer m_identityTimer;
+    QTimer m_personalityTimer;
+    QDate m_lastEvolutionDate;
+    bool m_evolutionPending = false;
+    std::unique_ptr<PersonalityConsolidationStage> m_personalityStage;
+    std::unique_ptr<ContextAssembler> m_personalityContextAssembler;
+    std::unique_ptr<CancellationSource> m_personalityCancellation;
+    void initializePersonalityStage(const SleepPolicy& policy);
     friend class AgentBootstrap;
     Result<RuntimeStartReport, DomainError> startAfterStorageReady(
         const RuntimeStartRequest& request,

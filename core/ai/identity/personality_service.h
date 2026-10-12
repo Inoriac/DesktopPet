@@ -20,6 +20,14 @@ public:
                        EventOutbox* eventOutbox);
 
     Result<void, DomainError> recordEvidence(const TraitEvidenceDraft& evidence);
+    Result<PersonalityConsolidationPreview, DomainError> preview(
+        const PersonalityConsolidationRequest& request) const;
+    Result<PersonalitySnapshot, DomainError> commit(
+        const PersonalityConsolidationPreview& preview,
+        const QString& behaviorStyleSummary,
+        const QString& selfNarrativeSummary);
+    static QString deterministicBehaviorSummary(const PersonalitySnapshot& snapshot);
+    static QString deterministicNarrativeSummary(const PersonalitySnapshot& snapshot);
     Result<PersonalitySnapshot, DomainError> consolidate(
         const PersonalityConsolidationRequest& request);
     Result<PersonalitySnapshot, DomainError> rollback(

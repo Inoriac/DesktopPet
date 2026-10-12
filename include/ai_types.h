@@ -74,7 +74,10 @@ enum class ModelRole {
     Consolidation,
     Diary,
     Vision,
-    Daydream
+    Daydream,
+    AgencyDecision,
+    TaskExecution,
+    PersonalityEvolution
 };
 
 enum class ContextPartition {
@@ -86,7 +89,10 @@ enum class ContextPartition {
     DiaryProjection,
     InnerThought,
     VisionInput,
-    OwnerAccess
+    OwnerAccess,
+    // Explicitly selected internal excerpts, never owner access or an index of
+    // the private store. Callers must keep these out of ordinary call logs.
+    PrivateReflectionExcerpt
 };
 
 struct ModelLimits {

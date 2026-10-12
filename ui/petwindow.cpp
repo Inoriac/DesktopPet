@@ -268,7 +268,7 @@ PetWindow::PetWindow(PetProfile profile,
 }
 
 PetWindow::~PetWindow() {
-    if (aiBrain) aiBrain->stopCurrentResponse();
+    if (aiBrain) aiBrain->stop();
     voiceSynthesis.stop();
     if (snapFollowTimer) {
         snapFollowTimer->stop();
@@ -424,6 +424,7 @@ void PetWindow::setupLauncherChatBridge() {
             {QStringLiteral("busy"), aiBrain && (aiBrain->isBusy() || aiBrain->pendingUserMessageCount() > 0)},
             {QStringLiteral("pendingMessageCount"), aiBrain ? aiBrain->pendingUserMessageCount() : 0},
             {QStringLiteral("messages"), messageArray},
+            {QStringLiteral("task"), aiBrain ? aiBrain->taskSnapshot() : QJsonObject{}},
             {QStringLiteral("statistics"), launcherChatStatistics(modelName)}
         };
     };
@@ -508,6 +509,28 @@ void PetWindow::setupLauncherChatBridge() {
         if (aiBrain) aiBrain->stopCurrentResponse();
         return Result<void, DomainError>::success();
     };
+    callbacks.taskAction = [this](const QString& action, const QJsonObject& payload)
+        -> Result<void, DomainError> {
+        if (!aiBrain || aiBrain->taskSnapshot().value("id").toString() != payload.value("taskId").toString()) {
+            return Result<void, DomainError>::failure(domainError(
+                QStringLiteral("TASK_NOT_FOUND"), QStringLiteral("当前任务已变化，请刷新后重试。")));
+        }
+        bool accepted = true;
+        if (action == "resume_task") {
+            TaskBudgetExtension extension;
+            if (payload.value("extendBudget").toBool()) extension = {12, 2, 300000};
+            accepted = aiBrain->resumeTask(payload.value("feedback").toString(), extension);
+        } else if (action == "pause_task") aiBrain->pauseTask();
+        else if (action == "stop_task") aiBrain->stopTask();
+        else if (action == "resolve_task_call") {
+            accepted = aiBrain->resolveTaskUnknownCall(payload.value("callId").toString(), payload.value("succeeded").toBool());
+        } else accepted = false;
+        if (!accepted) {
+            return Result<void, DomainError>::failure(domainError(QStringLiteral("TASK_ACTION_UNAVAILABLE"),
+                aiBrain->taskSnapshot().value("reason").toString(QStringLiteral("当前任务暂时无法继续，请查看任务进度。"))));
+        }
+        return Result<void, DomainError>::success();
+    };
 
     OwnerDiaryBootstrap settings = bootstrap.takeValue();
     launcherChatServer = std::make_unique<LauncherChatServer>(
@@ -532,6 +555,8 @@ void PetWindow::setupLauncherChatBridge() {
     connect(conversationModel.get(), &ChatConversationModel::messageChanged,
             this, [notifyChanged](int, const QString&) { notifyChanged(); });
     connect(aiBrain.get(), &AIBrain::pendingUserMessagesChanged, this, notifyChanged);
+    connect(aiBrain.get(), &AIBrain::taskProgressChanged,
+            this, [notifyChanged](const QJsonObject&) { notifyChanged(); });
     connect(aiBrain.get(), &AIBrain::thinkingStarted,
             this, [notifyChanged](const QString&) { notifyChanged(); });
     connect(aiBrain.get(), &AIBrain::thinkingFinished,
@@ -579,7 +604,7 @@ void PetWindow::speakPetReply(const QString& text, const QString& source) {
 
 void PetWindow::closeEvent(QCloseEvent *event) {
     qDebug() << "PetWindow closing...";
-    if (aiBrain) aiBrain->stopCurrentResponse();
+    if (aiBrain) aiBrain->stop();
     hideBubbleMessage();
     launcherChatServer.reset();
     if (outputBubble) outputBubble->close();

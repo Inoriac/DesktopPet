@@ -128,6 +128,7 @@ class StubChatClient(QObject):
         self.busy = False
         self.sent = []
         self.stop_calls = 0
+        self.task_calls = []
 
     def request_state(self, after_revision=-1):
         self.stateReceived.emit(self.get_state(after_revision))
@@ -160,6 +161,18 @@ class StubChatClient(QObject):
 
     def retry_message(self, _message_id):
         return {}
+
+    def resume_task(self, task_id, feedback="", extend_budget=False):
+        self.task_calls.append(("resume_task", task_id, feedback, extend_budget))
+
+    def pause_task(self, task_id):
+        self.task_calls.append(("pause_task", task_id))
+
+    def stop_task(self, task_id):
+        self.task_calls.append(("stop_task", task_id))
+
+    def resolve_task_call(self, task_id, call_id, succeeded):
+        self.task_calls.append(("resolve_task_call", task_id, call_id, succeeded))
 
 
 class LauncherChatTests(unittest.TestCase):
@@ -210,6 +223,46 @@ class LauncherChatTests(unittest.TestCase):
         self.assertEqual(socket.actions,
                          ["hello", "get_chat_state", "send_message",
                           "stop_response"])
+
+    def test_task_resume_keeps_counts_and_extends_only_on_explicit_button(self):
+        client = StubChatClient()
+        page = self.page()
+        page.set_client(client)
+        page._poll_timer.stop()
+        state = self.state([], revision=2)
+        state["task"] = {"id": "task-1", "goal": "比较资料", "status": "Paused",
+                         "reason": "已保存进度", "tool_calls": 12,
+                         "budget": {"max_tool_calls": 12, "max_replans": 2, "max_active_ms": 300000}}
+        page._apply_state(state)
+        self.assertTrue(page.task_continue.isVisible())
+        self.assertTrue(page.task_extend.isVisible())
+        page.input_edit.setPlainText("请增加来源")
+        page.task_continue.click()
+        self.assertEqual(client.task_calls, [("resume_task", "task-1", "请增加来源", False)])
+        self.assertFalse(page.task_continue.isEnabled())
+        self.assertEqual(page.input_edit.toPlainText(), "请增加来源")
+        client.revision = 2
+        page._operation_finished("resume_task", {})
+        page.task_extend.click()
+        self.assertEqual(client.task_calls[-1], ("resume_task", "task-1", "", True))
+
+    def test_unknown_action_requires_explicit_outcome_and_offline_disables_controls(self):
+        client = StubChatClient()
+        page = self.page()
+        page.set_client(client)
+        page._poll_timer.stop()
+        state = self.state([], revision=2)
+        state["task"] = {"id": "task-1", "status": "WaitingForUser", "goal": "提醒",
+                         "steps": [{"id": "call-1", "status": "unknown", "read_only": False}]}
+        page._apply_state(state)
+        self.assertFalse(page.task_continue.isVisible())
+        self.assertTrue(page.task_confirm_done.isVisible())
+        page.task_confirm_done.click()
+        self.assertEqual(client.task_calls, [("resolve_task_call", "task-1", "call-1", True)])
+        client.is_connected = False
+        client.disconnected.emit()
+        self.assertFalse(page.task_confirm_done.isEnabled())
+        self.assertFalse(page.task_stop.isEnabled())
 
     def test_page_whenStateChanges_shouldRenderStatsSendStopAndOpen(self):
         client = StubChatClient()

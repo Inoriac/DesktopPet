@@ -29,6 +29,12 @@ enum class TraitEvidenceStatus {
     Rejected
 };
 
+enum class TraitEvidenceCategory { Fact, Feeling, Speculation };
+QString traitEvidenceCategoryToString(TraitEvidenceCategory category);
+std::optional<TraitEvidenceCategory> traitEvidenceCategoryFromString(const QString& value);
+double traitConsolidationLimit(const QString& trait);
+QMap<QString, double> relationshipDefaults();
+
 struct TraitEvidenceDraft {
     QString trait;
     double direction = 0.0;
@@ -37,12 +43,20 @@ struct TraitEvidenceDraft {
     QString contextKey;
     QString sourceEventId;
     QDateTime createdAt;
+    // Derived diaries/reflections retain the original experience identity and time.
+    QString originalSourceId;
+    QString sourceCategory = QStringLiteral("interaction");
+    TraitEvidenceCategory category = TraitEvidenceCategory::Fact;
+    QDateTime originalOccurredAt;
+    qint64 sourceSequence = 0;
 };
 
 struct TraitEvidence : TraitEvidenceDraft {
     QString evidenceId;
     QString profileId;
     TraitEvidenceStatus status = TraitEvidenceStatus::Pending;
+    qint64 consumedVersion = 0;
+    qint64 revision = 1;
 };
 
 struct PersonalityConsolidationRequest {
@@ -50,6 +64,7 @@ struct PersonalityConsolidationRequest {
     QDateTime windowStart;
     QDateTime windowEnd;
     int expectedVersion = 0;
+    qint64 evidenceCutoffSequence = 0;
 };
 
 struct PersonalitySnapshot {
@@ -59,9 +74,23 @@ struct PersonalitySnapshot {
     IdentityBaseline baseline = IdentityBaseline::defaults();
     QMap<QString, double> tendencies;
     QStringList sourceEvidenceIds;
+    QMap<QString, qint64> sourceEvidenceRevisions;
     qint64 evidenceCutoffSequence = 0;
     QDateTime effectiveAt;
     QDateTime createdAt;
+    qint64 parentVersion = 0;
+    QString behaviorStyleSummary;
+    QString selfNarrativeSummary;
+
+    QMap<QString, double> effectiveTraits() const;
+};
+
+struct PersonalityConsolidationPreview {
+    PersonalityConsolidationRequest request;
+    PersonalitySnapshot current;
+    PersonalitySnapshot candidate;
+    QStringList consumedEvidenceIds;
+    bool hasChanges = false;
 };
 
 struct RelationshipEvidence {
@@ -71,6 +100,8 @@ struct RelationshipEvidence {
     double confidence = 0.0;
     QString sourceEventId;
     QDateTime occurredAt;
+    // Absence and the pet declining a task are not negative relationship evidence.
+    QString eventKind = QStringLiteral("interaction");
 };
 
 struct RelationshipSnapshot {
@@ -78,11 +109,15 @@ struct RelationshipSnapshot {
     QString profileId;
     QString subjectId;
     qint64 version = 0;
-    QMap<QString, double> tendencies;
+    QMap<QString, double> tendencies = relationshipDefaults();
+    // UTC date + dimension -> accumulated absolute movement, persisted across restarts.
+    QMap<QString, double> dailyAbsoluteChanges;
     QStringList sourceEvidenceIds;
     qint64 evidenceCutoffSequence = 0;
     QDateTime effectiveAt;
     QDateTime createdAt;
+
+    double favorability() const;
 };
 
 enum class EvidenceSourceType {

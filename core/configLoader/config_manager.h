@@ -15,6 +15,7 @@
 #include "ai_types.h"
 #include "ai/identity/identity_baseline.h"
 #include "ai/identity/identity_types.h"
+#include "ai/task/task_types.h"
 #include "emotion/emotion_types.h"
 
 class ConfigManager {
@@ -69,6 +70,7 @@ public:
     const ScreenChatConfig& getScreenChatConfig() const { return screenChatConfig; }
     const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
     const SleepPolicy& getSleepPolicy() const { return sleepPolicy; }
+    const TaskBudget& getTaskBudget() const { return taskBudget; }
     EmotionConfig getEmotionConfig() const { return emotionConfig; }
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
@@ -137,6 +139,7 @@ private:
     ScreenChatConfig screenChatConfig;
     DaydreamConfig daydreamConfig;
     SleepPolicy sleepPolicy;
+    TaskBudget taskBudget;
     EmotionConfig emotionConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;
