@@ -537,17 +537,12 @@ bool AIBrain::isToolCallAllowed(const QString& triggerTag,
 
     QString state;
     if (call.name == "request_idle_transition") {
-        state = call.arguments.value("target_action").toString();
+        state = call.arguments.value("state").toString(call.arguments.value("target_action").toString());
     } else {
         state = call.arguments.value("state").toString();
     }
     if (state.isEmpty()) {
         denialReason = QString("%1 missing required state field").arg(call.name);
-        return false;
-    }
-
-    if (state.startsWith("Touch", Qt::CaseInsensitive)) {
-        denialReason = QString("Action '%1' is touch-only and managed by local interaction pipeline").arg(state);
         return false;
     }
 

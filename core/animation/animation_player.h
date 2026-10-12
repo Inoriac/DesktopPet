@@ -65,7 +65,15 @@ public:
     void setMouseTrackingEnabled(bool enabled) { mouseTrackingEnabled = enabled; }
     
     // 根据状态名切换动画
-    void changeState(const std::string& targetState, double transitionDuration = 0.2);
+    bool changeState(const std::string& targetState, double transitionDuration = 0.2);
+
+    void setManaged(bool managed) { m_managed = managed; }
+    bool startManaged(const QString& state, const QString& clip, bool loop, quint64 generation, QString* error);
+    void resetManaged(const QString& initialState);
+    bool isPlaying() const { return m_playing; }
+signals:
+    void cycleFinished(quint64 generation, quint64 cycle);
+    void playbackFailed(quint64 generation, QString reason);
 
 private:
     // 内部流程函数
@@ -88,6 +96,12 @@ private:
     void applyLookOffsetToBone(int boneIndex, float yawDeg, float pitchDeg, float rollDeg = 0.0f, float blend = 1.0f);
 
 private:
+    bool m_managed = false;
+    bool m_playing = true;
+    bool m_managedLoop = true;
+    quint64 m_generation = 0;
+    quint64 m_cycle = 0;
+
     // 输入依赖
     Skeleton mySkeleton;
     const std::unordered_map<std::string, AnimationClip>* myClips = nullptr;

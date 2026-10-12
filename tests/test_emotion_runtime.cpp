@@ -32,6 +32,24 @@ void compareNear(double actual, double expected, double tolerance = 1e-9) {
     QVERIFY(std::abs(actual - expected) <= tolerance);
 }
 
+class EmotionAvatarBackend : public AvatarBackend {
+public:
+    quint64 token = 0;
+    QJsonObject resources() const override { return {{"durations",QJsonObject{{"a",1.0},{"b",1.0}}}}; }
+    bool start(const QString&,const QString&,bool,quint64 generation,QString*)override{token=generation;return true;}
+    void stop(const QString&)override{}
+    void setDrawing(bool)override{}
+    bool moveTo(const QPoint&,QPoint*)override{return false;}
+    void cycle(){emit cycleFinished(token,1);}
+};
+QJsonObject emotionAvatarConfig() {
+    return {{"defaultState","calm"},{"queueLimit",2},{"states",QJsonArray{
+        QJsonObject{{"name","calm"},{"loop",true},{"interruption","finish_cycle"},{"clipOptions",QJsonArray{QJsonObject{{"clipName","a"}}}}},
+        QJsonObject{{"name","smile"},{"loop",true},{"clipOptions",QJsonArray{QJsonObject{{"clipName","b"}}}}}}},
+        {"transactions",QJsonArray{QJsonObject{{"fromState","calm"},{"toState","smile"},{"condition","express"}}}},
+        {"semantics",QJsonObject{{"emotion.joy","smile"},{"emotion.anger","smile"},{"emotion.fear","smile"}}}};
+}
+
 } // namespace
 
 class TestEmotionRuntime : public QObject {
@@ -83,57 +101,40 @@ void TestEmotionRuntime::sqliteRepositoryRoundTripsState() {
 }
 
 void TestEmotionRuntime::behaviorQueuesWhileBusyAndPlaysWhenIdle() {
-    QString currentState = QStringLiteral("Drag");
-    QStringList playedStates;
-    BehaviorManager manager(3);
-    manager.setCurrentStateProvider([&currentState]() { return currentState; });
-    manager.setAnimationPlayer([&playedStates](const QString& state) {
-        playedStates.append(state);
-        return true;
-    });
-    QSignalSpy queuedSpy(&manager, &BehaviorManager::expressionQueued);
-    QSignalSpy playedSpy(&manager, &BehaviorManager::expressionPlayed);
-
-    const QDateTime now = testTime();
-    QCOMPARE(static_cast<int>(manager.handleExpression(expression(EmotionType::Joy, now), now)),
-             static_cast<int>(ExpressionDisposition::Queued));
-    QCOMPARE(manager.pendingCount(), 1);
-    QCOMPARE(queuedSpy.count(), 1);
-    QVERIFY(playedStates.isEmpty());
-
-    manager.processPending(now.addSecs(1));
-    QVERIFY(playedStates.isEmpty());
-    currentState = QStringLiteral("Idle");
-    manager.processPending(now.addSecs(2));
-    QCOMPARE(playedStates, QStringList{QStringLiteral("Happy")});
-    QCOMPARE(manager.pendingCount(), 0);
-    QCOMPARE(playedSpy.count(), 1);
+    AvatarPresentation presentation; EmotionAvatarBackend backend;
+    QVERIFY(presentation.configure(emotionAvatarConfig()).isEmpty());
+    presentation.setBackend(&backend); presentation.setVisible(true);
+    BehaviorManager manager; manager.setPresentation(&presentation);
+    QSignalSpy played(&manager,&BehaviorManager::expressionPlayed);
+    const auto now=QDateTime::currentDateTimeUtc();
+    QCOMPARE(manager.handleExpression(expression(EmotionType::Joy,now),now),ExpressionDisposition::Queued);
+    QCOMPARE(manager.pendingCount(),1); QCOMPARE(played.count(),0);
+    backend.cycle();
+    QCOMPARE(manager.pendingCount(),0); QCOMPARE(played.count(),1);
+    QCOMPARE(played[0][1].toString(),"smile");
 }
-
 void TestEmotionRuntime::behaviorBoundsQueueAndDropsExpiredRequests() {
-    QString currentState = QStringLiteral("Talk");
-    BehaviorManager manager(2);
-    manager.setCurrentStateProvider([&currentState]() { return currentState; });
-    manager.setAnimationPlayer([](const QString&) { return true; });
-    QSignalSpy droppedSpy(&manager, &BehaviorManager::expressionDropped);
-    const QDateTime now = testTime();
-
-    manager.handleExpression(expression(EmotionType::Joy, now), now);
-    manager.handleExpression(expression(EmotionType::Anger, now), now);
-    manager.handleExpression(expression(EmotionType::Fear, now), now);
-    QCOMPARE(manager.pendingCount(), 2);
-    QCOMPARE(droppedSpy.count(), 1);
-    QCOMPARE(droppedSpy.at(0).at(1).toString(), QStringLiteral("queue_full"));
-
-    manager.processPending(now.addSecs(6));
-    QCOMPARE(manager.pendingCount(), 0);
-    QCOMPARE(droppedSpy.count(), 3);
+    AvatarPresentation presentation; EmotionAvatarBackend backend;
+    QVERIFY(presentation.configure(emotionAvatarConfig()).isEmpty());
+    presentation.setBackend(&backend); presentation.setVisible(true);
+    BehaviorManager manager; manager.setPresentation(&presentation);
+    QSignalSpy dropped(&manager,&BehaviorManager::expressionDropped);
+    const auto now=QDateTime::currentDateTimeUtc();
+    manager.handleExpression(expression(EmotionType::Joy,now,30),now);
+    manager.handleExpression(expression(EmotionType::Anger,now,30),now);
+    manager.handleExpression(expression(EmotionType::Fear,now,30),now);
+    QCOMPARE(manager.pendingCount(),2); QCOMPARE(dropped.count(),1);
+    QCOMPARE(dropped[0][1].toString(),"queue_full");
+    QTRY_COMPARE(manager.pendingCount(),0); QCOMPARE(dropped.count(),3);
+    manager.handleExpression(expression(EmotionType::Joy,now),now);
+    presentation.setVisible(false); QCOMPARE(manager.pendingCount(),0);
+    presentation.setVisible(true); backend.cycle();
+    QCOMPARE(presentation.snapshot()["current_state"].toString(),"calm");
 }
 
 void TestEmotionRuntime::behaviorRejectsNonFiniteIntensity() {
     BehaviorManager manager;
-    manager.setCurrentStateProvider([]() { return QStringLiteral("Idle"); });
-    manager.setAnimationPlayer([](const QString&) { return true; });
+
     QSignalSpy droppedSpy(&manager, &BehaviorManager::expressionDropped);
 
     ExpressionRequest request = expression(EmotionType::Joy, testTime());
@@ -145,16 +146,17 @@ void TestEmotionRuntime::behaviorRejectsNonFiniteIntensity() {
 }
 
 void TestEmotionRuntime::behaviorDoesNotInventSurpriseAnimation() {
-    BehaviorManager manager;
-    manager.setCurrentStateProvider([]() { return QStringLiteral("Idle"); });
-    manager.setAnimationPlayer([](const QString&) { return true; });
+    AvatarPresentation presentation; EmotionAvatarBackend backend;
+    presentation.configure(emotionAvatarConfig()); presentation.setBackend(&backend); presentation.setVisible(true);
+    BehaviorManager manager; manager.setPresentation(&presentation);
+
     QSignalSpy droppedSpy(&manager, &BehaviorManager::expressionDropped);
 
     QCOMPARE(static_cast<int>(manager.handleExpression(
                  expression(EmotionType::Surprise, testTime()), testTime())),
              static_cast<int>(ExpressionDisposition::Dropped));
     QCOMPARE(droppedSpy.count(), 1);
-    QCOMPARE(droppedSpy.at(0).at(1).toString(), QStringLiteral("unsupported_emotion"));
+    QCOMPARE(droppedSpy.at(0).at(1).toString(), QStringLiteral("unknown_state"));
 }
 
 void TestEmotionRuntime::controllerProducesBoundedStructuredEvents() {

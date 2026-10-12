@@ -43,6 +43,7 @@ struct ChatPreparationRequest {
     QString reason;
     QString triggerTag;
     QString petName;
+    QJsonObject avatarContext;
     QStringList allowedActions;
     QList<ChatMessage> conversationMemory;
     QList<WorkingMemoryItem> workingMemory;

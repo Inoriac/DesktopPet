@@ -128,9 +128,7 @@ std::unique_ptr<CallbackRuntimeUiBridge> makeBridge(int* bubbleCalls = nullptr,
         if (notificationCalls) ++(*notificationCalls);
     };
     return std::make_unique<CallbackRuntimeUiBridge>(
-        std::move(callbacks),
-        reinterpret_cast<AnimationPlayer*>(quintptr(1)),
-        reinterpret_cast<AnimationManager*>(quintptr(2)));
+        std::move(callbacks));
 }
 
 EventDraft normalDraft(const QString& profileId = kProfileId) {
@@ -726,8 +724,7 @@ void TestAgentRuntimeServices::start_whenBridgeIsValid_shouldUseUiCapabilitiesWi
     QCOMPARE(bubbleCalls, 1);
     QCOMPARE(notificationCalls, 1);
     QCOMPARE(bridge.get(), bridgeAddress);
-    QVERIFY(bridge->animationPlayer() != nullptr);
-    QVERIFY(bridge->animationManager() != nullptr);
+    QVERIFY(bridge->presentation() == nullptr); // Headless startup is a supported contract.
 }
 
 void TestAgentRuntimeServices::stop_whenRuntimeEnds_shouldReleaseBridgeBeforePetWindowDestroysUiObjects() {

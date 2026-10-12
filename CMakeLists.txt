@@ -1972,3 +1972,20 @@ if(WIN32 AND EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
             COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe" --no-translations --no-system-d3d-compiler "$<TARGET_FILE:${task_test}>")
     endforeach()
 endif()
+
+add_desktop_pet_cpp_test(avatar_presentation_tests AvatarPresentationTests
+    SOURCES tests/test_avatar_presentation.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES Qt::Core Qt::Test)
+
+add_library(avatar_presentation STATIC core/presentation/avatar_presentation.cpp core/presentation/avatar_presentation.h)
+target_include_directories(avatar_presentation PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core)
+target_link_libraries(avatar_presentation PUBLIC Qt::Core)
+foreach(avatar_target Desktop_Pet avatar_presentation_tests emotion_runtime_tests tool_tests)
+    target_link_libraries(${avatar_target} avatar_presentation)
+endforeach()
+
+target_sources(Desktop_Pet PRIVATE core/animation/avatar_3d_backend.cpp core/animation/avatar_3d_backend.h)
+
+target_sources(statistic_tests PRIVATE core/animation/avatar_3d_backend.cpp core/animation/avatar_3d_backend.h)
+target_link_libraries(statistic_tests avatar_presentation)

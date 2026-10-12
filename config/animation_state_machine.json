@@ -1,89 +1,79 @@
 {
+  "avatar": {"id": "default-avatar", "description": ""},
   "defaultState": "Intro",
-
+  "queueLimit": 8,
+  "requestTimeoutMs": 15000,
+  "interactionPolicy": {"angerRefusalThreshold": 0.85},
+  "semantics": {"emotion.joy": "Happy", "emotion.sadness": "Cry", "emotion.anger": "Angry", "emotion.fear": "Fear", "touch.Head": "TouchHead", "touch.Body": "TouchBody", "touch.HandL": "TouchHandL", "touch.HandR": "TouchHandR", "start_drag": "Drag", "stop_drag": "Idle", "window_sit": "WindowSit", "window_stand": "Idle"},
   "states": [
-    { "name": "Intro", "loop": false, "clipOptions": [] },
-    { "name": "Idle", "loop": true, "clipOptions": [] },
-    { "name": "Dance", "loop": false, "clipOptions": [] },
-    { "name": "Sitting", "loop": true, "folder": "Sitting", "clipMatch": "SITTING|suwari|sippose", "clipOptions": [] },
-    { "name": "Sleeping", "loop": true, "clipOptions": [] },
-
-    { "name": "TouchHead", "loop": false, "folder": "Face", "clipMatch": "HAIR_STROKE", "clipOptions": [] },
-    { "name": "TouchBody", "loop": false, "folder": "Face", "clipMatch": "INTIME", "clipOptions": [] },
-    { "name": "TouchHandL", "loop": false, "clipOptions": [] },
-    { "name": "TouchHandR", "loop": false, "clipOptions": [] },
-
-    { "name": "Eat", "loop": false, "clipOptions": [] },
-    { "name": "Drink", "loop": false, "clipOptions": [] },
-    { "name": "Happy", "loop": false, "folder": "Misc", "clipMatch": "HAPPY|SMILE|LAUGH", "clipOptions": [] },
-    { "name": "Cry", "loop": false, "clipOptions": [] },
-    { "name": "Angry", "loop": false, "clipOptions": [] },
-    { "name": "Fear", "loop": false, "clipOptions": [] },
-    { "name": "Hide", "loop": false, "clipOptions": [] },
-    { "name": "BigScreen", "loop": true, "folder": "BigScreen", "clipMatch": "BIG_SCREEN", "clipOptions": [] },
-    { "name": "ScreenSaver", "loop": true, "folder": "BigScreen", "clipMatch": "SCREEN_SAVER", "clipOptions": [] },
-    { "name": "Alarm", "loop": true, "folder": "BigScreen", "clipMatch": "ALARM", "clipOptions": [] },
-    { "name": "WindowSit", "loop": true, "folder": "Sitting", "clipMatch": "WINDOW_LAY", "clipOptions": [] },
-    { "name": "Drag", "loop": true, "folder": "Misc", "clipMatch": "DRAG", "clipOptions": [] },
-    { "name": "Talk", "loop": true, "clipOptions": [] }
+    {"name": "Intro", "loop": false, "clipOptions": [], "description": "初次显示形象的入场动作", "interruption": "finish_cycle", "requestable": false},
+    {"name": "Idle", "loop": true, "clipOptions": [], "description": "放松待机", "interruption": "immediate", "requestable": true},
+    {"name": "Dance", "loop": false, "clipOptions": [], "description": "跳舞", "interruption": "immediate", "requestable": true},
+    {"name": "Sitting", "loop": true, "folder": "Sitting", "clipMatch": "SITTING|suwari|sippose", "clipOptions": [], "description": "坐下休息", "interruption": "immediate", "requestable": true},
+    {"name": "Sleeping", "loop": true, "clipOptions": [], "description": "睡觉", "interruption": "immediate", "requestable": true},
+    {"name": "TouchHead", "loop": false, "folder": "Face", "clipMatch": "HAIR_STROKE", "clipOptions": [], "description": "摸头反应", "interruption": "finish_cycle", "requestable": false},
+    {"name": "TouchBody", "loop": false, "folder": "Face", "clipMatch": "INTIME", "clipOptions": [], "description": "触碰身体反应", "interruption": "finish_cycle", "requestable": false},
+    {"name": "TouchHandL", "loop": false, "clipOptions": [], "description": "触碰左手反应", "interruption": "finish_cycle", "requestable": false},
+    {"name": "TouchHandR", "loop": false, "clipOptions": [], "description": "触碰右手反应", "interruption": "finish_cycle", "requestable": false},
+    {"name": "Eat", "loop": false, "clipOptions": [], "description": "Eat", "interruption": "immediate", "requestable": true},
+    {"name": "Drink", "loop": false, "clipOptions": [], "description": "Drink", "interruption": "immediate", "requestable": true},
+    {"name": "Happy", "loop": false, "folder": "Misc", "clipMatch": "HAPPY|SMILE|LAUGH", "clipOptions": [], "description": "开心", "interruption": "immediate", "requestable": true},
+    {"name": "Cry", "loop": false, "clipOptions": [], "description": "难过", "interruption": "immediate", "requestable": true},
+    {"name": "Angry", "loop": false, "clipOptions": [], "description": "生气", "interruption": "immediate", "requestable": true},
+    {"name": "Fear", "loop": false, "clipOptions": [], "description": "害怕", "interruption": "immediate", "requestable": true},
+    {"name": "Hide", "loop": false, "clipOptions": [], "description": "Hide", "interruption": "immediate", "requestable": true},
+    {"name": "BigScreen", "loop": true, "folder": "BigScreen", "clipMatch": "BIG_SCREEN", "clipOptions": [], "description": "BigScreen", "interruption": "immediate", "requestable": true},
+    {"name": "ScreenSaver", "loop": true, "folder": "BigScreen", "clipMatch": "SCREEN_SAVER", "clipOptions": [], "description": "ScreenSaver", "interruption": "immediate", "requestable": true},
+    {"name": "Alarm", "loop": true, "folder": "BigScreen", "clipMatch": "ALARM", "clipOptions": [], "description": "Alarm", "interruption": "immediate", "requestable": true},
+    {"name": "WindowSit", "loop": true, "folder": "Sitting", "clipMatch": "WINDOW_LAY", "clipOptions": [], "description": "坐在窗口上", "interruption": "immediate", "requestable": false},
+    {"name": "Drag", "loop": true, "folder": "Misc", "clipMatch": "DRAG", "clipOptions": [], "description": "被拖动的姿态", "interruption": "immediate", "requestable": false},
+    {"name": "Talk", "loop": true, "clipOptions": [], "description": "说话", "interruption": "immediate", "requestable": true}
   ],
-
   "transactions": [
-    { "fromState": "Intro", "toState": "Idle", "condition": "", "blendDuration": 0.3 },
-
-    { "fromState": "Idle", "toState": "Dance", "condition": "start_dance" },
-    { "fromState": "Idle", "toState": "Sitting", "condition": "sit" },
-    { "fromState": "Idle", "toState": "Sleeping", "condition": "sleep" },
-
-    { "fromState": "Sitting", "toState": "Idle", "condition": "stand" },
-    { "fromState": "Sitting", "toState": "Sleeping", "condition": "sleep" },
-
-    { "fromState": "Sleeping", "toState": "Idle", "condition": "wake" },
-
-    { "fromState": "Dance", "toState": "Idle", "condition": "stop_dance" },
-
-    { "fromState": "TouchHead", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-    { "fromState": "TouchBody", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-    { "fromState": "TouchHandL", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-    { "fromState": "TouchHandR", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Eat", "condition": "eat" },
-    { "fromState": "Eat", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Drink", "condition": "drink" },
-    { "fromState": "Drink", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Happy", "condition": "happy" },
-    { "fromState": "Happy", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Cry", "condition": "cry" },
-    { "fromState": "Cry", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Angry", "condition": "angry" },
-    { "fromState": "Angry", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Fear", "condition": "fear" },
-    { "fromState": "Fear", "toState": "Idle", "condition": "", "blendDuration": 0.2 },
-
-    { "fromState": "Idle", "toState": "Hide", "condition": "hide" },
-    { "fromState": "Hide", "toState": "Idle", "condition": "show" },
-
-    { "fromState": "Idle", "toState": "BigScreen", "condition": "start_big_screen" },
-    { "fromState": "BigScreen", "toState": "Idle", "condition": "stop_big_screen" },
-
-    { "fromState": "Idle", "toState": "ScreenSaver", "condition": "start_screen_saver" },
-    { "fromState": "ScreenSaver", "toState": "Idle", "condition": "stop_screen_saver" },
-
-    { "fromState": "Idle", "toState": "Alarm", "condition": "start_alarm" },
-    { "fromState": "Alarm", "toState": "Idle", "condition": "stop_alarm" },
-
-    { "fromState": "Idle", "toState": "WindowSit", "condition": "window_sit" },
-    { "fromState": "WindowSit", "toState": "Idle", "condition": "window_stand" },
-
-    { "fromState": "Idle", "toState": "Drag", "condition": "start_drag", "blendDuration": 0.1 },
-    { "fromState": "Drag", "toState": "Idle", "condition": "stop_drag", "blendDuration": 0.2 },
-    
-    { "fromState": "Idle", "toState": "Talk", "condition": "start_talk" },
-    { "fromState": "Talk", "toState": "Idle", "condition": "stop_talk" }
+    {"fromState": "Intro", "toState": "Idle", "condition": "", "blendDuration": 0.3},
+    {"fromState": "Idle", "toState": "Dance", "condition": "start_dance"},
+    {"fromState": "Idle", "toState": "Sitting", "condition": "sit"},
+    {"fromState": "Idle", "toState": "Sleeping", "condition": "sleep"},
+    {"fromState": "Sitting", "toState": "Idle", "condition": "stand"},
+    {"fromState": "Sitting", "toState": "Sleeping", "condition": "sleep"},
+    {"fromState": "Sleeping", "toState": "Idle", "condition": "wake"},
+    {"fromState": "Dance", "toState": "Idle", "condition": "stop_dance"},
+    {"fromState": "TouchHead", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "TouchBody", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "TouchHandL", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "TouchHandR", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Eat", "condition": "eat"},
+    {"fromState": "Eat", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Drink", "condition": "drink"},
+    {"fromState": "Drink", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Happy", "condition": "happy"},
+    {"fromState": "Happy", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Cry", "condition": "cry"},
+    {"fromState": "Cry", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Angry", "condition": "angry"},
+    {"fromState": "Angry", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Fear", "condition": "fear"},
+    {"fromState": "Fear", "toState": "Idle", "condition": "", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Hide", "condition": "hide"},
+    {"fromState": "Hide", "toState": "Idle", "condition": "show"},
+    {"fromState": "Idle", "toState": "BigScreen", "condition": "start_big_screen"},
+    {"fromState": "BigScreen", "toState": "Idle", "condition": "stop_big_screen"},
+    {"fromState": "Idle", "toState": "ScreenSaver", "condition": "start_screen_saver"},
+    {"fromState": "ScreenSaver", "toState": "Idle", "condition": "stop_screen_saver"},
+    {"fromState": "Idle", "toState": "Alarm", "condition": "start_alarm"},
+    {"fromState": "Alarm", "toState": "Idle", "condition": "stop_alarm"},
+    {"fromState": "Idle", "toState": "WindowSit", "condition": "window_sit"},
+    {"fromState": "WindowSit", "toState": "Idle", "condition": "window_stand"},
+    {"fromState": "Idle", "toState": "Drag", "condition": "start_drag", "blendDuration": 0.1},
+    {"fromState": "Drag", "toState": "Idle", "condition": "stop_drag", "blendDuration": 0.2},
+    {"fromState": "Idle", "toState": "Talk", "condition": "start_talk"},
+    {"fromState": "Talk", "toState": "Idle", "condition": "stop_talk"},
+    {"fromState": "*", "toState": "TouchHead", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "TouchBody", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "TouchHandL", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "TouchHandR", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "Drag", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "Idle", "condition": "configured_interaction"},
+    {"fromState": "*", "toState": "WindowSit", "condition": "configured_interaction"}
   ]
 }

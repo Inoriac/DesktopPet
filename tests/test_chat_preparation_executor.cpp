@@ -187,6 +187,7 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void avatarDescriptionAndStateRemainSeparateFromIdentity();
     void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems_data();
     void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems();
     void proactiveRecall_shouldUseRecentTopicAndEmotionAlongsidePersona();
@@ -1447,5 +1448,18 @@ void ChatPreparationExecutorTests::nativeOnnxRecallRunsThroughChatWorker() {
 }
 #endif
 
+
+void ChatPreparationExecutorTests::avatarDescriptionAndStateRemainSeparateFromIdentity() {
+    QTemporaryDir directory;ChatPreparationExecutor executor;
+    auto environment=environmentFor(directory);QVERIFY(executor.start(environment).isOk());
+    auto request=requestFor();
+    request.avatarContext={{"state",QJsonObject{{"current_state","cloud_perch"},{"visible",false}}},{"avatar",QJsonObject{{"description","a tiny blue bird with a yellow scarf"}}}};
+    const auto originalProfile=request.runtimeMetadata.profileId;
+    ChatPreparationResult result;QVERIFY(prepareOnce(executor,request,&result));
+    QString text;for(const auto& m:result.messages)text+=m.content;
+    QVERIFY(text.contains("cloud_perch"));QVERIFY(text.contains("a tiny blue bird with a yellow scarf"));
+    QVERIFY(!text.contains("pet_state=Idle"));QCOMPARE(request.runtimeMetadata.profileId,originalProfile);
+    executor.stop();
+}
 QTEST_MAIN(ChatPreparationExecutorTests)
 #include "test_chat_preparation_executor.moc"

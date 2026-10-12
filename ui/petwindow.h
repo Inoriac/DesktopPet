@@ -30,6 +30,9 @@ class LiquidGlassChatBubble;
 class QMessageBox;
 
 class RenderViewport;
+class AvatarView;
+class AvatarPresentation;
+class QSystemTrayIcon;
 class BehaviorManager;
 class EmotionEngine;
 class EmotionEngineStateProvider;
@@ -60,14 +63,6 @@ public:
                               const ScreenChatConfig& screenChatConfig = ScreenChatConfig{},
                               const VoiceConfig& voiceConfig = VoiceConfig{});
     void previewBubble(const QString& message = QString());
-    bool loadModel(const QString &modelPath);
-    
-    // 动画控制方法
-    void playAnimation();
-    void pauseAnimation();
-    void stopAnimation();
-    void setAnimationSpeed(float speed);
-    void setAnimationLoop(bool loop);
     void setBigScreenAlarm(bool on);
 
 signals:
@@ -85,6 +80,8 @@ protected:
 
     // 窗口事件
     void closeEvent(QCloseEvent *event) override;
+    void showEvent(QShowEvent* event) override;
+    void hideEvent(QHideEvent* event) override;
 
     // 键盘事件(用于调试相机视角)
     void keyPressEvent(QKeyEvent *event) override;
@@ -92,6 +89,7 @@ protected:
 private:
     void setupWindow();
     void setupRenderViewport();
+    void setAvatarVisible(bool visible);
     void setupContextMenu();
     void setupEmotionSystem();
     QString emotionStatusText() const;
@@ -166,7 +164,6 @@ private:
     bool isDraggingAnyWindowSitState() const;
 
     // 辅助交互方法
-    bool canTriggerTouch() const;   // 是否能够触发触摸反应，交互锁
     void triggerTouchReaction(const std::string& tag);  // 触发触摸反应逻辑
 
     // 交互相关
@@ -188,6 +185,10 @@ private:
 
     // 渲染组件
     RenderViewport *renderViewport;
+    AvatarView* avatarView = nullptr;
+    std::unique_ptr<AvatarPresentation> avatarPresentation;
+    QSystemTrayIcon* avatarTray = nullptr;
+    bool changingWindowFlags = false;
     PetProfile profile;
     ProfileMigrationRequest profileMigration;
     QString ownerDiaryBootstrapPath;
@@ -219,7 +220,6 @@ private:
     std::unique_ptr<PetController> petController;
     std::unique_ptr<BehaviorManager> behaviorManager;
     QTimer* emotionTickTimer = nullptr;
-    QTimer* emotionBehaviorTimer = nullptr;
     QStringList m_allowedRoots;  // 文件工具允许的根目录
     QNetworkAccessManager visionNetwork;
     QTimer* screenChatTimer = nullptr;

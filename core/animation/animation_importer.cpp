@@ -36,6 +36,7 @@ AnimationClip AnimationImporter::loadAnimation(const std::string &filepath,
 }
 
 void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationStateMachineDefinition &outStateMachine) {
+    outStateMachine = AnimationStateMachineDefinition{};
     std::ifstream file(filepath);
     if (!file.is_open()) {
         std::cerr << "[StateMachine] Failed to open: " << filepath << std::endl;
@@ -54,6 +55,7 @@ void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationS
         return;
     }
 
+    try {
     // 默认状态
     if (data.contains("defaultState"))
         outStateMachine.defaultState = data["defaultState"];
@@ -68,6 +70,15 @@ void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationS
             state.folder = s.value("folder", state.name);
             state.clipMatch = s.value("clipMatch", "");
             state.loop = s.value("loop", true);
+            if (s.contains("clipOptions") && s["clipOptions"].is_array()) {
+                for (const auto& option : s["clipOptions"]) {
+                    AnimationCLipOption clip;
+                    clip.clipName = option.value("clipName", "");
+                    clip.weight = option.value("weight", 1.0f);
+                    if (!clip.clipName.empty()) state.clipOptions.push_back(clip);
+                }
+            }
+            state.explicitClipOptions = !state.clipOptions.empty();
 
             outStateMachine.states.push_back(state);
         }
@@ -88,6 +99,11 @@ void AnimationImporter::loadStateMachine(const std::string &filepath, AnimationS
         }
     }
 
+    } catch (const std::exception& error) {
+        outStateMachine = AnimationStateMachineDefinition{};
+        std::cerr << "[StateMachine] Invalid configuration: " << error.what() << std::endl;
+        return;
+    }
     // 建立快速映射表，供运行时查询
     outStateMachine.buildLookupTables();
     std::cout << "[StateMachine] Loaded successfully: " << filepath << std::endl;

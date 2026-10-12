@@ -4,8 +4,8 @@
 
 #include "petwindow.h"
 
-#include "render_engine.h"
-#include "render_viewport.h"
+#include "presentation/avatar_presentation.h"
+
 
 #include <QDateTime>
 #include <QDebug>
@@ -21,6 +21,7 @@
 void PetWindow::setupWindowSnapping() {
     snapFollowTimer = new QTimer(this);
     connect(snapFollowTimer, &QTimer::timeout, this, [this]() {
+        if (!isVisible()) return;
         updateCachedWindows();
         updateSnapZone();
 
@@ -69,6 +70,7 @@ void PetWindow::setupWindowSnapping() {
 
     snapScanTimer = new QTimer(this);
     connect(snapScanTimer, &QTimer::timeout, this, [this]() {
+        if (!isVisible()) return;
         updateCachedWindows();
         updateSnapZone();
     });
@@ -219,8 +221,8 @@ void PetWindow::exitWindowSnapping(bool triggerWindowStand) {
     pendingSnapTarget = nullptr;
     refreshTopMostByState();
 
-    if (triggerWindowStand && renderViewport && renderViewport->getRenderEngine() && renderViewport->getRenderEngine()->getAnimationPlayer()) {
-        renderViewport->getRenderEngine()->getAnimationPlayer()->triggerEvent("window_stand");
+    if (triggerWindowStand && avatarPresentation) {
+        avatarPresentation->interact("window_stand");
     }
 }
 
@@ -292,31 +294,10 @@ void PetWindow::stopDropAnimation() {
 }
 
 void PetWindow::beginDragAnimation() {
-    if (!renderViewport || !renderViewport->getRenderEngine()) {
-        return;
-    }
-    auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
-    if (!player) {
-        return;
-    }
-
-    const std::string before = player->getCurrentStateName();
-    player->triggerEvent("start_drag");
-    const std::string after = player->getCurrentStateName();
-
-    if (after == before || after != "Drag") {
-        player->changeState("Drag", 0.1);
-        qDebug() << "[WindowSnap] force change to Drag from" << before.c_str();
-    }
+    if (avatarPresentation) avatarPresentation->interact("start_drag");
 }
-
 bool PetWindow::isDraggingAnyWindowSitState() const {
-    if (!renderViewport || !renderViewport->getRenderEngine() || !renderViewport->getRenderEngine()->getAnimationPlayer()) {
-        return false;
-    }
-
-    const std::string state = renderViewport->getRenderEngine()->getAnimationPlayer()->getCurrentStateName();
-    return state == "WindowSit" || state == "Drag";
+    return avatarPresentation && (avatarPresentation->hasSemanticState("window_sit") || avatarPresentation->hasSemanticState("start_drag"));
 }
 
 void PetWindow::setBigScreenAlarm(bool on) {

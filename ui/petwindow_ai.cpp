@@ -23,8 +23,8 @@
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "configLoader/config_manager.h"
 #include "controller/pet_controller.h"
-#include "render_engine.h"
-#include "render_viewport.h"
+#include "presentation/avatar_presentation.h"
+
 
 #include <QCoreApplication>
 #include <QDebug>
@@ -45,18 +45,6 @@ void PetWindow::setupAiBrain() {
     if (runtimeServices || runtimeUiBridge) {
         qWarning() << "[AIBrain] runtime is already configured, skip duplicate setup";
         return;
-    }
-
-    AnimationPlayer* player = nullptr;
-    AnimationManager* animationManager = nullptr;
-    if (renderViewport) {
-        animationManager = renderViewport->getAnimationManager();
-        if (RenderEngine* renderEngine = renderViewport->getRenderEngine()) {
-            player = renderEngine->getAnimationPlayer();
-        }
-    }
-    if (!player || !animationManager) {
-        qInfo() << "[AIBrain] starting basic chat before animation tools are ready";
     }
 
     QPointer<PetWindow> window(this);
@@ -82,7 +70,7 @@ void PetWindow::setupAiBrain() {
             }, Qt::QueuedConnection);
         };
     runtimeUiBridge = std::make_unique<CallbackRuntimeUiBridge>(
-        std::move(uiCallbacks), player, animationManager);
+        std::move(uiCallbacks), avatarPresentation.get());
     runtimeServices = std::make_unique<AgentRuntimeServices>();
     agentScheduler = std::make_unique<AgentScheduler>(this);
     QString schedulerError;
@@ -267,6 +255,12 @@ void PetWindow::setupAiBrain() {
     }
     aiBrain->setIdentityBaseline(ConfigManager::instance().getIdentityBaseline());
 
+    setupAiAnimationTools();
+    QPointer<AvatarPresentation> avatar(avatarPresentation.get());
+    aiBrain->setAvatarContextProvider([avatar] {
+        if (!avatar) return QJsonObject{};
+        return QJsonObject{{"state", avatar->snapshot()}, {"avatar", avatar->capabilities()["avatar"]}};
+    });
     aiBrain->setToolRegistry(aiToolRegistry.get());
     aiBrain->setAgentScheduler(agentScheduler.get());
     aiBrain->setEnabled(aiEnabled);
@@ -280,29 +274,16 @@ void PetWindow::setupAiBrain() {
 }
 
 void PetWindow::setupAiAnimationTools() {
-    if (!aiToolRegistry || !runtimeUiBridge || !renderViewport
-        || !renderViewport->getRenderEngine()) {
-        qWarning() << "[AIBrain] animation tools could not be attached";
-        return;
-    }
-    AnimationPlayer* player =
-        renderViewport->getRenderEngine()->getAnimationPlayer();
-    AnimationManager* animationManager = renderViewport->getAnimationManager();
-    if (!player || !animationManager) {
-        qWarning() << "[AIBrain] model has no usable animation system; chat remains available";
-        return;
-    }
-
-    runtimeUiBridge->setAnimationSystem(player, animationManager);
-    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(player));
-    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(player));
-    aiToolRegistry->registerTool(
-        std::make_unique<GetIdleTransitionCandidatesTool>(player, animationManager));
-    aiToolRegistry->registerTool(
-        std::make_unique<GetActionTransitionStatusTool>(player));
-    aiToolRegistry->registerTool(
-        std::make_unique<RequestIdleTransitionTool>(player, animationManager));
-    qInfo() << "[AIBrain] animation tools attached";
+    if (!aiToolRegistry || !runtimeUiBridge) return;
+    auto* presentation = runtimeUiBridge->presentation();
+    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<CancelAnimationRequestTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<GetAvatarCapabilitiesTool>(presentation));
+    aiToolRegistry->registerTool(std::make_unique<MoveAvatarTool>(presentation));
 }
 
 void PetWindow::teardownAiRuntime() {

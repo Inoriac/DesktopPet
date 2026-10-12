@@ -84,6 +84,7 @@ public:
 
     // 注入通用提示词模版与独立身份基线（由聊天准备线程构建上下文）。
     void setIdentityBaseline(const IdentityBaseline& baseline);
+    void setAvatarContextProvider(std::function<QJsonObject()> provider) { m_avatarContextProvider = std::move(provider); }
     void setPromptTemplate(const PromptTemplate& templ);
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     void setChatPreparationDelayForTests(int delayMs);
@@ -276,6 +277,7 @@ private:
     ToolRegistry* m_toolRegistry = nullptr; // non-owning
     AgentRuntimeServices* m_runtimeServices = nullptr; // non-owning
 
+    std::function<QJsonObject()> m_avatarContextProvider;
     IdentityBaseline m_identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy m_personalityPolicy;
     PromptTemplate m_promptTemplate;

@@ -4,6 +4,8 @@
 
 #include "render_viewport.h"
 #include "render_engine.h"
+#include "animation/avatar_3d_backend.h"
+#include <QKeyEvent>
 
 #include <QOpenGLContext>
 #include <QOpenGLFunctions_3_3_Core>
@@ -37,17 +39,53 @@ RenderViewport::RenderViewport(QWidget *parent)
     ConfigManager& config = ConfigManager::instance();
     int fps = config.getDefaultFPS();
     int interval = fps > 0 ? 1000 / fps : 16; // 默认60帧
-    
+
     // 设置定时器
-    auto *timer = new QTimer(this);
+    auto *timer = &m_frameTimer;
     // update被调用时，会发出一个“请求重绘”的信号，从而让Qt在下一个事件循环中用到 paintGL
     connect(timer, &QTimer::timeout, this, QOverload<>::of(&RenderViewport::update));
-    timer->start(interval);
+    timer->setInterval(std::max(1, interval));
 
     qDebug() << "RenderViewport timer started (" << fps << " FPS, interval: " << interval << "ms)";
 }
 
-RenderViewport::~RenderViewport() = default;
+RenderViewport::~RenderViewport() {
+    if (m_presentation) m_presentation->setBackend(nullptr);
+    m_avatarBackend.reset();
+}
+void RenderViewport::bindPresentation(AvatarPresentation* presentation) { m_presentation = presentation; }
+void RenderViewport::setRenderingEnabled(bool enabled) {
+    m_renderingEnabled = enabled;
+    m_frameClock.invalidate();
+    if (enabled) { m_frameTimer.start(); update(); } else m_frameTimer.stop();
+}
+void RenderViewport::attachBackend() {
+    if (!m_presentation || !renderEngine || !animationManager) return;
+    QJsonObject durations, states;
+    for (const auto& [name, clip] : animationManager->getClips()) durations[QString::fromStdString(name)] = clip.duration;
+    for (const auto& state : animationManager->getStateMachine().states) {
+        QJsonArray clips; for (const auto& option : state.clipOptions) clips.append(QString::fromStdString(option.clipName));
+        states[QString::fromStdString(state.name)] = clips;
+    }
+    const int configuredFps = ConfigManager::instance().getDefaultFPS();
+    const double frameRateFactor = configuredFps > 0 ? std::min(1.0, configuredFps * 0.05) : 1.0;
+    m_avatarBackend = std::make_unique<Avatar3DBackend>(renderEngine->getAnimationPlayer(),
+        QJsonObject{{"durations",durations},{"states",states},{"playbackRate", ConfigManager::instance().getAnimationSpeed() * frameRateFactor}},
+        [this](bool enabled) { setRenderingEnabled(enabled); },
+        [this](QPoint target, QPoint* actual) {
+            if (!window()) return false;
+            window()->move(target); *actual = window()->pos(); return true;
+        });
+    m_presentation->setBackend(m_avatarBackend.get());
+}
+QString RenderViewport::hitRegion(const QPoint& hostPosition) const {
+    const QPoint position = mapFrom(window(), hostPosition);
+    if (!renderEngine || !m_renderingEnabled) return {};
+    auto tag = renderEngine->checkHit(position.x(),position.y());
+    if (tag.empty()) tag = renderEngine->checkHit(qRound(position.x()*devicePixelRatioF()),qRound(position.y()*devicePixelRatioF()));
+    return QString::fromStdString(tag);
+}
+
 
 // 添加辅助函数：获取当前进程内存占用（MB）
 size_t getCurrentMemoryUsage() {
@@ -69,6 +107,12 @@ size_t getCurrentMemoryUsage() {
 }
 
 void RenderViewport::initializeGL() {
+    // Qt can recreate the GL context without selecting a new avatar. Restore
+    // the already selected asset internally; the public load entry remains locked.
+    const QString selectedModel = currentModelPath;
+    const bool restoringContext = m_modelSelected && !selectedModel.isEmpty();
+    if (m_presentation) m_presentation->setBackend(nullptr);
+    m_avatarBackend.reset();
     qDebug() << "=== Memory Analysis Start ===";
     size_t mem0 = getCurrentMemoryUsage();
     qDebug() << "Initial memory:" << mem0 << "MB";
@@ -120,9 +164,12 @@ void RenderViewport::initializeGL() {
     size_t memFinal = getCurrentMemoryUsage();
     qDebug() << "=== Final memory:" << memFinal << "MB ===";
     qDebug() << "Total increase:" << (memFinal - mem0) << "MB";
-    
+
     // 发送初始化完成信号
-    emit initializationCompleted();
+    if (restoringContext) {
+        m_modelSelected = false;
+        loadModel(selectedModel);
+    } else emit initializationCompleted();
 }
 
 void RenderViewport::resizeGL(int w, int h) {
@@ -130,20 +177,15 @@ void RenderViewport::resizeGL(int w, int h) {
 }
 
 void RenderViewport::paintGL() {
-    static QElapsedTimer timer;
-    if (!timer.isValid()) {
-        timer.start();
-    }
-    
-    // 计算deltatime（秒）
-    qint64 msDelta = timer.restart();
-    float deltaTime = static_cast<float>(msDelta) / 1000.0f;
-    if (deltaTime > 0.05f) deltaTime = 0.05f; // 防止系统阻塞或后台暂停导致的巨大deltaTime跳跃吞掉动画过程
+    if (!m_renderingEnabled || !isVisible()) return;
+    float deltaTime = 0;
+    if (m_frameClock.isValid()) deltaTime = std::min(0.05f, static_cast<float>(m_frameClock.restart()) / 1000.0f);
+    else m_frameClock.start();
 
     // 应用动画速度设置
     ConfigManager& config = ConfigManager::instance();
     deltaTime *= config.getAnimationSpeed();
-    
+
     if (renderEngine) {
         // 更新动画
         renderEngine->updateAnimation(deltaTime);
@@ -182,16 +224,18 @@ void RenderViewport::paintGL() {
 }
 
 void RenderViewport::clearModel() {
+    if (m_presentation) m_presentation->setBackend(nullptr);
+    m_avatarBackend.reset();
     if (renderEngine) {
         renderEngine->clearScene();
         qDebug() << "Model cleared from GPU memory";
     }
-    
+
     if (animationManager) {
         animationManager->clear();
         qDebug() << "Animations cleared";
     }
-    
+
     currentModelPath.clear();
     currentAnimationPath.clear();
 }
@@ -208,6 +252,11 @@ bool RenderViewport::loadModel(const QString& modelPath) {
         return false;
     }
 
+    if (m_modelSelected) {
+        qWarning() << "[Avatar] replacing a selected avatar requires restart";
+        return false;
+    }
+    m_modelSelected = true;
     // 清除当前模型
     clearModel();
     currentModelPath = modelPath;
@@ -297,6 +346,7 @@ bool RenderViewport::loadModel(const QString& modelPath) {
             }
         }
 
+        attachBackend();
         return true;
     } else {
         qWarning() << "Failed to load model:" << modelPath;
@@ -305,3 +355,46 @@ bool RenderViewport::loadModel(const QString& modelPath) {
 }
 
 // Touch to force rebuild
+
+bool RenderViewport::handleCameraKey(int key, Qt::KeyboardModifiers modifiers) {
+    if (!renderEngine) return false;
+
+    auto* engine = renderEngine.get();
+    QVector3D eye = engine->getCameraEye();
+    QVector3D center = engine->getCameraCenter();
+
+    // 移动速度
+    float speed = 0.5f;
+    if (modifiers & Qt::ShiftModifier) speed *= 4.0f; // Shift 加速
+    if (modifiers & Qt::ControlModifier) speed *= 0.25f; // Ctrl 减速
+
+    bool changed = false;
+
+    // 前后: W/S (Z轴)
+    if (key == Qt::Key_W) { eye.setZ(eye.z() - speed); changed = true; }
+    if (key == Qt::Key_S) { eye.setZ(eye.z() + speed); changed = true; }
+
+    // 左右: A/D (X轴，同时移动Center以保持水平平移)
+    if (key == Qt::Key_A) { eye.setX(eye.x() - speed); center.setX(center.x() - speed); changed = true; }
+    if (key == Qt::Key_D) { eye.setX(eye.x() + speed); center.setX(center.x() + speed); changed = true; }
+
+    // 上下(升降): Q/E (Y轴)
+    if (key == Qt::Key_Q) { eye.setY(eye.y() + speed); changed = true; }
+    if (key == Qt::Key_E) { eye.setY(eye.y() - speed); changed = true; }
+
+    // 调整观看中心高度: Up/Down
+    if (key == Qt::Key_Up) { center.setY(center.y() + speed); changed = true; }
+    if (key == Qt::Key_Down) { center.setY(center.y() - speed); changed = true; }
+
+    if (changed) {
+        engine->setCameraEye(eye);
+        engine->setCameraCenter(center);
+        qDebug() << "Camera Updated -> Eye:" << eye << " Center:" << center;
+        qDebug() << "Code: view.lookAt(QVector3D("
+                 << eye.x() << "f," << eye.y() << "f," << eye.z() << "f), QVector3D("
+                 << center.x() << "f," << center.y() << "f," << center.z() << "f), ...);";
+    } else {
+        return false;
+    }
+    return true;
+}

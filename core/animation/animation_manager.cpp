@@ -83,7 +83,7 @@ bool AnimationManager::loadAnimations(const std::string& stateName, const Skelet
         return false;
     }
 
-    for (const auto& clipName : matchedClipNames) { 
+    if (!targetState.explicitClipOptions) for (const auto& clipName : matchedClipNames) {
         // 检查是否已存在相同的 clipOption
         auto optionIt = std::find_if(targetState.clipOptions.begin(), targetState.clipOptions.end(),
                                    [&](const AnimationCLipOption& opt) {
@@ -156,4 +156,5 @@ void AnimationManager::buildStateMachine() {
 void AnimationManager::clear() {
     // 清除已加载的动画片段，但保留状态机定义（由配置文件提供）
     clips.clear();
+    for (auto& state : stateMachine.states) if (!state.explicitClipOptions) state.clipOptions.clear();
 }

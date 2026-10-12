@@ -51,13 +51,13 @@ bool TaskOrchestrator::readOnlyTool(const QString& name) {
     static const QSet<QString> names{"web_search", "web_fetch", "read_text_file", "list_directory",
         "get_current_time", "get_user_idle_state", "get_battery_status", "get_network_status",
         "weather_query", "holiday_query", "daily_briefing", "schedule_list", "get_current_animation",
-        "get_idle_transition_candidates", "get_action_transition_status", "lx_music_status",
+        "get_idle_transition_candidates", "get_action_transition_status", "get_avatar_capabilities", "lx_music_status",
         "lx_music_lyric", "lx_music_list_playlists", "lx_music_playlist_songs"};
     return names.contains(name);
 }
 bool TaskOrchestrator::allowedTool(const QString& name) {
     static const QSet<QString> actions{"schedule_create", "schedule_cancel", "schedule_snooze",
-        "show_chat_bubble", "notify_user", "set_proactive_mode", "play_animation", "request_idle_transition",
+        "show_chat_bubble", "notify_user", "set_proactive_mode", "play_animation", "request_idle_transition", "cancel_animation_request", "move_avatar",
         "lx_music_play", "lx_music_pause", "lx_music_skip_next", "lx_music_skip_prev", "lx_music_set_volume",
         "lx_music_search_play", "lx_music_play_playlist"};
     return readOnlyTool(name) || actions.contains(name);

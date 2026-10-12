@@ -64,7 +64,14 @@ void AnimationPlayer::selectRandomClipForState(const AnimationState& state) {
 }
 
 void AnimationPlayer::update(double deltaTime) {
-    if (!currentClip || !myStateMachine) return;  // 添加安全检查
+    if (!m_playing || !currentClip || !myStateMachine || !std::isfinite(deltaTime) || deltaTime < 0) return;
+    if (!std::isfinite(currentClip->duration) || currentClip->duration <= 0) {
+        m_playing = false;
+        emit playbackFailed(m_generation, QStringLiteral("invalid_animation_duration"));
+        return;
+    }
+    const quint64 generation = m_generation;
+    bool cycleEnded = false;
 
     currentTime += deltaTime;
     double clipLen = currentClip->duration;
@@ -77,8 +84,12 @@ void AnimationPlayer::update(double deltaTime) {
         shouldLoop = myStateMachine->states[stateIt->second].loop;
     }
 
+    if (m_managed) shouldLoop = m_managedLoop;
+
     // 处理动画时间循环或非循环结束情况
     if (currentTime >= clipLen) {
+        cycleEnded = shouldLoop || m_cycle == 0;
+        if (cycleEnded) m_cycle += shouldLoop ? static_cast<quint64>(currentTime / clipLen) : 1;
         if (shouldLoop) {
             // 循环播放时重置时间
             currentTime = std::fmod(currentTime, clipLen);
@@ -88,7 +99,7 @@ void AnimationPlayer::update(double deltaTime) {
             
             // 查找当前状态的所有可能转换
             auto transIt = myStateMachine->transactionMap.find(currentStateName);
-            if (transIt != myStateMachine->transactionMap.end() && !transIt->second.empty()) {
+            if (!m_managed && transIt != myStateMachine->transactionMap.end() && !transIt->second.empty()) {
                 for (int transIndex : transIt->second) {
                     // 确保转换索引有效
                     if (transIndex >= 0 && transIndex < static_cast<int>(myStateMachine->transactions.size())) {
@@ -126,6 +137,7 @@ void AnimationPlayer::update(double deltaTime) {
     }
 
     applyMouseTracking(deltaTime);
+    if (m_managed && cycleEnded) emit cycleFinished(generation, m_cycle);
 }
 
 void AnimationPlayer::setScreenLookVector(const QVector2D& lookVector) {
@@ -259,6 +271,7 @@ void AnimationPlayer::applyMouseTracking(double deltaTime) {
 }
 
 void AnimationPlayer::triggerEvent(const std::string &eventName) {
+    if (m_managed) return;
     if (!myStateMachine || eventName.empty()) return;  // 添加安全检查
     
     // 查找当前状态的所有转换
@@ -364,42 +377,45 @@ QQuaternion AnimationPlayer::sampleQuat(const std::vector<KeyFrameQuat>& keys, d
     return QQuaternion(k.w, k.x, k.y, k.z);
 }
 
-void AnimationPlayer::changeState(const std::string& targetState, double transitionDuration){
-    if (currentStateName == targetState) return;
-    if (!myStateMachine) return;
 
-    auto it = myStateMachine->stateIndexMap.find(targetState);
-    if (it == myStateMachine->stateIndexMap.end()) {
-        qDebug() << "[AnimationPlayer] State " << targetState.c_str() << " not found";
-        return;
+bool AnimationPlayer::changeState(const std::string& targetState, double transitionDuration) {
+    if (m_managed || !myStateMachine || !myClips) return false;
+    const auto it = myStateMachine->stateIndexMap.find(targetState);
+    if (it == myStateMachine->stateIndexMap.end()) return false;
+    const auto& target = myStateMachine->states[it->second];
+    std::vector<const AnimationClip*> available;
+    std::vector<double> weights;
+    for (const auto& option : target.clipOptions) {
+        const auto found = myClips->find(option.clipName);
+        if (found != myClips->end() && std::isfinite(found->second.duration) && found->second.duration > 0) {
+            available.push_back(&found->second);
+            weights.push_back(std::isfinite(option.weight) && option.weight > 0 ? option.weight : 1.0);
+        }
     }
+    if (available.empty()) return false;
+    const auto* next = available[std::discrete_distribution<size_t>(weights.begin(), weights.end())(rng)];
+    if (transitionDuration > 0 && currentClip) m_crossfader.startFade(poseFinal, transitionDuration);
+    currentStateName = targetState; currentClip = next; currentTime = 0; m_playing = true;
+    return true;
+}
 
-    int stateIndex = it->second;
-    const AnimationState& target = myStateMachine->states[stateIndex];
-
-    selectRandomClipForState(target);
-    if (currentClipIndex < 0 || currentClipIndex >= static_cast<int>(target.clipOptions.size())) {
-        qDebug() << "[AnimationPlayer] clip index invalid for state" << targetState.c_str();
-        return;
+bool AnimationPlayer::startManaged(const QString& state, const QString& clip, bool loop,
+                                   quint64 generation, QString* error) {
+    if (!myClips) { *error = "animation_resources_unavailable"; return false; }
+    const auto found = myClips->find(clip.toStdString());
+    if (found == myClips->end() || !std::isfinite(found->second.duration) || found->second.duration <= 0) {
+        *error = "invalid_animation_resource"; return false;
     }
-
-    const auto& clipOption = target.clipOptions[currentClipIndex];
-    if (!myClips) return;
-    auto clipIt = myClips->find(clipOption.clipName);
-    if (clipIt == myClips->end()) {
-        qDebug() << "[AnimationPlayer] Clip " << clipOption.clipName.c_str() << " not found";
-        return;
-    }
-
-    if (transitionDuration > 0.0 && currentClip != nullptr) {
-        m_crossfader.startFade(poseFinal, transitionDuration);
-    }
-    
-    qDebug() << "[AnimationPlayer] changeState from" << currentStateName.c_str() << "to" << targetState.c_str() << "blendDuration=" << transitionDuration;
-
-    currentStateName = targetState;
-    currentClip = &clipIt->second;
-    currentTime = 0.0;
+    if (currentClip) m_crossfader.startFade(poseFinal, 0.2);
+    m_managed = true; m_playing = true; m_managedLoop = loop;
+    m_generation = generation; m_cycle = 0;
+    currentStateName = state.toStdString(); currentClip = &found->second; currentTime = 0;
+    return true;
+}
+void AnimationPlayer::resetManaged(const QString& initialState) {
+    m_managed = true; m_playing = false; ++m_generation; m_cycle = 0;
+    currentStateName = initialState.toStdString(); currentClip = nullptr; currentTime = 0;
+    m_crossfader = AnimationCrossfader{};
 }
 
 std::vector<QMatrix4x4> AnimationPlayer::getCurrentTransforms() {

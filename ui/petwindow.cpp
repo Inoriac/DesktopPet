@@ -1,3 +1,10 @@
+#include "presentation/avatar_presentation.h"
+#include <QFile>
+#include <QJsonDocument>
+#include <QShowEvent>
+#include <QHideEvent>
+#include <QSystemTrayIcon>
+#include <QStyle>
 //
 // Created by Inoriac on 2025/10/15.
 //
@@ -39,7 +46,6 @@
 #pragma comment(lib, "dwmapi.lib")
 #endif
 
-#include "render_engine.h"
 #include "behavior/behavior_manager.h"
 #include "configLoader/config_manager.h"
 #include "controller/pet_controller.h"
@@ -281,9 +287,6 @@ PetWindow::~PetWindow() {
     }
     if (emotionTickTimer) {
         emotionTickTimer->stop();
-    }
-    if (emotionBehaviorTimer) {
-        emotionBehaviorTimer->stop();
     }
     if (screenChatTimer) {
         screenChatTimer->stop();
@@ -651,7 +654,29 @@ void PetWindow::setupWindow() {
 }
 
 void PetWindow::setupRenderViewport() {
+    avatarPresentation = std::make_unique<AvatarPresentation>();
+    QFile configuration(ConfigManager::instance().getStateMachinePath());
+    if (configuration.open(QIODevice::ReadOnly)) {
+        QJsonParseError parse;
+        const auto document = QJsonDocument::fromJson(configuration.readAll(), &parse);
+        if (parse.error != QJsonParseError::NoError) qWarning() << "[Avatar]" << parse.errorString();
+        const auto errors = avatarPresentation->configure(document.object());
+        if (!errors.isEmpty()) qWarning() << "[Avatar] invalid configuration:" << errors;
+    } else qWarning() << "[Avatar] configuration unavailable:" << configuration.fileName();
     renderViewport = new RenderViewport(this);
+    avatarView = renderViewport;
+    renderViewport->bindPresentation(avatarPresentation.get());
+    if (QSystemTrayIcon::isSystemTrayAvailable()) {
+        avatarTray = new QSystemTrayIcon(style()->standardIcon(QStyle::SP_ComputerIcon), this);
+        auto* menu = new QMenu(this);
+        menu->addAction(QStringLiteral("显示形象"), this, [this] { setAvatarVisible(true); });
+        menu->addAction(QStringLiteral("隐藏形象"), this, [this] { setAvatarVisible(false); });
+        menu->addAction(QStringLiteral("退出"), this, &PetWindow::close);
+        avatarTray->setContextMenu(menu); avatarTray->show();
+        connect(avatarTray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
+            if (reason == QSystemTrayIcon::Trigger) setAvatarVisible(!isVisible());
+        });
+    }
     renderViewport->setMinimumHeight(400);
 
     // 设置布局
@@ -668,7 +693,6 @@ void PetWindow::setupRenderViewport() {
             qWarning() << "Failed to load model:" << profile.modelPath;
         }
 
-        setupAiAnimationTools();
     });
 }
 
@@ -686,22 +710,11 @@ void PetWindow::updateWindowFlags(bool alwaysOnTop, bool clickThrough) {
         setAttribute(Qt::WA_TransparentForMouseEvents, false);
     }
 
+    const bool wasVisible = isVisible();
+    changingWindowFlags = true;
     setWindowFlags(flags);
-
-    // 强制更新窗口
-    if (isVisible()) {
-        hide();
-        show();
-    }
-}
-
-bool PetWindow::loadModel(const QString &modelPath) {
-    if (!renderViewport) {
-        qWarning() << "RenderViewport not initialized";
-        return false;
-    }
-    
-    return renderViewport->loadModel(modelPath);
+    if (wasVisible) show();
+    changingWindowFlags = false;
 }
 
 void PetWindow::unloadModel() {
@@ -711,27 +724,18 @@ void PetWindow::unloadModel() {
     }
 }
 
-void PetWindow::playAnimation() {
-    // 动画播放控制逻辑
-    qDebug() << "Playing animation";
+void PetWindow::setAvatarVisible(bool visible) {
+    if (visible) show(); else hide();
 }
-
-void PetWindow::pauseAnimation() {
-    // 动画暂停控制逻辑
-    qDebug() << "Pausing animation";
+void PetWindow::showEvent(QShowEvent* event) {
+    QWidget::showEvent(event);
+    if (!changingWindowFlags && avatarPresentation) avatarPresentation->setVisible(true);
 }
-
-void PetWindow::stopAnimation() {
-    // 动画停止控制逻辑
-    qDebug() << "Stopping animation";
-}
-
-void PetWindow::setAnimationSpeed(float speed) {
-    // 设置动画速度逻辑
-    qDebug() << "Setting animation speed:" << speed;
-}
-
-void PetWindow::setAnimationLoop(bool loop) {
-    // 设置动画循环逻辑
-    qDebug() << "Setting animation loop:" << loop;
+void PetWindow::hideEvent(QHideEvent* event) {
+    if (!changingWindowFlags && avatarPresentation) {
+        avatarPresentation->setVisible(false);
+        stopDropAnimation();
+        isDragging = false;
+    }
+    QWidget::hideEvent(event);
 }

@@ -24,8 +24,8 @@ bool complexRequest(const QString& text) {
 }
 bool ownerThreadTaskTool(const QString& name) {
     static const QSet<QString> names{"schedule_create", "schedule_list", "schedule_cancel", "schedule_snooze",
-        "set_proactive_mode", "play_animation", "show_chat_bubble", "notify_user", "request_idle_transition",
-        "get_current_animation", "get_idle_transition_candidates", "get_action_transition_status"};
+        "set_proactive_mode", "play_animation", "show_chat_bubble", "notify_user", "request_idle_transition", "cancel_animation_request", "move_avatar",
+        "get_current_animation", "get_idle_transition_candidates", "get_action_transition_status", "get_avatar_capabilities"};
     return names.contains(name);
 }
 }

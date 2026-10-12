@@ -1,3 +1,4 @@
+#include <cmath>
 //
 // Created by Inoriac on 2025/10/15.
 //
@@ -480,6 +481,7 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         QJsonObject appSettings = configJson["appSettings"].toObject();
         defaultFPS = appSettings["defaultFPS"].toInt(60);
         animationSpeed = appSettings["animationSpeed"].toDouble(1.0);
+        if (!std::isfinite(animationSpeed) || animationSpeed <= 0) animationSpeed = 1.0f;
         volume = appSettings["volume"].toDouble(0.75);
     }
     
@@ -603,16 +605,8 @@ bool ConfigManager::loadConfig(const QString& configPath) {
         "read_text_file",
         "list_directory"
     };
-    aiBehaviorPolicy.idleActionWhitelist = {
-        "Idle", "Sitting", "Sleeping", "Happy", "Talk", "Dance"
-    };
-    aiBehaviorPolicy.touchActionWhitelist = {
-        "TouchHead", "TouchBody", "TouchHandL", "TouchHandR", "Happy"
-    };
-    aiBehaviorPolicy.emotionActionWhitelist = {
-        "Happy", "Cry", "Angry", "Fear", "Talk"
-    };
-    aiBehaviorPolicy.forbiddenActions = {"Drag", "WindowSit"};
+    // Empty defaults mean use the current avatar's configured capabilities.
+    // Explicit per-trigger policies loaded below remain authoritative.
 
     aiBehaviorPolicy.idleTrigger = AiTriggerConfig{true, 60000, 180000};
     aiBehaviorPolicy.emotionTrigger = AiTriggerConfig{false, 120000, 300000};

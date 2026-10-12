@@ -1,3 +1,4 @@
+#include <QJsonDocument>
 #include "chat_preparation_executor.h"
 
 #include <QDateTime>
@@ -356,8 +357,12 @@ public:
         ChatMessage contextMessage;
         contextMessage.role = QStringLiteral("user");
         contextMessage.content = contextBuilder.buildRuntimeContext(
-            request.petName, request.reason, QStringLiteral("Idle"), request.triggerTag,
+            request.petName, request.reason, request.avatarContext["state"].toObject()["current_state"].toString(), request.triggerTag,
             request.allowedActions, request.emotion);
+        if (!request.avatarContext.isEmpty()) {
+            contextMessage.content += QStringLiteral("\n[当前形象描述与呈现状态，仅描述当前外观，不改写人格或历史记忆]\n")
+                + QString::fromUtf8(QJsonDocument(request.avatarContext).toJson(QJsonDocument::Compact));
+        }
 
         if (m_memoryRepository || !request.workingMemory.isEmpty()) {
             const QStringList forgetQueries = forgetQueriesFor(request);

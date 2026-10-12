@@ -204,9 +204,7 @@ std::unique_ptr<CallbackRuntimeUiBridge> makeRuntimeBridge() {
     callbacks.showChatBubble = [](const QString&, int) {};
     callbacks.notifyUser = [](const QString&, const QString&, int) {};
     return std::make_unique<CallbackRuntimeUiBridge>(
-        std::move(callbacks),
-        reinterpret_cast<AnimationPlayer*>(quintptr(1)),
-        reinterpret_cast<AnimationManager*>(quintptr(2)));
+        std::move(callbacks));
 }
 
 RuntimeStartRequest runtimeRequestFor(QTemporaryDir& directory,

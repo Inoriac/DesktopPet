@@ -5,8 +5,7 @@
 
 #include <functional>
 
-class AnimationManager;
-class AnimationPlayer;
+class AvatarPresentation;
 
 class RuntimeUiBridge {
 public:
@@ -14,8 +13,7 @@ public:
     virtual void showChatBubble(const QString& text, int durationMs) = 0;
     virtual void notifyUser(const QString& title, const QString& message,
                             int durationMs) = 0;
-    virtual AnimationPlayer* animationPlayer() const = 0;
-    virtual AnimationManager* animationManager() const = 0;
+    virtual AvatarPresentation* presentation() const = 0;
 };
 
 struct RuntimeUiCallbacks {
@@ -26,21 +24,16 @@ struct RuntimeUiCallbacks {
 class CallbackRuntimeUiBridge final : public RuntimeUiBridge {
 public:
     CallbackRuntimeUiBridge(RuntimeUiCallbacks callbacks,
-                            AnimationPlayer* animationPlayer,
-                            AnimationManager* animationManager);
+                            AvatarPresentation* presentation = nullptr);
 
     void showChatBubble(const QString& text, int durationMs) override;
     void notifyUser(const QString& title, const QString& message,
                     int durationMs) override;
-    void setAnimationSystem(AnimationPlayer* animationPlayer,
-                            AnimationManager* animationManager);
-    AnimationPlayer* animationPlayer() const override { return m_animationPlayer; }
-    AnimationManager* animationManager() const override { return m_animationManager; }
+    AvatarPresentation* presentation() const override { return m_presentation; }
 
 private:
     RuntimeUiCallbacks m_callbacks;
-    AnimationPlayer* m_animationPlayer = nullptr;
-    AnimationManager* m_animationManager = nullptr;
+    AvatarPresentation* m_presentation = nullptr;
 };
 
 #endif // DESKTOP_PET_RUNTIME_UI_BRIDGE_H

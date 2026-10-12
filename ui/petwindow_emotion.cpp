@@ -5,8 +5,9 @@
 #include "controller/pet_controller.h"
 #include "emotion/emotion_engine.h"
 #include "emotion/sqlite_emotion_state_repository.h"
-#include "render_engine.h"
-#include "render_viewport.h"
+#include "presentation/avatar_presentation.h"
+#include "statistic_manager.h"
+
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -50,38 +51,24 @@ void PetWindow::setupEmotionSystem() {
     petController = std::make_unique<PetController>(emotionEngine.get());
     behaviorManager = std::make_unique<BehaviorManager>(config.expressionQueueLimit);
 
-    behaviorManager->setCurrentStateProvider([this]() -> QString {
-        if (!renderViewport || !renderViewport->getRenderEngine()) {
-            return {};
+    behaviorManager->setPresentation(avatarPresentation.get());
+    avatarPresentation->setPolicyProvider([this] {
+        QJsonArray forbidden;
+        for (const auto& state : ConfigManager::instance().getAiBehaviorPolicy().forbiddenActions) forbidden.append(state);
+        QJsonObject policy{{"ai_forbidden_states", forbidden}};
+        if (emotionEngine && emotionEngine->isEnabled()) {
+            const auto snapshot = emotionEngine->snapshot(QDateTime::currentDateTimeUtc());
+            policy["emotion"] = emotionTypeToString(snapshot.active).toLower();
+            policy["intensity"] = snapshot.intensity;
         }
-        const auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
-        return player ? QString::fromStdString(player->getCurrentStateName()) : QString{};
+        return policy;
     });
-    behaviorManager->setAnimationPlayer([this](const QString& state) -> bool {
-        if (!renderViewport || !renderViewport->getRenderEngine() || !renderViewport->getAnimationManager()) {
-            return false;
-        }
-        auto* player = renderViewport->getRenderEngine()->getAnimationPlayer();
-        if (!player || player->getCurrentStateName() != "Idle") {
-            return false;
-        }
-
-        const AnimationStateMachineDefinition& stateMachine =
-            renderViewport->getAnimationManager()->getStateMachine();
-        const auto stateIt = stateMachine.stateIndexMap.find(state.toStdString());
-        if (stateIt == stateMachine.stateIndexMap.end()) {
-            return false;
-        }
-        const int index = stateIt->second;
-        if (index < 0
-            || index >= static_cast<int>(stateMachine.states.size())
-            || stateMachine.states[index].clipOptions.empty()) {
-            return false;
-        }
-
-        player->changeState(state.toStdString());
-        return player->getCurrentStateName() == state.toStdString();
-    });
+    connect(avatarPresentation.get(), &AvatarPresentation::interactionOccurred, this,
+        [this](const QString& kind, const QString& region) {
+            if (kind != "touch") return;
+            StatisticManager::getInstance().recordTouchInteraction(modelName, region);
+            if (petController) petController->recordTouch(region);
+        });
 
     connect(emotionEngine.get(), &EmotionEngine::expressionRequested,
             this, [this](const ExpressionRequest& request) {
@@ -113,14 +100,7 @@ void PetWindow::setupEmotionSystem() {
         emotionTickTimer->start();
     }
 
-    emotionBehaviorTimer = new QTimer(this);
-    emotionBehaviorTimer->setInterval(250);
-    connect(emotionBehaviorTimer, &QTimer::timeout, this, [this]() {
-        if (behaviorManager) {
-            behaviorManager->processPending(QDateTime::currentDateTimeUtc());
-        }
-    });
-    emotionBehaviorTimer->start();
+
 }
 
 QString PetWindow::emotionStatusText() const {

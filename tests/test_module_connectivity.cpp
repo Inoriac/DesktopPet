@@ -82,7 +82,7 @@ struct Runtime {
     QTemporaryDir directory;
     FakeClient client;
     AIBrain brain{&client, roles()};
-    CallbackRuntimeUiBridge bridge{RuntimeUiCallbacks{}, nullptr, nullptr};
+    CallbackRuntimeUiBridge bridge{RuntimeUiCallbacks{}};
     AgentRuntimeServices services;
     RuntimeStartRequest request;
     bool ready = false;
@@ -137,6 +137,7 @@ class Crypto : public PrivatePsycheCrypto {
 class TestModuleConnectivity : public QObject {
     Q_OBJECT
 private slots:
+    void animationPolicyUsesConfiguredStateIdsAndLegacyAlias();
     void proactiveModeControlsBrainAndExpires();
     void reminderStateFollowsSnoozeCancelAndDelivery();
     void reminderFailureRetriesWithoutSuccessAndPartialDeliveryCompletes();
@@ -765,5 +766,14 @@ void TestModuleConnectivity::disabledAiCancelsAndDoesNotRestartTaskReflection() 
     QVERIFY(!runtime.brain.m_taskExperienceTimer.isActive());
 }
 
+
+void TestModuleConnectivity::animationPolicyUsesConfiguredStateIdsAndLegacyAlias() {
+    AIBrain brain;
+    LlmToolCall alias;alias.name="request_idle_transition";alias.arguments={{"target_action","cloud_perch"}};
+    QString denial;
+    QVERIFY2(brain.isToolCallAllowed("user_request",alias,denial),qPrintable(denial));
+    LlmToolCall arbitrary;arbitrary.name="play_animation";arbitrary.arguments={{"state","TouchOfCloud"}};
+    QVERIFY2(brain.isToolCallAllowed("user_request",arbitrary,denial),qPrintable(denial));
+}
 QTEST_GUILESS_MAIN(TestModuleConnectivity)
 #include "test_module_connectivity.moc"

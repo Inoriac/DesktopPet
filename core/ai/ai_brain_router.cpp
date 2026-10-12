@@ -263,6 +263,7 @@ ChatPreparationRequest AIBrain::makeChatPreparationRequest(
     request.reason = reason;
     request.triggerTag = triggerTag;
     request.petName = m_petName;
+    request.avatarContext = m_avatarContextProvider ? m_avatarContextProvider() : QJsonObject{};
     request.allowedActions = allowedActionsForTrigger(triggerTag);
     // The current user message is already remembered for the next turn; this
     // request receives it once via reason, alongside the prior conversation.
