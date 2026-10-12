@@ -32,7 +32,8 @@ public:
     // for small in-memory repositories.
     virtual QList<MemoryEntry> loadRecent(int limit,
                                           const QString& partition = QString(),
-                                          bool activeOnly = false) {
+                                          bool activeOnly = false, bool* ok = nullptr) {
+        if (ok) *ok = true;
         QList<MemoryEntry> entries = loadAll();
         if (activeOnly) {
             entries.erase(std::remove_if(entries.begin(), entries.end(),

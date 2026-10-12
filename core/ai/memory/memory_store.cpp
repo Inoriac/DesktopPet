@@ -485,10 +485,15 @@ bool MemoryStore::loadRecallWindow(int limit, QString* errorMessage) {
     const int boundedLimit = std::clamp(limit, 1, 4096);
     // Keep the hot recent window bounded, while reserving a small explicit
     // budget for older Hippocampus inbox items that may await consolidation.
-    QList<MemoryEntry> recentEntries = m_repository->loadRecent(boundedLimit, QString(), true);
+    bool recentOk = false, inboxOk = false;
+    QList<MemoryEntry> recentEntries = m_repository->loadRecent(boundedLimit, QString(), true, &recentOk);
     const int hippocampusBudget = std::min(64, boundedLimit);
     const QList<MemoryEntry> hippocampusEntries = m_repository->loadRecent(
-        hippocampusBudget, QStringLiteral("hippocampus"), true);
+        hippocampusBudget, QStringLiteral("hippocampus"), true, &inboxOk);
+    if (!recentOk || !inboxOk) {
+        if (errorMessage) *errorMessage = QStringLiteral("Unable to read recall window");
+        return false;
+    }
     QSet<QString> seen;
     m_entries.clear();
     m_entries.reserve(recentEntries.size() + hippocampusEntries.size());
@@ -507,9 +512,10 @@ bool MemoryStore::loadRecallWindow(int limit, QString* errorMessage) {
 
 QList<MemoryEntry> MemoryStore::loadRecentFromDatabase(int limit,
                                                        const QString& partition,
-                                                       bool activeOnly) {
+                                                       bool activeOnly, bool* ok) {
+    if (ok) *ok = false;
     if (!m_repository || !m_repository->isOpen() || limit <= 0) return {};
-    return m_repository->loadRecent(std::clamp(limit, 1, 4096), partition, activeOnly);
+    return m_repository->loadRecent(std::clamp(limit, 1, 4096), partition, activeOnly, ok);
 }
 
 bool MemoryStore::saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,
@@ -1256,6 +1262,14 @@ qint64 MemoryStore::databaseVersion() const {
     QSqlQuery query(QSqlDatabase::database(databaseConnectionName(), false));
     if (!query.exec(QStringLiteral("PRAGMA data_version")) || !query.next()) return -1;
     return query.value(0).toLongLong();
+}
+
+QPair<qint64, qint64> MemoryStore::recallRevisions() const {
+    if (!databaseIsOpen()) return {-1, -1};
+    QSqlQuery query(QSqlDatabase::database(databaseConnectionName(), false));
+    if (!query.exec(QStringLiteral("SELECT recall_revision,reset_revision FROM memory_tag_catalog_state WHERE singleton=1"))
+        || !query.next()) return {-1, -1};
+    return {query.value(0).toLongLong(), query.value(1).toLongLong()};
 }
 
 std::optional<MemoryEntry> MemoryStore::readForRecall(const QString& id) const {

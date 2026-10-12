@@ -1,4 +1,6 @@
 #include "hnsw_embedding_index.h"
+#include <QElapsedTimer>
+#include <cstring>
 
 #include <hnswlib/hnswlib.h>
 #include <hnswlib/space_ip.h>
@@ -220,6 +222,58 @@ QList<EmbeddingSearchResult> HnswEmbeddingIndex::searchVector(const QVector<floa
 QList<EmbeddingSearchResult> HnswEmbeddingIndex::search(const QString& query, int limit) {
     if (!m_provider || m_provider->dimension() <= 0 || query.isEmpty()) return {};
     return searchVector(m_provider->embed(query), limit);
+}
+
+PreparedEmbeddingQuery HnswEmbeddingIndex::prepareQuery(const QString& text) {
+    PreparedEmbeddingQuery query;
+    query.attempted = true;
+    if (!m_provider || text.trimmed().isEmpty()) return query;
+    QElapsedTimer timer;
+    timer.start();
+    try {
+        query.model = m_provider->modelName();
+        if (m_provider->dimension() > 0) {
+            query.encodeCalls = 1;
+            query.vector = m_provider->embed(text);
+        }
+        if (query.vector.size() != m_provider->dimension() || !query.valid()) query.vector.clear();
+    } catch (...) {
+        query.vector.clear();
+    }
+    query.durationMs = timer.elapsed();
+    return query;
+}
+
+QList<EmbeddingSearchResult> HnswEmbeddingIndex::searchPrepared(const PreparedEmbeddingQuery& query, int limit) {
+    if (!query.valid() || !m_provider || query.model != m_provider->modelName()) return {};
+    return searchVector(query.vector, limit);
+}
+
+std::optional<double> HnswEmbeddingIndex::similarityToCurrent(
+    const QString& id, const QString& currentText, const PreparedEmbeddingQuery& query) const {
+    if (!query.valid() || !m_provider || query.model != m_provider->modelName()) return {};
+    QSqlDatabase db = QSqlDatabase::database(m_connectionName, false);
+    if (!db.isOpen()) return {};
+    QSqlQuery row(db);
+    row.prepare(QStringLiteral("SELECT dimension,vector_blob FROM memory_embeddings "
+                               "WHERE memory_id=:id AND model=:model AND content_hash=:hash"));
+    row.bindValue(QStringLiteral(":id"), id);
+    row.bindValue(QStringLiteral(":model"), query.model);
+    row.bindValue(QStringLiteral(":hash"), contentHash(currentText));
+    if (!row.exec() || !row.next() || row.value(0).toInt() != query.vector.size()) return {};
+    const auto blob = row.value(1).toByteArray();
+    if (blob.size() != query.vector.size() * qsizetype(sizeof(float))) return {};
+    double dot = 0, norm = 0, queryNorm = 0;
+    for (qsizetype i = 0; i < query.vector.size(); ++i) {
+        float value;
+        std::memcpy(&value, blob.constData() + i * sizeof(float), sizeof(float));
+        if (!std::isfinite(value)) return {};
+        dot += double(value) * query.vector[i];
+        norm += double(value) * value;
+        queryNorm += double(query.vector[i]) * query.vector[i];
+    }
+    if (!std::isfinite(norm) || norm <= 1e-12) return {};
+    return std::clamp(dot / std::sqrt(norm * queryNorm), -1.0, 1.0);
 }
 
 bool HnswEmbeddingIndex::loadLabelMapsFromDatabase() {

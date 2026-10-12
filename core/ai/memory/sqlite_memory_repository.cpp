@@ -481,7 +481,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
     for (const QString& sql : {
             QStringLiteral("CREATE TABLE IF NOT EXISTS memory_tag_catalog_state ("
                            "singleton INTEGER PRIMARY KEY CHECK(singleton=1), revision INTEGER NOT NULL)"),
-            QStringLiteral("INSERT OR IGNORE INTO memory_tag_catalog_state VALUES(1,0)"),
+            QStringLiteral("INSERT OR IGNORE INTO memory_tag_catalog_state(singleton,revision) VALUES(1,0)"),
             QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_insert AFTER INSERT ON memory_tags "
                            "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END"),
             QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_tag_catalog_delete AFTER DELETE ON memory_tags "
@@ -500,6 +500,62 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
                            "WHEN OLD.status IS NOT NEW.status OR OLD.privacy_level IS NOT NEW.privacy_level "
                            "OR OLD.partition IS NOT NEW.partition OR OLD.expires_at IS NOT NEW.expires_at "
                            "BEGIN UPDATE memory_tag_catalog_state SET revision=revision+1 WHERE singleton=1; END")}) {
+        if (!query.exec(sql)) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+
+    // Extend the existing derived-cache revision, preserving old databases.
+    // Recall contents/edges are separate from metadata writes (access, mention,
+    // snapshots and embedding maintenance), which must not reset conversation state.
+    QSet<QString> recallStateColumns;
+    if (!query.exec(QStringLiteral("PRAGMA table_info(memory_tag_catalog_state)"))) return false;
+    while (query.next()) recallStateColumns.insert(query.value(1).toString());
+    query.finish();
+    for (const auto& column : {QStringLiteral("recall_revision"), QStringLiteral("reset_revision")}) {
+        if (!recallStateColumns.contains(column)
+            && !query.exec(QStringLiteral("ALTER TABLE memory_tag_catalog_state ADD COLUMN %1 INTEGER NOT NULL DEFAULT 0").arg(column))) {
+            if (errorMessage) *errorMessage = query.lastError().text();
+            return false;
+        }
+    }
+    const QString changed = QStringLiteral(
+        "old.summary IS NOT NEW.summary OR old.content IS NOT NEW.content OR old.key IS NOT NEW.key OR old.scope IS NOT NEW.scope "
+        "OR old.status IS NOT NEW.status OR old.privacy_level IS NOT NEW.privacy_level "
+        "OR old.partition IS NOT NEW.partition OR old.expires_at IS NOT NEW.expires_at "
+        "OR json_extract(CASE WHEN json_valid(old.payload_json) THEN old.payload_json ELSE '{}' END,'$.source_tags') "
+        "IS NOT json_extract(CASE WHEN json_valid(NEW.payload_json) THEN NEW.payload_json ELSE '{}' END,'$.source_tags')");
+    QStringList recallTriggers = {
+        QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_recall_insert BEFORE INSERT ON memory_items "
+                       "WHEN (COALESCE(NEW.partition,'')!='hippocampus' AND NOT EXISTS(SELECT 1 FROM memory_items WHERE id=NEW.id)) "
+                       "OR EXISTS(SELECT 1 FROM memory_items old WHERE old.id=NEW.id "
+                       "AND (COALESCE(old.partition,'')!='hippocampus' OR COALESCE(NEW.partition,'')!='hippocampus') AND (%1)) "
+                       "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1,revision=revision+1 WHERE singleton=1; END").arg(changed),
+        QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_recall_update AFTER UPDATE ON memory_items "
+                       "WHEN (COALESCE(OLD.partition,'')!='hippocampus' OR COALESCE(NEW.partition,'')!='hippocampus') AND (%1) "
+                       "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1,revision=revision+1 WHERE singleton=1; END").arg(changed),
+        QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_recall_delete AFTER DELETE ON memory_items "
+                       "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1, "
+                       "reset_revision=reset_revision+1 WHERE singleton=1; END")
+    };
+    for (const auto& table : {QStringLiteral("memory_relations"), QStringLiteral("tag_cooccurrences")}) {
+        for (const auto& operation : {QStringLiteral("INSERT"), QStringLiteral("UPDATE"), QStringLiteral("DELETE")}) {
+            recallTriggers.append(QStringLiteral("CREATE TRIGGER IF NOT EXISTS recall_%1_%2 AFTER %2 ON %1 "
+                "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1 WHERE singleton=1; END")
+                .arg(table, operation));
+        }
+    }
+    for (const auto& operation : {QStringLiteral("INSERT"), QStringLiteral("UPDATE"), QStringLiteral("DELETE")}) {
+        const QString owners = operation == QLatin1String("DELETE") ? QStringLiteral("OLD.memory_id")
+            : operation == QLatin1String("UPDATE") ? QStringLiteral("OLD.memory_id,NEW.memory_id")
+                                                   : QStringLiteral("NEW.memory_id");
+        recallTriggers.append(QStringLiteral("CREATE TRIGGER IF NOT EXISTS memory_recall_tags_%1 AFTER %1 ON memory_tags "
+            "WHEN EXISTS(SELECT 1 FROM memory_items WHERE id IN (%2) AND COALESCE(partition,'')!='hippocampus') "
+            "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1 WHERE singleton=1; END")
+            .arg(operation, owners));
+    }
+    for (const auto& sql : recallTriggers) {
         if (!query.exec(sql)) {
             if (errorMessage) *errorMessage = query.lastError().text();
             return false;
@@ -837,7 +893,8 @@ std::optional<MemoryEntry> SQLiteMemoryRepository::loadById(const QString& id) {
 
 QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
                                                       const QString& partition,
-                                                      bool activeOnly) {
+                                                      bool activeOnly, bool* ok) {
+    if (ok) *ok = false;
     if (!isOpen() || limit <= 0) return {};
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
@@ -853,7 +910,9 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
     if (!partition.trimmed().isEmpty()) query.bindValue(QStringLiteral(":partition"), partition);
     query.bindValue(QStringLiteral(":limit"), limit);
     if (!query.exec()) return {};
-    return loadQuery(query);
+    auto entries = loadQuery(query);
+    if (ok) *ok = !query.lastError().isValid();
+    return entries;
 }
 
 bool SQLiteMemoryRepository::saveActiveMemorySnapshot(const QList<ActiveMemoryItem>& items,

@@ -9,6 +9,10 @@
 #include <QTimer>
 #include <QSqlQuery>
 #include <QSqlDatabase>
+#include <QMutex>
+#include <QMutexLocker>
+#include <limits>
+#include <stdexcept>
 #include "ai/memory/hnsw_embedding_index.h"
 #include "ai/memory/memory_index_worker.h"
 #ifdef DESKTOP_PET_HAS_ORT
@@ -76,8 +80,10 @@ bool prepareOnce(ChatPreparationExecutor& executor,
                  ChatPreparationRequest request,
                  ChatPreparationResult* output) {
     bool received = false;
+    QSignalSpy feedback(&executor, &ChatPreparationExecutor::recallFeedbackProcessed);
     const auto connection = QObject::connect(&executor, &ChatPreparationExecutor::prepared, &executor,
-                     [&received, output](ChatPreparationResult result) {
+                     [&received, output, &executor](ChatPreparationResult result) {
+                         executor.acceptRecallFeedback(result);
                          *output = std::move(result);
                          received = true;
                      });
@@ -88,6 +94,7 @@ bool prepareOnce(ChatPreparationExecutor& executor,
         QCoreApplication::processEvents(QEventLoop::AllEvents, 20);
         QTest::qWait(1);
     }
+    if (received && output->recallFeedbackToken != 0 && feedback.isEmpty()) feedback.wait(2000);
     QObject::disconnect(connection);
     return received;
 }
@@ -109,6 +116,56 @@ private:
     std::shared_ptr<std::atomic_bool> m_wrongThread;
     quintptr m_guiThread;
 };
+
+struct TopicProviderState {
+    std::atomic<int> calls{0};
+    std::atomic<int> failure{0};
+    std::atomic<int> model{1};
+    QMutex mutex;
+    QStringList queryTexts;
+};
+class TopicTestProvider final : public EmbeddingProvider {
+public:
+    explicit TopicTestProvider(std::shared_ptr<TopicProviderState> state) : m_state(std::move(state)) {}
+    QString modelName() const override { return QStringLiteral("topic-test-%1").arg(m_state->model.load()); }
+    int dimension() const override { return 3; }
+    QVector<float> embed(const QString& text) override {
+        if (!text.contains(QLatin1Char('\n'))) {
+            ++m_state->calls;
+            QMutexLocker locker(&m_state->mutex);
+            m_state->queryTexts.append(text);
+            switch (m_state->failure.load()) {
+            case 1: return {};
+            case 2: return {std::numeric_limits<float>::quiet_NaN(), 0.f, 0.f};
+            case 3: return {1.f, 0.f};
+            case 4: throw std::runtime_error("simulated encoder failure");
+            default: break;
+            }
+        }
+        if (text.contains(QStringLiteral("医院")) || text.contains(QStringLiteral("天气"))) return {0.f, 0.f, 1.f};
+        if (text.contains(QStringLiteral("工作")) || text.contains(QStringLiteral("职业")) || text.contains(QStringLiteral("酒店"))) return {0.f, 1.f, 0.f};
+        return {1.f, 0.f, 0.f};
+    }
+private:
+    std::shared_ptr<TopicProviderState> m_state;
+};
+
+bool seedTopicVector(MemoryStore& store, const MemoryEntry& entry,
+                     TopicTestProvider& provider, const QString& directory) {
+    const QString text = entry.summary + QLatin1Char('\n') + entry.content;
+    const auto vector = provider.embed(text);
+    const auto hash = HnswEmbeddingIndex::contentHash(text);
+    QSqlQuery row(QSqlDatabase::database(store.databaseConnectionName(), false));
+    row.prepare(QStringLiteral("INSERT OR REPLACE INTO memory_embeddings(memory_id,model,dimension,vector_blob,content_hash) VALUES(?,?,?,?,?)"));
+    row.addBindValue(entry.id);
+    row.addBindValue(provider.modelName());
+    row.addBindValue(vector.size());
+    row.addBindValue(QByteArray(reinterpret_cast<const char*>(vector.constData()), vector.size()*sizeof(float)));
+    row.addBindValue(hash);
+    if (!row.exec()) return false;
+    HnswEmbeddingIndex index(store.databaseConnectionName(), &provider, directory);
+    return index.rebuildFromRepository() && index.saveToDisk();
+}
 
 bool fillRecentWindow(MemoryStore& store) {
     for (int i = 0; i < 300; ++i) {
@@ -137,6 +194,22 @@ private slots:
     void wholeTagRecallFindsOldMemoryWithoutEmbeddings();
     void semanticRecallFindsOldMemoryAndRejectsStalePrivateHits();
     void activePoolSurvivesWorkerRestartAndClear();
+    void topicRecallReusesCurrentCandidatesWithoutAccumulatingActivation();
+    void topicRecallSharesOneEmbeddingAcrossSemanticRewordings();
+    void topicRecallChecksNewInputsWithoutHistoryContamination();
+    void topicRecallRefreshesInboxButNotPostingsForMetadata();
+    void topicRecallRejectsChangedContentAndEligibility_data();
+    void topicRecallRejectsChangedContentAndEligibility();
+    void topicRecallInvalidatesForGraphAndRawSqlChanges();
+    void topicRecallRejectsFailedEmbeddings_data();
+    void topicRecallRejectsFailedEmbeddings();
+    void topicRecallOnlyLearnsConsumedResults();
+    void topicRecallReusesCandidatesFromMoreThanOnePreviousTurn();
+    void topicRecallAcceptedFeedbackDrainsBeforeStop();
+    void topicRecallAutomaticTriggerEncodesContextAndPreservesUserTopic();
+    void topicPoolRetainsMultipleTurnsAndExpiresDerivedState();
+    void topicPoolGuardsChanges_data();
+    void topicPoolGuardsChanges();
     void emotionBonusIsNotPersistedIntoActivationPool();
     void slowProviderInitializationDoesNotBlockGui();
 #ifdef DESKTOP_PET_HAS_ORT
@@ -743,6 +816,420 @@ retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation()
     QVERIFY(!unchanged->lastAccessedAt.isValid());
 }
 
+void ChatPreparationExecutorTests::topicRecallSharesOneEmbeddingAcrossSemanticRewordings() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider seedProvider(state);
+    QVERIFY(seedTopicVector(store, entry, seedProvider, directory.path()));
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐演出")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QCOMPARE(result.recallDiagnostics.queryEmbeddingCalls, 1);
+    QCOMPARE(result.recallDiagnostics.indexQueries, 1);
+    QVERIFY(result.recallDiagnostics.graphExpanded);
+    QCOMPARE(state->calls.load(), 1);
+    QVERIFY(result.reinforcementIds.contains(entry.id));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("想听点即兴演奏")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("reuse"));
+    QCOMPARE(result.recallDiagnostics.queryEmbeddingCalls, 1);
+    QCOMPARE(result.recallDiagnostics.indexQueries, 0);
+    QVERIFY(!result.recallDiagnostics.graphExpanded);
+    QCOMPARE(state->calls.load(), 2);
+    QVERIFY(result.reinforcementIds.contains(entry.id));
+    QVERIFY(!result.recallDiagnostics.cacheRebuilt);
+    QCOMPARE(store.readForRecall(entry.id)->accessCount, 0);
+    QCOMPARE(store.readForRecall(entry.id)->mentionCount, entry.mentionCount);
+    // A model switch cannot reuse vectors or topic evidence from its predecessor.
+    state->model.store(2);
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("想听点即兴演奏")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QCOMPARE(result.recallDiagnostics.reason, QStringLiteral("embedding_changed"));
+    QCOMPARE(state->calls.load(), 3);
+}
+
+void ChatPreparationExecutorTests::topicRecallChecksNewInputsWithoutHistoryContamination() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = matchingMemory();
+    entry.summary = entry.content = QStringLiteral("杭州景点旅游计划");
+    entry = store.addEntry(entry);
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider provider(state);
+    QVERIFY(seedTopicVector(store, entry, provider, directory.path()));
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("杭州景点")), &result));
+    auto next = requestFor(QStringLiteral("杭州医院"));
+    next.conversationMemory.append({QStringLiteral("user"), QStringLiteral("杭州景点旅游计划")});
+    QVERIFY(prepareOnce(executor, next, &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QCOMPARE(result.recallDiagnostics.indexQueries, 1);
+    {
+        QMutexLocker locker(&state->mutex);
+        QCOMPARE(state->queryTexts.last(), QStringLiteral("杭州医院"));
+    }
+    next.reason = QStringLiteral("上海天气");
+    QVERIFY(prepareOnce(executor, next, &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QMutexLocker locker(&state->mutex);
+    QCOMPARE(state->queryTexts.last(), QStringLiteral("上海天气"));
+}
+
+void ChatPreparationExecutorTests::topicRecallRefreshesInboxButNotPostingsForMetadata() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &result));
+    const auto revisions = store.recallRevisions();
+    store.reinforceEntries({entry.id});
+    auto latest = *store.readForRecall(entry.id);
+    latest.lastMentionedAt = QDateTime::currentDateTimeUtc();
+    ++latest.mentionCount;
+    latest.payload.insert(QStringLiteral("request_id"), QStringLiteral("new-write"));
+    QVERIFY(store.updateEntryById(latest));
+    QCOMPARE(store.recallRevisions(), revisions);
+    auto inbox = matchingMemory();
+    inbox.id = QStringLiteral("new-inbox-condition");
+    inbox.type = MemoryType::ShortTerm;
+    inbox.partition = QStringLiteral("hippocampus");
+    inbox.summary = inbox.content = QStringLiteral("爵士乐最新场地就在家附近");
+    inbox = store.addEntry(inbox);
+    QVERIFY(!inbox.id.isEmpty());
+    QCOMPARE(store.recallRevisions(), revisions);
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("reuse"));
+    QVERIFY(!result.recallDiagnostics.cacheRebuilt);
+    QVERIFY(result.reinforcementIds.contains(inbox.id));
+    QCOMPARE(store.readForRecall(entry.id)->mentionCount, latest.mentionCount);
+}
+
+void ChatPreparationExecutorTests::topicRecallRejectsChangedContentAndEligibility_data() {
+    QTest::addColumn<QString>("mutation");
+    QTest::newRow("content") << QStringLiteral("UPDATE memory_items SET summary='unrelated bookkeeping',content='unrelated bookkeeping' WHERE id='memory-jazz'");
+    QTest::newRow("private") << QStringLiteral("UPDATE memory_items SET privacy_level='sensitive' WHERE id='memory-jazz'");
+    QTest::newRow("expired") << QStringLiteral("UPDATE memory_items SET expires_at='2000-01-01T00:00:00Z' WHERE id='memory-jazz'");
+    QTest::newRow("deleted") << QStringLiteral("DELETE FROM memory_items WHERE id='memory-jazz'");
+    QTest::newRow("archived") << QStringLiteral("UPDATE memory_items SET status='archived' WHERE id='memory-jazz'");
+}
+void ChatPreparationExecutorTests::topicRecallRejectsChangedContentAndEligibility() {
+    QFETCH(QString, mutation);
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    const auto entry = store.addEntry(matchingMemory());
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider provider(state);
+    QVERIFY(seedTopicVector(store, entry, provider, directory.path()));
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("想听点即兴演奏")), &result));
+    QVERIFY(result.reinforcementIds.contains(entry.id));
+    QSqlQuery change(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(change.exec(mutation));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("想听点即兴演奏")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QVERIFY(result.recallDiagnostics.cacheRebuilt);
+    QVERIFY(!result.reinforcementIds.contains(entry.id));
+    QVERIFY(!result.messages.last().content.contains(QStringLiteral("unrelated bookkeeping")));
+}
+
+void ChatPreparationExecutorTests::topicRecallInvalidatesForGraphAndRawSqlChanges() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    auto neighbor = matchingMemory();
+    neighbor.id = QStringLiteral("other");
+    neighbor.summary = neighbor.content = QStringLiteral("独立关联线索");
+    QVERIFY(!store.addEntry(neighbor).id.isEmpty());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(), &result));
+    QSqlQuery sql(QSqlDatabase::database(store.databaseConnectionName(), false));
+    QVERIFY(!result.messages.last().content.contains(neighbor.summary));
+    const auto before = store.recallRevisions();
+    QVERIFY(sql.exec(QStringLiteral("UPDATE memory_items SET scope='new_scope' WHERE id='memory-jazz'")));
+    QVERIFY(store.recallRevisions().first > before.first);
+    QVERIFY(prepareOnce(executor, requestFor(), &result));
+    QVERIFY(result.recallDiagnostics.cacheRebuilt);
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    const auto scopeRevision = store.recallRevisions();
+    QVERIFY(sql.exec(QStringLiteral("INSERT INTO memory_relations(id,from_memory_id,to_memory_id,relation_type,weight,confidence) VALUES('new-edge','memory-jazz','other','related',1,1)")));
+    QVERIFY(store.recallRevisions().first > scopeRevision.first);
+    QVERIFY(prepareOnce(executor, requestFor(), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QVERIFY(result.recallDiagnostics.graphExpanded);
+    QVERIFY(result.messages.last().content.contains(neighbor.summary));
+    QVERIFY(!result.reinforcementIds.contains(neighbor.id));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("忘记爵士乐")), &result));
+    QVERIFY(!result.messages.last().content.contains(neighbor.summary));
+    QVERIFY(!result.reinforcementIds.contains(entry.id));
+    const auto graphRevision = store.recallRevisions();
+    QVERIFY(sql.exec(QStringLiteral("UPDATE memory_items SET payload_json='{\"source_tags\":[\"爵士乐\"]}' WHERE id='memory-jazz'")));
+    QVERIFY(store.recallRevisions().first > graphRevision.first);
+    const auto contentRevision = store.recallRevisions();
+    QVERIFY(sql.exec(QStringLiteral("UPDATE memory_items SET payload_json='{\"source_tags\":[\"爵士乐\"],\"request_id\":\"changed\"}' WHERE id='memory-jazz'")));
+    QCOMPARE(store.recallRevisions(), contentRevision);
+}
+
+void ChatPreparationExecutorTests::topicRecallRejectsFailedEmbeddings_data() {
+    QTest::addColumn<int>("failure");
+    QTest::newRow("empty") << 1;
+    QTest::newRow("nan") << 2;
+    QTest::newRow("dimension") << 3;
+    QTest::newRow("exception") << 4;
+}
+void ChatPreparationExecutorTests::topicRecallRejectsFailedEmbeddings() {
+    QFETCH(int, failure);
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider provider(state);
+    QVERIFY(seedTopicVector(store, entry, provider, directory.path()));
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(), &result));
+    state->failure.store(failure);
+    QVERIFY(prepareOnce(executor, requestFor(), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QCOMPARE(result.recallDiagnostics.queryEmbeddingCalls, 1);
+    QCOMPARE(result.recallDiagnostics.indexQueries, 0);
+    QCOMPARE(state->calls.load(), 2);
+    QVERIFY(result.reinforcementIds.contains(entry.id)); // lexical fallback remains useful
+}
+
+void ChatPreparationExecutorTests::topicRecallOnlyLearnsConsumedResults() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    QSignalSpy prepared(&executor, &ChatPreparationExecutor::prepared);
+    executor.submit(requestFor(QStringLiteral("爵士乐")));
+    QVERIFY(prepared.wait(2000));
+    auto abandoned = qvariant_cast<ChatPreparationResult>(prepared.first().first());
+    QVERIFY(abandoned.reinforcementIds.contains(entry.id));
+    QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
+    ChatPreparationResult consumed;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &consumed));
+    QCOMPARE(consumed.recallDiagnostics.mode, QStringLiteral("full"));
+    QVERIFY(!store.loadActiveMemorySnapshot().isEmpty());
+    QSignalSpy feedback(&executor, &ChatPreparationExecutor::recallFeedbackProcessed);
+    executor.acceptRecallFeedback(abandoned);
+    QVERIFY(feedback.wait(2000));
+    QCOMPARE(feedback.last().at(1).toBool(), false);
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &consumed));
+    QCOMPARE(consumed.recallDiagnostics.mode, QStringLiteral("reuse"));
+    executor.stop();
+    QVERIFY(executor.start(environment).isOk());
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &consumed));
+    QCOMPARE(consumed.recallDiagnostics.mode, QStringLiteral("full")); // derived topic is not persisted
+}
+
+void ChatPreparationExecutorTests::topicRecallReusesCandidatesFromMoreThanOnePreviousTurn() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider provider(state);
+    auto sightseeing = matchingMemory();
+    sightseeing.summary = sightseeing.content = QStringLiteral("杭州 景点");
+    sightseeing.importance = sightseeing.strength = 1.0;
+    sightseeing = store.addEntry(sightseeing);
+    QVERIFY(seedTopicVector(store, sightseeing, provider, directory.path()));
+    for (int i = 0; i < 8; ++i) {
+        auto hotel = matchingMemory();
+        hotel.id = QStringLiteral("hotel-%1").arg(i);
+        hotel.summary = hotel.content = QStringLiteral("杭州 酒店 偏好%1").arg(QChar('a'+i));
+        hotel.importance = hotel.strength = 1.0;
+        hotel = store.addEntry(hotel);
+        QVERIFY(seedTopicVector(store, hotel, provider, directory.path()));
+    }
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("杭州 景点")), &result));
+    QVERIFY(result.reinforcementIds.contains(sightseeing.id));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("杭州 酒店")), &result));
+    QCOMPARE(result.reinforcementIds.size(), 8);
+    QVERIFY(!result.reinforcementIds.contains(sightseeing.id));
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("杭州 景点")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("reuse"));
+    QCOMPARE(result.recallDiagnostics.indexQueries, 0);
+    QVERIFY(result.reinforcementIds.contains(sightseeing.id));
+    QCOMPARE(state->calls.load(), 3);
+}
+
+void ChatPreparationExecutorTests::topicRecallAutomaticTriggerEncodesContextAndPreservesUserTopic() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    const auto entry = store.addEntry(matchingMemory());
+    auto state = std::make_shared<TopicProviderState>();
+    TopicTestProvider provider(state);
+    QVERIFY(seedTopicVector(store, entry, provider, directory.path()));
+    environment.embeddingProviderFactory = [state] { return std::make_unique<TopicTestProvider>(state); };
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &result));
+    auto automatic = requestFor(QStringLiteral("proactive_chat_tick"));
+    automatic.triggerTag = QStringLiteral("proactive_chat");
+    automatic.conversationMemory.append({QStringLiteral("user"), QStringLiteral("想听点即兴演奏")});
+    QVERIFY(prepareOnce(executor, automatic, &result));
+    QVERIFY(result.reinforcementIds.contains(entry.id));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("full"));
+    QCOMPARE(result.recallDiagnostics.queryEmbeddingCalls, 1);
+    {
+        QMutexLocker locker(&state->mutex);
+        QVERIFY(!state->queryTexts.last().contains(QStringLiteral("proactive_chat_tick")));
+        QVERIFY(state->queryTexts.last().contains(QStringLiteral("想听点即兴演奏")));
+    }
+    QVERIFY(prepareOnce(executor, requestFor(QStringLiteral("爵士乐")), &result));
+    QCOMPARE(result.recallDiagnostics.mode, QStringLiteral("reuse"));
+    automatic.conversationMemory.clear();
+    QVERIFY(prepareOnce(executor, automatic, &result));
+    QCOMPARE(result.recallDiagnostics.queryEmbeddingCalls, 0); // no context to encode
+}
+
+void ChatPreparationExecutorTests::topicRecallAcceptedFeedbackDrainsBeforeStop() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = store.addEntry(matchingMemory());
+    {
+        ChatPreparationExecutor executor;
+        QVERIFY(executor.start(environment).isOk());
+        QSignalSpy prepared(&executor, &ChatPreparationExecutor::prepared);
+        executor.submit(requestFor());
+        QVERIFY(prepared.wait(2000));
+        const auto result = qvariant_cast<ChatPreparationResult>(prepared.first().first());
+        executor.acceptRecallFeedback(result);
+        executor.stop();
+        // Destructor drains the accepted feedback ahead of the queued shutdown.
+    }
+    const auto snapshot = store.loadActiveMemorySnapshot();
+    QCOMPARE(snapshot.items.size(), 1);
+    QCOMPARE(snapshot.items.first().memoryId, entry.id);
+}
+
+void ChatPreparationExecutorTests::topicPoolRetainsMultipleTurnsAndExpiresDerivedState() {
+    ActiveMemoryPool pool;
+    PreparedEmbeddingQuery query;
+    query.attempted = true; query.model = QStringLiteral("test"); query.vector = {1,0,0};
+    const auto now = QDateTime::currentDateTimeUtc();
+    ActiveMemoryItem first; first.memoryId = QStringLiteral("first"); first.activation = 0.7;
+    ActiveMemoryItem second; second.memoryId = QStringLiteral("second"); second.activation = 0.6;
+    pool.recordRecall(QStringLiteral("爵士乐演出"), query, false, {first}, now);
+    pool.recordRecall(QStringLiteral("萨克斯音乐"), query, true, {second}, now.addSecs(1));
+    QCOMPARE(pool.topicItems().size(), 2); // a memory absent last turn is still eligible
+    QVERIFY(pool.assessTopic(QStringLiteral("想听点即兴演奏"), query, now.addSecs(2)).reuse);
+    QCOMPARE(pool.assessTopic(QStringLiteral("想听点即兴演奏"), query, now.addSecs(1801)).reason,
+             QStringLiteral("topic_idle"));
+    for (int i = 0; i < ActiveMemoryPool::TOPIC_TURN_WINDOW; ++i)
+        pool.recordRecall(QStringLiteral("萨克斯音乐"), query, true, {second}, now.addSecs(i+2));
+    QCOMPARE(pool.topicItems().size(), 1);
+    pool.clear();
+    QVERIFY(pool.topicItems().isEmpty());
+    QVERIFY(!pool.assessTopic(QStringLiteral("萨克斯音乐"), query, now).reuse);
+    // A low-scoring candidate evicted at capacity must not reappear as a default item.
+    for (int i = 0; i < ActiveMemoryPool::MAX_POOL_SIZE; ++i)
+        pool.activate(QString::number(i), 1.0, QStringLiteral("session"));
+    first.activation = 0.05;
+    pool.recordRecall(QStringLiteral("爵士乐"), query, false, {first}, now);
+    QCOMPARE(pool.activeItems().size(), ActiveMemoryPool::MAX_POOL_SIZE);
+    QVERIFY(!pool.contains(first.memoryId));
+}
+
+void ChatPreparationExecutorTests::topicPoolGuardsChanges_data() {
+    QTest::addColumn<QString>("previous");
+    QTest::addColumn<QString>("current");
+    QTest::newRow("new-facet") << QStringLiteral("杭州景点") << QStringLiteral("杭州医院");
+    QTest::newRow("number") << QStringLiteral("预算2000酒店") << QStringLiteral("预算20000酒店");
+    QTest::newRow("chinese-number") << QStringLiteral("预算两千酒店") << QStringLiteral("预算两万酒店");
+    QTest::newRow("removed-number") << QStringLiteral("预算2000酒店") << QStringLiteral("酒店");
+    QTest::newRow("negation") << QStringLiteral("喜欢咖啡") << QStringLiteral("不喜欢咖啡");
+    QTest::newRow("switch") << QStringLiteral("爵士乐") << QStringLiteral("换个话题，爵士乐发展史");
+    QTest::newRow("unclear-reference") << QStringLiteral("爵士乐") << QStringLiteral("它");
+}
+void ChatPreparationExecutorTests::topicPoolGuardsChanges() {
+    QFETCH(QString, previous); QFETCH(QString, current);
+    ActiveMemoryPool pool;
+    PreparedEmbeddingQuery query; // no semantic provider: lexical checks still guard boundaries
+    pool.recordRecall(previous, query, false, {});
+    QVERIFY(!pool.assessTopic(current, query).reuse);
+}
+
+void ChatPreparationExecutorTests::topicRecallReusesCurrentCandidatesWithoutAccumulatingActivation() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    auto entry = matchingMemory();
+    entry.summary = entry.content = QStringLiteral("weekend jazz concerts preferred near home");
+    QVERIFY(!store.addEntry(entry).id.isEmpty());
+    QStringList phases;
+    ChatPreparationExecutor executor;
+    executor.setTestResourceLifecycleProbe([&phases](const QString& phase, quintptr) {
+        // Read only after a queued prepared delivery synchronizes with the worker.
+        phases.append(phase);
+    });
+    QVERIFY(executor.start(environment).isOk());
+    ChatPreparationResult result;
+    const auto request = requestFor(QStringLiteral("weekend jazz concerts preferred near home"));
+    QVERIFY(prepareOnce(executor, request, &result));
+    const double firstActivation = store.loadActiveMemorySnapshot().items.first().activation;
+    QVERIFY(prepareOnce(executor, request, &result));
+    QVERIFY(result.reinforcementIds.contains(entry.id));
+    const double secondActivation = store.loadActiveMemorySnapshot().items.first().activation;
+    QVERIFY2(secondActivation <= firstActivation + 1e-6, "Rescanning a candidate must not accumulate activation");
+    QVERIFY2(phases.contains(QStringLiteral("recall.reuse")), "A covered same-topic request must skip complete recall");
+    QCOMPARE(store.readForRecall(entry.id)->mentionCount, entry.mentionCount);
+}
+
 void ChatPreparationExecutorTests::wholeTagRecallFindsOldMemoryWithoutEmbeddings() {
     QTemporaryDir directory;
     const auto environment = environmentFor(directory); // No embedding model/provider.
@@ -798,7 +1285,17 @@ void ChatPreparationExecutorTests::semanticRecallFindsOldMemoryAndRejectsStalePr
     WorkerTestProvider seedProvider;
     {
         HnswEmbeddingIndex index(store.databaseConnectionName(), &seedProvider, directory.path());
-        QVERIFY(index.upsert(old.id, old.summary));
+        const auto vector = seedProvider.embed(old.summary);
+        QSqlQuery persisted(QSqlDatabase::database(store.databaseConnectionName(), false));
+        persisted.prepare(QStringLiteral("INSERT OR REPLACE INTO memory_embeddings(memory_id,model,dimension,vector_blob,content_hash) VALUES(?,?,?,?,?)"));
+        persisted.addBindValue(old.id);
+        persisted.addBindValue(seedProvider.modelName());
+        persisted.addBindValue(vector.size());
+        persisted.addBindValue(QByteArray(reinterpret_cast<const char*>(vector.constData()), vector.size() * sizeof(float)));
+        const auto hash = HnswEmbeddingIndex::contentHash(old.summary + QLatin1Char('\n') + old.content);
+        persisted.addBindValue(hash);
+        QVERIFY(persisted.exec());
+        QVERIFY(index.upsertVector(old.id, vector, hash));
         QVERIFY(index.saveToDisk());
     }
     ChatPreparationEnvironment configured = environment;
@@ -874,16 +1371,16 @@ void ChatPreparationExecutorTests::activePoolSurvivesWorkerRestartAndClear() {
     ChatPreparationExecutor restarted;
     QVERIFY(restarted.start(environment).isOk());
     ChatPreparationResult result;
-    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("爵士乐")), &result));
     QVERIFY(result.reinforcementIds.contains(old.id));
     store.clear();
-    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("爵士乐")), &result));
     QVERIFY(result.reinforcementIds.isEmpty());
     QVERIFY(store.loadActiveMemorySnapshot().isEmpty());
     // Importing the same ID after clear must not resurrect its old activation.
     QVERIFY(!store.addEntry(old).id.isEmpty());
     QVERIFY(fillRecentWindow(store));
-    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("unrelated wording")), &result));
+    QVERIFY(prepareOnce(restarted, requestFor(QStringLiteral("爵士乐")), &result));
     QVERIFY(!result.reinforcementIds.contains(old.id));
     QVERIFY(!result.messages.last().content.contains(old.summary));
 }

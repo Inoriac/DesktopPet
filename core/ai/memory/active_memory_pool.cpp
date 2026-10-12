@@ -4,6 +4,9 @@
 #include <algorithm>
 #include <cmath>
 #include <limits>
+#include <QRegularExpression>
+#include <QUuid>
+#include "recall_text.h"
 
 namespace {
 
@@ -129,6 +132,8 @@ double ActiveMemoryPool::getActivation(const QString& memoryId) const {
 
 void ActiveMemoryPool::clear() {
     m_pool.clear();
+    m_lastDecayAt = {};
+    invalidateTopic();
 }
 
 QList<ActiveMemoryItem> ActiveMemoryPool::snapshot(int maxCount) const {
@@ -206,4 +211,120 @@ double ActiveMemoryPool::halfLifeMinutes(const QString& source) {
     if (source == QLatin1String("emotion")) return 360.0;     // 6 hours
     if (source == QLatin1String("goal")) return 1440.0;       // 24 hours
     return 60.0;  // Default fallback
+}
+
+namespace {
+double topicCosine(const QVector<float>& a, const QVector<float>& b) {
+    if (a.isEmpty() || a.size() != b.size()) return 0;
+    double dot = 0, aa = 0, bb = 0;
+    for (qsizetype i = 0; i < a.size(); ++i) { dot += double(a[i])*b[i]; aa += double(a[i])*a[i]; bb += double(b[i])*b[i]; }
+    return aa > 0 && bb > 0 ? dot / std::sqrt(aa*bb) : 0;
+}
+QStringList numericCues(const QString& text) {
+    static const QRegularExpression numbers(QStringLiteral("[0-9]+(?:[.,][0-9]+)*|[零〇一二两三四五六七八九十百千万亿]+"));
+    QStringList out;
+    auto matches = numbers.globalMatch(text);
+    while (matches.hasNext()) out.append(matches.next().captured());
+    return out;
+}
+}
+
+bool ActiveMemoryPool::explicitFollowup(const QString& input) {
+    static const QRegularExpression pattern(QStringLiteral(
+        "^(那(这个|那个|第二个|第一个|它|具体)?呢[？?]?|继续[吧。]?|详细说说[。？?]?|为什么[？?]?|"
+        "这件事呢[？?]?|tell me more[.!?]?|why[?]?|what about that[?]?)$"),
+        QRegularExpression::CaseInsensitiveOption);
+    return pattern.match(input.trimmed()).hasMatch();
+}
+
+QString ActiveMemoryPool::topicText() const {
+    QStringList inputs;
+    for (const auto& turn : m_topicTurns) inputs.append(turn.input);
+    return inputs.join(QLatin1Char(' '));
+}
+
+TopicRecallDecision ActiveMemoryPool::assessTopic(
+    const QString& input, const PreparedEmbeddingQuery& query, const QDateTime& now) const {
+    TopicRecallDecision result;
+    if (m_topicTurns.isEmpty()) return result;
+    const auto& last = m_topicTurns.last();
+    if (!now.isValid() || last.at.secsTo(now) < 0 || last.at.secsTo(now) >= TOPIC_IDLE_SECONDS) {
+        result.reason = QStringLiteral("topic_idle"); return result;
+    }
+    if (query.model != last.query.model || query.vector.size() != last.query.vector.size()) {
+        result.reason = QStringLiteral("embedding_changed"); return result;
+    }
+    if (query.attempted && !query.valid()) {
+        result.reason = QStringLiteral("embedding_failed"); return result;
+    }
+    static const QRegularExpression switchTopic(QStringLiteral(
+        "换个话题|换一个话题|另外问|另一个问题|顺便问|不聊|\\b(?:new topic|unrelated|switch topics)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    static const QRegularExpression negative(QStringLiteral(
+        "不|没|别|改为|改成|取消|而是|\\b(?:not|no|never|without|instead|change)\\b"),
+        QRegularExpression::CaseInsensitiveOption);
+    if (switchTopic.match(input).hasMatch()) { result.reason = QStringLiteral("explicit_switch"); return result; }
+    result.followup = explicitFollowup(input);
+    if (result.followup) { result.related = result.reuse = true; result.reason = QStringLiteral("explicit_followup"); return result; }
+    const auto currentTokens = RecallText::tokens(input);
+    if (currentTokens.isEmpty()) { result.reason = QStringLiteral("uncertain_reference"); return result; }
+    const auto historyTokens = RecallText::tokens(topicText());
+    const QSet<QString> history(historyTokens.cbegin(), historyTokens.cend());
+    const double coverage = RecallText::lexicalCoverage(input, currentTokens, history);
+    double similarity = 0;
+    for (const auto& turn : m_topicTurns)
+        if (query.valid() && turn.query.valid()) similarity = std::max(similarity, topicCosine(query.vector, turn.query.vector));
+    result.related = coverage >= 0.35 || similarity >= 0.75;
+    if (negative.match(input).hasMatch()) { result.reason = QStringLiteral("changed_condition"); return result; }
+    if (numericCues(input) != numericCues(last.input)) {
+        result.reason = QStringLiteral("changed_number"); return result;
+    }
+    // Shared background alone (e.g. Hangzhou + a new hospital requirement)
+    // cannot authorize reuse. Pure rewordings may use strong semantic evidence.
+    if (coverage > 0.0 && coverage < TEXT_COVERAGE) {
+        result.reason = QStringLiteral("new_cue"); return result;
+    }
+    result.reuse = coverage >= TEXT_COVERAGE || similarity >= TOPIC_SIMILARITY;
+    result.reason = result.reuse ? QStringLiteral("topic_match") : QStringLiteral("uncertain_topic");
+    return result;
+}
+
+QList<ActiveMemoryItem> ActiveMemoryPool::topicItems() const {
+    QList<ActiveMemoryItem> result;
+    for (const auto& item : activeItems()) {
+        if (!m_topicId.isEmpty() && item.contextId == m_topicId
+            && item.topicTurn > 0 && item.topicTurn + TOPIC_TURN_WINDOW > m_topicSequence)
+            result.append(item);
+    }
+    return result;
+}
+
+void ActiveMemoryPool::invalidateTopic() {
+    m_topicTurns.clear();
+    m_topicId.clear();
+    m_topicSequence = 0;
+}
+
+void ActiveMemoryPool::recordRecall(const QString& input, const PreparedEmbeddingQuery& query,
+                                     bool related, const QList<ActiveMemoryItem>& selected,
+                                     const QDateTime& now) {
+    if (!related || m_topicId.isEmpty()) {
+        invalidateTopic();
+        m_topicId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    }
+    ++m_topicSequence;
+    m_topicTurns.append({input.left(2000), query, now});
+    while (m_topicTurns.size() > TOPIC_TURN_WINDOW) m_topicTurns.removeFirst();
+    for (auto item : selected) {
+        if (item.memoryId.isEmpty() || !std::isfinite(item.activation)) continue;
+        item.contextId = m_topicId;
+        item.topicTurn = m_topicSequence;
+        item.lastActivatedAt = now;
+        item.source = QStringLiteral("session");
+        // A retrieval is evidence for this turn, not a second activation event.
+        m_pool.remove(item.memoryId);
+        activate(item.memoryId, std::clamp(item.activation, ACTIVATION_THRESHOLD, 1.0), item.source, item.contextId);
+        auto retained = m_pool.find(item.memoryId);
+        if (retained != m_pool.end()) retained->topicTurn = item.topicTurn;
+    }
 }

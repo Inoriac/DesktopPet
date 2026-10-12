@@ -7,6 +7,7 @@
 #include <QMap>
 
 #include "memory_types.h"
+#include "embedding_index.h"
 
 class MemoryStore;
 class EmbeddingIndex;
@@ -20,6 +21,7 @@ struct WorkingMemoryItem;
 struct MemoryQuery {
     QString text;
     QStringList requiredTags;
+    QStringList forgetQueries;
     int limit = 8;
     bool includeSensitive = false;
     bool includeInactive = false;
@@ -47,6 +49,25 @@ struct RetrievedMemory {
     double scoreWithoutEmotion = 0.0; // ACT-R score used for activation feedback
 };
 
+struct RecallDiagnostics {
+    QString mode = QStringLiteral("full");
+    QString reason;
+    int previousCandidates = 0;
+    int queryEmbeddingCalls = 0;
+    qint64 queryEmbeddingMs = 0;
+    int indexQueries = 0;
+    bool graphExpanded = false;
+    bool cacheRebuilt = false;
+};
+
+struct TopicRecallOptions {
+    QString originalInput;
+    PreparedEmbeddingQuery embedding;
+    bool cacheReliable = true;
+    bool topicRelated = false;
+    RecallDiagnostics diagnostics;
+};
+
 // 激活式召回的可选通道集合。为空的通道自动跳过，不强行补齐。
 struct ActivationChannels {
     ActiveMemoryPool* activePool = nullptr;
@@ -55,6 +76,7 @@ struct ActivationChannels {
     EmbeddingIndex* embeddingIndex = nullptr;
     AssociativeActivationEngine* graphPropagation = nullptr;
     const QList<WorkingMemoryItem>* workingMemory = nullptr;
+    TopicRecallOptions* topicRecall = nullptr;
 };
 
 class MemoryRetriever {
@@ -98,6 +120,7 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     const MemoryKeywordIndex& keywordIndex,
     EmbeddingIndex* embeddingIndex,
     const MemoryQuery& query,
-    const QList<WorkingMemoryItem>& workingMemory = {});
+    const QList<WorkingMemoryItem>& workingMemory = {},
+    TopicRecallOptions* topicRecall = nullptr);
 
 #endif // DESKTOP_PET_MEMORY_RETRIEVER_H

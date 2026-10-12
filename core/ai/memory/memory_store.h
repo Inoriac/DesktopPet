@@ -53,7 +53,7 @@ public:
     bool loadRecallWindow(int limit = 256, QString* errorMessage = nullptr);
     QList<MemoryEntry> loadRecentFromDatabase(int limit,
                                               const QString& partition = QString(),
-                                              bool activeOnly = false);
+                                              bool activeOnly = false, bool* ok = nullptr);
     bool refreshDatabaseOnly(QString* errorMessage = nullptr);
     bool save(QString* errorMessage = nullptr) const;
     bool importLegacyJson(const QString& jsonPath,
@@ -143,6 +143,8 @@ public:
     // Authoritative point read for bounded recall candidates, including old HNSW hits.
     std::optional<MemoryEntry> readForRecall(const QString& id) const;
     qint64 databaseVersion() const;
+    // {-1,-1} means cache validity is unknown and reuse must be disabled.
+    QPair<qint64, qint64> recallRevisions() const;
     bool databaseIsOpen() const;
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;

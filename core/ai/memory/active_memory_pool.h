@@ -4,6 +4,7 @@
 #include <QDateTime>
 #include <QHash>
 #include <QString>
+#include "embedding_index.h"
 
 struct ActiveMemoryItem {
     QString memoryId;
@@ -11,6 +12,7 @@ struct ActiveMemoryItem {
     QString source;  // "session", "association", "recent", "emotion", "goal"
     QDateTime lastActivatedAt;
     QString contextId;
+    quint64 topicTurn = 0; // Runtime only; never restored as dialogue context.
 };
 
 struct ActiveMemorySnapshot {
@@ -19,10 +21,33 @@ struct ActiveMemorySnapshot {
     bool isEmpty() const { return items.isEmpty(); }
 };
 
+struct TopicRecallDecision {
+    bool related = false;
+    bool reuse = false;
+    bool followup = false;
+    QString reason = QStringLiteral("no_topic");
+};
+
 class ActiveMemoryPool {
 public:
     static constexpr int MAX_POOL_SIZE = 50;
     static constexpr double ACTIVATION_THRESHOLD = 0.05;
+    static constexpr int TOPIC_TURN_WINDOW = 6;
+    static constexpr int TOPIC_IDLE_SECONDS = 30 * 60;
+    // Conservative provisional defaults; calibrate on Windows with the real model.
+    static constexpr double TOPIC_SIMILARITY = 0.86;
+    static constexpr double CANDIDATE_SIMILARITY = 0.84;
+    static constexpr double TEXT_COVERAGE = 0.75;
+    static bool explicitFollowup(const QString& input);
+    TopicRecallDecision assessTopic(const QString& input, const PreparedEmbeddingQuery& query,
+                                    const QDateTime& now = QDateTime::currentDateTimeUtc()) const;
+    QList<ActiveMemoryItem> topicItems() const;
+    void recordRecall(const QString& input, const PreparedEmbeddingQuery& query,
+                      bool related, const QList<ActiveMemoryItem>& selected,
+                      const QDateTime& now = QDateTime::currentDateTimeUtc());
+    void invalidateTopic();
+    QString topicText() const;
+
 
     void activate(const QString& memoryId,
                   double activation,
@@ -54,6 +79,10 @@ private:
     
     QHash<QString, ActiveMemoryItem> m_pool;
     QDateTime m_lastDecayAt;
+    struct TopicTurn { QString input; PreparedEmbeddingQuery query; QDateTime at; };
+    QList<TopicTurn> m_topicTurns;
+    QString m_topicId;
+    quint64 m_topicSequence = 0;
 };
 
 #endif // DESKTOP_PET_ACTIVE_MEMORY_POOL_H

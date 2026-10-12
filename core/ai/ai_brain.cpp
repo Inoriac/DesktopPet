@@ -662,6 +662,7 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
         }
     }
 
+    if (m_chatPreparationExecutor) m_chatPreparationExecutor->acceptRecallFeedback(result);
     const MemoryReinforcementBatch reinforcement =
         m_memoryStore.stageReinforcement(result.reinforcementIds);
     if (!reinforcement.entries.isEmpty() && m_chatSideEffectQueue

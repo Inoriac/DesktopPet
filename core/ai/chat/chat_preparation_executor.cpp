@@ -29,6 +29,7 @@
 #include "ai/memory/sqlite_memory_repository.h"
 #include "ai/runtime/runtime_types.h"
 #include "ai/memory/semantic_index_service.h"
+#include "ai/memory/hnsw_embedding_index.h"
 #ifdef DESKTOP_PET_HAS_ORT
 #include "ai/memory/onnx_embedding_provider.h"
 #endif
@@ -53,10 +54,7 @@ MemoryQuery memoryQueryFor(const ChatPreparationRequest& request,
             if (query.sessionTopic.isEmpty()) query.sessionTopic = it->content.left(400);
         }
     }
-    const bool needsContext = timerOpportunity || request.reason.size() < 24
-        || request.reason.contains(QStringLiteral("刚才"))
-        || request.reason.contains(QStringLiteral("继续"))
-        || request.reason.contains(QStringLiteral("这件事"));
+    const bool needsContext = timerOpportunity || ActiveMemoryPool::explicitFollowup(request.reason);
     const auto now = QDateTime::currentDateTimeUtc();
     QStringList observations;
     for (auto it = request.workingMemory.crbegin(); it != request.workingMemory.crend(); ++it) {
@@ -248,7 +246,7 @@ public:
         m_recallWorkingSet.setStore(nullptr);
         m_recallStore.reset();
         m_recallKeywordIndex.rebuild({});
-        m_recallDatabaseVersion = -1;
+        m_recallRevisions = {-1, -1};
         if (m_memoryRepository) {
             m_memoryRepository->close();
             notifyLifecycle(QStringLiteral("memory.close"));
@@ -367,8 +365,32 @@ public:
             // Phase 3: Use graph propagation recall through the worker-local
             // cache.  The cache owns a dedicated SQLite connection and is only
             // refreshed when SQLite reports an external commit.
+            auto query = memoryQueryFor(request, projection);
+            query.forgetQueries = forgetQueries;
+            const bool userDialogue = request.triggerTag == QLatin1String("user_request")
+                || request.triggerTag == QLatin1String("manual");
+            TopicRecallOptions topic;
+            // Automatic timers use their derived contextual query, never the
+            // internal trigger marker, and cannot establish a user's topic.
+            topic.originalInput = (userDialogue ? request.reason : query.text).left(2000);
+            const bool cacheOk = refreshRecallCache(false);
+            topic.cacheReliable = cacheOk && !m_cacheRebuilt && userDialogue;
+            topic.diagnostics.cacheRebuilt = m_cacheRebuilt;
+            if (m_semanticService && m_semanticService->index()) {
+                // Only explicit references borrow history; ordinary short inputs
+                // are encoded independently so history cannot manufacture continuity.
+                topic.embedding = m_semanticService->index()->prepareQuery(
+                    ActiveMemoryPool::explicitFollowup(request.reason) ? query.text : topic.originalInput);
+                topic.diagnostics.queryEmbeddingCalls = topic.embedding.encodeCalls;
+                topic.diagnostics.queryEmbeddingMs = topic.embedding.durationMs;
+            }
+            if (isCancelled(expectedEpoch)) return result;
+            ActiveMemoryPool workingPool = m_recallActivePool;
             const WorkerRecallResult recallResult = recallWithCache(
-                memoryQueryFor(request, projection), request.workingMemory);
+                query, request.workingMemory, workingPool, topic, cacheOk);
+            if (!userDialogue && cacheOk) topic.diagnostics.reason = QStringLiteral("automatic_context");
+            result.recallDiagnostics = topic.diagnostics;
+            notifyLifecycle(QStringLiteral("recall.") + topic.diagnostics.mode);
             notifyLifecycle(QStringLiteral("memory.load"));
             
             // Filter out forgotten memories (in-memory forget queries from current request)
@@ -393,15 +415,24 @@ public:
                         "敏感记忆未经确认不得主动暴露。\n");
             }
             
+            QList<ActiveMemoryItem> feedbackItems;
             for (const RetrievedMemory& memory : memories) {
                 if (memory.entry.id.startsWith(QLatin1String("wm:"))) continue;
-                // Emotion affects this response's final ranking only; feeding
-                // its bonus back into R_i would bias the next seed selection.
-                m_recallActivePool.activate(memory.entry.id,
-                    qBound(0.05, memory.scoreWithoutEmotion / 3.0, 1.0), QStringLiteral("session"));
+                ActiveMemoryItem item;
+                item.memoryId = memory.entry.id;
+                // Use current cue evidence; ACT-R's final score contains R_i and
+                // would create a feedback loop even with replacement, not addition.
+                item.activation = std::clamp(memory.cueMatch, 0.05, 0.8);
+                feedbackItems.append(item);
             }
-            if (m_recallStore && !m_recallStore->saveActiveMemorySnapshot(m_recallActivePool.snapshot()))
-                qWarning() << "[Recall] failed to save activation snapshot";
+            if (userDialogue)
+                workingPool.recordRecall(topic.originalInput, topic.embedding, topic.topicRelated, feedbackItems);
+            if (cacheOk) {
+                result.recallFeedbackToken = ++m_nextFeedbackToken;
+                m_pendingFeedback = PendingFeedback{result.recallFeedbackToken, request.requestId,
+                    request.generation, std::move(workingPool), memories,
+                    m_recallRevisions};
+            }
 
             // Collect reinforcement IDs (already filtered by helper)
             result.reinforcementIds = recallResult.reinforcementIds;
@@ -434,65 +465,105 @@ public:
         return result;
     }
 
+    bool acceptFeedback(const ChatPreparationResult& result) {
+        if (!m_pendingFeedback || m_pendingFeedback->token != result.recallFeedbackToken
+            || m_pendingFeedback->requestId != result.requestId
+            || m_pendingFeedback->generation != result.generation || !m_recallStore) return false;
+        auto pending = std::move(*m_pendingFeedback);
+        m_pendingFeedback.reset();
+        if (m_recallStore->recallRevisions() != pending.revisions) return false;
+        const auto now = QDateTime::currentDateTimeUtc();
+        for (const auto& selected : pending.memories) {
+            if (selected.entry.id.startsWith(QLatin1String("wm:"))) continue;
+            const auto current = m_recallStore->readForRecall(selected.entry.id);
+            if (!current || current->status != MemoryStatus::Active
+                || current->privacyLevel == PrivacyLevel::Sensitive
+                || (current->expiresAt.isValid() && current->expiresAt <= now)
+                || current->summary != selected.entry.summary || current->content != selected.entry.content
+                || current->tags != selected.entry.tags) return false;
+        }
+        // Acceptance is an explicit owner decision made while the generation
+        // was current. A subsequently queued stop must still drain this commit.
+        m_recallActivePool = std::move(pending.pool);
+        if (!m_recallStore->saveActiveMemorySnapshot(m_recallActivePool.snapshot()))
+            qWarning() << "[Recall] failed to save activation snapshot";
+        return true;
+    }
+
 private:
     WorkerRecallResult recallWithCache(const MemoryQuery& query,
-                                       const QList<WorkingMemoryItem>& workingMemory) {
-        refreshRecallCache(false);
+                                       const QList<WorkingMemoryItem>& workingMemory,
+                                       ActiveMemoryPool& workingPool, TopicRecallOptions& topic,
+                                       bool cacheOk) {
         WorkerRecallResult result;
-        if (!m_recallStore) {
-            // No persistent store is available. Use the same bounded ACT-R path
-            // with only temporary observations; no database is opened or written.
+        if (!m_recallStore || !cacheOk) {
             MemoryStore transientStore;
             ActivationChannels channels;
             channels.workingMemory = &workingMemory;
+            topic.diagnostics.reason = QStringLiteral("cache_unavailable");
             result.memories = MemoryRetriever().retrieveWithGraphPropagation(
                 transientStore, query, channels, nullptr, /*skipReinforcement=*/true);
             return result;
         }
         return retrieveWithGraphPropagationForWorker(
-            *m_recallStore, m_recallActivePool, m_recallWorkingSet,
+            *m_recallStore, workingPool, m_recallWorkingSet,
             m_recallKeywordIndex, m_semanticService ? m_semanticService->index() : nullptr,
-            query, workingMemory);
+            query, workingMemory, &topic);
     }
 
-    void refreshRecallCache(bool force) {
-        const qint64 version = m_recallStore ? m_recallStore->databaseVersion() : -1;
-        if (!force && version >= 0 && version == m_recallDatabaseVersion) return;
-
-        if (!m_recallStore) {
+    bool refreshRecallCache(bool force) {
+        m_cacheRebuilt = false;
+        const bool opening = !m_recallStore;
+        if (opening) {
             m_recallStore = std::make_unique<MemoryStore>();
             m_recallStore->setDatabasePath(m_environment.memoryDatabasePath);
             QString error;
             if (!m_recallStore->loadRecallWindow(/*limit=*/256, &error)) {
                 m_recallStore.reset();
-                m_recallDatabaseVersion = -1;
-                return;
+                m_recallRevisions = {-1, -1};
+                return false;
             }
             m_recallWorkingSet.setStore(m_recallStore.get());
-        } else {
+        }
+        // Content/edge revisions include raw SQL and INSERT OR REPLACE. Routine
+        // access/mention writes do not rebuild postings or erase topic context.
+        const auto revisions = m_recallStore->recallRevisions();
+        if (revisions.first < 0 || revisions.second < 0) {
+            m_recallActivePool.clear();
+            m_recallKeywordIndex = MemoryKeywordIndex{};
+            m_recallRevisions = {-1, -1};
+            return false;
+        }
+        if (m_recallRevisions.second >= 0 && revisions.second != m_recallRevisions.second)
+            m_recallActivePool.clear();
+        if (force || opening || revisions.first != m_recallRevisions.first) {
             QString error;
-            // Re-read only the bounded recall window.  This keeps chat
-            // preparation independent of total database size while still
-            // observing new/updated recent memories.
-            if (!m_recallStore->loadRecallWindow(/*limit=*/256, &error)) return;
+            if (!opening && !m_recallStore->loadRecallWindow(/*limit=*/256, &error)) {
+                m_recallActivePool.clear();
+                m_recallKeywordIndex = MemoryKeywordIndex{};
+                m_recallRevisions = {-1, -1};
+                return false;
+            }
+            m_recallKeywordIndex.rebuild(m_recallStore->all());
+            m_cacheRebuilt = true;
+            notifyLifecycle(QStringLiteral("recall.cache_rebuilt"));
         }
-
-        m_recallKeywordIndex.rebuild(m_recallStore->all());
-        if (!m_recallKeywordIndex.refreshGlobalTags(m_recallStore->databaseConnectionName())) {
-            qWarning() << "[Recall] global tag catalog unavailable; will retry";
-            m_recallDatabaseVersion = -1;
-            return;
+        if (!m_recallKeywordIndex.refreshGlobalTags(m_recallStore->databaseConnectionName())
+            || !m_recallWorkingSet.refresh()) {
+            m_recallActivePool.clear();
+            m_recallKeywordIndex = MemoryKeywordIndex{};
+            m_recallRevisions = {-1, -1};
+            return false;
         }
-        m_recallWorkingSet.refresh();
-        const auto snapshot = m_recallStore->loadActiveMemorySnapshot();
-        // Replace, do not merge: clear/privacy changes must drop cached items,
-        // and restored offline decay needs a fresh live-decay baseline.
-        m_recallActivePool = ActiveMemoryPool{};
-        m_recallActivePool.restoreFromSnapshot(snapshot.items, snapshot.savedAt,
-                                               QDateTime::currentDateTimeUtc());
-        // Save the version observed BEFORE reading, so a concurrent commit during
-        // refresh forces another refresh next request rather than being missed.
-        m_recallDatabaseVersion = version;
+        if (opening) {
+            const auto snapshot = m_recallStore->loadActiveMemorySnapshot();
+            m_recallActivePool.restoreFromSnapshot(snapshot.items, snapshot.savedAt,
+                                                   QDateTime::currentDateTimeUtc());
+        }
+        // Keep the version observed before reads; a concurrent semantic commit
+        // will require a new refresh, while point reads already enforce eligibility.
+        m_recallRevisions = revisions;
+        return true;
     }
 
     bool isCancelled(quint64 expectedEpoch) const {
@@ -546,7 +617,18 @@ private:
     HippocampusWorkingSet m_recallWorkingSet;
     ActiveMemoryPool m_recallActivePool;
     std::unique_ptr<SemanticIndexService> m_semanticService;
-    qint64 m_recallDatabaseVersion = -1;
+    QPair<qint64, qint64> m_recallRevisions{-1, -1};
+    bool m_cacheRebuilt = false;
+    quint64 m_nextFeedbackToken = 0;
+    struct PendingFeedback {
+        quint64 token;
+        QString requestId;
+        quint64 generation;
+        ActiveMemoryPool pool;
+        QList<RetrievedMemory> memories;
+        QPair<qint64, qint64> revisions;
+    };
+    std::optional<PendingFeedback> m_pendingFeedback;
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS
     std::shared_ptr<std::atomic<int>> m_testPreparationDelayMs;
     std::function<void(const QString&, quintptr)> m_lifecycleProbe;
@@ -666,6 +748,17 @@ void ChatPreparationExecutor::submit(ChatPreparationRequest request) {
                 Qt::QueuedConnection);
         },
         Qt::QueuedConnection);
+}
+
+void ChatPreparationExecutor::acceptRecallFeedback(const ChatPreparationResult& result) {
+    if (!m_accepting || m_stopping || !m_worker || result.recallFeedbackToken == 0) return;
+    QPointer<ChatPreparationExecutor> guarded(this);
+    QMetaObject::invokeMethod(m_worker, [worker = m_worker, guarded, result]() {
+        const bool accepted = worker->acceptFeedback(result);
+        if (guarded) QMetaObject::invokeMethod(guarded.data(), [guarded, token = result.recallFeedbackToken, accepted]() {
+            if (guarded) emit guarded->recallFeedbackProcessed(token, accepted);
+        }, Qt::QueuedConnection);
+    }, Qt::QueuedConnection);
 }
 
 void ChatPreparationExecutor::kickMemoryMaintenance() {

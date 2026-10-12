@@ -28,8 +28,10 @@ bool HippocampusWorkingSet::refresh() {
     
     // Read a bounded window ordered by actual mentions, not maintenance writes. The
     // worker and long-running recall paths must not rescan the full history.
+    bool readOk = false;
     QList<MemoryEntry> candidates = m_store->loadRecentFromDatabase(
-        m_capacity, QStringLiteral("hippocampus"), true);
+        m_capacity, QStringLiteral("hippocampus"), true, &readOk);
+    if (m_store->databaseIsOpen() && !readOk) return false;
     if (!m_store->databaseIsOpen()) {
         // An unopened in-memory store has no SQLite rows to query.
         for (const MemoryEntry& entry : m_store->all()) {

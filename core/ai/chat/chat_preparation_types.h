@@ -10,6 +10,7 @@
 #include <functional>
 #include <memory>
 #include "ai/memory/embedding_provider.h"
+#include "ai/memory/memory_retriever.h"
 
 #include "ai/domain/domain_result.h"
 #include "ai/identity/identity_baseline.h"
@@ -60,6 +61,8 @@ struct ChatPreparationResult {
     QList<ChatMessage> messages;
     QStringList reinforcementIds;
     qint64 preparationDurationMs = 0;
+    RecallDiagnostics recallDiagnostics;
+    quint64 recallFeedbackToken = 0;
     std::optional<RuntimeSnapshot> runtimeSnapshot;
     DomainError error;
 };

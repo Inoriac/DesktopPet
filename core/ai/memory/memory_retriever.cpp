@@ -16,6 +16,9 @@
 #include "memory_keyword_index.h"
 #include "memory_cue_extractor.h"
 #include "associative_activation_engine.h"
+#include "recall_text.h"
+#include "memory_policy.h"
+#include "memory_metadata.h"
 
 namespace {
 
@@ -30,6 +33,8 @@ bool passesFilters(const MemoryEntry& entry, const MemoryQuery& query,
             if (!entry.tags.contains(requiredTag, Qt::CaseInsensitive)) return false;
         }
     }
+    for (const auto& forgotten : query.forgetQueries)
+        if (MemoryPolicy::matchesForgetQuery(entry, forgotten)) return false;
     return true;
 }
 
@@ -122,15 +127,72 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     QHash<QString, double> seedTextCue;
     QHash<QString, double> seedHippocampusScore;
 
-    // 通道 1: 激活池
+    // Reevaluate the bounded previous candidates against this input. A high
+    // historical activation is never evidence of relevance to a new question.
+    auto* topic = channels.topicRecall;
+    TopicRecallDecision decision;
+    bool reuse = false;
+    if (topic && channels.activePool) {
+        decision = channels.activePool->assessTopic(topic->originalInput, topic->embedding);
+        topic->topicRelated = decision.related;
+        topic->diagnostics.reason = decision.reason;
+        if (!topic->cacheReliable) topic->diagnostics.reason = QStringLiteral("cache_changed");
+    }
     if (channels.activePool) {
-        const QList<ActiveMemoryItem> activeItems = channels.activePool->activeItems();
+        auto activeItems = topic && decision.related ? channels.activePool->topicItems()
+                                                    : channels.activePool->activeItems();
+        struct PreviousCandidate { ActiveMemoryItem item; double relevance; double semantic; QSet<QString> tokens; QStringList tags; };
+        QList<PreviousCandidate> previous;
+        QSet<QString> coveredTokens;
+        QStringList coveredTags;
+        bool strongSemantic = false;
+        for (const auto& item : activeItems) {
+            if (!topic) { previous.append({item, item.activation, 0.0}); continue; }
+            const auto entry = store.readForRecall(item.memoryId);
+            if (!entry || !passesFilters(*entry, query, now)) continue;
+            const auto tokens = RecallText::tokens(entry->key + QLatin1Char(' ') + entry->summary + QLatin1Char(' ') + entry->content + QLatin1Char(' ') + entry->scope);
+            const QSet<QString> document(tokens.cbegin(), tokens.cend());
+            const double lexical = RecallText::lexicalCoverage(query.text, cue.tokens, document, cue.tokenWeights);
+            const double tag = RecallText::tagCoverage(cue.knownTags, MemoryMetadata::semanticTags(*entry));
+            double semantic = 0.0;
+            if (channels.embeddingIndex && topic->embedding.valid()) {
+                semantic = channels.embeddingIndex->similarityToCurrent(item.memoryId,
+                    entry->summary + QLatin1Char('\n') + entry->content, topic->embedding).value_or(0.0);
+            }
+            const double relevance = std::max({lexical, tag, semantic});
+            if (relevance < 0.25) continue;
+            previous.append({item, relevance, semantic, document, MemoryMetadata::semanticTags(*entry)});
+        }
+        std::sort(previous.begin(), previous.end(), [](const auto& a, const auto& b) {
+            if (a.relevance != b.relevance) return a.relevance > b.relevance;
+            if (a.item.activation != b.item.activation) return a.item.activation > b.item.activation;
+            return a.item.memoryId < b.item.memoryId;
+        });
+        if (previous.size() > kActivePoolBudget) previous = previous.mid(0, kActivePoolBudget);
+        for (const auto& candidate : previous) {
+            coveredTokens.unite(candidate.tokens);
+            coveredTags.append(candidate.tags);
+            strongSemantic |= candidate.semantic >= ActiveMemoryPool::CANDIDATE_SIMILARITY;
+        }
+        if (topic) {
+            topic->diagnostics.previousCandidates = int(previous.size());
+            const double coverage = RecallText::lexicalCoverage(query.text, cue.tokens, coveredTokens, cue.tokenWeights);
+            const bool tagsCovered = cue.knownTags.isEmpty()
+                || RecallText::tagCoverage(cue.knownTags, coveredTags) >= 1.0;
+            reuse = topic->cacheReliable && decision.reuse && !previous.isEmpty() && tagsCovered
+                && (coverage >= ActiveMemoryPool::TEXT_COVERAGE || strongSemantic);
+            if (decision.reuse && !reuse && topic->cacheReliable)
+                topic->diagnostics.reason = QStringLiteral("insufficient_current_evidence");
+            topic->diagnostics.mode = reuse ? QStringLiteral("reuse") : QStringLiteral("full");
+        }
         int taken = 0;
-        for (const ActiveMemoryItem& item : activeItems) {
-            if (taken >= kActivePoolBudget) break;
+        for (const auto& previousCandidate : previous) {
+            if (taken++ >= kActivePoolBudget) break;
+            const auto& item = previousCandidate.item;
             seedChannels[item.memoryId].append(QStringLiteral("active_pool"));
-            seedRuntimeActivation[item.memoryId] = item.activation;
-            ++taken;
+            seedRuntimeActivation[item.memoryId] = topic
+                ? std::min(item.activation, previousCandidate.relevance) : item.activation;
+            seedSemanticCue[item.memoryId] = previousCandidate.semantic;
         }
     }
 
@@ -148,20 +210,33 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     }
 
     // 通道 3: Embedding
-    if (channels.embeddingIndex && !query.text.isEmpty()) {
-        const QList<EmbeddingSearchResult> semanticHits =
-            channels.embeddingIndex->search(query.text, kEmbeddingBudget);
+    if (!reuse && channels.embeddingIndex && !query.text.isEmpty()
+        && (!topic || !topic->embedding.attempted || topic->embedding.valid())) {
+        if (topic) ++topic->diagnostics.indexQueries;
+        const QList<EmbeddingSearchResult> semanticHits = topic && topic->embedding.attempted
+            ? channels.embeddingIndex->searchPrepared(topic->embedding, kEmbeddingBudget)
+            : channels.embeddingIndex->search(query.text, kEmbeddingBudget);
         for (const EmbeddingSearchResult& hit : semanticHits) {
+            double similarity = hit.similarity;
+            if (topic && topic->embedding.attempted) {
+                const auto entry = store.readForRecall(hit.memoryId);
+                if (!entry || !passesFilters(*entry, query, now)) continue;
+                const auto current = channels.embeddingIndex->similarityToCurrent(hit.memoryId,
+                    entry->summary + QLatin1Char('\n') + entry->content, topic->embedding);
+                if (!current) continue;
+                similarity = *current;
+                if (similarity < 0.25) continue;
+            }
             if (!seedChannels[hit.memoryId].contains(QLatin1String("embedding"))) {
                 seedChannels[hit.memoryId].append(QStringLiteral("embedding"));
             }
-            seedSemanticCue[hit.memoryId] = std::max(seedSemanticCue.value(hit.memoryId, 0.0), hit.similarity);
+            seedSemanticCue[hit.memoryId] = std::max(seedSemanticCue.value(hit.memoryId, 0.0), similarity);
         }
     }
 
     // 通道 4: 独立记录词法/概念证据，合并分数不重复累计。
     if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
-        const auto hits = channels.keywordIndex->lookup(cue, kKeywordBudget);
+        const auto hits = channels.keywordIndex->lookup(cue, reuse ? 4 : kKeywordBudget);
         for (const auto& hit : hits) {
             if (hit.lexicalScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("keyword"));
             if (hit.tagScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("tag"));
@@ -216,7 +291,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     QHash<QString, QStringList> graphPaths;
     QSet<QString> exploratoryIds;
 
-    if (channels.graphPropagation) {
+    if (channels.graphPropagation && !reuse) {
+        if (topic) topic->diagnostics.graphExpanded = true;
         if (!query.personality.isEmpty()) {
             channels.graphPropagation->setPersonality(
                 {cue.openness, cue.sociability, cue.initiative});
@@ -276,6 +352,21 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         candidate.sourceChannels = it.value();
         candidate.runtimeActivation = seedRuntimeActivation.value(it.key(), 0.0);
         candidate.semanticCue = seedSemanticCue.value(it.key(), 0.0);
+        if (topic && topic->embedding.valid() && channels.embeddingIndex && candidate.semanticCue > 0) {
+            candidate.semanticCue = channels.embeddingIndex->similarityToCurrent(it.key(),
+                entry->summary + QLatin1Char('\n') + entry->content, topic->embedding).value_or(0.0);
+        }
+        if (topic && !it.value().contains(QStringLiteral("hippocampus"))
+            && graphActivations.value(it.key(), 0.0) <= 0.0) {
+            const auto terms = RecallText::tokens(entry->key + QLatin1Char(' ') + entry->summary
+                + QLatin1Char(' ') + entry->content + QLatin1Char(' ') + entry->scope);
+            const double lexical = RecallText::lexicalCoverage(query.text, cue.tokens,
+                QSet<QString>(terms.cbegin(), terms.cend()), cue.tokenWeights);
+            const double tag = RecallText::tagCoverage(cue.knownTags, MemoryMetadata::semanticTags(*entry));
+            // A concurrent rewrite can invalidate a posting or previous-pool
+            // proof after seed selection; never give its replacement stale credit.
+            if (std::max({lexical, tag, candidate.semanticCue}) < 0.01) continue;
+        }
         candidate.graphActivation = graphActivations.value(it.key(), 0.0);
         candidate.isExploratory = exploratoryIds.contains(it.key());
         candidates.append(candidate);
@@ -372,7 +463,8 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     const MemoryKeywordIndex& keywordIndex,
     EmbeddingIndex* embeddingIndex,
     const MemoryQuery& query,
-    const QList<WorkingMemoryItem>& workingMemory) {
+    const QList<WorkingMemoryItem>& workingMemory,
+    TopicRecallOptions* topicRecall) {
     WorkerRecallResult result;
     AssociativeActivationEngine graphEngine;
     ActivationChannels channels;
@@ -382,6 +474,7 @@ WorkerRecallResult retrieveWithGraphPropagationForWorker(
     channels.embeddingIndex = embeddingIndex;
     channels.graphPropagation = &graphEngine;
     channels.workingMemory = &workingMemory;
+    channels.topicRecall = topicRecall;
 
     MemoryCueExtractor cueExtractor;
     cueExtractor.setSessionContext(query.sessionTopic, query.activeGoals);

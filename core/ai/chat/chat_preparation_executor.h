@@ -22,6 +22,9 @@ public:
 
     Result<void, DomainError> start(const ChatPreparationEnvironment& environment);
     void submit(ChatPreparationRequest request);
+    // The owner calls this only after checking request/generation and consuming
+    // the prepared context. Unaccepted/cancelled results never train the topic.
+    void acceptRecallFeedback(const ChatPreparationResult& result);
     void stop();
     void kickMemoryMaintenance();
 
@@ -34,6 +37,7 @@ public:
 
 signals:
     void prepared(ChatPreparationResult result);
+    void recallFeedbackProcessed(quint64 token, bool accepted);
 
 private:
     class Worker;

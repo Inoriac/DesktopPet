@@ -1661,6 +1661,17 @@ void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCrea
         QVERIFY(query.exec(QStringLiteral("DROP INDEX idx_memory_recall_mentions")));
         QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_eligibility")));
         QVERIFY(query.exec(QStringLiteral("DROP TRIGGER memory_tag_catalog_replace")));
+        // Reconstruct an actual old schema: its derived-cache triggers/columns
+        // did not exist and cannot continue referencing the removed partition.
+        QVERIFY(query.exec(QStringLiteral("SELECT name FROM sqlite_master WHERE type='trigger' "
+                                          "AND (name LIKE 'memory_recall_%' OR name LIKE 'recall_%')")));
+        QStringList newTriggers;
+        while (query.next()) newTriggers.append(query.value(0).toString());
+        query.finish();
+        for (const auto& trigger : newTriggers)
+            QVERIFY(query.exec(QStringLiteral("DROP TRIGGER %1").arg(trigger)));
+        QVERIFY(query.exec(QStringLiteral("ALTER TABLE memory_tag_catalog_state DROP COLUMN recall_revision")));
+        QVERIFY(query.exec(QStringLiteral("ALTER TABLE memory_tag_catalog_state DROP COLUMN reset_revision")));
         QVERIFY(query.exec(QStringLiteral(
             "ALTER TABLE memory_items DROP COLUMN partition")));
         QVERIFY(query.exec(QStringLiteral("PRAGMA user_version=0")));
@@ -1675,6 +1686,8 @@ void TestMemoryStrategy::testLegacySchemaWithoutPartitionMigratesBeforeIndexCrea
     QVERIFY2(migrated.load(&error), qPrintable(error));
     QCOMPARE(migrated.all().size(), 1);
     QCOMPARE(migrated.all().first().partition, QStringLiteral("semantic"));
+    QVERIFY(migrated.recallRevisions().first >= 0);
+    QVERIFY(migrated.recallRevisions().second >= 0);
 }
 
 // 自适应遗忘扫描：高空闲低重要 Episodic 被 Expired；Core 类型(高 importance)靠自适应保留；

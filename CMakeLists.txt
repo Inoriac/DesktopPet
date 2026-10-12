@@ -1499,6 +1499,8 @@ add_desktop_pet_cpp_test(memory_recall_phase2_tests MemoryRecallPhase2Tests
         core/ai/memory/hippocampus_working_set.cpp
         core/ai/memory/memory_retriever.h
         core/ai/memory/memory_retriever.cpp
+        core/ai/memory/memory_policy.h
+        core/ai/memory/memory_policy.cpp
         core/ai/memory/working_memory_cache.h
         core/ai/memory/working_memory_cache.cpp
         core/ai/memory/memory_store.h
@@ -1546,6 +1548,8 @@ add_desktop_pet_cpp_test(memory_recall_phase3_tests MemoryRecallPhase3Tests
         core/ai/memory/hippocampus_working_set.cpp
         core/ai/memory/memory_retriever.h
         core/ai/memory/memory_retriever.cpp
+        core/ai/memory/memory_policy.h
+        core/ai/memory/memory_policy.cpp
         core/ai/memory/working_memory_cache.h
         core/ai/memory/working_memory_cache.cpp
         core/ai/memory/memory_store.h

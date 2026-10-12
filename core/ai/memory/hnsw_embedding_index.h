@@ -56,6 +56,10 @@ public:
     bool upsert(const QString& memoryId, const QString& text) override;
     QList<EmbeddingSearchResult> search(const QString& query, int limit = 10) override;
     bool remove(const QString& memoryId) override;
+    PreparedEmbeddingQuery prepareQuery(const QString& text) override;
+    QList<EmbeddingSearchResult> searchPrepared(const PreparedEmbeddingQuery& query, int limit) override;
+    std::optional<double> similarityToCurrent(const QString& id, const QString& currentText,
+                                              const PreparedEmbeddingQuery& query) const override;
 
     // ---- 向量级接口（MemoryIndexWorker / 重建复用，不重复 embed）----
     // contentHash 用于幂等：同 memoryId+model+hash 的重复 upsert 不产生重复有效节点。
