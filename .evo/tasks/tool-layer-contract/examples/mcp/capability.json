@@ -1,0 +1,36 @@
+{
+  "formatVersion": "1",
+  "id": "example.notes",
+  "name": "笔记搜索",
+  "version": "1.0.0",
+  "summary": "通过已配置的 MCP 笔记服务搜索可访问的笔记。",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {"id": "notes-service", "description": "需要一个公开 search_notes 工具的 MCP 服务；本例约定该工具接受 query 字符串。", "setup": "选择符合说明的 MCP 服务并完成连接和所需登录，配置 notesConnection；换用不同服务时同步调整工具名和说明。"}
+    ],
+    "configuration": [
+      {"key": "notesConnection", "kind": "mcp_connection", "required": true, "description": "使用者已配置的 MCP 连接引用，不是模型生成的 URL 或凭据。"}
+    ],
+    "operations": [
+      {
+        "id": "search",
+        "description": "搜索当前账户可访问的笔记，调用参数以连接中 search_notes 的公开定义为准。",
+        "parameters": {"source": "mcp"},
+        "invocation": {
+          "kind": "mcp",
+          "connection": {"setting": "notesConnection"},
+          "tool": "search_notes"
+        },
+        "result": {
+          "format": "mcp",
+          "description": "返回 MCP 服务报告的匹配笔记内容或结构化搜索结果，按该服务的公开结果定义理解。",
+          "successMeaning": "本次搜索已返回结果，空结果表示本次查询没有匹配项，不证明服务中不存在其他笔记。",
+          "failureMeaning": "MCP 协议错误、工具错误或账户不可用均不作为有效搜索结果；向使用者说明服务返回的原因。",
+          "completion": "completed"
+        },
+        "effects": {"kind": "read", "description": "读取服务公开的搜索结果，不创建、更新或删除笔记；查询文本会发送给所配置的服务。"}
+      }
+    ]
+  }
+}

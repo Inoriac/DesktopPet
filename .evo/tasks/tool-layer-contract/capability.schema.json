@@ -1,0 +1,196 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:desktop-pet:capability:format-1",
+  "title": "能力包声明格式 1",
+  "description": "声明模板的机器检查附件。只校验结构和部分条件，不证明说明、实现、引用与环境均已合格。",
+  "type": "object",
+  "required": ["formatVersion", "id", "name", "version", "summary", "definition"],
+  "properties": {
+    "formatVersion": {"const": "1"},
+    "id": {"$ref": "#/$defs/identifier"},
+    "name": {"$ref": "#/$defs/nonBlank"},
+    "version": {"$ref": "#/$defs/nonBlank"},
+    "summary": {"$ref": "#/$defs/nonBlank"},
+    "definition": {"$ref": "#/$defs/definition"}
+  },
+  "$defs": {
+    "nonBlank": {"type": "string", "minLength": 1, "pattern": "\\S"},
+    "identifier": {"type": "string", "pattern": "^[a-z][a-z0-9._-]*$"},
+    "pointer": {"type": "string", "pattern": "^(?:/(?:[^~/]|~[01])*)+$"},
+    "setting": {
+      "type": "object",
+      "properties": {"setting": {"$ref": "#/$defs/nonBlank"}},
+      "required": ["setting"],
+      "additionalProperties": false
+    },
+    "inputArgument": {
+      "type": "object",
+      "properties": {"input": {"$ref": "#/$defs/pointer"}},
+      "required": ["input"],
+      "additionalProperties": false
+    },
+    "expandedArgument": {
+      "type": "object",
+      "properties": {"expand": {"$ref": "#/$defs/pointer"}},
+      "required": ["expand"],
+      "additionalProperties": false
+    },
+    "argument": {
+      "oneOf": [
+        {"type": "string"},
+        {"$ref": "#/$defs/setting"},
+        {"$ref": "#/$defs/inputArgument"},
+        {"$ref": "#/$defs/expandedArgument"}
+      ]
+    },
+    "requirement": {
+      "type": "object",
+      "required": ["id", "description", "setup"],
+      "properties": {
+        "id": {"$ref": "#/$defs/nonBlank"},
+        "description": {"$ref": "#/$defs/nonBlank"},
+        "setup": {"$ref": "#/$defs/nonBlank"}
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "required": ["key", "description", "kind", "required"],
+      "properties": {
+        "key": {"$ref": "#/$defs/nonBlank"},
+        "description": {"$ref": "#/$defs/nonBlank"},
+        "kind": {"enum": ["executable", "path", "text", "secret", "mcp_connection"]},
+        "required": {"type": "boolean"}
+      }
+    },
+    "businessSchema": {
+      "$ref": "https://json-schema.org/draft/2020-12/schema"
+    },
+    "inputSchema": {
+      "allOf": [
+        {"$ref": "#/$defs/businessSchema"},
+        {
+          "type": "object",
+          "required": ["type"],
+          "properties": {"type": {"const": "object"}}
+        }
+      ]
+    },
+    "inlineParameters": {
+      "type": "object",
+      "required": ["source", "schema"],
+      "properties": {
+        "source": {"const": "inline"},
+        "schema": {"$ref": "#/$defs/inputSchema"}
+      },
+      "additionalProperties": false
+    },
+    "mcpParameters": {
+      "type": "object",
+      "required": ["source"],
+      "properties": {"source": {"const": "mcp"}},
+      "additionalProperties": false
+    },
+    "commandInvocation": {
+      "type": "object",
+      "required": ["kind", "program", "arguments", "stdin"],
+      "properties": {
+        "kind": {"const": "command"},
+        "program": {"$ref": "#/$defs/setting"},
+        "arguments": {"type": "array", "items": {"$ref": "#/$defs/argument"}},
+        "stdin": {"enum": ["none", "json"]},
+        "workingDirectory": {"$ref": "#/$defs/setting"},
+        "commandScope": {"$ref": "#/$defs/nonBlank"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "arguments": {"contains": {"$ref": "#/$defs/expandedArgument"}}
+            },
+            "required": ["arguments"]
+          },
+          "then": {"required": ["commandScope"]}
+        }
+      ]
+    },
+    "mcpInvocation": {
+      "type": "object",
+      "required": ["kind", "connection", "tool"],
+      "properties": {
+        "kind": {"const": "mcp"},
+        "connection": {"$ref": "#/$defs/setting"},
+        "tool": {"$ref": "#/$defs/nonBlank"}
+      }
+    },
+    "result": {
+      "type": "object",
+      "required": ["format", "description", "successMeaning", "failureMeaning", "completion"],
+      "properties": {
+        "format": {"enum": ["json", "text", "mcp"]},
+        "description": {"$ref": "#/$defs/nonBlank"},
+        "successMeaning": {"$ref": "#/$defs/nonBlank"},
+        "failureMeaning": {"$ref": "#/$defs/nonBlank"},
+        "completion": {"enum": ["completed", "accepted", "reported"]},
+        "schema": {"$ref": "#/$defs/businessSchema"},
+        "stateDescription": {"$ref": "#/$defs/nonBlank"}
+      },
+      "allOf": [
+        {
+          "if": {"properties": {"completion": {"const": "reported"}}, "required": ["completion"]},
+          "then": {"required": ["stateDescription"]}
+        }
+      ]
+    },
+    "effects": {
+      "type": "object",
+      "required": ["kind", "description"],
+      "properties": {
+        "kind": {"enum": ["read", "write", "conditional"]},
+        "description": {"$ref": "#/$defs/nonBlank"}
+      }
+    },
+    "operation": {
+      "type": "object",
+      "required": ["id", "description", "parameters", "invocation", "result", "effects"],
+      "properties": {
+        "id": {"$ref": "#/$defs/identifier"},
+        "description": {"$ref": "#/$defs/nonBlank"},
+        "parameters": {
+          "oneOf": [{"$ref": "#/$defs/inlineParameters"}, {"$ref": "#/$defs/mcpParameters"}]
+        },
+        "invocation": {
+          "oneOf": [{"$ref": "#/$defs/commandInvocation"}, {"$ref": "#/$defs/mcpInvocation"}]
+        },
+        "result": {"$ref": "#/$defs/result"},
+        "effects": {"$ref": "#/$defs/effects"}
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {"invocation": {"properties": {"kind": {"const": "command"}}, "required": ["kind"]}},
+            "required": ["invocation"]
+          },
+          "then": {
+            "properties": {
+              "parameters": {"$ref": "#/$defs/inlineParameters"},
+              "result": {"properties": {"format": {"enum": ["json", "text"]}}}
+            }
+          },
+          "else": {
+            "properties": {"result": {"properties": {"format": {"const": "mcp"}}}}
+          }
+        }
+      ]
+    },
+    "definition": {
+      "type": "object",
+      "required": ["instructions", "requirements", "configuration", "operations"],
+      "properties": {
+        "instructions": {"$ref": "#/$defs/nonBlank"},
+        "requirements": {"type": "array", "items": {"$ref": "#/$defs/requirement"}},
+        "configuration": {"type": "array", "items": {"$ref": "#/$defs/configuration"}},
+        "operations": {"type": "array", "minItems": 1, "items": {"$ref": "#/$defs/operation"}}
+      }
+    }
+  }
+}
