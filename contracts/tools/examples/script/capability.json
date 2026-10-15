@@ -1,0 +1,52 @@
+{
+  "formatVersion": "1",
+  "id": "example.text",
+  "name": "文本计数",
+  "version": "1.0.0",
+  "summary": "统计一段文本中的 Unicode 码点数量。",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {"id": "python", "description": "需要 Python 3 以及符合本包说明的计数脚本。", "setup": "配置 Python 可执行路径与作者提供的脚本绝对路径；说明中附有脚本参考实现。"}
+    ],
+    "configuration": [
+      {"key": "python", "kind": "executable", "required": true, "description": "Python 3 可执行程序的绝对路径。"},
+      {"key": "scriptPath", "kind": "path", "required": true, "description": "计数脚本的绝对路径。"}
+    ],
+    "operations": [
+      {
+        "id": "count",
+        "description": "统计输入文本的 Unicode 码点数量，不读取文件。",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {"text": {"type": "string"}},
+            "required": ["text"],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {"setting": "python"},
+          "arguments": ["-I", "-X", "utf8", {"setting": "scriptPath"}],
+          "stdin": "json"
+        },
+        "result": {
+          "format": "json",
+          "description": "返回 count，表示 Python 字符串长度，即 Unicode 码点数，不等于字节数或可见字符簇数。",
+          "successMeaning": "已完成对输入文本的计数，空字符串为 0。",
+          "failureMeaning": "非零退出码表示脚本执行失败，stderr 提供原因；stdout 不是有效 JSON 时结果不可用。",
+          "completion": "completed",
+          "schema": {
+            "type": "object",
+            "properties": {"count": {"type": "integer", "minimum": 0}},
+            "required": ["count"],
+            "additionalProperties": false
+          }
+        },
+        "effects": {"kind": "read", "description": "只处理本次传入的文本，不读取或写入文件，不访问网络。"}
+      }
+    ]
+  }
+}

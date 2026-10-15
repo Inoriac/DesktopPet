@@ -1,0 +1,54 @@
+{
+  "formatVersion": "1",
+  "id": "example.git",
+  "name": "Git 信息查询",
+  "version": "1.0.0",
+  "summary": "通过一个通用入口查询 Git 版本与指定仓库的简短状态。",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {"id": "git", "description": "需要已安装 Git，并准备要查询的仓库。", "setup": "配置 git 与 repository 的绝对路径。"}
+    ],
+    "configuration": [
+      {"key": "git", "kind": "executable", "required": true, "description": "Git 可执行程序的绝对路径。"},
+      {"key": "repository", "kind": "path", "required": true, "description": "使用者指定的仓库工作目录。"}
+    ],
+    "operations": [
+      {
+        "id": "query",
+        "description": "根据使用说明组织 argv，通过同一个入口查询版本或仓库状态。",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "argv": {
+                "type": "array",
+                "items": {"type": "string"},
+                "enum": [["--version"], ["status", "--short"]]
+              }
+            },
+            "required": ["argv"],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {"setting": "git"},
+          "arguments": ["--no-pager", "--no-optional-locks", {"expand": "/argv"}],
+          "stdin": "none",
+          "workingDirectory": {"setting": "repository"},
+          "commandScope": "本示例只允许 argv 为 [--version] 或 [status, --short]；不能追加其他参数或执行修改仓库的命令。"
+        },
+        "result": {
+          "format": "text",
+          "description": "版本查询输出 Git 版本文本；状态查询输出 Git 的 short 格式。",
+          "successMeaning": "退出码为 0 时本次查询完成；status --short 的空输出表示本次查询没有报告工作区变更。",
+          "failureMeaning": "非零退出码表示查询失败，stderr 提供诊断；错误时的空输出不能解释为仓库干净。",
+          "completion": "completed"
+        },
+        "effects": {"kind": "conditional", "description": "允许的命令不提交或修改工作区内容；实际 Git 仍受仓库与本机配置影响，例如文件系统监视器。该入口不构成执行程序的系统级隔离。"}
+      }
+    ]
+  }
+}
