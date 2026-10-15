@@ -135,6 +135,7 @@ Desktop-Pet/
 ├── launcher/      # Python 启动器（角色注册、配置、进程编排）
 ├── assets/        # 模型、动画、配置、图标
 ├── config/        # 默认配置与状态机定义
+├── contracts/     # 插件系统开发指导与能力准入契约
 ├── tests/         # Qt Test 单元测试
 ├── third_party/   # 第三方库（TinyGLTF 等）
 └── models/        # 推理模型文件（按需下载，不入库）
@@ -156,6 +157,7 @@ Desktop-Pet/
 
 ## 📖 相关文档
 
+* [插件系统开发指导](contracts/tools/插件系统开发指导.md)：Plugin、Skill、Tool 的定位、按需加载与开发验收要求（契约阶段）
 * `memory_improvement_plan.md`：记忆框架改进方案与实施进度
 * `daydream.md`：桌宠空闲记忆整理（Daydream）设计
 * `前端修改计划.md`：Python 前端改造方案
