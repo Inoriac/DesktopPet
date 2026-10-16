@@ -5,8 +5,12 @@
 #include <QJsonDocument>
 #include <QPointer>
 #include <QSignalSpy>
+#include <QSqlDatabase>
+#include <QSqlQuery>
 
 #include "ai/ai_brain.h"
+#include "ai/activity/activity_runtime.h"
+#include "ai/plugin/plugin_runtime.h"
 #include "ai/identity/persona_projector.h"
 #include "ai/identity/person_directory.h"
 #include "ai/tools/companion_tools.h"
@@ -139,6 +143,9 @@ class TestModuleConnectivity : public QObject {
     Q_OBJECT
 private slots:
   void autonomyEnabledRoutesLegacyTriggersWithoutConsumerOrModel();
+  void aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner_data();
+  void aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner();
+  void aiBrain_configurationFailureReportedAndRecovery_doesNotPretendEnabled();
   void animationPolicyUsesConfiguredStateIdsAndLegacyAlias();
   void proactiveModeControlsBrainAndExpires();
   void reminderStateFollowsSnoozeCancelAndDelivery();
@@ -801,6 +808,8 @@ void TestModuleConnectivity::autonomyEnabledRoutesLegacyTriggersWithoutConsumerO
     AutonomyConfig config;
     config.enabled = true;
     runtime.brain.setAutonomyConfig(config);
+    QTRY_VERIFY(runtime.brain.autonomyStatus()["ready"].toBool());
+    runtime.brain.m_activityRuntime->setOpportunityConsumer({});
     runtime.brain.start();
     runtime.brain.triggerThink("legacy tick", "proactive_chat");
     runtime.brain.triggerThink("idle tick", "idle_action");
@@ -810,10 +819,233 @@ void TestModuleConnectivity::autonomyEnabledRoutesLegacyTriggersWithoutConsumerO
     QVERIFY(!runtime.brain.m_idleTriggerTimer.isActive());
     QVERIFY(!runtime.brain.m_chatTriggerTimer.isActive());
     runtime.brain.setAutonomyPaused(true);
+    QTRY_COMPARE(runtime.brain.autonomyStatus()["state"].toString(),
+                 QString("paused"));
+    QVERIFY(!runtime.brain.autonomyStatus()["canDeliberate"].toBool());
     runtime.brain.requestAutonomousOpportunity("message");
     QTest::qWait(30);
     QVERIFY(runtime.client.systemPrompts.isEmpty());
     runtime.brain.stop();
+}
+
+void TestModuleConnectivity::
+    aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner_data() {
+    QTest::addColumn<QString>("package");
+    QTest::addColumn<QString>("operation");
+    QTest::newRow("library")
+        << QString("library.alpha") << QString("read_pages");
+    QTest::newRow("notes") << QString("notes.beta") << QString("scan_notes");
+}
+void TestModuleConnectivity::
+    aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner() {
+    QFETCH(QString, package);
+    QFETCH(QString, operation);
+    ToolRegistry registry;
+    Runtime r;
+    QVERIFY(r.ready);
+    r.brain.setToolRegistry(&registry);
+    QVERIFY(r.brain.pluginRuntime());
+    auto root = r.directory.filePath("capability");
+    QDir().mkpath(root);
+    auto write = [&](QString name, QByteArray data) {
+        QFile file(root + "/" + name);
+        QVERIFY(file.open(QIODevice::WriteOnly));
+        file.write(data);
+    };
+    auto json = [&](QString name, QJsonObject data) {
+        write(name, QJsonDocument(data).toJson());
+    };
+    const QString entry = package + ".reader";
+    CapabilityRef ref{package, entry, "1", operation};
+    write("USAGE.md", "Inspect available reading material.");
+    write("read.py", "import "
+                     "json,sys\njson.load(sys.stdin)\nprint(json.dumps({'empty'"
+                     ":True,'items':[]}))\n");
+    json("plugin.json",
+         {{"formatVersion", "1"},
+          {"id", package},
+          {"name", "Reading"},
+          {"version", "1"},
+          {"summary", "Read available material"},
+          {"entries", QJsonArray{QJsonObject{{"kind", "tool"},
+                                             {"id", entry},
+                                             {"definition", "tool.json"}}}}});
+    json("tool.json",
+         {{"formatVersion", "1"},
+          {"id", entry},
+          {"name", "Reading"},
+          {"version", "1"},
+          {"summary", "Read available material"},
+          {"definition",
+           QJsonObject{
+               {"instructions", "USAGE.md"},
+               {"requirements", QJsonArray{}},
+               {"configuration",
+                QJsonArray{QJsonObject{{"key", "program"},
+                                       {"kind", "executable"},
+                                       {"required", true},
+                                       {"description", "Program"}},
+                           QJsonObject{{"key", "script"},
+                                       {"kind", "path"},
+                                       {"required", true},
+                                       {"description", "Script"}}}},
+               {"operations",
+                QJsonArray{QJsonObject{
+                    {"id", operation},
+                    {"description", "Inspect material"},
+                    {"parameters",
+                     QJsonObject{{"source", "inline"},
+                                 {"schema", QJsonObject{{"type", "object"}}}}},
+                    {"invocation",
+                     QJsonObject{
+                         {"kind", "command"},
+                         {"program", QJsonObject{{"setting", "program"}}},
+                         {"arguments",
+                          QJsonArray{QJsonObject{{"setting", "script"}}}},
+                         {"stdin", "json"}}},
+                    {"effects", QJsonObject{{"kind", "read"},
+                                            {"description", "Read only"}}},
+                    {"result", QJsonObject{{"format", "json"},
+                                           {"description", "Items"},
+                                           {"successMeaning", "Read complete"},
+                                           {"failureMeaning", "Read failed"},
+                                           {"completion", "completed"}}}}}}}}});
+    auto config = QJsonObject{
+        {"plugins",
+         QJsonArray{QJsonObject{{"rootPath", root}, {"enabled", true}}}},
+        {"configuration",
+         QJsonObject{{entry, QJsonObject{{"program", "/usr/bin/python3"},
+                                         {"script", root + "/read.py"}}}}},
+        {"grants", QJsonArray{QJsonObject{{"id", "internal-read"},
+                                          {"pluginId", package},
+                                          {"profileId", profileId},
+                                          {"scope", "internal_activity"},
+                                          {"entryId", entry},
+                                          {"operationId", operation},
+                                          {"effects", QJsonArray{"read"}},
+                                          {"executor", "/usr/bin/python3"},
+                                          {"autonomous", true}}}}};
+    QVERIFY(r.brain.pluginRuntime()->setHostConfiguration(config));
+    r.brain.refreshTaskDependencies();
+    int selections = 0, plans = 0;
+    bool invocationSeen = false;
+    r.client.responder = [&](const QList<ChatMessage> &messages) {
+        auto input =
+            QJsonDocument::fromJson(messages.last().content.toUtf8()).object();
+        auto system = messages.first().content;
+        QJsonObject output;
+        if (system.startsWith("Choose a worthwhile autonomous")) {
+            ++selections;
+            output = {{"decision", "start"},
+                      {"reason", "Read available material"},
+                      {"evidenceRefs", QJsonArray{}},
+                      {"goal", "Inspect reading material"},
+                      {"stopWhen", "Query completes"},
+                      {"reconsiderWhen", "Important reply"},
+                      {"capabilityRefs", QJsonArray{ref.toJson()}},
+                      {"candidates", QJsonArray{}},
+                      {"activityId", ""},
+                      {"nextConsiderAt", ""}};
+        } else if (system.startsWith("You are the companion's subjective"))
+            output = {{"decision", "accept"},
+                      {"reason", "Interested"},
+                      {"message", "Read"}};
+        else if (system.startsWith("Plan one next step")) {
+            ++plans;
+            auto steps = input["steps"].toArray();
+            output = {
+                {"required_source_tools", QJsonArray{"invoke_capability"}},
+                {"plan", "Inspect"},
+                {"completion_criteria", "Actual query completed"}};
+            if (steps.isEmpty())
+                output["tool"] = QJsonObject{
+                    {"name", "load_capability"},
+                    {"arguments", QJsonObject{{"ref", ref.toJson()}}}};
+            else if (steps.size() == 1)
+                output["tool"] = QJsonObject{
+                    {"name", "invoke_capability"},
+                    {"arguments", QJsonObject{{"ref", ref.toJson()},
+                                              {"arguments", QJsonObject{}}}}};
+            else {
+                invocationSeen = true;
+                output["candidate_answer"] = "Query returned no material";
+            }
+        } else if (system.startsWith("Independently verify")) {
+            auto steps = input["steps"].toArray();
+            output = {{"complete", true},
+                      {"supported", true},
+                      {"contradictions", QJsonArray{}},
+                      {"unresolved", QJsonArray{}},
+                      {"evidence", QJsonArray{steps.last().toObject()["id"]}},
+                      {"result", "Query returned no material"},
+                      {"reason", "Actual query completed"}};
+        }
+        return QString::fromUtf8(
+            QJsonDocument(output).toJson(QJsonDocument::Compact));
+    };
+    AutonomyConfig autonomy;
+    autonomy.enabled = true;
+    autonomy.maxTokensPerHour = 1000000;
+    autonomy.maxEstimatedCostMicrosPerHour = 10000000;
+    r.brain.setAutonomyConfig(autonomy);
+    r.brain.start();
+    QTRY_VERIFY_WITH_TIMEOUT(r.brain.taskSnapshot()["status"] == "Completed",
+                             10000);
+    ActivityStore inspect(
+        profileId,
+        r.services.chatPreparationRuntimeMetadata().runtimeDatabasePath);
+    QVERIFY(inspect.pendingExperiences().value().isEmpty());
+    OpportunityStore opportunities(profileId, inspect.databasePath());
+    QVERIFY(!opportunities.snapshot()
+                 .value()["lastCheckedAt"]
+                 .toString()
+                 .isEmpty());
+    QTRY_VERIFY(r.brain.autonomyStatus()["state"] != "running");
+    QCOMPARE(selections, 1);
+    QVERIFY(plans >= 3);
+    QVERIFY(invocationSeen);
+    QVERIFY(r.brain.taskSnapshot()["autonomous"].toBool());
+    QCOMPARE(
+        r.brain.taskSnapshot()["context"].toObject()["originKind"].toString(),
+        QString("internal"));
+    r.brain.stop();
+}
+void TestModuleConnectivity::
+    aiBrain_configurationFailureReportedAndRecovery_doesNotPretendEnabled() {
+    Runtime r;
+    QVERIFY(r.ready);
+    AutonomyConfig c;
+    c.enabled = true;
+    auto path = r.services.chatPreparationRuntimeMetadata().runtimeDatabasePath;
+    QTRY_VERIFY(r.brain.autonomyStatus()["ready"].toBool());
+    QByteArray original;
+    const QString name = "autonomy-corrupt";
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", name);
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        QVERIFY(q.exec("SELECT control_json FROM agent_runtime_state"));
+        QVERIFY(q.next());
+        original = q.value(0).toByteArray();
+        QVERIFY(q.exec("UPDATE agent_runtime_state SET control_json='broken'"));
+    }
+    QSqlDatabase::removeDatabase(name);
+    r.brain.setAutonomyConfig(c);
+    QTRY_VERIFY(!r.brain.autonomyStatus()["error"].toString().isEmpty());
+    QVERIFY(!r.brain.autonomyStatus()["ready"].toBool());
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", name);
+        db.setDatabaseName(path);
+        QVERIFY(db.open());
+        QSqlQuery q(db);
+        q.prepare("UPDATE agent_runtime_state SET control_json=?");
+        q.addBindValue(QString::fromUtf8(original));
+        QVERIFY(q.exec());
+    }
+    QSqlDatabase::removeDatabase(name);
+    r.brain.setAutonomyConfig(c);
+    QTRY_VERIFY(r.brain.autonomyStatus()["ready"].toBool());
 }
 
 QTEST_GUILESS_MAIN(TestModuleConnectivity)

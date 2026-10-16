@@ -221,7 +221,10 @@ set(TASK_ORCHESTRATION_SOURCES
     core/ai/task/task_orchestrator.cpp
 )
 set(TASK_INTEGRATION_SOURCES
+    core/ai/activity/selection_types.h
+    core/ai/activity/activity_selector.h core/ai/activity/activity_selector.cpp
     ${TASK_ORCHESTRATION_SOURCES}
+    core/ai/ai_brain_autonomy.cpp
     core/ai/ai_brain_tasks.cpp
     core/ai/task/task_experience_adapter.h
     core/ai/task/task_experience_adapter.cpp
@@ -2044,6 +2047,11 @@ endif ()
 if(Python3_EXECUTABLE)
     add_test(NAME AutonomyConfigTests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autonomy_config.py)
 endif()
+add_desktop_pet_cpp_test(activity_selector_tests ActivitySelectorTests
+    SOURCES tests/test_activity_selector.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
 add_desktop_pet_cpp_test(activity_opportunities_tests ActivityOpportunitiesTests
     SOURCES tests/test_activity_opportunities.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic

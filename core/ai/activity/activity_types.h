@@ -13,7 +13,7 @@ enum class ActivityState {
     Cancelled,
     Failed
 };
-enum class ResumeActor { User, Event, Scheduler };
+enum class ResumeActor { User, Event, Scheduler, Selection };
 enum class ActionOutcome { Accepted, Succeeded, Failed, Unknown, NotExecuted };
 QString activityStateName(ActivityState state);
 std::optional<ActivityState> activityStateFromName(const QString &value);

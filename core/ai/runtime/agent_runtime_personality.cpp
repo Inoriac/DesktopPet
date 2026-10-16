@@ -149,3 +149,27 @@ void AgentRuntimeServices::initializePersonalityStage(const SleepPolicy& policy)
     });
     if (policy.enabled) m_personalityTimer.start();
 }
+
+QJsonObject
+AgentRuntimeServices::taskIdentityContext(const QString &name,
+                                          const ContextSpec &context) const {
+    auto result = taskIdentityContext(name);
+    result.remove("relationship");
+    QJsonObject relationships;
+    if (context.profileId == m_profileId && m_identityRepository)
+        for (const auto &person : context.participantPersonIds.mid(0, 8)) {
+            auto current =
+                m_identityRepository->currentRelationship(m_profileId, person);
+            if (current && current.value()) {
+                auto value = numericMapToJson(current.value()->tendencies);
+                value["version"] = current.value()->version;
+                relationships[person] = value;
+            }
+        }
+    auto persona = result["personality"].toObject();
+    persona["style"] = persona["style"].toString().left(1024);
+    persona["self_narrative"] = persona["self_narrative"].toString().left(512);
+    result["personality"] = persona;
+    result["relationships"] = relationships;
+    return result;
+}

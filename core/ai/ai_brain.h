@@ -58,6 +58,7 @@ struct ChatPreparationResult;
 
 class MemoryConsolidationService;
 class TaskStore;
+class ActivitySelector;
 class ActivityRuntime;
 class TaskOrchestrator;
 class TaskToolExecutor;
@@ -113,6 +114,7 @@ public:
         return m_autonomyConfig.enabled;
     }
     void setAutonomyConfig(const AutonomyConfig &);
+    QJsonObject autonomyStatus() const;
     void setAutonomyPaused(bool paused);
     void requestAutonomousOpportunity(const QString &kind = "tick", const QString &contextId = {},
                                       const QStringList &eventIds = {});
@@ -157,32 +159,34 @@ public:
     const SkillStore* skillStore() const { return &m_skillStore; }
 
 signals:
-    void taskProgressChanged(const QJsonObject& task);
-    void pendingUserMessagesChanged();
-    void thinkingStarted(const QString& reason);
-    void thinkingFinished(bool success, const QString& errorMessage);
-    void thinkRequestRejected(const QString& replyToId,
-                              const QString& errorMessage);
-    void assistantResponseReady(const QString& content, const QString& voiceSource);
-    void assistantResponseStarted(const QString& messageId,
-                                  const QString& replyToId,
-                                  const QString& triggerTag);
-    void assistantResponseStageChanged(const QString& messageId,
-                                       ChatActivityStage stage);
-    void assistantResponseDelta(const QString& messageId,
-                                const QString& textDelta);
-    void assistantResponseFinished(const QString& messageId,
-                                   ChatMessageStatus status,
-                                   const QString& errorMessage);
-    void toolExecuted(const QString& toolName, bool success, const QString& payload);
-    void toolConfirmationRequired(const QString& requestId,
-                                  const QString& toolName,
-                                  const QString& reason,
-                                  const QJsonObject& arguments);
-    void daydreamStarted(int itemCount);
-    void daydreamFinished(const QJsonObject& summary);
-    void daydreamCancelled(const QString& reason);
-    void chatPreparationTimingsObserved(ChatPreparationTimings timings);
+  void autonomyStatusChanged(const QJsonObject &status);
+  void taskProgressChanged(const QJsonObject &task);
+  void pendingUserMessagesChanged();
+  void thinkingStarted(const QString &reason);
+  void thinkingFinished(bool success, const QString &errorMessage);
+  void thinkRequestRejected(const QString &replyToId,
+                            const QString &errorMessage);
+  void assistantResponseReady(const QString &content,
+                              const QString &voiceSource);
+  void assistantResponseStarted(const QString &messageId,
+                                const QString &replyToId,
+                                const QString &triggerTag);
+  void assistantResponseStageChanged(const QString &messageId,
+                                     ChatActivityStage stage);
+  void assistantResponseDelta(const QString &messageId,
+                              const QString &textDelta);
+  void assistantResponseFinished(const QString &messageId,
+                                 ChatMessageStatus status,
+                                 const QString &errorMessage);
+  void toolExecuted(const QString &toolName, bool success,
+                    const QString &payload);
+  void toolConfirmationRequired(const QString &requestId,
+                                const QString &toolName, const QString &reason,
+                                const QJsonObject &arguments);
+  void daydreamStarted(int itemCount);
+  void daydreamFinished(const QJsonObject &summary);
+  void daydreamCancelled(const QString &reason);
+  void chatPreparationTimingsObserved(ChatPreparationTimings timings);
 
 private:
     void initializeTaskRuntime();
@@ -193,6 +197,14 @@ private:
     void shutdownTaskRuntime();
     bool tryHandleComplexTask(const QString& text, const QString& triggerTag);
     void finishTaskResponse();
+    void configureAutonomyConsumer();
+    void beginActivitySelection(OpportunityTicket ticket);
+    void publishAutonomyStatus(const QString &state, const QString &error = {});
+    std::unique_ptr<ActivitySelector> m_activitySelector;
+    bool m_autonomyConfigured = false;
+    quint64 m_autonomyConfigurationGeneration = 0;
+    QString m_autonomyState = "disabled", m_autonomyError;
+    IdleDecision m_autonomyIdleDecision;
     std::unique_ptr<ActivityRuntime> m_activityRuntime;
     bool m_taskCommandPending=false;
     QSet<QString> m_suspendedTaskIds;

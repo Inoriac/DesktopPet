@@ -38,6 +38,9 @@ struct TaskStartRequest {
 };
 
 struct TaskRecord {
+    QString hostPauseReason;
+    QJsonObject
+        activityIntent;      // Host intent, references and stopping conditions.
     bool autonomous = false; // Projection of the host-owned activity intent.
     ContextSpec context;
     qint64 activityRevision = 0;

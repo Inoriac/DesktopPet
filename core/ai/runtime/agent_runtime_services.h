@@ -9,6 +9,7 @@
 #include "ai/event/event_types.h"
 #include "runtime_types.h"
 
+struct ContextSpec;
 class AgentBootstrap;
 class AgentScheduler;
 class ContextAssembler;
@@ -93,6 +94,8 @@ public:
 #endif
     void cancelSleepForUserInteraction();
     QJsonObject taskIdentityContext(const QString& petName) const;
+    QJsonObject taskIdentityContext(const QString &petName,
+                                    const ContextSpec &context) const;
     bool isStarted() const { return m_started; }
     void stop();
 

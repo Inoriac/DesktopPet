@@ -304,3 +304,48 @@ Task 6—8 尚未实施，内部无会话自主 grant 按 context.md 的 §3.8 p
 最终日志：/tmp/task6-final-verified-build.log、/tmp/task6-final-verified-ctest.log、/tmp/task6-final-contract.log。新机会套件 26/26，运行时服务 57/57，流式对话 79/79；两条旧 CAS 用例各连续 50 次、检查点用例连续 100 次通过。未删除或跳过失败断言。
 
 本阶段提供机会与预算基础设施；没有 consumer 时零模型选择。实际选择器及内部自主授权由 §3.8 接入，受控消息端到端由 §3.9 验证。
+
+## §3.8 自主活动选择与持续意图
+
+### 审查范围与初轮反馈
+
+- 生产 consumer 使用已有 ModelRouter 与真实 attempt hooks；未知来源/权限不能由模型构造，实际采用必须启动原 runner。
+- 内部自主 grant 贯穿发现、加载、生命周期校验与实际 invoke；保留用户入口兼容，省略 scope 使用旧 conversationId，显式 scope 只使用已定义值。
+- 票据消耗与活动前台写入同事务；用户输入/目录换代/预算不足拒绝旧选择，恢复保持原检查点、人物范围和累计用量。
+- 记忆/内心材料带真实来源并受范围过滤；有界数据库读取不在跨库 I/O 期间占 runtime 写锁。空材料仍可用合法 schema 正常休息。
+- 限量材料优先可恢复意图，再补近期摘要；原记忆的完整历史来源不删除，但本次提示中的来源数量有界。
+
+初轮审查发现并要求回归：空 references 导致非法 enum=[]；纯读材料准备使用 BEGIN IMMEDIATE 跨库持有 writer；最近完成记录挤掉可恢复活动；单记忆来源数组缺上限；新 scope 的错误类型/未定义别名；实际选择用量超额后的采用准入。后续以实际测试和最终 Wave 7 记录确认闭合，不把这些中间反馈视为通过结论。
+
+### §3.8 行为覆盖映射与修复
+
+| 契约 | 实际验证入口 |
+| --- | --- |
+| 真实人物/记忆/来源引用，拒绝虚构引用与越界 audience | ActivitySelectorTests::selectionMaterials_realSourcesAudienceAndChangedMeaning、selectActivity_unknownReferenceOrWrongAudience_rejectsWithoutDispatch |
+| 当前消息不依赖已形成旧记忆 | selectionMaterials_newCommittedMessageWithoutOldMemory |
+| 原子采用选择，失败保留票据并回滚前台 | applySelection_ticketConsumptionAndForegroundAcquisition_atomicRollback |
+| 新输入、目录换代和实际模型超额拒绝旧提案 | applySelection_newInputCatalogAndActualUsageInvalidateOldChoice（数据驱动） |
+| 原范围、检查点及累计预算恢复，用户/重启暂停不自动恢复 | applySelection_checkpointResume_preservesBudgetAndContext_userAndRestartDenied |
+| 同范围旧意图可见、撤销记忆授权禁止恢复旧权限 | selectionMaterials_sameScopeOldIntentVisibleAndRevokedMemoryBlocksResume |
+| 近期完成记录不挤掉旧意图 | selectionMaterials_eligibleIntentSurvivesRecentCompletedActivities |
+| 空材料可休息，失败有别于 wait，真实修复/fallback 共用两次发送额度 | selectActivity_emptyMaterial_hasValidRestSchema、selectActivity_restProviderFailureAndRepairShareActualAttemptBudget |
+| Internal 显式 grant 到真实子进程，owner-only 与 autonomous=false 拒绝 | PluginRuntimeTests::internalActivity_explicitAutonomousGrant_propagatesThroughActualToolExecution |
+| 加密内心读取返回真实来源，依赖故障明确不可用 | TaskExperienceTests::unresolvedThought_recentReadRetainsRealSourceAndReportsUnavailable |
+| 小幅情绪变化保持活动；重要回复先保存计划与验证结果 | TestTaskOrchestrator::smallEmotionChangeDoesNotReselectAutonomousIntent、safeCheckpointPreservesReturnedPlanAndVerification |
+| 异步准入及保存失败均不能越过检查点派发 | importantReplyDuringToolPreparationStopsDispatch、failedCheckpointStopsToolDispatch |
+| 实际选择/模型/工具/runner 端到端，不根据包/操作名字分支 | TestModuleConnectivity::aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner（两套不同包与操作名） |
+| 实际空查询更新 lastCheckedAt，不写虚假 ExperienceReady，结束后状态离开 running | 同上真实生产链路，直接检查原库与 AIBrain status |
+| 配置失败不假报 ready，恢复后可以重新配置 | aiBrain_configurationFailureReportedAndRecovery_doesNotPretendEnabled |
+| memoryAccess 默认关闭、错误值关闭、Launcher 保存保留工程权限 | ActivitySelectorTests::autonomyMemoryAccess_defaultDeniedExplicitAndMalformedFailClosed；tests/test_autonomy_config.py |
+
+父级复核确认：MemoryMetadata::semanticRevision 覆盖同 ID 内容改义；Internal 关系来自真实 cue person 引用，只作投影不添加虚构参与人；准备器用只读 runtime 连接且在另库活动读取前关闭；最终 identity/capabilities 丰富后再次检查 32 KiB 材料上限。材料来源、权限、目录与预算均在采用前复核，票据消耗和前台取得同事务。
+
+重要回复回归取得实际 RED：延迟 prepareTool 期间到达回复，以及 checkpoint UPDATE 失败时，旧实现都会多派发一次工具。修复在异步准入后和真实派发前再次检查；存储失败保留 trigger、停止 runner 并报告失败。/tmp/task7-checkpoint-red.log 记录两项失败，/tmp/task7-checkpoint-green.log 记录 TaskOrchestratorTests 30/30 通过。返回的验证结果先处理；已经有充分完成证据时正常完成，不丢掉它再机械暂停。
+
+真实 memoryAccess 组合另由 selectionMaterials_explicitMemoryAccessHonorsBoundConversation 验证：默认仅可见 Internal，显式宿主授权后可见 owner/绑定 conversation，External 重新准备后排除 owner/private，真实 person 引用不制造参与人。
+
+### §3.8 最终结论
+
+代码审查通过，已发现问题全部闭合。完整应用及全部测试目标构建成功；CTest **55/55 通过**（75.44 秒），选择器 21/21、任务执行器 30/30，工具契约 **70/70**。主设计结构/链接/SQL、测试布局/覆盖/锚点和 git diff --check 通过；Wave 7 五项校验通过。
+
+最终日志 /tmp/task7-final-build.log、/tmp/task7-final-ctest.log、/tmp/task7-final-contract.log。实现报告 /tmp/task7-implementation-report.md。验证采用真实本地插件进程和受控模型 provider；本阶段没有连接真实 QQ，外部观察与真实 runner 等待接入属于 §3.9。

@@ -1,3 +1,5 @@
+#include <QCoreApplication>
+#include <QThreadPool>
 #include "inner_thought_service.h"
 
 #include <QJsonArray>
@@ -274,4 +276,72 @@ Result<InnerThoughtSummary, DomainError> InnerThoughtService::readSummary(
         QString::fromUtf8(plaintext.value()), record.profileId,
         record.sourceEventId, record.recordId, record.createdAt);
     return parsed;
+}
+
+void InnerThoughtService::recentUnresolvedAsync(
+    int limit,
+    std::function<void(Result<QList<InnerThoughtSummary>, DomainError>)>
+        complete) {
+    using Reply = Result<QList<InnerThoughtSummary>, DomainError>;
+    if (!m_repository || !m_keyProvider || !m_crypto) {
+        complete(Reply::failure(domainError("PRIVATE_STORE_UNAVAILABLE",
+                                            "Private material unavailable")));
+        return;
+    }
+    auto key = m_keyProvider->loadOrCreate(m_profileId);
+    if (!key) {
+        complete(Reply::failure(key.error()));
+        return;
+    }
+    const auto path = m_repository->databasePath(), profile = m_profileId;
+    const auto alive = m_alive;
+    auto *crypto = m_crypto;
+    // Only ciphertext/key values cross threads. The injected crypto stays on
+    // its owner thread.
+    QThreadPool::globalInstance()->start(
+        [path, profile, limit, key = key.value(), alive, crypto,
+         complete = std::move(complete)]() mutable {
+            SqlitePrivatePsycheRepository reader;
+            auto opened = reader.openReadOnly(path);
+            auto records =
+                opened
+                    ? reader.recentUnresolved(profile, limit)
+                    : Result<QList<StoredPrivateRecord>, DomainError>::failure(
+                          opened.error());
+            QMetaObject::invokeMethod(
+                QCoreApplication::instance(),
+                [profile, key, alive, crypto, records = std::move(records),
+                 complete = std::move(complete)]() mutable {
+                    if (!alive->load(std::memory_order_acquire))
+                        return;
+                    if (!records) {
+                        complete(Reply::failure(records.error()));
+                        return;
+                    }
+                    QList<InnerThoughtSummary> summaries;
+                    for (const auto &record : records.value()) {
+                        const PrivateRecordAad aad{
+                            record.encrypted.schemaVersion, record.profileId,
+                            record.recordType, record.recordId,
+                            record.encrypted.keyVersion};
+                        auto plain =
+                            crypto->decrypt(record.encrypted, aad, key);
+                        if (!plain) {
+                            complete(Reply::failure(plain.error()));
+                            return;
+                        }
+                        auto parsed =
+                            parseSummary(QString::fromUtf8(plain.value()),
+                                         profile, record.sourceEventId,
+                                         record.recordId, record.createdAt);
+                        if (!parsed) {
+                            complete(Reply::failure(parsed.error()));
+                            return;
+                        }
+                        if (parsed.value().unresolved)
+                            summaries << parsed.value();
+                    }
+                    complete(Reply::success(summaries));
+                });
+        });
 }

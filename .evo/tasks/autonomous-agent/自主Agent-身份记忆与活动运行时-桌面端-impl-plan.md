@@ -250,19 +250,40 @@ Wave 6 校验（2026-10-17）：
 ## Task 7: 自主活动选择与持续意图
 
 - 关联设计: §3.8 自主活动选择与持续意图
-- 状态: [ ]
+- 状态: [x]
 - Wave: 7
 - 依赖: Task 1—Task 6
 
-文件：新增活动选择模块、`core/ai/task/agency_decision_service.*` 集成、身份/内心材料投影、能力目录；新增 `tests/test_activity_selector.cpp`；`CMakeLists.txt`。
+文件：新增 `core/ai/activity/activity_selector.*` 及材料类型/准备模块；调整 `activity_types/store/runtime.*`、`opportunity_types/store/coordinator.*` 的选择权限与原子采用；`core/ai/ai_brain*.cpp/.h` 安装真实 consumer；`core/ai/task/{task_types,task_orchestrator,agency_decision_service}.*` 接续活动与宿主自主属性；`core/ai/plugin/{plugin_runtime,capability_types}.*`、`plugin_gateway.cpp` 及 `core/ai/tools/runtime/`、`ai_tool.h` 的内部范围和调用属性传播。按现有结构调整身份/persona/记忆/私有内心仓库服务的只读投影，必要 `core/ai/runtime/agent_runtime_services.*`；`AutonomyConfig`、`core/configLoader/config_manager.*`、默认配置及 `tests/test_autonomy_config.py` 接入/验证显式 memoryAccess 与保存兼容。新增 `tests/test_activity_selector.cpp`；相关回归沿用 `tests/test_activity_opportunities.cpp`、`test_activity_runtime.cpp`、`test_plugin_runtime.cpp`、`test_module_connectivity.cpp`、`test_task_orchestrator.cpp`、`test_sleep_cycle.cpp`、`test_task_experience.cpp`（现有私有内心服务测试所在套件）。根 `CMakeLists.txt` 注册；主 agent 维护设计与过程文档，实现 agent 独占源码/build。
 
-测试用例：
-- selectActivity_relevantFriendMemory_proposesEvidenceBasedCheck（happy path）。
-- applySelection_newReadingCapability_startsWithoutSoftwareNameBranch（happy path）。
+测试用例（来源主设计 v1.7 §3.8.7 及工程边界）：
+- selectActivity_relevantFriendMemory_proposesEvidenceBasedCheck（happy path，真实 person/memory/source 引用）。
+- selectActivity_unknownReferenceOrWrongAudience_rejectsWithoutDispatch。
+- applySelection_newReadingCapability_startsWithoutSoftwareNameBranch（happy path，两个不同名称包与真实 runner）。
+- internalActivity_explicitAutonomousGrant_propagatesThroughActualToolExecution；ownerOnlyOrAutonomousFalse_denied。
+- applySelection_ticketConsumptionAndForegroundAcquisition_atomicRollback。
+- applySelection_newUserInputOrStaleCatalog_rejectsOldChoice。
+- applySelection_checkpointResume_preservesBudgetAndContext；userAndRestartPause_remainUserOnly。
 - applySelection_smallEmotionChange_preservesCurrentActivity。
 - applySelection_importantReply_preservesReadingCheckpoint。
 - applySelection_emptyQueryWait_recordsCheckWithoutInventingConversation。
-- selectActivity_noSuitableActivity_acceptsRest。
+- selectActivity_noSuitableActivity_acceptsRest（happy path）；providerFailure_distinctFromWait。
+- selectActivity_schemaRepairAndFallback_shareTwoActualSendLimit。
+- selectionMaterials_unresolvedThought_hasRealSource；unavailableReportedAndPrivateMaterialExcludedExternally。
+- aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner（生产接线，受控 provider）。
+- aiBrain_configurationFailureReportedAndRecovery_doesNotPretendEnabled。
+- memoryAccess_defaultClosedExplicitInternalScope_externalDoesNotInherit；relationsFromActualCues_doNotInventParticipants。
+
+工程约定以主设计 v1.7 为准；先核对 Task 6 最终接口，不创建第二机会/预算权威。
+
+Wave 7 校验（2026-10-17）：
+- 文件冲突：通过，单 Task 实现 agent 串行拥有源码/tests/CMake/build，主 agent 维护设计与审查；阶段边界明确交回所有权。
+- 构建/全量测试：完整应用和全部测试目标构建成功；最终 CTest **55/55 组通过**（75.44 秒），工具契约 **70/70**。选择器 21/21、任务执行器 30/30；没有删除或跳过失败断言。
+- 行为覆盖：全部计划行为都有对应测试，见审查记录；包含真实两套包/操作名、真实记忆与新消息材料、默认/撤销权限、原子采用回滚、fallback/修复额度、安全检查点和真实空查询归档。
+- 测试布局：通过，新增 tests/test_activity_selector.cpp 由根 CMakeLists.txt 注册，其他回归放既有对应套件。
+- 实现锚点与留痕：通过，consumer、ModelRouter actual-attempt hooks、ActivityStore 原子采用、当前 grant validator、私有材料读取与 runner 检查点均核对；context.md 有记录。主设计 8 切片各 7 节、8 Task、38 本地链接和 SQL 迁移/重复/FK/空库撤销演练通过；git diff --check 干净。
+
+最终日志：/tmp/task7-final-build.log、/tmp/task7-final-ctest.log、/tmp/task7-final-contract.log，结构化实现报告 /tmp/task7-implementation-report.md。Wave 7 五项通过；外部观察归一化与真实聊天等待链路由 Task 8 实施。
 
 ## Task 8: 外部观察与 QQ 式自主使用验证
 

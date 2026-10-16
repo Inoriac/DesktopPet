@@ -15,6 +15,7 @@
 | 1.4 | 2026-10-16 | §3.5 开发核对：标准 Schema 验证、宿主配置与授权、结果映射、工具元数据和生产异步调用入口 |
 | 1.5 | 2026-10-16 | §3.6 开发核对：runtime schema 3、后台活动执行、旧任务投影、动作回执、恢复依据与经历消费接管 |
 | 1.6 | 2026-10-16 | §3.7 开发核对：宿主 readiness、机会租约、默认关闭设置、每次模型发送的共享预算与生产接线 |
+| 1.7 | 2026-10-17 | §3.8 开发核对：宿主范围与引用材料、内部活动授权、原子采用选择、持续意图及真实生产选择器 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -104,6 +105,8 @@
 
 预算与时间的工程约定（§3.7—§3.8）：
 
+- §3.8 的内部材料授权另由 `aiSettings.autonomy.memoryAccess={owner:false, conversationIds:[]}` 控制。owner 必须为布尔值，conversationIds 最多 32 个非空、去重的本 profile 稳定会话 ID；错误类型/超限明确拒绝或关闭对应授权，不能扩大范围。它只影响无会话的 Internal 自主材料投影，与工具 effects/executor/autonomous 授权独立。外部机会始终重新加载当前会话范围。首版作为 JSON 工程配置保留，Launcher 保存不得丢失。
+
 - 配置位于 `aiSettings.autonomy`，不随模型配置切换：`enabled=false`、`paused=false`、`coalesceWindowMs=1000`、`coalesceMaxWaitMs=3000`、`minDecisionIntervalMs=60000`、`noOpBackoffMs=300000`、`maxNoOpBackoffMs=1800000`、`localTickMs=15000`、`ticketTtlMs=120000`、`maxSelectionCallsPerHour=12`、`maxActiveMsPerHour=900000`、`maxTokensPerHour=120000`、`maxEstimatedCostMicrosPerHour=1000000`、`unknownAttemptCostMicros=50000`。非正上限、超界数值、错误类型使用保守默认或明确拒绝，不能解释为无限预算。Launcher 行为设置提供自主启用与暂停开关，其余工程参数保留在 JSON；保存不覆盖其他配置。
 - token 与费用上限针对自主选择及 `intent.origin=self/event` 的自主活动模型请求共享；明确用户请求的普通对话/任务保持原规则，不因自主预算耗尽被阻断。自主性是宿主保存的活动属性，不能从是否 External/LocalOwner 推断。选择次数限额只计选择/修复，活动请求另计共享 token/费用。
 - 每次实际 provider attempt（包括 fallback、格式修复）在发送前写入不可复用的宿主 attemptId 及预算预留；选择一张 ticket 最多允许两次实际发送，跨路由不重置。底层 retryCount 保持 0。输入预留按完整序列化 messages/tools/schema 的 UTF-8 字节数加固定封装余量 1024，再加正数 output maxTokens；这是保守估计，不宣称精确 tokenizer。费用预留为 `max(route.estimatedCostMicros, unknownAttemptCostMicros)`，均以宿主配置的同一微费用单位计，不宣称账单精度。
@@ -172,7 +175,8 @@ sequenceDiagram
 | 🆕 | core/ai/plugin/*、core/ai/ai_brain_plugins.cpp | Plugin / Skill 清单、发现目录、按需加载、宿主授权和主体调用绑定 |
 | 🔧 | [tool_registry](../../core/ai/tool_registry.h)、[tool_runtime](../../core/ai/tools/runtime/tool_runtime.h)、[mcp_client](../../core/ai/mcp/mcp_client.h) | 动态工具、异步执行、完整 MCP 调用和生命周期 |
 | 🆕 / 🔧 | core/ai/ai_tool.h、core/ai/tools/runtime/tool_policy.*、ui/petwindow_ai.cpp、third_party/jsoncons、contracts/tools/* | 内置工具宿主元数据与工厂注册、离线标准 Schema 验证、Plugin / Skill 清单及配置示例 |
-| 🆕 | core/ai/activity/* | ActivityStore、ActivityRuntime/串行执行 worker、OpportunityScheduler、ActivitySelector |
+| 🆕 | core/ai/activity/* | ActivityStore、ActivityRuntime/串行执行 worker、OpportunityCoordinator、ActivitySelector 与有界材料准备 |
+| 🔧 | core/ai/reflection/{inner_thought_service,sqlite_private_psyche_repository}.*、core/ai/memory/、core/ai/identity/、core/ai/runtime/ | 为选择器读取真实记忆/内心引用和人格关系投影，保持私有内容及线程边界 |
 | 🔧 | [task_orchestrator](../../core/ai/task/task_orchestrator.cpp)、[task_store](../../core/ai/task/task_store.cpp)、[agency_decision_service](../../core/ai/task/agency_decision_service.cpp) | 复用执行检查点，支持挂起集合，移除按工具名字固定的准入分支 |
 | 🔧 | [ai_brain](../../core/ai/ai_brain.h)、[ai_brain_loop](../../core/ai/ai_brain_loop.cpp) | 单一协调入口、从专用主动聊天触发过渡到通用选择 |
 | 🔧 | [event schema](../../core/ai/event/event_schema_registry.h)、[runtime growth](../../core/ai/runtime/agent_runtime_growth.cpp)、[反思类型](../../core/ai/reflection/reflection_types.h) | 带人物与上下文的来源、运行记录与长期经历分流 |
@@ -648,11 +652,11 @@ Result<ActionSnapshot, DomainError> markActionDispatched(const ActionDispatch& r
 - waitingCondition 包含 kind、conversationId/sourceId、原消息/动作锚点、resumeRule 及实际 receipt/tracking 引用。WaitingExternal 只接受已归档完成发送的消息等待，或 accepted 且有有效跟踪方式的远端事件等待；仍在工具返回、观察或验证阶段保持 Running。
 - accepted 远端任务的原回执 tracking 至少包含非空 sourceId、remoteJobId，并保存于原动作；kind=event 的等待绑定同一 callId/sourceId/remoteJobId。后续真实成功回执须匹配原 tracking，observeAction 才在结算动作的同一事务写 ActionCompleted outbox。其 payload 使用 profile_id、activity_id、call_id、source_id、remote_job_id 和实际完成时间，eventId 由 profile/activity/call/type 确定性生成；重复回执只产生一个完成事件。身份不匹配的结果不得结算或唤醒。Event/Scheduler 恢复读取已提交事件并核对这些字段；Scheduler 还要求 resumeRule 明确允许 scheduler，不能将 event 规则视为调度授权。
 - event 恢复必须读取已提交 MessageObserved/允许的完成事件，核对 profile、conversation/source、原等待锚点之后的消息水位及非自身回显；找不到证据则拒绝。user 恢复只来自宿主明确用户入口；scheduler 仅可处理原 waitingCondition 明确允许且已经就绪的等待，不能恢复 user pause 或 restart pause。
-- 宿主重新准备 ContextSpec 并核对人物、会话 revision、所需能力的版本/启用/授权及剩余预算；校验结果不能由选择模型传入。进入事务再核对活动、前台及会话 revision。若目标需替换当前前台，只有当前没有未结算工具/验证且可保存检查点时，才在一个事务将原前台 Paused/checkpoint、目标 Running；失败保持两者原状。无匹配事件不得唤醒，Cancelled/Completed/Failed 不恢复。
+- 宿主重新准备 ContextSpec 并核对人物、会话 revision、所需能力的版本/启用/授权及剩余预算；校验结果不能由选择模型传入。进入事务再核对活动、前台及会话 revision。若目标需替换当前前台，只有当前没有未结算工具/验证且可保存检查点时，才在一个事务将原前台 Paused/checkpoint、目标 Running；失败保持两者原状。事件等待没有匹配事件不得唤醒，Cancelled/Completed/Failed 不恢复；自主 checkpoint/budget/dependency 暂停另按 §3.8 的有效选择票据与宿主资格恢复，user/restart 暂停仍仅用户可恢复。
 - 有会话的活动在写事务外通过 ConversationStore::currentContext 取得最新完整范围，再以该范围验证能力；写事务内复核 conversationRevision 与 identityRevision，不复制人物目录算法或仅给旧 ContextSpec 增加版本号。不含会话的 Internal 活动保持自身真实来源与已授权范围，不借用 local_owner。
 - worker 在活动转换或切换前读取当前 runner 的累计 activeMs，随内部 DTO 交给对应事务，以 max(原累计,宿主累计) 更新预算。双活动切换将原前台最后一个活跃时段与暂停状态一并提交，再释放 runner 并刷新投影；不先做一笔使 expectedRevision 失效的独立保存，也不在切换后拿旧 TaskRecord 覆盖新状态。小于 -1 的输入和整数溢出拒绝，等待与停机不计入。
-- PluginRuntime 提供捕获共享状态的能力校验器 factory，ActivityRuntime 将其交给 worker/ActivityStore 使用。校验器通过短锁取得当前配置与目录快照，复用现有 scope/grant 规则，检查启用、版本、引用和宿主授权；退役后拒绝新启动/恢复。不得捕获 GUI QObject 并跨线程调用，也不得把一次启动时的授权快照永久当成当前权限；实际执行仍进行最终权限检查。
-- startActivity 前台空闲时取得前台，有 Running 时保存 Ready 候选；选择预留有效时不得越过其所有权。Ready 的普通候选不自动抢前台。用户暂停标记 user，重启统一标记 restart；预算/依赖/模型错误分别保留原因。
+- PluginRuntime 提供捕获共享状态的能力校验器 factory，ActivityRuntime 将其交给 worker/ActivityStore 使用。校验器通过短锁取得当前配置与目录快照，复用现有 scope/grant 规则，检查启用、版本、引用和宿主授权，并接受活动库从真实 intent 推导的自主属性；退役后拒绝新启动/恢复。不得捕获 GUI QObject 并跨线程调用，也不得把一次启动时的授权快照永久当成当前权限；实际执行仍进行最终权限检查。
+- startActivity 前台空闲时取得前台，有 Running 时保存 Ready 候选；选择预留有效时不得越过其所有权。Ready 的普通候选不自动抢前台。用户暂停标记 user，重启统一标记 restart；预算/依赖/模型错误分别保留原因。真实 TaskOrchestrator 以宿主枚举/字段传递 pauseReason，TaskRecord 兼容保存不能把所有 pause 都映射成 user，亦不能从模型理由或显示文案推断类型。自主恢复仍只接受 §3.8 明确允许且条件已恢复的原因，累计预算不清零。
 - 已验证为空的查询可用实际 completed 调用证据结束活动，无需伪造聊天或文档结果；此类检查不生成长期经历。模型失败只能 Failed/Paused，模型文本的“没有消息”不是空查询证据。
 - Completed 的类型化和 TaskRecord 兼容入口都须确认该活动没有 prepared/dispatched/accepted/unknown 调用，再核对成功证据；不能用一个已成功步骤掩盖仍未结算的另一个动作。Cancelled/Failed 可以保留未知动作事实供后续核对。
 
@@ -793,11 +797,11 @@ agent_runtime_state.control_json 保存 nextConsiderAt、lastDecisionAt、observ
 
 ### 3.8 自主活动选择与持续意图
 
-> 依赖：§3.2—§3.7。ActivitySelector 是新增逻辑角色，可复用现有模型连接。
+> 依赖：§3.2—§3.7。ActivitySelector 是新增逻辑角色，复用现有模型连接、机会账本和活动执行器。
 
 #### 1. 模块定位
 
-在获得机会后回答“现在值得做什么”，产生有依据、可执行、可结束的活动意图。活动不依赖软件名称枚举；不要求每个插件实现动机生成器。
+取得一次机会后，依据人物、经历、兴趣和已有承诺，提出“现在值得做什么”。选择负责目的，TaskOrchestrator/AgencyDecisionService 负责已接受目的的持续执行；工具只提供可发现的能力，不负责替主体制造动机。
 
 #### 2. 核心服务接口
 
@@ -806,51 +810,78 @@ void selectActivity(const SelectionRequest& request, SelectionCompletion complet
 Result<AppliedSelection, DomainError> applySelection(const SelectionProposal& proposal);
 ```
 
+上述为语义入口；生产使用 ActivitySelector 的异步材料准备/模型选择、ActivityRuntime 的异步采用 facade，以及 ActivityStore 同 UoW 的 ticket 消耗/活动转换。不得只在测试里组合几个 Store 调用代替生产接线。
+
 | 输入 | 值来源 | 说明 |
 | --- | --- | --- |
-| ticket、runtimeRevision、catalogRevision | 系统推导（来源: §3.7 的预留与当前目录） | stale ticket 不派发动作 |
-| currentActivity、suspendedActivities、readyObligations | 系统推导（来源: 活动库及调度） | 明确已有承诺与恢复成本 |
-| persona、emotion、relationships | 系统推导（来源: 本轮版本快照与相关人物） | 不把情绪写回长期人格 |
-| memoryCues、unresolvedIntentRefs、recentActivitySummary | 系统推导（来源: 允许范围内的记忆与真实活动记录） | 来源引用可核对；反思中的 desire 是候选意图，不是已完成事实 |
-| capabilitySummaries | 系统推导（来源: §3.5 的轻量目录检索） | 包含当前就绪状态，细节仍按需加载 |
-| proposal.decision、intent、evidenceRefs、nextConsiderAt | 调用方传入 | 模型结构化输出，程序验证后才能使用 |
+| ticket、runtimeRevision、hostEpoch、catalogRevision | 系统推导（来源: §3.7 预留、宿主实例与当前能力目录） | 旧提案不取得前台；自身预算写入不误使票据失效 |
+| ContextSpec、可恢复活动的上下文 | 系统推导（来源: 宿主机会分流、ConversationStore 当前上下文及已保存活动） | 模型不能修改人物/权限/profile 或任意切换会话 |
+| currentActivity、suspendedActivities、readyObligations | 系统推导（来源: 活动库与调度） | 只列出经宿主判断可继续的活动；用户/重启暂停不能自行恢复 |
+| persona、emotion、relationships | 系统推导（来源: 现有人格投影及相关人物的关系快照） | 长期人格与本次情绪分别提供 |
+| memoryCues、observedMessageCues、unresolvedIntentRefs、recentActivitySummary | 系统推导（来源: 本上下文获准的真实记忆、ticket 原事件、内心活动和经历） | 每条有真实 ID/来源；不能用字符串摘要替代可核对引用 |
+| capabilitySummaries | 系统推导（来源: PluginRuntime 的授权范围与轻量目录） | 当前可用性、版本与摘要；方法/参数按需加载 |
+| proposal.decision、candidates、intent、evidenceRefs、nextConsiderAt | 调用方传入（来源: 模型结构化输出） | 不含程序路径、任意命令、宿主 grant 或预算增量 |
+| 宿主预算及自主属性 | 系统推导（来源: §1.5 和已采用意图 origin=self/event） | 使用 §3.7 真实 attempt hooks，不能由模型关闭计费 |
+
+工程边界：
+
+- 每次机会固定宿主范围：普通空闲为 Internal 且无会话；已分流的外部消息机会使用实际 External 会话。开始活动只采用该范围，恢复活动重新读取原范围。无会话 Internal 的 owner/conversation 记忆权限来自宿主 memoryAccess 显式配置，不由插件、模型或关系亲疏授予。Internal 材料不直接复制给外部活动；外部执行重新准备人物、记忆与能力。已有不同会话的承诺可列为引用，但不得把其他会话的私有正文混进本次外部材料。
+- 材料有界：首版最多 8 条记忆线索、8 条本次已提交消息线索、4 条未解内心线索、8 个近期/待恢复活动及 16 个能力摘要，并限制单条/整体文本。消息线索从 ticket.eventIds 读取同会话的已提交原始 MessageObserved，排除 self/history，不从模型或任意日志制造；没有旧记忆也可依据实际新消息选择。全部身份/能力材料装配完成后再执行整体长度门禁。从相关人物与内容检索；无特定线索时使用有界近期候选。来源不明、不可解密或库不可用分别标注不可用；不会伪造“没有牵挂”。
+- 关系材料至多包含 8 个真实人物的当前关系快照：External 取当前会话相关参与人；Internal 取本次获准 cue 的真实 person 引用。关系查询使用临时投影，不把被提及人物加入活动的 participantPersonIds。缺状态表示未知，不伪造亲密度。
+- 记忆使用带 ID/attribution 的结构化投影；InnerThoughtSummary 的 desire/unresolved 通过已有加密服务按真实 entryId/sourceEventId 获取。私有全文只在本次获准 Internal 材料中短暂使用，不把完整快照复制到普通日志或未加密 intent_json。源事件、personId、activityId 和 CapabilityRef 必须属于本 profile 并存在；输出引用只能来自所提供且仍有效的集合。
+- 数据库读取在独立 worker/UoW，已有对象的投影在其 owner 线程使用；不跨线程携带 QSqlDatabase、身份仓库或私有加密对象。AIBrain 安装真实 consumer 时处理 opportunity 配置/初始化错误，不把初步 GUI readiness 当作最终准入；最终授权来自持久 Store。无法启用时返回明确故障并允许宿主重新初始化。
+- 新宿主 grant 范围为 `scope=internal_activity`，仅匹配 Internal + 空 conversationId，配置中不得同时给出 conversationId；旧 local_owner/具体 conversationId 规则保留。缺失/未知 scope 不扩大权限。effects、executor、对象参数与路径限制照常检查；`autonomous=true` 仍是独立要求。discover/load/生命周期 validator/实际 invoke 使用同一授权逻辑。ActivityStore 从真实 intent 判断自主性，validator probe、TaskToolCall、ToolExecutionRequest 和 CapabilityCall 全程保留该属性，不能假冒 LocalOwner。
 
 #### 3. 模块业务流程
 
-1. 构建有界材料：当前活动、近期/待恢复活动、相关人物与记忆、少量未解疑问，以及按这些线索检索的能力摘要。始终允许 wait。
-2. 当前任务承诺与已就绪输入先处理；探索机会由模型结合兴趣、关系、当前状态、近期重复和成本产生至多 4 个候选，选择 start/resume/continue/wait。
-3. 输出含简短理由、来源引用、目的、首步所需能力、stopWhen、reconsiderWhen。模型不输出程序路径、任意命令或授权增量。无须存储完整推演过程。
-4. 检查引用存在、提案使用的版本仍有效、当前状态未改变、预算和活动目标在允许范围内。首次使用工具先 load，缺依赖则记录不可执行原因，不编造结果。
-5. start/resume/continue 交给 §3.6；wait 释放决策预留并保存下一次考虑。无重要变化时不在每个工具步骤重新调用选择模型。
-6. 执行经历更新最近活动和未解决意图。只有实际外部结果进入事实；兴趣变化通过现有反思/成长流程积累，单次选择不直接改长期性格或关系。
+1. §3.7 提供当前 ticket，选择器异步准备同一范围内的有限材料。显式用户任务、到期提醒及可验证的等待回复义务优先；原始输入须先完成归档和宿主分流，普通外部线索不能一直留作阻塞自身选择的 ready obligation。
+2. 模型产生至多 4 个候选并选择 start/resume/continue/wait，理由、真实来源、目标、首步能力及 stopWhen/reconsiderWhen 都须可校验。始终允许休息；不得强制发言或为了活跃度制造任务。
+3. 通过 ModelRouter 和 §3.7 hooks 发起选择；一张票据最多两次真实发送，包含任何 fallback/修复。结构错误最多修复一次；依赖/模型/存储故障与正常 wait 分开。
+4. 宿主校验全部引用、范围、目录/活动版本、当前 host/input 水位与预算。首次使用工具先 load；包禁用、版本变化、授权缺失或未知来源拒绝采用，不能挑一个名字近似的工具代替。
+5. 采用 start/resume/continue 时，同一 runtime UoW 校验有效 ticket、当前前台/上下文并消耗选择预留、创建/激活目标活动。任一 SQL/CAS/授权失败全部回滚；不得先 finish ticket 再调用普通 start。提交后 worker 激活真实 TaskOrchestrator，后续调用保持原活动身份。
+6. wait 保存简短理由、来源水位和夹取后的 nextConsiderAt，并释放预留。未采用候选仅有界诊断，不批量写长期记忆。已发生的模型用量仍保留。
+7. 多步执行持续同一意图；小幅情绪变化、普通 heartbeat 不重新选择。重要回复可由宿主请求在安全检查点切换；未结算工具/验证不允许抢占。继续原活动须保留 checkpoint、累计用量、人物/会话及人格版本。
+8. 自主 Paused/checkpoint 可以凭有效选择票据及宿主资格恢复；预算/依赖原因需先证明额度/依赖恢复。Paused/user、Paused/restart 仍仅用户恢复；不得把模型选择包装成 ResumeActor::User。WaitingExternal 仍核对真实已提交匹配事件和原 resumeRule。
+9. 真实空查询可按 §3.6 完成并记录 lastCheckedAt；选择 wait 本身不表示查过消息。仅有外部证据的结果进入事实和经历；反思通过原流程逐渐影响兴趣，不由单次活动选择直接改人格或关系。
 
 #### 4. 数据变更
 
-选择被采用后在 agent_activities.intent_json 保存目的、依据、停止/再评估条件、能力引用及选择快照。wait 的简短依据与下次时间保存在 agent_runtime_state。未采用候选只保留有界诊断，不逐条写长期记忆。正式“牵挂”使用已有内心活动/记忆来源引用，避免新增每分钟自增的心理数值。
+沿用 agent_activities.intent_json 保存目的、理由、证据引用、stopWhen、reconsiderWhen、CapabilityRef 和必要选择版本；已有 execution_json 保存实际检查点。暂停恢复沿用原预算。agent_runtime_state 保存 wait/失败的简短诊断、下次考虑时间及实际查看时间；查看时间由已完成查询的真实证据产生。票据消耗与活动状态转换共享 UoW，不增加独立的第二活动或预算表。
+
+已有内心活动和记忆来源引用承载持续意图；若新增只读近期内心索引查询，不复制私有全文或新增每分钟自增的心理数值。
 
 #### 5. 实现锚点
 
 | 现有位置 | 接入 |
 | --- | --- |
-| AgencyDecisionService | 仍判断已给定任务的接受/继续等；ActivitySelector 提供上游目的，职责不重复 |
-| PersonaProjector / IdentityBaseline | 使用现有 initiative、openness、sociability、persistence 等投影 |
-| InnerThoughtSummary::desire / unresolved | 从有真实来源的未解意图中取候选线索；读取本身不创造新的经历 |
-| TaskRecord::completionCriteria、TaskBudget | stopWhen 与宿主上限分开；“看过且无新内容”可完成，“超时”只能暂停/失败 |
-| 能力目录 | 先按摘要发现，再加载具体方法/操作；插件总介绍不替代独立条目描述 |
+| AIBrain / ActivityRuntime::setOpportunityConsumer | Bootstrap 后安装真实选择器，处理配置失败；旧实例 consumer 失效 |
+| OpportunityStore / ModelRouter::completeAsync、completeStreamAsync | 复用当前 ticket、每次实际请求计费与有界修复；不另计免费调用 |
+| ActivityStore::startActivity / resumeActivity | 抽取同事务采用路径；保留普通用户入口、原状态机和未知动作保护 |
+| AgencyDecisionService::request / TaskOrchestrator | 仍负责已给定目的的接受/继续；完整执行计划沿用同一活动 |
+| PersonaProjector / IdentityBaseline / taskIdentityContext | 使用 initiative、openness、sociability、persistence 等现有投影 |
+| MemoryAttributionService / MemoryStore 的范围查询 | 提供带真实引用及人物归属的有界线索 |
+| InnerThoughtService::readSummary / SqlitePrivatePsycheRepository | 扩展只读近期未解线索入口，保留加密与原始事件来源 |
+| PluginRuntime::findGrant / makeCapabilityValidator / executeGateway | 显式 internal_activity scope 与自主标记贯穿；摘要发现后再加载 |
+| TaskRecord::completionCriteria、TaskBudget | stopWhen 与宿主上限分开；超时不能冒充成功 |
 
 #### 6. 异常场景
 
-- 业务异常：意图引用不存在的人、活动或能力，拒绝采用并记录 UNKNOWN_REFERENCE；最多一次结构修复，不自动切换到近似工具。
-- 系统异常：模型失败按 §1.5 有界重试，仍失败则释放预留并延后；不能报告主体“不想做”掩盖服务故障。
-- 考虑期间收到主人输入：使 ticket 失效，选择结果不抢占输入；已消耗预算仍记账。
+- 未知人物/活动/记忆/能力、范围不匹配或模型自填授权返回 UNKNOWN_REFERENCE/INVALID_INPUT/PERMISSION_DENIED；最多一次结构修复，不自动降低权限门槛。
+- 模型失败、材料库故障、不可解密与正常休息分开记录。任何未发送请求不得绕过预算门禁；存储失败不派发新动作。
+- 考虑期间用户输入、宿主换代、目录/活动版本改变使旧 ticket 失效；实际请求费用照常结算，旧提案不抢占用户。
+- 用户/重启暂停、终结活动和缺少真实唤醒证据都不能由选择模型强行恢复。
 
 #### 7. 关键行为场景
 
-- selectActivity：空闲且记得朋友今天考试，提出先查看相关会话；依据指向该人物的真实记忆。
-- applySelection：新安装阅读插件后，目录出现对应能力，可形成阅读活动而不用修改主体软件名称分支。
-- 正在读文章时小波动不触发换活动；重要回复到达后保存阅读进度再处理。
-- 查询 QQ 没有新内容后选择 wait，运行记录更新 lastCheckedAt；不形成“与朋友聊过天”的虚假记忆。
-- 没有合适活动时休息是正常结果，既不强制发言也不制造任务失败。
+- selectActivity：朋友考试线索来自实际人物记忆和原事件，提出对应的获准查看；虚构人物、来源或错误受众的线索不采用。
+- applySelection：新阅读包进入目录并启动真实 runner；替换包/操作名字后主体没有软件名称分支。
+- Internal 活动通过显式内部自主 grant 使用能力；只有 owner grant 或 autonomous=false 时拒绝，实际调用标记完整传播。
+- start/resume 原子消耗票据；写失败保持原预留和前台，新主人输入优先于旧选择结果。
+- 自主阅读的小幅情绪变化不重选；重要回复在安全检查点切换并可恢复阅读进度，用户/重启暂停仍拒绝自主恢复。
+- 实际空查询可完成并更新查看时间，随后 wait 不产生“和朋友聊过”的假经历。
+- 没有合适活动是正常休息；格式错误修复计入两次发送上限，服务故障单列，不伪装成休息。
+- 未解内心线索具有真实 sourceEventId，外部上下文不继承 Internal 的私有材料或授权。
+- 生产 AIBrain consumer → ModelRouter 受控 provider → ActivityRuntime/ActivityStore → 真实执行器的链路可验证，不能仅证明解析器输出正确。
 
 ### 3.9 外部观察与 QQ 式自主使用验证
 
@@ -940,7 +971,7 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ActivityIntent | goal、reason、origin=user/self/event、ContextSpec、evidenceRefs、capabilityRefs、stopWhen、reconsiderWhen；预算由宿主附加 |
 | ActivitySnapshot | activityId、profileId、state、revision、context、intent、executionPhase、checkpoint、waitingCondition、budget、generation |
 | ActivityTransition | profileId、activityId、expectedRevision、targetState、reason、checkpoint；进入等待附 waitingCondition，终结附 result 与 evidenceRefs |
-| ResumeActivityRequest | profileId、activityId、expectedRevision、triggerRef、resumeActor=user/event/scheduler、expectedForegroundId/Revision；validatedContext/能力验证由宿主服务获取，按 pauseReason 和等待证据校验谁可恢复 |
+| ResumeActivityRequest | profileId、activityId、expectedRevision、triggerRef、resumeActor=user/event/scheduler/selection、expectedForegroundId/Revision；selection 仅在原子采用有效选择票据时适用。validatedContext/能力验证由宿主服务获取，按 pauseReason 和等待证据校验谁可恢复 |
 | ActionObservation | profileId、activityId、callId、dispatchGeneration、outcome、receipt、observedAt；从实际执行器生成并绑定原派发身份 |
 | ActionPreparation / ActionDispatch | 前者包含活动版本、宿主 logicalStepId、CapabilityRef、参数与预算引用；后者包含已准备 callId、活动版本与generation。logicalKey/argumentRef由宿主生成 |
 | RuntimeReadiness / IdleDecision | 输入前台活动/选择预留、readyObligations、pendingResults；返回 isIdle、reason、blockingRefs |
@@ -948,7 +979,7 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | OpportunityFinish | ticketId、宿主 hostRevision/inputWatermark、outcome=wait/cancel/failure、reason、nextConsiderAt 可空；adopted 必须与活动转换同事务 |
 | ModelBudgetRequest / ModelBudgetReservation | 宿主 attemptId、profileId、ticketId 或 activityId、purpose=selection/activity、完整输入估计、maxOutputTokens、routeEstimatedCostMicros 与时钟；返回持久预留及剩余额度 |
 | ModelBudgetSettlement | 原 profile/attemptId、实际 usage 或 unknown、已发送状态与宿主时间；按原账本幂等，不从当前前台取归属 |
-| SelectionRequest / SelectionProposal | request 含 ticket、快照和有界材料；proposal 含 ticketId、decision=start/resume/continue/wait、activityId 或 intent、evidenceRefs、reason、nextConsiderAt 可空 |
+| SelectionRequest / SelectionProposal | request 含精确 ticket（含 hostEpoch）、host ContextSpec、catalogRevision、快照和有界真实引用材料；proposal 含 decision=start/resume/continue/wait、至多四个候选、activityId 或 intent、evidenceRefs、reason、nextConsiderAt 可空。票据由宿主绑定，不由模型回填；模型不得填写授权/profile/任意会话，实际采用由宿主再次校验 |
 | AppliedSelection | accepted、activityId 可空、nextConsiderAt 可空、stateRevision、reason；未采用提案不代表创建活动 |
 
 audience 为宿主结构化属性：
@@ -1042,7 +1073,7 @@ MCP 默认保留完整 structuredContent/content 协议结果，有业务 schema
 
 command 与 MCP 绑定继续遵守[调用模板](../tools/能力包声明模板.md)。PolicyEngine 采用注册能力和 effect 元数据，加上宿主验证的执行器类型/对象范围检查；禁止插件自授予权限。对现有内置工具，注册时附实际 effect 元数据以替代名字猜测。
 
-PluginHostConfig 的 grants 由宿主安装/设置入口建立，每项绑定 profileId、conversationId 或 local_owner 范围、pluginId/entryId/operationId、允许 effects、执行器程序或 MCP connection、可选对象参数/允许路径及 autonomous 开关。没有匹配记录不授予执行；context/grantRef 由宿主选择，模型传同名字段不覆盖宿主值。路径限制按规范化与符号链接后的实际目标检查。执行器配置、grant 或包内容修改使旧加载句柄失效；派发点复核后才启动。禁用请求不等待执行完成再生效，正在运行的调用使用原快照结算。
+PluginHostConfig 的 grants 由宿主安装/设置入口建立，每项绑定 profileId、具体 conversationId 或 local_owner 或显式 scope=internal_activity 范围、pluginId/entryId/operationId、允许 effects、执行器程序或 MCP connection、可选对象参数/允许路径及 autonomous 开关。internal_activity 必须没有 conversationId，仅匹配 Internal 且无会话；与 conversationId 同填或未知 scope 一律拒绝。旧配置没有 scope 时仍使用原 conversationId 规则。自主属性由真实 intent.origin 推导，发现/加载/生命周期能力校验与实际调用均复用范围判定并保留此属性；模型不能关闭自主收费或授权要求。没有匹配记录不授予执行；context/grantRef 由宿主选择，模型传同名字段不覆盖宿主值。路径限制按规范化与符号链接后的实际目标检查。执行器配置、grant 或包内容修改使旧加载句柄失效；派发点复核后才启动。禁用请求不等待执行完成再生效，正在运行的调用使用原快照结算。
 
 ReplyBinding 将 §3.4 的 channel/connection/目标与 CapabilityRef/grantRef 绑定。argumentBindings 的键是非空 JSON Pointer，装配可嵌套的参数对象，值仅为 content、remoteConversationId、replyToRemoteId；引用消息 ID 使用 ConversationService 已解析的远端 ID，不能使用宿主本地 messageId。非法 Pointer、未知来源或父子路径冲突在发送前拒绝。回执 remoteMessageIdPointer、contentPointer、occurredAtPointer 从 CapabilityOutcome.data 提取实际远端 ID、正文与 ISO 8601 时间，默认分别为 /remote_message_id、/content、/occurred_at；缺失或格式非法视为 unknown，不能用模型建议正文或本地时钟补造成功回执。这些映射复用 JSON Pointer 和通用对象装配，不添加 QQ 等软件判断。未知发送状态不重发；完成由 ConversationStore 原幂等回执路径记录。
 

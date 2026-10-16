@@ -535,3 +535,51 @@ std::shared_ptr<ModelAttemptHooks> ActivityRuntime::modelBudgetHooks(QString act
     };
     return hooks;
 }
+
+void ActivityRuntime::applySelectionAsync(SelectionAdoption adoption,
+                                          Completion completion) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(w, [w, self, adoption = std::move(adoption),
+                                  completion =
+                                      std::move(completion)]() mutable {
+        auto result =
+            w->tasks && w->tasks->activityStore()
+                ? w->tasks->activityStore()->applySelection(adoption)
+                : Result<ActivitySnapshot, DomainError>::failure(domainError(
+                      "STORE_UNAVAILABLE", "Activity store unavailable"));
+        if (result && w->runner) {
+            w->runner->releaseCurrent();
+            w->runner->activate(result.value().activityId);
+        }
+        if (self)
+            QMetaObject::invokeMethod(
+                self, [self, result = std::move(result),
+                       completion = std::move(completion)]() mutable {
+                    if (self && completion)
+                        completion(std::move(result));
+                });
+    });
+}
+void ActivityRuntime::checkpointForImportantReplyAsync(
+    QString eventId, ControlCompletion completion) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(
+        w, [w, self, eventId, completion = std::move(completion)]() mutable {
+            auto result =
+                w->tasks && w->tasks->activityStore()
+                    ? w->tasks->activityStore()->validateImportantReply(eventId)
+                    : Result<void, DomainError>::failure(domainError(
+                          "STORE_UNAVAILABLE", "Activity store unavailable"));
+            if (result && w->runner)
+                w->runner->requestSafeCheckpoint(eventId);
+            if (self)
+                QMetaObject::invokeMethod(
+                    self, [self, result = std::move(result),
+                           completion = std::move(completion)]() mutable {
+                        if (self && completion)
+                            completion(std::move(result));
+                    });
+        });
+}

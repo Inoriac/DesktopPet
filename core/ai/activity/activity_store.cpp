@@ -367,9 +367,10 @@ QJsonObject executionForTask(const TaskRecord &t,
                              const QJsonObject &previous = {}) {
     auto j = t.toJson();
     for (const auto &key :
-         QStringList{"id", "profile_id", "status", "goal", "origin_kind",
-                     "context", "activity_revision", "activity_generation",
-                     "budget", "tool_calls", "replans", "active_ms"})
+         QStringList{"activity_intent", "id", "profile_id", "status", "goal",
+                     "origin_kind", "context", "activity_revision",
+                     "activity_generation", "budget", "tool_calls", "replans",
+                     "active_ms"})
         j.remove(key);
     QJsonArray steps;
     for (const auto &value : t.steps) {
@@ -392,6 +393,7 @@ Result<TaskRecord, DomainError> projectTask(const ActivitySnapshot &a,
     t.originKind = a.context.originKind;
     t.autonomous = a.intent["origin"] == "self" || a.intent["origin"] == "event";
     t.goal = a.intent["goal"].toString();
+    t.activityIntent = a.intent;
     t.activityRevision = a.revision;
     t.activityGeneration = a.generation;
     t.status = a.state == ActivityState::Running ? a.executionPhase
@@ -403,6 +405,7 @@ Result<TaskRecord, DomainError> projectTask(const ActivitySnapshot &a,
     if (a.state == ActivityState::Cancelled && a.executionPhase == "Declined")
         t.status = "Declined";
     t.reason = a.execution["reason"].toString(a.pauseReason);
+    t.hostPauseReason = a.pauseReason;
     t.budget = a.budget.limits;
     t.toolCalls = a.budget.toolCalls;
     t.replans = a.budget.replans;
@@ -631,7 +634,7 @@ ActivityStore::find(const QString &id) const {
     return readActivity(tx.db, m_profileId, id);
 }
 Result<QList<ActivitySnapshot>, DomainError>
-ActivityStore::list(const QList<ActivityState> &states) const {
+ActivityStore::list(const QList<ActivityState> &states, int limit) const {
     Transaction tx(m_databasePath, false);
     if (!tx.ok())
         return Result<QList<ActivitySnapshot>, DomainError>::failure(
@@ -651,11 +654,18 @@ ActivityStore::list(const QList<ActivityState> &states) const {
                 a.error());
         if (states.isEmpty() || states.contains(a.value().state))
             rows.append(a.value());
+        if (limit > 0 && rows.size() >= limit)
+            break;
     }
     return Result<QList<ActivitySnapshot>, DomainError>::success(rows);
 }
 Result<ActivitySnapshot, DomainError>
 ActivityStore::startActivity(const ActivityIntent &intent) {
+    return startActivityImpl(intent, nullptr);
+}
+Result<ActivitySnapshot, DomainError>
+ActivityStore::startActivityImpl(const ActivityIntent &intent,
+                                 const SelectionAdoption *adoption) {
     if (intent.context.profileId != m_profileId ||
         intent.goal.trimmed().isEmpty() || intent.goal.size() > 16000 ||
         intent.budget.maxToolCalls < 0 || intent.budget.maxReplans < 0 ||
@@ -668,8 +678,10 @@ ActivityStore::startActivity(const ActivityIntent &intent) {
             return fail<ActivitySnapshot>(
                 "DEPENDENCY_UNAVAILABLE",
                 "Capability validator is unavailable");
-        auto checked =
-            m_capabilityValidator(intent.capabilityRefs, intent.context);
+        auto checked = m_capabilityValidator(
+            intent.capabilityRefs, intent.context,
+            intent.origin == "self" || intent.origin == "event",
+            adoption ? adoption->request.catalogRevision : 0);
         if (!checked)
             return Result<ActivitySnapshot, DomainError>::failure(
                 checked.error());
@@ -677,15 +689,41 @@ ActivityStore::startActivity(const ActivityIntent &intent) {
     Transaction tx(m_databasePath);
     if (!tx.ok())
         return Result<ActivitySnapshot, DomainError>::failure(tx.failure);
+    if (adoption) {
+        auto scope = OpportunityStore::validateMemoryScope(tx.db, m_profileId,
+                                                           intent.context);
+        if (!scope)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                scope.error());
+        auto consumed = OpportunityStore::consumeSelection(
+            tx.db, m_profileId, adoption->request.ticket,
+            adoption->proposal.decision, OpportunityStore::systemClock());
+        if (!consumed)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                consumed.error());
+    }
     auto busy = foregroundBusy(tx.db, m_profileId);
     if (!busy)
         return Result<ActivitySnapshot, DomainError>::failure(busy.error());
+    if (adoption && busy.value())
+        return fail<ActivitySnapshot>("STALE_CONTEXT",
+                                      "Foreground is occupied");
     ActivitySnapshot a;
     a.activityId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     a.profileId = m_profileId;
     a.context = intent.context;
     a.context.activityId = a.activityId;
     a.intent = intent.toJson();
+    if (adoption) {
+        const auto identity = adoption->request.identity;
+        a.execution["personality_version"] =
+            identity["personality"].toObject()["version"];
+        a.execution["personality_snapshot"] = identity["personality"];
+        a.execution["relationship_snapshot"] = identity["relationships"];
+        a.execution["initial_emotion"] = identity["emotion"];
+        a.execution["current_emotion"] = identity["emotion"];
+        a.execution["completion_criteria"] = intent.stopWhen;
+    }
     a.execution["created_at"] = now();
     a.budget.limits = intent.budget;
     if (intent.origin == "self" || intent.origin == "event") {
@@ -701,6 +739,12 @@ ActivityStore::startActivity(const ActivityIntent &intent) {
     auto checked = validateScope(tx.db, a.context);
     if (!checked)
         return Result<ActivitySnapshot, DomainError>::failure(checked.error());
+    if (adoption &&
+        (a.context.conversationRevision !=
+             intent.context.conversationRevision ||
+         a.context.identityRevision != intent.context.identityRevision))
+        return fail<ActivitySnapshot>("STALE_CONTEXT",
+                                      "Selection conversation changed");
     auto saved = writeActivity(tx.db, a, true);
     if (!saved)
         return Result<ActivitySnapshot, DomainError>::failure(saved.error());
@@ -810,6 +854,12 @@ ActivityStore::transitionActivity(const ActivityTransition &t) {
         a.waitingCondition = w;
         a.waitingCondition["since"] = now();
     }
+    if (t.targetState == ActivityState::Paused && t.reason == "checkpoint") {
+        auto settled = requireSettledActions(tx.db, m_profileId, a.activityId);
+        if (!settled)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                settled.error());
+    }
     if (t.targetState == ActivityState::Completed) {
         auto settled = requireSettledActions(tx.db, m_profileId, a.activityId);
         if (!settled)
@@ -881,6 +931,11 @@ ActivityStore::transitionActivity(const ActivityTransition &t) {
 }
 Result<ActivitySnapshot, DomainError>
 ActivityStore::resumeActivity(const ResumeActivityRequest &r) {
+    return resumeActivityImpl(r, nullptr);
+}
+Result<ActivitySnapshot, DomainError>
+ActivityStore::resumeActivityImpl(const ResumeActivityRequest &r,
+                                  const SelectionAdoption *adoption) {
     if (r.profileId != m_profileId || r.foregroundActiveMs < -1)
         return fail<ActivitySnapshot>("INVALID_INPUT",
                                       "Resume belongs to another profile");
@@ -910,7 +965,11 @@ ActivityStore::resumeActivity(const ResumeActivityRequest &r) {
         if (!m_capabilityValidator)
             return fail<ActivitySnapshot>("DEPENDENCY_UNAVAILABLE",
                                           "Capability validation is required");
-        auto checked = m_capabilityValidator(refs, fresh);
+        auto checked = m_capabilityValidator(
+            refs, fresh,
+            before.value().intent["origin"] == "self" ||
+                before.value().intent["origin"] == "event",
+            adoption ? adoption->request.catalogRevision : 0);
         if (!checked)
             return Result<ActivitySnapshot, DomainError>::failure(
                 checked.error());
@@ -928,7 +987,12 @@ ActivityStore::resumeActivity(const ResumeActivityRequest &r) {
     if (activityTerminal(a.state) || a.state == ActivityState::Running)
         return fail<ActivitySnapshot>("INVALID_INPUT",
                                       "Activity cannot resume");
-    if (r.resumeActor != ResumeActor::User) {
+    if (r.resumeActor == ResumeActor::Selection &&
+        (!adoption || !selectionResumeEligible(a)))
+        return fail<ActivitySnapshot>("PERMISSION_DENIED",
+                                      "Pause requires user authority");
+    if (r.resumeActor != ResumeActor::User &&
+        r.resumeActor != ResumeActor::Selection) {
         if ((r.resumeActor == ResumeActor::Scheduler &&
              a.waitingCondition["resumeRule"] != "scheduler" &&
              a.waitingCondition["resumeRule"] != "event_or_scheduler") ||
@@ -1020,6 +1084,19 @@ ActivityStore::resumeActivity(const ResumeActivityRequest &r) {
         return fail<ActivitySnapshot>(
             "STALE_CONTEXT", "Conversation changed during resume validation");
     a.context = fresh;
+    if (adoption) {
+        auto scope = OpportunityStore::validateMemoryScope(tx.db, m_profileId,
+                                                           a.context);
+        if (!scope)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                scope.error());
+        auto consumed = OpportunityStore::consumeSelection(
+            tx.db, m_profileId, adoption->request.ticket,
+            adoption->proposal.decision, OpportunityStore::systemClock());
+        if (!consumed)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                consumed.error());
+    }
     auto busy = foregroundBusy(tx.db, m_profileId, a.activityId);
     if (!busy)
         return Result<ActivitySnapshot, DomainError>::failure(busy.error());
@@ -1319,6 +1396,13 @@ ActivityStore::observeAction(const ActionObservation &o) {
     q.addBindValue(c.callId);
     if (!q.exec())
         return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+    if (c.status == "succeeded" && c.result["readOnly"].toBool() &&
+        c.result["businessEvidence"].toBool()) {
+        auto recorded = OpportunityStore::recordActualCheck(
+            tx.db, m_profileId, c.activityId, c.callId, o.observedAt);
+        if (!recorded)
+            return recorded;
+    }
     if (trackedCompletion) {
         EventSchemaRegistry schemas;
         auto registered = registerBuiltInEventSchemas(schemas);
@@ -1460,6 +1544,38 @@ Result<void, DomainError> ActivityStore::saveTask(TaskRecord &task,
                                   "Task completion evidence is not verified");
         }
     }
+    bool emptyCheck = false;
+    if (task.status == "Completed" &&
+        (a.intent["origin"] == "self" || a.intent["origin"] == "event")) {
+        QSqlQuery q(tx.db);
+        q.prepare("SELECT status,result_json FROM agent_action_calls WHERE "
+                  "profile_id=? AND activity_id=?");
+        q.addBindValue(m_profileId);
+        q.addBindValue(task.id);
+        if (!q.exec())
+            return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+        bool any = false, onlyEmpty = true;
+        while (q.next()) {
+            auto result = object(q.value(1));
+            if (!result["businessEvidence"].toBool(false))
+                continue;
+            if (q.value(0) != "succeeded") {
+                onlyEmpty = false;
+                continue;
+            }
+            any = true;
+            auto receipt = result["receipt"].toObject();
+            if (receipt.contains("data"))
+                receipt = receipt["data"].toObject();
+            else if (receipt["receipt"].isObject())
+                receipt = receipt["receipt"].toObject();
+            onlyEmpty = onlyEmpty && result["readOnly"].toBool() &&
+                        receipt["empty"].toBool(false) &&
+                        receipt["items"].isArray() &&
+                        receipt["items"].toArray().isEmpty();
+        }
+        emptyCheck = any && onlyEmpty;
+    }
     const auto target = stateForTask(task);
     if (!insert && target == ActivityState::Running &&
         a.state != ActivityState::Running)
@@ -1483,7 +1599,9 @@ Result<void, DomainError> ActivityStore::saveTask(TaskRecord &task,
     a.execution = executionForTask(task, a.execution);
     a.checkpoint = {{"steps", task.steps.size()}, {"plan", task.plan}};
     if (target == ActivityState::Paused)
-        a.pauseReason = task.needsRevalidation ? "user" : "dependency";
+        a.pauseReason = task.hostPauseReason.isEmpty()
+                            ? (task.needsRevalidation ? "user" : "dependency")
+                            : task.hostPauseReason;
     // Tool counts are exclusively charged at the dispatch boundary.
     a.budget.limits = task.budget;
     if (insert)
@@ -1493,7 +1611,7 @@ Result<void, DomainError> ActivityStore::saveTask(TaskRecord &task,
     auto saved = writeActivity(tx.db, a, insert);
     if (!saved)
         return saved;
-    if (enqueue) {
+    if (enqueue && !emptyCheck) {
         auto e = enqueueExperience(tx, m_databasePath, task);
         if (!e)
             return e;
@@ -1580,4 +1698,158 @@ ActivityStore::acknowledgeExperience(const QString &id) {
 Result<qint64, DomainError> ActivityStore::remainingAutonomousActiveMs() const {
     return OpportunityStore(m_profileId, m_databasePath)
         .remainingActiveMs(OpportunityStore::systemClock());
+}
+
+Result<ActivitySnapshot, DomainError>
+ActivityStore::applySelection(const SelectionAdoption &a) {
+    const auto &r = a.request;
+    const auto &p = a.proposal;
+    if (r.context.profileId != m_profileId ||
+        r.ticket.profileId != m_profileId ||
+        (p.decision != "start" && p.decision != "resume" &&
+         p.decision != "continue"))
+        return fail<ActivitySnapshot>("INVALID_INPUT",
+                                      "Invalid selection adoption");
+    for (const auto &ref : p.evidenceRefs)
+        if (!r.references.contains(ref))
+            return fail<ActivitySnapshot>("UNKNOWN_REFERENCE",
+                                          "Selection evidence was not offered");
+    if (r.validateSources) {
+        auto valid = r.validateSources();
+        if (!valid)
+            return Result<ActivitySnapshot, DomainError>::failure(
+                valid.error());
+    }
+    // Reference existence is checked again from the current profile. Memory
+    // revision and audience are verified by the host projection; cross-database
+    // facts never pretend to share a transaction.
+    {
+        Transaction tx(m_databasePath, false);
+        if (!tx.ok())
+            return Result<ActivitySnapshot, DomainError>::failure(tx.failure);
+        for (const auto &ref : p.evidenceRefs) {
+            QString table, column;
+            if (ref.startsWith("event:")) {
+                table = "event_log";
+                column = "event_id";
+            } else if (ref.startsWith("person:")) {
+                table = "agent_persons";
+                column = "person_id";
+            } else if (ref.startsWith("activity:")) {
+                table = "agent_activities";
+                column = "id";
+            } else
+                continue;
+            QSqlQuery q(tx.db);
+            q.prepare("SELECT 1 FROM " + table + " WHERE profile_id=? AND " +
+                      column + "=?");
+            q.addBindValue(m_profileId);
+            q.addBindValue(ref.mid(ref.indexOf(':') + 1));
+            if (!q.exec())
+                return fail<ActivitySnapshot>("STORE_UNAVAILABLE",
+                                              q.lastError().text());
+            if (!q.next())
+                return fail<ActivitySnapshot>("UNKNOWN_REFERENCE",
+                                              "Selection source disappeared");
+        }
+    }
+    if (p.decision == "start") {
+        if (p.intent.context.cacheKey() != r.context.cacheKey() ||
+            p.intent.context.participantPersonIds !=
+                r.context.participantPersonIds ||
+            p.intent.origin != (r.context.originKind == OriginKind::External
+                                    ? "event"
+                                    : "self") ||
+            p.intent.capabilityRefs.isEmpty() || p.intent.stopWhen.isEmpty() ||
+            p.intent.reconsiderWhen.isEmpty())
+            return fail<ActivitySnapshot>(
+                "INVALID_INPUT", "Start changed host selection context");
+        for (const auto &ref : p.intent.capabilityRefs) {
+            bool found = false;
+            for (const auto &v : r.capabilities) {
+                auto c = v.toObject();
+                found = found || (c["pluginId"] == ref.pluginId &&
+                                  c["id"] == ref.entryId &&
+                                  c["version"] == ref.entryVersion);
+            }
+            if (!found)
+                return fail<ActivitySnapshot>("UNKNOWN_REFERENCE",
+                                              "Capability was not offered");
+        }
+        auto intent = p.intent;
+        intent.context = r.context;
+        intent.evidenceRefs = p.evidenceRefs;
+        intent.budget = TaskBudget{};
+        return startActivityImpl(intent, &a);
+    }
+    bool offered = false;
+    for (const auto &row : r.activities)
+        if (row.activityId == p.activityId &&
+            row.revision == p.expectedRevision && selectionResumeEligible(row))
+            offered = true;
+    if (!offered)
+        return fail<ActivitySnapshot>("UNKNOWN_REFERENCE",
+                                      "Resume was not offered");
+    ResumeActivityRequest resume;
+    resume.profileId = m_profileId;
+    resume.activityId = p.activityId;
+    resume.expectedRevision = p.expectedRevision;
+    resume.resumeActor = ResumeActor::Selection;
+    return resumeActivityImpl(resume, &a);
+}
+Result<void, DomainError>
+ActivityStore::validateImportantReply(const QString &id) const {
+    Transaction tx(m_databasePath, false);
+    if (!tx.ok())
+        return Result<void, DomainError>::failure(tx.failure);
+    QSqlQuery q(tx.db);
+    q.prepare("SELECT payload_json FROM event_log WHERE profile_id=? AND "
+              "event_id=? AND type='MessageObserved'");
+    q.addBindValue(m_profileId);
+    q.addBindValue(id);
+    if (!q.exec())
+        return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+    if (!q.next())
+        return fail<void>("UNKNOWN_REFERENCE",
+                          "Important reply has not committed");
+    auto payload = object(q.value(0));
+    if (payload["sender_kind"] == "self" ||
+        payload["historical_import"].toBool() ||
+        payload["conversation_id"].toString().isEmpty())
+        return fail<void>("INVALID_INPUT", "Reply is not a new incoming fact");
+    return Result<void, DomainError>::success();
+}
+
+Result<QList<ActivitySnapshot>, DomainError>
+ActivityStore::selectionCandidates(int limit) const {
+    Transaction tx(m_databasePath, false);
+    if (!tx.ok())
+        return Result<QList<ActivitySnapshot>, DomainError>::failure(
+            tx.failure);
+    QSqlQuery q(tx.db);
+    q.prepare(
+        "SELECT id FROM agent_activities WHERE profile_id=? AND "
+        "json_extract(intent_json,'$.origin') IN ('self','event') AND "
+        "(state='Ready' OR (state='Paused' AND "
+        "json_extract(execution_json,'$.pauseReason') IN "
+        "('checkpoint','budget','dependency'))) AND "
+        "json_extract(budget_json,'$.used.active_ms')<json_extract(budget_json,"
+        "'$.limits.max_active_ms') AND "
+        "json_extract(budget_json,'$.used.tool_calls')<json_extract(budget_"
+        "json,'$.limits.max_tool_calls') ORDER BY updated_at DESC,id LIMIT ?");
+    q.addBindValue(m_profileId);
+    q.addBindValue(std::clamp(limit, 1, 8));
+    if (!q.exec())
+        return fail<QList<ActivitySnapshot>>("STORE_UNAVAILABLE",
+                                             q.lastError().text());
+    QList<ActivitySnapshot> result;
+    while (q.next()) {
+        auto row = readActivity(tx.db, m_profileId, q.value(0).toString());
+        if (!row)
+            return Result<QList<ActivitySnapshot>, DomainError>::failure(
+                row.error());
+        if (selectionResumeEligible(row.value()))
+            result << row.value();
+    }
+    return Result<QList<ActivitySnapshot>, DomainError>::success(result);
 }

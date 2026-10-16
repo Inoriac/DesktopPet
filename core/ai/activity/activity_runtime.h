@@ -37,6 +37,9 @@ class ActivityRuntime final : public QObject {
     void resolveUnknownAsync(QString activityId, QString callId,
                              bool succeeded);
     void startActivityAsync(ActivityIntent intent, Completion completion);
+    void applySelectionAsync(SelectionAdoption adoption, Completion completion);
+    void checkpointForImportantReplyAsync(QString eventId,
+                                          ControlCompletion completion = {});
     void transitionActivityAsync(ActivityTransition transition,
                                  Completion completion);
     void resumeActivityAsync(ResumeActivityRequest request,

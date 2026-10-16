@@ -6,6 +6,7 @@
 
 #include "ai_brain.h"
 #include "activity/activity_runtime.h"
+#include "activity/activity_selector.h"
 #include "plugin/plugin_runtime.h"
 #include "reflection/memory_consolidation_service.h"
 #include "memory/memory_metadata.h"

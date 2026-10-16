@@ -5,6 +5,26 @@ AutonomyConfig AutonomyConfig::fromJson(const QJsonObject &j) {
     AutonomyConfig c;
     c.enabled = j["enabled"].toBool(false);
     c.paused = j["paused"].toBool(false);
+    const auto access = j["memoryAccess"].toObject();
+    bool valid = !j.contains("memoryAccess") ||
+                 (j["memoryAccess"].isObject() &&
+                  (!access.contains("owner") || access["owner"].isBool()) &&
+                  (!access.contains("conversationIds") ||
+                   access["conversationIds"].isArray()));
+    c.memoryAccessOwner = access["owner"].toBool(false);
+    for (const auto &id : access["conversationIds"].toArray()) {
+        if (!id.isString() || id.toString().trimmed().isEmpty() ||
+            id.toString().size() > 128)
+            valid = false;
+        else if (!c.memoryAccessConversationIds.contains(id.toString()))
+            c.memoryAccessConversationIds << id.toString();
+    }
+    if (c.memoryAccessConversationIds.size() > 32)
+        valid = false;
+    if (!valid) {
+        c.memoryAccessOwner = false;
+        c.memoryAccessConversationIds.clear();
+    }
     auto number = [&j](const char *key, qint64 fallback, qint64 maximum) {
         const auto v = j[key];
         return v.isDouble() && v.toDouble() == double(v.toInteger()) && v.toInteger() > 0 &&
@@ -65,7 +85,10 @@ IdleDecision evaluateIdle(const RuntimeReadiness &r) {
     return d;
 }
 QJsonObject OpportunityTicket::toJson() const {
-    return {{"ticketId", ticketId},
+    return {{"hostEpoch", hostEpoch},
+            {"contextId", contextId},
+            {"eventIds", QJsonArray::fromStringList(eventIds)},
+            {"ticketId", ticketId},
             {"profileId", profileId},
             {"runtimeRevision", runtimeRevision},
             {"hostRevision", qint64(hostRevision)},
@@ -76,6 +99,10 @@ QJsonObject OpportunityTicket::toJson() const {
 }
 OpportunityTicket OpportunityTicket::fromJson(const QJsonObject &j) {
     OpportunityTicket t;
+    t.hostEpoch = j["hostEpoch"].toString();
+    t.contextId = j["contextId"].toString();
+    for (const auto &id : j["eventIds"].toArray())
+        t.eventIds << id.toString();
     t.ticketId = j["ticketId"].toString();
     t.profileId = j["profileId"].toString();
     t.runtimeRevision = j["runtimeRevision"].toInteger();

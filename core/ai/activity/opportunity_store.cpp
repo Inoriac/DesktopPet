@@ -159,7 +159,11 @@ void anchor(QJsonObject &control, const OpportunityClock &c, qint64 logical) {
                     {"session", c.sessionId}};
 }
 QJsonObject configJson(const AutonomyConfig &c) {
-    return {{"maxSelectionCallsPerHour", c.maxSelectionCallsPerHour},
+    return {{"memoryAccess", QJsonObject{{"owner", c.memoryAccessOwner},
+                                         {"conversationIds",
+                                          QJsonArray::fromStringList(
+                                              c.memoryAccessConversationIds)}}},
+            {"maxSelectionCallsPerHour", c.maxSelectionCallsPerHour},
             {"maxActiveMsPerHour", c.maxActiveMsPerHour},
             {"maxTokensPerHour", c.maxTokensPerHour},
             {"maxEstimatedCostMicrosPerHour", c.maxEstimatedCostMicrosPerHour},
@@ -302,7 +306,9 @@ Result<void, DomainError> OpportunityStore::configure(const AutonomyConfig &conf
         s.control["paused"] = config.paused;
     s.control["configuredPaused"] = config.paused;
     s.control["autonomyConfig"] = configJson(config);
-    if (!config.enabled || s.control.value("paused").toBool() ||
+    if (previous.value("autonomyConfig").toObject() !=
+            s.control.value("autonomyConfig").toObject() ||
+        !config.enabled || s.control.value("paused").toBool() ||
         expired(s.control.value("selectionReservation").toObject(), clock))
         s.control.remove("selectionReservation");
     const bool restart =
@@ -427,6 +433,9 @@ OpportunityStore::considerOpportunity(const OpportunitySignal &signal) {
     OpportunityTicket ticket;
     ticket.ticketId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     ticket.profileId = m_profileId;
+    ticket.hostEpoch = signal.readiness.hostEpoch;
+    ticket.contextId = signal.contextId;
+    ticket.eventIds = signal.eventIds;
     ticket.runtimeRevision = s.revision + 1;
     ticket.hostRevision = signal.readiness.hostRevision;
     ticket.inputWatermark =
@@ -724,4 +733,89 @@ Result<void, DomainError> OpportunityStore::bindHostEpoch(const QString &epoch,
     if (committed)
         m_hostEpoch = epoch;
     return committed;
+}
+
+Result<void, DomainError> OpportunityStore::consumeSelection(
+    QSqlDatabase db, const QString &profile, const OpportunityTicket &ticket,
+    const QString &decision, const OpportunityClock &clock) {
+    auto loaded = read(db, profile);
+    if (!loaded)
+        return Result<void, DomainError>::failure(loaded.error());
+    auto s = loaded.value();
+    const auto reservation = s.control.value("selectionReservation").toObject();
+    if (ticket.profileId != profile || ticket.ticketId.isEmpty() ||
+        reservation != ticket.toJson() || expired(reservation, clock) ||
+        s.control.value("hostEpoch").toString() != ticket.hostEpoch ||
+        s.control.value("hostRevision").toInteger() !=
+            qint64(ticket.hostRevision) ||
+        s.control.value("inputWatermarks").toObject() !=
+            ticket.inputWatermark ||
+        s.control.value("paused").toBool() ||
+        !s.control.value("autonomyEnabled").toBool())
+        return fail<void>("STALE_CONTEXT", "Selection is no longer authorized");
+    auto config =
+        AutonomyConfig::fromJson(s.control.value("autonomyConfig").toObject());
+    auto used = totals(s.control, logicalNow(s.control, clock));
+    if (used.tokens >= config.maxTokensPerHour ||
+        used.cost >= config.maxEstimatedCostMicrosPerHour ||
+        used.active >= config.maxActiveMsPerHour)
+        return fail<void>(
+            "BUDGET_EXHAUSTED",
+            "Autonomous execution budget exhausted after selection");
+    s.control.remove("selectionReservation");
+    s.control["lastDecision"] =
+        QJsonObject{{"ticketId", ticket.ticketId}, {"outcome", decision}};
+    s.control["observedWatermarks"] =
+        mergeInput(s.control.value("observedWatermarks").toObject(),
+                   ticket.inputWatermark);
+    return write(db, profile, s);
+}
+
+Result<void, DomainError>
+OpportunityStore::recordActualCheck(QSqlDatabase db, const QString &profile,
+                                    const QString &activity,
+                                    const QString &call, const QDateTime &at) {
+    auto loaded = read(db, profile);
+    if (!loaded)
+        return Result<void, DomainError>::failure(loaded.error());
+    auto s = loaded.value();
+    auto previous = QDateTime::fromString(
+        s.control.value("lastCheckedAt").toString(), Qt::ISODateWithMs);
+    if (!previous.isValid() || at > previous) {
+        s.control["lastCheckedAt"] = at.toUTC().toString(Qt::ISODateWithMs);
+        s.control["lastCheck"] =
+            QJsonObject{{"activityId", activity}, {"callId", call}};
+    }
+    return write(db, profile, s);
+}
+
+Result<void, DomainError>
+OpportunityStore::validateMemoryScope(QSqlDatabase db, const QString &profile,
+                                      const ContextSpec &context) {
+    if (context.originKind != OriginKind::Internal)
+        return Result<void, DomainError>::success();
+    auto state = read(db, profile);
+    if (!state)
+        return Result<void, DomainError>::failure(state.error());
+    auto config = AutonomyConfig::fromJson(
+        state.value().control.value("autonomyConfig").toObject());
+    if (context.allowOwnerMemory && !config.memoryAccessOwner)
+        return fail<void>("PERMISSION_DENIED",
+                          "Owner memory authorization was revoked");
+    for (const auto &id : context.authorizedConversationIds) {
+        if (!config.memoryAccessConversationIds.contains(id))
+            return fail<void>("PERMISSION_DENIED",
+                              "Conversation memory authorization was revoked");
+        QSqlQuery q(db);
+        q.prepare(
+            "SELECT 1 FROM agent_conversations WHERE profile_id=? AND id=?");
+        q.addBindValue(profile);
+        q.addBindValue(id);
+        if (!q.exec())
+            return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+        if (!q.next())
+            return fail<void>("UNKNOWN_REFERENCE",
+                              "Authorized conversation is unavailable");
+    }
+    return Result<void, DomainError>::success();
 }

@@ -19,8 +19,20 @@ OpportunityCoordinator::OpportunityCoordinator(QString p, QString path, QObject 
     });
 }
 Result<void, DomainError> OpportunityCoordinator::configure(const AutonomyConfig &c) {
-    if (!m_initializationError.code.isEmpty())
-        return Result<void, DomainError>::failure(m_initializationError);
+    if (!m_initializationError.code.isEmpty()) {
+        auto snapshot = store.snapshot();
+        if (!snapshot)
+            return Result<void, DomainError>::failure(snapshot.error());
+        const auto owner = snapshot.value()["hostEpoch"].toString();
+        if (!owner.isEmpty() && owner != m_hostEpoch)
+            return Result<void, DomainError>::failure(
+                domainError("STALE_CONTEXT", "Opportunity host replaced"));
+        auto bound =
+            store.bindHostEpoch(m_hostEpoch, OpportunityStore::systemClock());
+        if (!bound)
+            return bound;
+        m_initializationError = {};
+    }
     config = c;
     auto r = store.configure(c, OpportunityStore::systemClock());
     if (r && c.enabled)
@@ -53,6 +65,10 @@ Result<void, DomainError> OpportunityCoordinator::publish(const OpportunitySigna
             }
         }
         auto d = evaluateIdle(effective);
+        if (r && d.canDeliberate) {
+            d.canDeliberate = false;
+            d.reason = consumer ? "checking" : "no_consumer";
+        }
         if (!r) {
             d.canDeliberate = false;
             d.reason = r.error().code;
@@ -70,6 +86,19 @@ void OpportunityCoordinator::consider(OpportunitySignal signal) {
     if (!consumer)
         return;
     auto r = store.considerOpportunity(signal);
+    if (publishDecision) {
+        auto d = evaluateIdle(signal.readiness);
+        d.canDeliberate = false;
+        d.reason =
+            r ? "selection_reserved"
+              : (r.error().code == "OPPORTUNITY_DEFERRED" ? r.error().message
+                                                          : r.error().code);
+        if (r) {
+            d.isIdle = false;
+            d.blockingRefs = {r.value().ticketId};
+        }
+        publishDecision(d);
+    }
     if (r)
         consumer(r.value());
 }

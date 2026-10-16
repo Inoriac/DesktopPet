@@ -70,6 +70,55 @@ class PluginRuntimeTests : public QObject {
     Q_OBJECT
 private slots:
   void
+  internalActivity_explicitAutonomousGrant_propagatesThroughActualToolExecution() {
+      QTemporaryDir dir;
+      const auto root = dir.filePath("package");
+      makeTool(root);
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      auto config = hostConfig(root);
+      auto permission = config["grants"].toArray()[0].toObject();
+      permission.remove("conversationId");
+      permission["scope"] = "internal_activity";
+      permission["autonomous"] = true;
+      config["grants"] = QJsonArray{permission};
+      QVERIFY(runtime.setHostConfiguration(config));
+      ContextSpec context;
+      context.profileId = "pet";
+      QVERIFY(!runtime.discoverCapabilities(context, true).isEmpty());
+      const CapabilityRef ref{"example.plugin", "example.tool", "1", "probe"};
+      QVERIFY(runtime.makeCapabilityValidator()({ref}, context, true,
+                                                runtime.catalogRevision()));
+      auto loaded = runtime.loadCapability(ref, context, true);
+      QVERIFY(loaded);
+      ToolExecutionRequest call;
+      call.requestId = "internal-call";
+      call.activityId = "internal-activity";
+      call.context = context;
+      call.autonomous = true;
+      call.toolName = "invoke_capability";
+      call.arguments = {{"ref", ref.toJson()},
+                        {"arguments", QJsonObject{{"value", "hello"}}}};
+      std::optional<ToolExecutionOutcome> outcome;
+      runtime.executeGateway(call, [&](auto value) { outcome = value; });
+      QTRY_VERIFY(outcome.has_value());
+      QVERIFY2(outcome->result.success,
+               qPrintable(outcome->result.errorMessage));
+      QVERIFY(outcome->executed);
+      permission["autonomous"] = false;
+      config["grants"] = QJsonArray{permission};
+      QVERIFY(runtime.setHostConfiguration(config));
+      QVERIFY(runtime.discoverCapabilities(context, true).isEmpty());
+      QVERIFY(!runtime.makeCapabilityValidator()({ref}, context, true,
+                                                 runtime.catalogRevision()));
+      QVERIFY(!runtime.loadCapability(ref, context, true));
+      permission["conversationId"] = "local_owner";
+      config["grants"] = QJsonArray{permission};
+      QVERIFY(!runtime.setHostConfiguration(config));
+      QVERIFY(runtime.setHostConfiguration(hostConfig(root)));
+      QVERIFY(runtime.discoverCapabilities(context, true).isEmpty());
+  }
+
+  void
   activityValidatorUsesCurrentGrantsVersionAndRetirementWithoutQObjectAccess() {
       QTemporaryDir dir;
       const auto root = dir.filePath("package");
@@ -81,22 +130,22 @@ private slots:
       const auto validator = runtime->makeCapabilityValidator();
       const CapabilityRef ref{"example.plugin", "example.tool", "1", "probe"};
       const auto local = ContextSpec::localOwner("pet");
-      QVERIFY(validator({ref}, local));
+      QVERIFY(validator({ref}, local, false, 0));
       auto stale = ref;
       stale.entryVersion = "old";
-      auto result = validator({stale}, local);
+      auto result = validator({stale}, local, false, 0);
       QVERIFY(!result);
       QCOMPARE(result.error().code, "STALE_REVISION");
       QVERIFY(runtime->setPluginEnabled(
           {ref.pluginId, false, runtime->catalogRevision()}));
-      result = validator({ref}, local);
+      result = validator({ref}, local, false, 0);
       QVERIFY(!result);
       QCOMPARE(result.error().code, "PLUGIN_DISABLED");
       QVERIFY(runtime->setPluginEnabled(
           {ref.pluginId, true, runtime->catalogRevision()}));
       auto restricted = local;
       restricted.originKind = OriginKind::Internal;
-      result = validator({ref}, restricted);
+      result = validator({ref}, restricted, false, 0);
       QVERIFY(!result);
       QCOMPARE(result.error().code, "PERMISSION_DENIED");
       restricted.originKind = OriginKind::External;
@@ -105,15 +154,15 @@ private slots:
       permission["conversationId"] = restricted.conversationId;
       config["grants"] = QJsonArray{permission};
       QVERIFY(runtime->setHostConfiguration(config));
-      QVERIFY(validator({ref}, restricted));
+      QVERIFY(validator({ref}, restricted, false, 0));
       permission["executor"] = "different-executable";
       config["grants"] = QJsonArray{permission};
       QVERIFY(runtime->setHostConfiguration(config));
-      result = validator({ref}, restricted);
+      result = validator({ref}, restricted, false, 0);
       QVERIFY(!result);
       QCOMPARE(result.error().code, "PERMISSION_DENIED");
       runtime.reset();
-      result = validator({ref}, local);
+      result = validator({ref}, local, false, 0);
       QVERIFY(!result);
       QCOMPARE(result.error().code, "CANCELLED");
   }

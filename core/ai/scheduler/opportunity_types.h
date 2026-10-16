@@ -7,6 +7,8 @@
 
 struct AutonomyConfig {
     bool enabled = false, paused = false;
+    bool memoryAccessOwner = false;
+    QStringList memoryAccessConversationIds;
     int coalesceWindowMs = 1000, coalesceMaxWaitMs = 3000;
     int minDecisionIntervalMs = 60000, noOpBackoffMs = 300000;
     int maxNoOpBackoffMs = 1800000, localTickMs = 15000, ticketTtlMs = 120000;
@@ -55,7 +57,8 @@ struct OpportunitySignal {
     qint64 expectedRuntimeRevision = -1;
 };
 struct OpportunityTicket {
-    QString ticketId, profileId;
+    QString ticketId, profileId, hostEpoch, contextId;
+    QStringList eventIds;
     qint64 runtimeRevision = 0;
     quint64 hostRevision = 0;
     QJsonObject inputWatermark;

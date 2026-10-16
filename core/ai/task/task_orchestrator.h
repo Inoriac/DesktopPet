@@ -24,6 +24,7 @@ public:
     bool hasUnfinishedTask() const { return !m_task.id.isEmpty() && !m_task.terminal(); }
     const TaskRecord& currentTask() const { return m_task; }
     // Signals are coalesced by trigger ID and judged only at safe checkpoints.
+    void requestSafeCheckpoint(const QString &eventId);
     void notifyAgencyTrigger(const QString& eventId, const QString& reason);
     // Unknown side effects must be checked externally or explicitly confirmed by the user.
     bool resolveUnknownCall(const QString& callId, bool succeeded, const QJsonObject& observation);
@@ -36,37 +37,42 @@ signals:
     void experienceReady(const QString& taskId);
     void activeChanged(bool active);
 private:
-    void accountTime();
-    void setActive(bool active);
-    bool persist(bool terminal = false);
-    bool transition(const QString& status);
-    void cancelPending();
-    void suspend(const QString& status, const QString& reason);
-    void finish(const QString& status, const QString& reason, const QString& result = {});
-    void assess(bool checkpoint, int attempt = 0);
-    void plan(bool replan = false, int attempt = 0);
-    void verify(int attempt = 0);
-    void replan(const QString& reason);
-    void dispatchTool(const QJsonObject& tool);
-    void dispatchValidatedTool(const QJsonObject &tool, bool readOnly);
-    void afterObservation();
-    void checkpointThenPlan();
-    void refreshContext();
-    bool hasUnknownAction() const;
-    bool hasRequiredCapability() const;
-    bool checkTimeBudget();
-    void callModel(TaskModelRequest request, std::function<void(TaskModelReply)> callback);
-    QJsonObject modelContext() const;
-    void heartbeat();
-    TaskStore* m_store = nullptr;
-    TaskDependencies m_dependencies;
-    TaskRecord m_task;
-    bool m_active = false;
-    bool m_pendingTool = false;
-    QString m_pendingId;
-    quint64 m_generation = 0;
-    quint64 m_requestSequence = 0;
-    QElapsedTimer m_clock;
-    QTimer m_deadline;
-    QTimer m_heartbeat;
+  bool applyRequestedCheckpoint();
+  QString m_checkpointTrigger;
+  void accountTime();
+  void setActive(bool active);
+  bool persist(bool terminal = false);
+  bool transition(const QString &status);
+  void cancelPending();
+  void suspend(const QString &status, const QString &reason);
+  void pauseWithReason(const QString &reason, const QString &hostReason);
+  void finish(const QString &status, const QString &reason,
+              const QString &result = {});
+  void assess(bool checkpoint, int attempt = 0);
+  void plan(bool replan = false, int attempt = 0);
+  void verify(int attempt = 0);
+  void replan(const QString &reason);
+  void dispatchTool(const QJsonObject &tool);
+  void dispatchValidatedTool(const QJsonObject &tool, bool readOnly);
+  void afterObservation();
+  void checkpointThenPlan();
+  void refreshContext();
+  bool hasUnknownAction() const;
+  bool hasRequiredCapability() const;
+  bool checkTimeBudget();
+  void callModel(TaskModelRequest request,
+                 std::function<void(TaskModelReply)> callback);
+  QJsonObject modelContext() const;
+  void heartbeat();
+  TaskStore *m_store = nullptr;
+  TaskDependencies m_dependencies;
+  TaskRecord m_task;
+  bool m_active = false;
+  bool m_pendingTool = false;
+  QString m_pendingId;
+  quint64 m_generation = 0;
+  quint64 m_requestSequence = 0;
+  QElapsedTimer m_clock;
+  QTimer m_deadline;
+  QTimer m_heartbeat;
 };

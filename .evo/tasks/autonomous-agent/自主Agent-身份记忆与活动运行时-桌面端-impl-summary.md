@@ -1,6 +1,6 @@
-# 自主 Agent 阶段实现总结：§3.2—§3.7
+# 自主 Agent 阶段实现总结：§3.2—§3.8
 
-设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由、插件与活动运行时，以及空闲机会调度的实现及验证。
+设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由、插件与活动运行时，以及空闲机会调度、自主活动选择的实现及验证。
 
 ## 已落地行为
 
@@ -118,3 +118,17 @@ aiSettings.autonomy 默认关闭；Launcher 提供自主启用和暂停。启用
 验证：完整构建成功，CTest **54/54 组通过**（72.34 秒）；机会套件 26/26、运行时服务 57/57、流式对话 79/79，工具契约 70/70。三个数据库竞争用例分别连续 50/50/100 次通过；TDD、覆盖映射、实现锚点和五项 Wave 校验见计划与审查记录。日志为 /tmp/task6-final-verified-build.log、/tmp/task6-final-verified-ctest.log、/tmp/task6-final-contract.log。
 
 第 7 阶段接入真实自主选择，第 8 阶段验证外部观察及消息流程；本阶段未接通真实 QQ。
+
+## §3.8 自主活动选择与持续意图
+
+AIBrain 安装真实 ActivitySelector consumer，使用原 ModelRouter 和按实际发送结算的预算 hooks。主体从有范围的记忆、真实新消息、未解内心线索、相关人物关系与能力摘要提出 start/resume/continue/wait；原子采用后激活现有 TaskOrchestrator。材料和引用有界，空材料允许休息，模型故障与休息分开。
+
+新增 Internal 显式自主工具 grant 和独立 memoryAccess 配置；默认不允许主人/外部会话私有记忆。真实 scope 与自主属性贯穿发现、加载、校验和调用，外部机会重新准备自己的上下文。恢复保留原预算、人物、检查点及人格版本，撤销授权后禁止旧 Internal 意图恢复；用户/重启暂停仍由用户恢复。
+
+重要回复先保存计划与实际结果再切换；异步工具准入及最终派发前均检查 checkpoint，保存失败不会再派发。真实只读查询才更新 lastCheckedAt，只有空查询的自主活动完成时不生成对话经历。配置失败、暂停、预算与任务结束状态从权威路径返回。
+
+主要文件：core/ai/activity/activity_selector.*、selection_types.h、ai_brain_autonomy.cpp，及原 ActivityStore/Runtime、机会账本、插件授权、任务执行器、私有内心读取/身份投影。新增 tests/test_activity_selector.cpp，回归沿用既有模块、插件、任务与配置套件。
+
+验证：完整构建成功，CTest **55/55 通过**（75.44 秒）；选择器 21/21、执行器 30/30、工具契约 70/70。真实两套包/操作名、权限撤销、同 ID 记忆改义、原子采用 SQL 回滚、fallback/修复计费、空查询归档和检查点故障均覆盖。真实 RED 与 GREEN、覆盖映射和 Wave 7 记录见审查文档；没有未同步设计偏差。
+
+日志：/tmp/task7-final-build.log、/tmp/task7-final-ctest.log、/tmp/task7-final-contract.log；报告 /tmp/task7-implementation-report.md。此阶段使用受控后端，不代表真实 QQ 已接通。

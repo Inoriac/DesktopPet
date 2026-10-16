@@ -55,8 +55,18 @@ Result<void,DomainError> PluginRuntime::setHostConfiguration(const QJsonObject& 
     }
     for (const auto& value:config["grants"].toArray()) {
         const auto grant=value.toObject();
-        if (grant["id"].toString().isEmpty() || grant["pluginId"].toString().isEmpty() || grant["profileId"]!=m_profileId || grant["conversationId"].toString().isEmpty() || grant["entryId"].toString().isEmpty())
+        if (grant["id"].toString().isEmpty() ||
+            grant["pluginId"].toString().isEmpty() ||
+            grant["profileId"] != m_profileId ||
+            grant["entryId"].toString().isEmpty())
             return fail<void>("INVALID_INPUT","Invalid host capability grant");
+        if ((grant.contains("scope") &&
+             (grant["scope"] != "internal_activity" ||
+              grant.contains("conversationId"))) ||
+            (!grant.contains("scope") &&
+             grant["conversationId"].toString().isEmpty()))
+            return fail<void>("INVALID_INPUT",
+                              "Conflicting or unknown host capability scope");
         if (grantIds.contains(grant["id"].toString())) return fail<void>("INVALID_INPUT","Duplicate host grant identity");
         grantIds.insert(grant["id"].toString());
     }
@@ -82,19 +92,33 @@ Result<PluginRegistration,DomainError> PluginRuntime::registerPlugin(const Plugi
 }
 
 quint64 PluginRuntime::catalogRevision() const { QMutexLocker lock(&m_state->mutex); return m_state->catalog->revision(); }
-Result<QJsonObject,DomainError> PluginRuntime::grant(const CapabilityRef& ref,const ContextSpec& context,const QString& id) const {
+Result<QJsonObject, DomainError>
+PluginRuntime::grant(const CapabilityRef &ref, const ContextSpec &context,
+                     const QString &id, bool autonomous) const {
     QMutexLocker lock(&m_state->mutex);
-    return findGrant(m_profileId, m_state->config, ref, context, id);
+    return findGrant(m_profileId, m_state->config, ref, context, id,
+                     autonomous);
 }
-Result<QJsonObject, DomainError> PluginRuntime::findGrant(
-    const QString &profile, const QJsonObject &configuration,
-    const CapabilityRef &ref, const ContextSpec &context, const QString &id) {
+Result<QJsonObject, DomainError>
+PluginRuntime::findGrant(const QString &profile,
+                         const QJsonObject &configuration,
+                         const CapabilityRef &ref, const ContextSpec &context,
+                         const QString &id, bool autonomous) {
     if (context.profileId != profile)
         return fail<QJsonObject>("INVALID_INPUT",
                                  "Capability context has the wrong profile");
     for (const auto &value : configuration["grants"].toArray()) {
         const auto g=value.toObject();
-        const bool scope=g["conversationId"]=="local_owner" ? context.originKind==OriginKind::LocalOwner : g["conversationId"]==context.conversationId;
+        const bool scope =
+            g["scope"] == "internal_activity"
+                ? context.originKind == OriginKind::Internal &&
+                      context.conversationId.isEmpty()
+            : g["conversationId"] == "local_owner"
+                ? context.originKind == OriginKind::LocalOwner
+                : !context.conversationId.isEmpty() &&
+                      g["conversationId"] == context.conversationId;
+        if (autonomous && !g["autonomous"].toBool())
+            continue;
         if (g["profileId"]==context.profileId && g["pluginId"]==ref.pluginId && scope && g["entryId"]==ref.entryId && (id.isEmpty() || g["id"]==id)
             && (ref.operationId.isEmpty() || g["operationId"]==ref.operationId)) return Result<QJsonObject,DomainError>::success(g);
     }
@@ -112,22 +136,37 @@ CapabilityBinding PluginRuntime::bindingFor(const QJsonObject &configuration,
                 .toObject()[ref.entryId + "/" + ref.operationId]
                 .toObject()};
 }
-QJsonArray PluginRuntime::discoverCapabilities(const ContextSpec& context) const {
+QJsonArray PluginRuntime::discoverCapabilities(const ContextSpec &context,
+                                               bool autonomous) const {
     std::shared_ptr<PluginCatalog> catalog; { QMutexLocker lock(&m_state->mutex); catalog=m_state->catalog; }
     QJsonArray result; if (context.profileId!=m_profileId) return result;
     for (const auto& value:catalog->discover()) {
         auto entry=value.toObject(); const auto ref=CapabilityRef{entry["pluginId"].toString(),entry["id"].toString(),entry["version"].toString(),{}};
-        if (context.originKind==OriginKind::LocalOwner || grant(ref,context)) { entry["catalogRevision"]=qint64(catalog->revision()); result.append(entry); }
+        if ((!autonomous && context.originKind == OriginKind::LocalOwner) ||
+            grant(ref, context, {}, autonomous)) {
+            entry["catalogRevision"] = qint64(catalog->revision());
+            result.append(entry);
+        }
     }
-    { QMutexLocker lock(&m_state->mutex); for (const auto& skill:LearnedSkillAdapter::discover(m_state->learned,context)) result.append(skill); }
+    {
+        QMutexLocker lock(&m_state->mutex);
+        for (const auto &skill : LearnedSkillAdapter::discover(
+                 autonomous ? QList<SkillEntry>{} : m_state->learned, context))
+            result.append(skill);
+    }
     return result;
 }
-Result<LoadedCapability,DomainError> PluginRuntime::loadCapability(const CapabilityRef& ref,const ContextSpec& context) { return loadForDispatch(ref,context,{}); }
+Result<LoadedCapability, DomainError>
+PluginRuntime::loadCapability(const CapabilityRef &ref,
+                              const ContextSpec &context, bool autonomous) {
+    return loadForDispatch(ref, context, {}, autonomous);
+}
 PluginRuntime::CapabilityValidator
 PluginRuntime::makeCapabilityValidator() const {
     return [state = m_state, profile = m_profileId](
-               const QList<CapabilityRef> &refs,
-               const ContextSpec &context) -> Result<void, DomainError> {
+               const QList<CapabilityRef> &refs, const ContextSpec &context,
+               bool autonomous,
+               quint64 expectedRevision) -> Result<void, DomainError> {
         if (context.profileId != profile)
             return fail<void>("INVALID_INPUT",
                               "Capability context has the wrong profile");
@@ -141,6 +180,10 @@ PluginRuntime::makeCapabilityValidator() const {
                 return fail<void>("CANCELLED", "Capability runtime is closing");
             catalog = state->catalog;
             revision = catalog->revision();
+            if (expectedRevision && expectedRevision != revision)
+                return fail<void>(
+                    "STALE_REVISION",
+                    "Capability catalog changed during selection");
             configuration = state->config;
             learned = state->learned;
             learnedRevision = state->learnedRevision;
@@ -153,12 +196,17 @@ PluginRuntime::makeCapabilityValidator() const {
                               : catalog->loadCapability(ref);
             if (!loaded)
                 return Result<void, DomainError>::failure(loaded.error());
-            if (ref.pluginId == "builtin.learned")
+            if (ref.pluginId == "builtin.learned") {
+                if (autonomous)
+                    return fail<void>(
+                        "PERMISSION_DENIED",
+                        "Learned owner methods have no autonomous grant");
                 continue;
-            if (context.originKind != OriginKind::LocalOwner ||
+            }
+            if (autonomous || context.originKind != OriginKind::LocalOwner ||
                 !ref.operationId.isEmpty()) {
-                auto permission =
-                    findGrant(profile, configuration, ref, context);
+                auto permission = findGrant(profile, configuration, ref,
+                                            context, {}, autonomous);
                 if (!permission)
                     return Result<void, DomainError>::failure(
                         permission.error());
@@ -166,6 +214,7 @@ PluginRuntime::makeCapabilityValidator() const {
                     CapabilityCall probe;
                     probe.context = context;
                     probe.ref = ref;
+                    probe.autonomous = autonomous;
                     auto permitted =
                         authorize(loaded.value(), probe, permission.value(),
                                   bindingFor(configuration, ref));
@@ -187,17 +236,51 @@ PluginRuntime::makeCapabilityValidator() const {
         return Result<void, DomainError>::success();
     };
 }
-Result<LoadedCapability,DomainError> PluginRuntime::loadForDispatch(const CapabilityRef& ref,const ContextSpec& context,const std::shared_ptr<ToolDispatchToken>& token) {
+Result<LoadedCapability, DomainError> PluginRuntime::loadForDispatch(
+    const CapabilityRef &ref, const ContextSpec &context,
+    const std::shared_ptr<ToolDispatchToken> &token, bool autonomous) {
     { QMutexLocker lock(&m_state->mutex); if (m_state->stopping || (token && !token->allowed())) return fail<LoadedCapability>("CANCELLED","Capability load cancelled"); }
     if (context.profileId!=m_profileId) return fail<LoadedCapability>("INVALID_INPUT","Capability context has the wrong profile");
-    if (ref.pluginId=="builtin.learned") { QMutexLocker lock(&m_state->mutex); return LearnedSkillAdapter::load(m_state->learned,ref,context); }
-    if (context.originKind!=OriginKind::LocalOwner) { auto allowed=grant(ref,context); if (!allowed) return Result<LoadedCapability,DomainError>::failure(allowed.error()); }
+    if (ref.pluginId == "builtin.learned") {
+        if (autonomous)
+            return fail<LoadedCapability>(
+                "PERMISSION_DENIED", "Learned method not autonomously granted");
+        QMutexLocker lock(&m_state->mutex);
+        return LearnedSkillAdapter::load(m_state->learned, ref, context);
+    }
+    if (autonomous || context.originKind != OriginKind::LocalOwner) {
+        auto allowed = grant(ref, context, {}, autonomous);
+        if (!allowed)
+            return Result<LoadedCapability, DomainError>::failure(
+                allowed.error());
+    }
     std::shared_ptr<PluginCatalog> catalog; { QMutexLocker lock(&m_state->mutex); catalog=m_state->catalog; }
     auto loaded=catalog->loadCapability(ref); if (!loaded) return loaded;
     loaded.value().hostConfiguration=binding(ref).configuration;
+    if (autonomous && !ref.operationId.isEmpty()) {
+        auto permission = grant(ref, context, {}, autonomous);
+        if (!permission)
+            return Result<LoadedCapability, DomainError>::failure(
+                permission.error());
+        CapabilityCall probe;
+        probe.context = context;
+        probe.ref = ref;
+        probe.autonomous = autonomous;
+        auto permitted =
+            authorize(loaded.value(), probe, permission.value(), binding(ref));
+        if (!permitted)
+            return Result<LoadedCapability, DomainError>::failure(
+                permitted.error());
+    }
     if (!ref.operationId.isEmpty() && loaded.value().operation["parameters"].toObject()["source"]=="mcp") {
-        auto allowed=grant(ref,context); if (!allowed) return Result<LoadedCapability,DomainError>::failure(allowed.error());
-        CapabilityCall probe; probe.context=context; probe.ref=ref;
+        auto allowed = grant(ref, context, {}, autonomous);
+        if (!allowed)
+            return Result<LoadedCapability, DomainError>::failure(
+                allowed.error());
+        CapabilityCall probe;
+        probe.context = context;
+        probe.ref = ref;
+        probe.autonomous = autonomous;
         auto bound=binding(ref); auto permitted=authorize(loaded.value(),probe,allowed.value(),bound);
         if (!permitted) return Result<LoadedCapability,DomainError>::failure(permitted.error());
         { QMutexLocker lock(&m_state->mutex);

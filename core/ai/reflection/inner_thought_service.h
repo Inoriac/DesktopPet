@@ -26,6 +26,10 @@ public:
     void createAsync(const InnerThoughtRequest& request,
                      const CancellationToken& token,
                      InnerThoughtHandler handler);
+    void recentUnresolvedAsync(
+        int limit,
+        std::function<void(Result<QList<InnerThoughtSummary>, DomainError>)>
+            completion);
     Result<InnerThoughtSummary, DomainError> readSummary(
         const QString& entryId) const;
 

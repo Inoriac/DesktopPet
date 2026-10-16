@@ -161,6 +161,44 @@ struct Fixture {
 class TestTaskExperience : public QObject {
     Q_OBJECT
 private slots:
+  void unresolvedThought_recentReadRetainsRealSourceAndReportsUnavailable() {
+      Fixture f;
+      QVERIFY(f.ready);
+      InnerThoughtSummary summary;
+      summary.entryId = "pending-thought";
+      summary.profileId = profileId;
+      summary.sourceEventId = "actual-event";
+      summary.createdAt = QDateTime::currentDateTimeUtc();
+      summary.unresolved = true;
+      auto payload = QJsonDocument(QJsonObject{{"appraisal", "Concern"},
+                                               {"desire", "Read more"},
+                                               {"uncertainty", "Unknown"},
+                                               {"unresolved", true}})
+                         .toJson();
+      auto key = f.keys.loadOrCreate(profileId);
+      auto encrypted = f.crypto.encrypt(
+          payload, {1, profileId, "inner_thought", summary.entryId, 1},
+          key.value());
+      QVERIFY(encrypted);
+      QVERIFY(f.privateStore.saveInnerThought(
+          summary, encrypted.value(),
+          {{"unresolved", true}, {"sourceEventId", summary.sourceEventId}}));
+      std::optional<Result<QList<InnerThoughtSummary>, DomainError>> result;
+      f.thoughts.recentUnresolvedAsync(4,
+                                       [&](auto r) { result = std::move(r); });
+      QTRY_VERIFY(result.has_value());
+      QVERIFY(*result);
+      QCOMPARE(result->value().size(), 1);
+      QCOMPARE(result->value().first().sourceEventId, summary.sourceEventId);
+      InnerThoughtService unavailable(profileId, nullptr, nullptr, nullptr,
+                                      nullptr);
+      result.reset();
+      unavailable.recentUnresolvedAsync(4,
+                                        [&](auto r) { result = std::move(r); });
+      QTRY_VERIFY(result.has_value());
+      QVERIFY(!*result);
+  }
+
   void subjectlessActivityRetainsVerifiedParticipantsAsParticipants() {
       QTemporaryDir directory;
       const auto path = directory.filePath("runtime.db");

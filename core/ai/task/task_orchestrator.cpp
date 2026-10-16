@@ -58,8 +58,14 @@ void TaskOrchestrator::accountTime() {
 void TaskOrchestrator::setActive(bool active) {
     if (m_active == active) return;
     accountTime(); m_active = active;
-    if (active) { m_clock.start(); m_heartbeat.start(); }
-    else { m_clock.invalidate(); m_heartbeat.stop(); }
+    if (active) {
+        m_task.hostPauseReason.clear();
+        m_clock.start();
+        m_heartbeat.start();
+    } else {
+        m_clock.invalidate();
+        m_heartbeat.stop();
+    }
     emit activeChanged(active);
 }
 bool TaskOrchestrator::persist(bool terminal) {
@@ -83,7 +89,9 @@ bool TaskOrchestrator::transition(const QString& status) {
 void TaskOrchestrator::refreshContext() {
     if (!m_dependencies.refreshContext) return;
     const auto context = m_dependencies.refreshContext();
-    if (context.value("relationship").isObject()) m_task.relationshipSnapshot = context.value("relationship").toObject();
+    if (m_task.context.originKind == OriginKind::LocalOwner &&
+        context.value("relationship").isObject())
+        m_task.relationshipSnapshot = context.value("relationship").toObject();
     if (context.value("emotion").isObject()) {
         const auto next = context.value("emotion").toObject();
         const auto baseline = m_task.decisions.isEmpty() ? m_task.initialEmotion
@@ -130,7 +138,14 @@ void TaskOrchestrator::suspend(const QString& status, const QString& reason) {
     m_task.needsRevalidation = m_task.accepted;
     if (transition(status)) emit userMessage(reason);
 }
-void TaskOrchestrator::pause(const QString& reason) { suspend("Paused", reason); }
+void TaskOrchestrator::pauseWithReason(const QString &reason,
+                                       const QString &hostReason) {
+    m_task.hostPauseReason = hostReason;
+    suspend("Paused", reason);
+}
+void TaskOrchestrator::pause(const QString &reason) {
+    pauseWithReason(reason, "user");
+}
 void TaskOrchestrator::stop(const QString& reason) {
     if (!hasUnfinishedTask()) return;
     finish("Cancelled", reason, m_task.result);
@@ -179,7 +194,9 @@ bool TaskOrchestrator::start(const TaskStartRequest& request) {
     if (!persist()) return false;
     setActive(true);
     if (!hasRequiredCapability()) {
-        pause(QStringLiteral("当前未配置此任务所需的资料查询工具或权限。已保存目标，请配置能力后继续。"));
+        pauseWithReason(QStringLiteral("当前未配置此任务所需的资料查询工具或权"
+                                       "限。已保存目标，请配置能力后继续。"),
+                        "dependency");
         return true;
     }
     assess(false);
@@ -217,6 +234,7 @@ bool TaskOrchestrator::activate(const QString &activityId) {
         return false;
     cancelPending();
     m_task = *saved;
+    m_checkpointTrigger.clear();
     setActive(true);
     if (m_task.accepted) {
         m_task.needsRevalidation = true;
@@ -375,13 +393,20 @@ bool TaskOrchestrator::checkTimeBudget() {
         if (!persist()) return false;
         auto remaining = m_store->activityStore()->remainingAutonomousActiveMs();
         if (!remaining || remaining.value() == 0) {
-            pause(remaining ? QStringLiteral("自主活动每小时活跃预算已用完，进度已保存。")
-                            : remaining.error().message);
+            pauseWithReason(
+                remaining ? QStringLiteral(
+                                "自主活动每小时活跃预算已用完，进度已保存。")
+                          : remaining.error().message,
+                remaining ? "budget" : "dependency");
             return false;
         }
     }
     if (m_task.activeMs >= m_task.budget.maxActiveMs) {
-        pause(QStringLiteral("本轮活跃执行时间预算已用完，进度已保存。可增加预算后继续。")); return false;
+        pauseWithReason(
+            QStringLiteral(
+                "本轮活跃执行时间预算已用完，进度已保存。可增加预算后继续。"),
+            "budget");
+        return false;
     }
     return true;
 }
@@ -405,7 +430,11 @@ QJsonObject TaskOrchestrator::modelContext() const {
 }
 void TaskOrchestrator::callModel(TaskModelRequest request, std::function<void(TaskModelReply)> callback) {
     if (!checkTimeBudget()) return;
-    if (!m_dependencies.requestModel) { pause(QStringLiteral("任务模型暂时不可用，进度已保存。")); return; }
+    if (!m_dependencies.requestModel) {
+        pauseWithReason(QStringLiteral("任务模型暂时不可用，进度已保存。"),
+                        "dependency");
+        return;
+    }
     request.activityId = m_task.id;
     request.autonomous = m_task.autonomous;
     request.generation = m_task.activityGeneration;
@@ -510,6 +539,8 @@ void TaskOrchestrator::plan(bool replanning, int attempt) {
 }
 
 void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
+    if (applyRequestedCheckpoint())
+        return;
     if (!m_dependencies.prepareTool) {
         dispatchValidatedTool(tool, readOnlyTool(tool["name"].toString(),
                                                  tool["arguments"].toObject()));
@@ -519,6 +550,7 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
     proposed.name = tool["name"].toString();
     proposed.arguments = tool["arguments"].toObject();
     proposed.activityId = m_task.id;
+    proposed.autonomous = m_task.autonomous;
     proposed.context = m_task.context;
     proposed.goal = m_task.goal;
     proposed.generation = m_task.activityGeneration;
@@ -533,7 +565,8 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
                             self->m_generation != generation)
                             return;
                         if (!permission.allowed) {
-                            self->pause("Tool permission is unavailable");
+                            self->pauseWithReason(
+                                "Tool permission is unavailable", "dependency");
                             return;
                         }
                         self->dispatchValidatedTool(tool, permission.readOnly);
@@ -542,12 +575,19 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
 }
 void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
                                              bool readOnly) {
+    // A reply may arrive while asynchronous capability preparation is pending.
+    if (applyRequestedCheckpoint())
+        return;
     if (!checkTimeBudget()) return;
     const QString name = tool.value("name").toString();
     const auto args = tool.value("arguments").toObject();
     if (!allowedTool(name) || !m_dependencies.executeTool || !m_dependencies.toolAllowed
         || !m_dependencies.toolAllowed(name, args)) {
-        pause(QStringLiteral("当前工具能力或权限不允许执行 %1，任务进度已保存。").arg(name)); return;
+        pauseWithReason(
+            QStringLiteral("当前工具能力或权限不允许执行 %1，任务进度已保存。")
+                .arg(name),
+            "dependency");
+        return;
     }
     const QString key = signature(name, args);
     // Persisted semantic dedup supplements stable dispatch IDs, including across process restarts.
@@ -564,7 +604,11 @@ void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
         }
     }
     if (m_task.toolCalls >= m_task.budget.maxToolCalls) {
-        pause(QStringLiteral("工具调用预算已用完（失败和重试也计入），可增加预算后继续。")); return;
+        pauseWithReason(
+            QStringLiteral(
+                "工具调用预算已用完（失败和重试也计入），可增加预算后继续。"),
+            "budget");
+        return;
     }
     TaskToolCall call;
     call.autonomous = m_task.autonomous;
@@ -582,7 +626,9 @@ void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
     // Count and intent are durable before invoking the external tool.
     const quint64 dispatchGeneration = m_generation;
     if (!transition("Executing")) return;
-    if (!m_active || !hasUnfinishedTask() || m_generation != dispatchGeneration || !checkTimeBudget()) {
+    if (!m_active || !hasUnfinishedTask() ||
+        m_generation != dispatchGeneration || !checkTimeBudget() ||
+        !m_checkpointTrigger.isEmpty()) {
         // A synchronous observer may pause/stop at the checkpoint before dispatch.
         // Record the known non-execution so recovery need not query a nonexistent action.
         for (int i = 0; i < m_task.steps.size(); ++i) {
@@ -591,7 +637,8 @@ void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
                 step["status"] = "not_started"; m_task.steps[i] = step;
             }
         }
-        if (persist()) emit taskChanged(m_task.toJson());
+        if (persist() && !applyRequestedCheckpoint())
+            emit taskChanged(m_task.toJson());
         return;
     }
     if (m_store->activityStore()) {
@@ -761,6 +808,8 @@ void TaskOrchestrator::notifyAgencyTrigger(const QString& eventId, const QString
     if (m_task.pendingTrigger.isEmpty()) m_task.pendingTrigger = key;
 }
 void TaskOrchestrator::checkpointThenPlan() {
+    if (applyRequestedCheckpoint())
+        return;
     accountTime(); refreshContext();
     if (m_task.activeMs >= m_task.budget.maxActiveMs - m_task.budget.maxActiveMs / 4)
         notifyAgencyTrigger("estimated-duration", QStringLiteral("任务已接近预计处理时长"));
@@ -822,4 +871,52 @@ void TaskOrchestrator::replan(const QString& reason) {
     }
     ++m_task.replans;
     plan(true);
+}
+
+void TaskOrchestrator::requestSafeCheckpoint(const QString &eventId) {
+    if (!m_active || !m_task.autonomous || eventId.isEmpty())
+        return;
+    m_checkpointTrigger = eventId;
+}
+bool TaskOrchestrator::applyRequestedCheckpoint() {
+    if (m_checkpointTrigger.isEmpty() || !m_active || !m_pendingId.isEmpty() ||
+        !m_task.autonomous)
+        return false;
+    const auto stopOnFailure = [this](const QString &detail) {
+        // Retain the trigger and stop this runner; storage failure is not an
+        // authorization to dispatch the proposed action.
+        cancelPending();
+        setActive(false);
+        m_task.status = "Paused";
+        m_task.hostPauseReason = "dependency";
+        m_task.reason =
+            QStringLiteral("任务检查点无法保存，已暂停执行：%1").arg(detail);
+        emit userMessage(m_task.reason);
+        emit taskChanged(m_task.toJson());
+        return true;
+    };
+    if (!m_store || !m_store->activityStore())
+        return stopOnFailure("no runtime database");
+    if (!persist())
+        return true;
+    auto row = m_store->activityStore()->find(m_task.id);
+    if (!row)
+        return stopOnFailure(row.error().message);
+    ActivityTransition transition;
+    transition.profileId = m_task.profileId;
+    transition.activityId = m_task.id;
+    transition.expectedRevision = row.value().revision;
+    transition.targetState = ActivityState::Paused;
+    transition.reason = "checkpoint";
+    transition.executionPhase = "checkpoint";
+    transition.checkpoint = row.value().checkpoint;
+    transition.checkpoint["importantReplyRef"] = m_checkpointTrigger;
+    transition.activeMs = currentActiveMs();
+    auto result = m_store->activityStore()->transitionActivity(transition);
+    if (!result)
+        return stopOnFailure(result.error().message);
+    m_checkpointTrigger.clear();
+    releaseCurrent();
+    emit taskChanged(m_task.toJson());
+    return true;
 }

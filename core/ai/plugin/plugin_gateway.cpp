@@ -54,8 +54,11 @@ void PluginRuntime::attach(ToolRegistry* registry) {
         });
     }
 }
-QJsonArray PluginRuntime::gatewaySchemas(const ContextSpec& context) const {
-    QJsonArray result; if (discoverCapabilities(context).isEmpty()) return result;
+QJsonArray PluginRuntime::gatewaySchemas(const ContextSpec &context,
+                                         bool autonomous) const {
+    QJsonArray result;
+    if (discoverCapabilities(context, autonomous).isEmpty())
+        return result;
     for (const auto& name:gatewayNames()) result.append(GatewayTool(name).toFunctionSchema()); return result;
 }
 bool PluginRuntime::gatewayReadOnly(const QString& name,const QJsonObject& arguments,const ContextSpec& context) const {
@@ -76,7 +79,11 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
     if (request.toolName=="invoke_capability") {
         const auto ref=CapabilityRef::fromJson(request.arguments["ref"].toObject()); LoadedCapability loaded;
         { QMutexLocker lock(&m_state->mutex); loaded=m_state->loaded.value(request.context.cacheKey()+ref.key()); }
-        auto permission=grant(ref,request.context); if (!permission) { finish(ToolResult::fail(permission.error().code)); return; }
+        auto permission = grant(ref, request.context, {}, request.autonomous);
+        if (!permission) {
+            finish(ToolResult::fail(permission.error().code));
+            return;
+        }
         CapabilityCall call; call.callId=request.requestId; call.activityId=request.activityId; call.context=request.context; call.ref=ref;
         call.arguments=request.arguments["arguments"].toObject(); call.catalogRevision=loaded.catalogRevision; call.definitionDigest=loaded.definitionDigest;
         call.grantRef=permission.value()["id"].toString(); call.timeoutMs=request.timeoutMs>0?request.timeoutMs:30000; call.autonomous=request.autonomous; call.dispatchToken=request.dispatchToken;
@@ -90,9 +97,14 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
         ToolResult result;
         bool cancelled=false; { QMutexLocker lock(&m_state->mutex); cancelled=m_state->stopping || (request.dispatchToken && !request.dispatchToken->allowed()); }
         if (cancelled) { finish(ToolResult::fail("CANCELLED")); return; }
-        if (request.toolName=="discover_capabilities") result=ToolResult::ok({{"entries",discoverCapabilities(request.context)}});
+        if (request.toolName == "discover_capabilities")
+            result = ToolResult::ok(
+                {{"entries",
+                  discoverCapabilities(request.context, request.autonomous)}});
         else {
-            auto loaded=loadForDispatch(CapabilityRef::fromJson(request.arguments["ref"].toObject()),request.context,request.dispatchToken);
+            auto loaded = loadForDispatch(
+                CapabilityRef::fromJson(request.arguments["ref"].toObject()),
+                request.context, request.dispatchToken, request.autonomous);
             result=loaded?ToolResult::ok(publicValue(loaded.value().toPublicJson(),loaded.value()).toObject()):ToolResult::fail(loaded.error().code);
         }
         // Completion retains only immutable request data, and ToolRuntime routes owner callbacks.

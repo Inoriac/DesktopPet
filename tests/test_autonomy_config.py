@@ -14,10 +14,11 @@ class AutonomyConfigTests(unittest.TestCase):
         self.assertFalse(state.autonomy_paused)
         state.autonomy_enabled = True
         state.autonomy_paused = True
-        source = {"aiSettings": {"autonomy": {"maxTokensPerHour": 45678},
+        source = {"aiSettings": {"autonomy": {"maxTokensPerHour": 45678, "memoryAccess": {"owner": True, "conversationIds": ["room"]}},
                   "activeProfile": "one", "profiles": {"one": {"enabled": False}}}}
         saved = apply_settings(source, state.to_settings_dict())
         self.assertEqual(saved["aiSettings"]["autonomy"]["maxTokensPerHour"], 45678)
+        self.assertEqual(saved["aiSettings"]["autonomy"]["memoryAccess"], {"owner": True, "conversationIds": ["room"]})
         restored = AppState.from_config(saved)
         self.assertTrue(restored.autonomy_enabled)
         self.assertTrue(restored.autonomy_paused)

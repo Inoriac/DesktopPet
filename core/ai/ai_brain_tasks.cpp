@@ -1,4 +1,5 @@
 #include "activity/activity_runtime.h"
+#include "activity/activity_selector.h"
 #include "ai_brain.h"
 #include "configLoader/config_manager.h"
 #include "plugin/plugin_runtime.h"
@@ -47,6 +48,9 @@ void AIBrain::shutdownTaskRuntime() {
     m_taskExperienceTimer.disconnect(this);
     m_taskResponse = false;
     m_taskExperienceAdapter.reset();
+    ++m_autonomyConfigurationGeneration;
+    m_autonomyConfigured = false;
+    m_activitySelector.reset();
     m_activityRuntime.reset();
     m_taskCommandPending = false;
     m_suspendedTaskIds.clear();
@@ -66,7 +70,51 @@ void AIBrain::initializeTaskRuntime() {
         m_chatPreparationRuntimeMetadata.runtimeDatabasePath);
     connect(m_activityRuntime.get(), &ActivityRuntime::opportunityCheckRequested, this,
             [this] { requestAutonomousOpportunity("tick"); });
+    m_activitySelector = std::make_unique<ActivitySelector>(&m_modelRouter);
     setAutonomyConfig(ConfigManager::instance().getAutonomyConfig());
+    connect(m_activityRuntime.get(), &ActivityRuntime::idleDecisionChanged,
+            this, [this](IdleDecision decision) {
+                m_autonomyIdleDecision = decision;
+                if (!m_autonomyConfigured)
+                    return;
+                if (!m_autonomyConfig.enabled) {
+                    publishAutonomyStatus("disabled");
+                    return;
+                }
+                if (decision.reason == "paused") {
+                    publishAutonomyStatus("paused");
+                    return;
+                }
+                if (m_activityRuntime && m_activityRuntime->isActive()) {
+                    publishAutonomyStatus("running");
+                    return;
+                }
+                if (decision.reason == "selection_reserved" ||
+                    decision.reason == "selection_in_progress")
+                    return;
+                if (decision.reason == "BUDGET_EXHAUSTED" ||
+                    decision.reason == "budget") {
+                    publishAutonomyStatus("budget_wait");
+                    return;
+                }
+                if (decision.reason == "cooldown") {
+                    publishAutonomyStatus("cooldown");
+                    return;
+                }
+                if (decision.reason == "backoff") {
+                    publishAutonomyStatus("wait");
+                    return;
+                }
+                if (decision.reason.startsWith("STORE_") ||
+                    decision.reason.startsWith("STALE_")) {
+                    publishAutonomyStatus("failure", decision.reason);
+                    return;
+                }
+                if (m_autonomyState != "selecting" &&
+                    m_autonomyState != "preparing")
+                    publishAutonomyStatus(decision.canDeliberate ? "ready"
+                                                                 : "waiting");
+            });
     connect(m_activityRuntime.get(), &ActivityRuntime::activeChanged, this, [this](bool) {
         m_taskCommandPending = false;
         requestAutonomousOpportunity("activity_state");
@@ -187,7 +235,8 @@ void AIBrain::refreshTaskDependencies() {
             if (input.scope.originKind != OriginKind::LocalOwner)
                 context["available_tools"] =
                     guard->m_pluginRuntime
-                        ? guard->m_pluginRuntime->gatewaySchemas(input.scope)
+                        ? guard->m_pluginRuntime->gatewaySchemas(
+                              input.scope, input.autonomous)
                         : QJsonArray{};
             context["memory_material"] =
                 guard->m_memoryStore.summaryForContext(input.scope, 8)
@@ -295,7 +344,8 @@ void AIBrain::refreshTaskDependencies() {
                                 permission.allowed && gateway &&
                                 guard->m_pluginRuntime &&
                                 !guard->m_pluginRuntime
-                                     ->gatewaySchemas(call.context)
+                                     ->gatewaySchemas(call.context,
+                                                      call.autonomous)
                                      .isEmpty();
                         }
                     }
@@ -326,6 +376,7 @@ void AIBrain::refreshTaskDependencies() {
                 request.timeoutMs = call.timeoutMs;
                 request.context = call.context;
                 request.activityId = call.activityId;
+                request.autonomous = call.autonomous;
                 request.policyContext = guard->buildToolPolicyContext(
                     "user_request", call.goal, true);
                 const auto metadata =

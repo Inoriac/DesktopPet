@@ -9,6 +9,19 @@
 
 ## 决策记录
 
+- [code-impl Task 7 sanity check] §3.8 的 ActivityRuntime::setOpportunityConsumer/modelBudgetHooks/applySelectionAsync、ModelRouter::completeAsync、ActivityStore::startActivity/resumeActivity/applySelection、PluginRuntime::findGrant/makeCapabilityValidator/executeGateway、InnerThoughtService::recentUnresolvedAsync 和 TaskOrchestrator::requestSafeCheckpoint 均与源码核对。没有增加第二机会/预算权威；真实调用保留自主标记、原 profile/范围与实际回执。
+- [code-impl Task 7 审查闭合] 空 schema、只读连接、近期记录挤占、来源上限、scope 类型、实际超额采用、同 ID 记忆改义、消息材料、真实空查询、状态更新及 memoryAccess 撤权均已回归。延迟工具准入与 checkpoint SQL 失败取得真实 RED 后修复最终派发门禁；返回验证结果先处理再考虑暂停。最终全量构建/55 组回归及 70 项工具契约通过，详细证据见审查记录与 impl-plan。
+
+- [code-impl Task 7 内部材料授权落点] 主设计 §1.5/§3.8 明确 aiSettings.autonomy.memoryAccess={owner:false,conversationIds:[]}，最多32个已知稳定会话 ID，只为无会话 Internal 投影；外部机会重新取 currentContext。内部关系从本次真实 person 来源引用取最多8个快照，不改活动参与人。该配置使既定“获准的私有记忆影响自主选择”在生产可用，默认不扩大权限，工具 grant 仍独立。
+
+- [code-impl Task 7 真实暂停原因] 真实 runner 的预算/依赖暂停须通过宿主类型化 pauseReason 进入 TaskRecord/ActivityStore，不能被兼容层统一写成 user。显式用户暂停及重启仍保留 user/restart，错误类型不由模型文字推断；主设计 §3.6 已同步，这使 §3.8 的既定恢复规则在真实链路可达。
+
+- [code-impl Task 7 外部线索补全] §3.8 明确从 ticket.eventIds 读取至多 8 条当前会话已提交原始消息，保留实际人物/事件引用；新消息不必先变为长期记忆才能影响选择，排除 self/history。整体材料上限在身份/能力装配完成后检查，不能仅在前置记忆读取时检查。属于既定外部会话机会的工程落点，未增加观察源功能。
+
+- [code-impl Task 7 sanity check] 已核对 setOpportunityConsumer、ModelRouter::completeAsync、ActivityStore start/resume、AgencyDecisionService::request、MemoryStore 范围读取、InnerThoughtService::readSummary、PluginRuntime validator/gateway 等实现锚点；生产自主选择复用现有串行 worker、模型路由和预算 hooks。
+
+- [code-impl Task 7 设计补全] 按 evoloop-gen-tech-design 补全 §3.8 的七子节、§4.1/4.3 和插件接入指南：宿主固定每次选择的 ContextSpec；真实 memory/inner/source ID 有界材料；明确内部 grant；采用票据与前台活动写入同一 UoW；选择器恢复仅允许宿主验证的自主 checkpoint/budget/dependency，user/restart 仍仅用户。AIBrain 安装真实 consumer，配置失败可见；外部执行重建材料，不继承 Internal 私有正文。没有新增产品方向，沿用持续开发授权。
+
 - [code-impl Task 6 锚点复核] 已核对 OpportunityStore/Coordinator 的 epoch、机会/预算事务，ActivityRuntime 的单 worker facade 与原库 modelBudgetHooks、ModelRouter::sendAttempt 真实 provider 边界，以及 AIBrain/config/Launcher/屏幕自动入口。完整构建、54/54 CTest（72.34 秒）、70/70 契约通过；重复完成与三个 CAS 竞争问题均有实际 RED→GREEN，旧用例不放宽。
 
 - [code-impl Task 6 全量回归定位] 实际回归暴露 runtime/身份 CAS 的 deferred 读后写事务与新增后台机会写入竞争，单跑重复复现 database is locked；主设计 §1.3 明确此类写事务先 BEGIN IMMEDIATE，保留原 CAS 与回滚。ModelRouter 每次 provider attempt 单独使用一次业务完成门，重复回执仍幂等结算并允许未知用量补实，不能再次完成或触发 fallback。
@@ -81,6 +94,6 @@
 
 ## 待回溯设计的发现
 
-- [pending，§3.8 启动前核对] 自主内部活动的插件授权范围需要显式落点。现有 grant 的 local_owner 只匹配 LocalOwner，其余匹配非空 conversationId；Internal 且无会话的自主阅读不能借用主人身份。§3.8 必须定义宿主内部活动 grant 范围并保持 autonomous 独立开关，再接自主调用，不能仅把 originKind 改成 LocalOwner 取得权限。
+- [resolved，主设计 v1.7 §3.8/§4.3] 内部自主授权采用显式 scope=internal_activity，仅匹配 Internal 且无会话；与 conversationId 冲突拒绝，autonomous 独立。发现/加载/validator/真实 ToolExecutionRequest/CapabilityCall 贯穿宿主自主属性；不借用 LocalOwner。
 
 inactive 人物管理、合并与拆分尚无本切片入口，后续增加这些操作时须先定义解析/历史更正规则，不能把预留 schema 当作已完成能力。

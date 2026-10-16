@@ -67,6 +67,7 @@
   "aiSettings": {
     "autonomy": {
       "enabled": false, "paused": false,
+      "memoryAccess": {"owner": false, "conversationIds": []},
       "coalesceWindowMs": 1000, "coalesceMaxWaitMs": 3000,
       "minDecisionIntervalMs": 60000, "noOpBackoffMs": 300000,
       "maxNoOpBackoffMs": 1800000, "localTickMs": 15000, "ticketTtlMs": 120000,

@@ -855,3 +855,40 @@ SqlitePrivatePsycheRepository::orphanDraftDates(
     }
     return Result<QList<QPair<QDate, int>>, DomainError>::success(orphans);
 }
+
+Result<void, DomainError>
+SqlitePrivatePsycheRepository::openReadOnly(const QString &path) {
+    close();
+    m_connectionName = newConnectionName();
+    auto db = QSqlDatabase::addDatabase("QSQLITE", m_connectionName);
+    db.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=5000");
+    db.setDatabaseName(path);
+    if (!db.open())
+        return Result<void, DomainError>::failure(
+            sqlError("Private database unavailable", db.lastError()));
+    m_databasePath = path;
+    return Result<void, DomainError>::success();
+}
+Result<QList<StoredPrivateRecord>, DomainError>
+SqlitePrivatePsycheRepository::recentUnresolved(const QString &profile,
+                                                int limit) const {
+    if (!isOpen())
+        return Result<QList<StoredPrivateRecord>, DomainError>::failure(
+            sqlError("Private repository closed"));
+    QSqlQuery q(QSqlDatabase::database(m_connectionName));
+    q.prepare("SELECT thought_id AS record_id,profile_id,NULL AS "
+              "local_date,source_event_id,1 AS "
+              "schema_version,key_version,nonce,ciphertext,index_json,0 AS "
+              "source_cutoff_sequence,created_at FROM inner_thought WHERE "
+              "profile_id=? AND json_extract(index_json,'$.unresolved')=1 "
+              "ORDER BY created_at DESC,thought_id LIMIT ?");
+    q.addBindValue(profile);
+    q.addBindValue(std::clamp(limit, 1, 4));
+    if (!q.exec())
+        return Result<QList<StoredPrivateRecord>, DomainError>::failure(
+            sqlError("Private index unavailable", q.lastError()));
+    QList<StoredPrivateRecord> rows;
+    while (q.next())
+        rows << recordFromQuery(q, "inner_thought");
+    return Result<QList<StoredPrivateRecord>, DomainError>::success(rows);
+}

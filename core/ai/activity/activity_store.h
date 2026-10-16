@@ -1,5 +1,6 @@
 #pragma once
 #include "activity_types.h"
+#include "selection_types.h"
 
 // Value object: no database connection or QObject crosses worker boundaries.
 class ActivityStore {
@@ -12,7 +13,13 @@ class ActivityStore {
     Result<qint64, DomainError> remainingAutonomousActiveMs() const;
     Result<ActivitySnapshot, DomainError> find(const QString &activityId) const;
     Result<QList<ActivitySnapshot>, DomainError>
-    list(const QList<ActivityState> &states = {}) const;
+    list(const QList<ActivityState> &states = {}, int limit = 0) const;
+    Result<QList<ActivitySnapshot>, DomainError>
+    selectionCandidates(int limit = 8) const;
+    Result<ActivitySnapshot, DomainError>
+    applySelection(const SelectionAdoption &);
+    Result<void, DomainError>
+    validateImportantReply(const QString &eventId) const;
     Result<ActivitySnapshot, DomainError>
     startActivity(const ActivityIntent &intent);
     Result<ActivitySnapshot, DomainError>
@@ -32,12 +39,17 @@ class ActivityStore {
     Result<QJsonArray, DomainError> pendingExperiences() const;
     Result<void, DomainError> acknowledgeExperience(const QString &activityId);
     using CapabilityValidator = std::function<Result<void, DomainError>(
-        const QList<CapabilityRef> &, const ContextSpec &)>;
+        const QList<CapabilityRef> &, const ContextSpec &, bool, quint64)>;
     void setCapabilityValidator(CapabilityValidator validator) {
         m_capabilityValidator = std::move(validator);
     }
 
   private:
+    Result<ActivitySnapshot, DomainError>
+    startActivityImpl(const ActivityIntent &, const SelectionAdoption *);
+    Result<ActivitySnapshot, DomainError>
+    resumeActivityImpl(const ResumeActivityRequest &,
+                       const SelectionAdoption *);
     QString m_profileId, m_databasePath;
     CapabilityValidator m_capabilityValidator;
 };

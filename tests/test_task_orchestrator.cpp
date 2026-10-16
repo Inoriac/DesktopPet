@@ -15,6 +15,8 @@ struct Harness {
     QList<TaskDependencies::ModelCompletion> models;
     QList<TaskToolCall> toolRequests;
     QList<TaskDependencies::ToolCompletion> tools;
+    QList<std::function<void(TaskToolPermission)>> permissions;
+    bool delayToolPreparation = false;
     QStringList cancelled;
     QJsonObject emotion{{"energy", .6}};
     QJsonArray schemas{QJsonObject{{"name", "web_search"}}, QJsonObject{{"name", "schedule_create"}},
@@ -48,6 +50,11 @@ struct Harness {
             return HostToolMetadata{};
         };
         dependencies.toolAllowed = [](const QString&, const QJsonObject&) { return true; };
+        if (delayToolPreparation) {
+            dependencies.prepareTool = [this](const TaskToolCall &, auto done) {
+                permissions.append(std::move(done));
+            };
+        }
         dependencies.availableTools = [this] { return schemas; };
         dependencies.refreshContext = [this] { return QJsonObject{{"relationship", QJsonObject{{"trust", .7}}},
             {"emotion", emotion}, {"personality", QJsonObject{{"version", 999}}}}; };
@@ -93,29 +100,33 @@ QJsonObject verification(bool complete, const QString& reference = "user_input")
 class TestTaskOrchestrator : public QObject {
     Q_OBJECT
 private slots:
-    void stopCallingToolsDoesNotCompleteUntilVerification();
-    void unsafeToolsCannotBeEnabledByModelOrHook();
-    void failedToolCallsConsumeBudget();
-    void verificationCannotExceedReplanBudget();
-    void agencyFailureRetriesOnceAndIsNotPersonalityRefusal();
-    void agencyChoices_data();
-    void agencyChoices();
-    void cancellationRejectsLateModelAndToolCallbacks();
-    void timeoutAndActiveBudgetActuallyPause();
-    void secondRequestPreservesUnfinishedTask();
-    void restartPreservesSnapshotAndBudgetAndDoesNotReplayAction();
-    void terminalCheckpointAndExperienceIntentAreAtomic();
-    void completedExperienceIsIdempotent();
-    void falseSourceCannotPassVerification();
-    void checkpointSubjectivityHasCooldownAndDedup();
-    void significantEmotionChangeTriggersCheckpoint();
-    void externalTaskNeedsCapabilityBeforeAgencyAndRealEvidenceToComplete();
-    void clarificationIsNotOutcomeFeedback();
-    void cancelledCandidateIsLabeledAsUnfinished();
-    void pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint();
-    void lateToolReceiptArchivesAfterRunnerDestroyed();
-    void lateReceiptStorageFailureDoesNotPauseReplacementActivity();
-    void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
+  void safeCheckpointPreservesReturnedPlanAndVerification();
+  void importantReplyDuringToolPreparationStopsDispatch();
+  void failedCheckpointStopsToolDispatch();
+  void smallEmotionChangeDoesNotReselectAutonomousIntent();
+  void stopCallingToolsDoesNotCompleteUntilVerification();
+  void unsafeToolsCannotBeEnabledByModelOrHook();
+  void failedToolCallsConsumeBudget();
+  void verificationCannotExceedReplanBudget();
+  void agencyFailureRetriesOnceAndIsNotPersonalityRefusal();
+  void agencyChoices_data();
+  void agencyChoices();
+  void cancellationRejectsLateModelAndToolCallbacks();
+  void timeoutAndActiveBudgetActuallyPause();
+  void secondRequestPreservesUnfinishedTask();
+  void restartPreservesSnapshotAndBudgetAndDoesNotReplayAction();
+  void terminalCheckpointAndExperienceIntentAreAtomic();
+  void completedExperienceIsIdempotent();
+  void falseSourceCannotPassVerification();
+  void checkpointSubjectivityHasCooldownAndDedup();
+  void significantEmotionChangeTriggersCheckpoint();
+  void externalTaskNeedsCapabilityBeforeAgencyAndRealEvidenceToComplete();
+  void clarificationIsNotOutcomeFeedback();
+  void cancelledCandidateIsLabeledAsUnfinished();
+  void pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint();
+  void lateToolReceiptArchivesAfterRunnerDestroyed();
+  void lateReceiptStorageFailureDoesNotPauseReplacementActivity();
+  void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
 };
 
 void TestTaskOrchestrator::stopCallingToolsDoesNotCompleteUntilVerification() {
@@ -458,6 +469,126 @@ void TestTaskOrchestrator::
     QCOMPARE(
         h.store.find(h.runner->currentTask().id)->context.participantPersonIds,
         current.value().participantPersonIds);
+}
+
+void TestTaskOrchestrator::
+    safeCheckpointPreservesReturnedPlanAndVerification() {
+    for (bool duringVerification : {false, true}) {
+        Harness h;
+        QVERIFY(h.ready);
+        ActivityIntent intent;
+        intent.context.profileId = h.store.activityStore()->profileId();
+        intent.origin = "self";
+        intent.goal = "Read sources";
+        auto started = h.store.activityStore()->startActivity(intent);
+        QVERIFY(started);
+        QVERIFY(h.runner->activate(started.value().activityId));
+        h.reply(decision());
+        if (!duringVerification) {
+            h.runner->requestSafeCheckpoint("host-approved-reply");
+            h.reply(nextTool());
+            QCOMPARE(h.runner->currentTask().status, QString("Paused"));
+            QVERIFY(h.toolRequests.isEmpty());
+            QCOMPARE(h.runner->currentTask().plan, QString("查找来源并比较"));
+            auto row =
+                h.store.activityStore()->find(started.value().activityId);
+            QVERIFY(row);
+            QCOMPARE(row.value().pauseReason, QString("checkpoint"));
+        } else {
+            h.reply(nextTool());
+            h.tool();
+            h.reply(candidate());
+            QCOMPARE(h.modelRequests.last().phase, QString("verify"));
+            h.runner->requestSafeCheckpoint("host-approved-reply");
+            h.reply(verification(true, h.runner->currentTask()
+                                           .steps.last()
+                                           .toObject()["id"]
+                                           .toString()));
+            QCOMPARE(h.runner->currentTask().status, QString("Completed"));
+            QCOMPARE(h.runner->currentTask().toolCalls, 1);
+        }
+    }
+}
+void TestTaskOrchestrator::importantReplyDuringToolPreparationStopsDispatch() {
+    Harness h;
+    QVERIFY(h.ready);
+    h.delayToolPreparation = true;
+    h.resetRunner();
+    ActivityIntent intent;
+    intent.context.profileId = h.store.activityStore()->profileId();
+    intent.origin = "self";
+    intent.goal = "Read sources";
+    const auto started = h.store.activityStore()->startActivity(intent);
+    QVERIFY(started);
+    QVERIFY(h.runner->activate(started.value().activityId));
+    h.reply(decision());
+    h.reply(nextTool());
+    QCOMPARE(h.permissions.size(), 1);
+    h.runner->requestSafeCheckpoint("reply-during-permission-load");
+    h.permissions.takeFirst()({true, true});
+    QCoreApplication::processEvents();
+    QVERIFY(h.toolRequests.isEmpty());
+    QVERIFY(!h.runner->isActive());
+    QCOMPARE(h.runner->currentTask().status, QString("Paused"));
+    QCOMPARE(h.runner->currentTask().plan, QString("查找来源并比较"));
+    const auto saved =
+        h.store.activityStore()->find(started.value().activityId);
+    QVERIFY(saved);
+    QCOMPARE(saved.value().pauseReason, QString("checkpoint"));
+    QCOMPARE(saved.value().checkpoint["importantReplyRef"].toString(),
+             QString("reply-during-permission-load"));
+    QCOMPARE(saved.value().budget.toolCalls, 0);
+}
+
+void TestTaskOrchestrator::failedCheckpointStopsToolDispatch() {
+    Harness h;
+    QVERIFY(h.ready);
+    ActivityIntent intent;
+    intent.context.profileId = h.store.activityStore()->profileId();
+    intent.origin = "self";
+    intent.goal = "Read sources";
+    const auto started = h.store.activityStore()->startActivity(intent);
+    QVERIFY(started);
+    QVERIFY(h.runner->activate(started.value().activityId));
+    h.reply(decision());
+    const QString connection = "reject-important-checkpoint";
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(h.directory.filePath("runtime.sqlite"));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(
+            "CREATE TRIGGER reject_checkpoint BEFORE UPDATE ON "
+            "agent_activities WHEN NEW.state='Paused' "
+            "BEGIN SELECT RAISE(ABORT,'checkpoint unavailable'); END"));
+    }
+    QSqlDatabase::removeDatabase(connection);
+    h.runner->requestSafeCheckpoint("important-reply");
+    h.reply(nextTool());
+    QVERIFY(h.toolRequests.isEmpty());
+    QVERIFY(!h.runner->isActive());
+    QCOMPARE(h.runner->currentTask().status, QString("Paused"));
+    QVERIFY(h.runner->currentTask().reason.contains("checkpoint unavailable"));
+    QCOMPARE(h.store.find(started.value().activityId)->toolCalls, 0);
+}
+
+void TestTaskOrchestrator::smallEmotionChangeDoesNotReselectAutonomousIntent() {
+    Harness h;
+    QVERIFY(h.ready);
+    ActivityIntent intent;
+    intent.context.profileId = h.store.activityStore()->profileId();
+    intent.origin = "self";
+    intent.goal = "Read sources";
+    auto started = h.store.activityStore()->startActivity(intent);
+    QVERIFY(started);
+    QVERIFY(h.runner->activate(started.value().activityId));
+    h.reply(decision());
+    h.emotion = {{"energy", .61}};
+    h.reply(nextTool());
+    h.tool();
+    QCOMPARE(h.modelRequests.last().phase, QString("plan"));
+    QCOMPARE(h.runner->currentTask().id, started.value().activityId);
+    QCOMPARE(h.runner->currentTask().decisions.size(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestTaskOrchestrator)

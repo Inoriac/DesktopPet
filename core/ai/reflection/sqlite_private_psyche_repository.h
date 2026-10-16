@@ -14,6 +14,9 @@ public:
     ~SqlitePrivatePsycheRepository();
 
     Result<void, DomainError> open(const QString& databasePath);
+    Result<void, DomainError> openReadOnly(const QString &databasePath);
+    Result<QList<StoredPrivateRecord>, DomainError>
+    recentUnresolved(const QString &profileId, int limit) const;
     void close();
     bool isOpen() const;
     const QString& connectionName() const { return m_connectionName; }

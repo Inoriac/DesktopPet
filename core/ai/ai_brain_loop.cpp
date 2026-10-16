@@ -568,8 +568,7 @@ void AIBrain::scheduleIdleRetryIfBusyFailure(const QString& toolName,
 void AIBrain::setAutonomyConfig(const AutonomyConfig &config) {
     const bool changed = m_autonomyConfig.enabled != config.enabled;
     m_autonomyConfig = config;
-    if (m_activityRuntime)
-        m_activityRuntime->configureOpportunitiesAsync(config);
+    configureAutonomyConsumer();
     if (changed) {
         m_idleTriggerTimer.stop();
         m_chatTriggerTimer.stop();
@@ -582,15 +581,25 @@ void AIBrain::setAutonomyConfig(const AutonomyConfig &config) {
 }
 void AIBrain::setAutonomyPaused(bool paused) {
     m_autonomyPaused = paused;
-    if (m_activityRuntime)
-        m_activityRuntime->setAutonomyPausedAsync(paused);
+    if (m_activityRuntime) {
+        QPointer<AIBrain> self(this);
+        m_activityRuntime->setAutonomyPausedAsync(paused, [self](auto result) {
+            if (self) {
+                if (!result)
+                    self->publishAutonomyStatus("failure", result.error().code);
+                else
+                    self->publishAutonomyStatus(
+                        self->m_autonomyPaused ? "paused" : "ready");
+            }
+        });
+    }
     requestAutonomousOpportunity("control");
 }
 RuntimeReadiness AIBrain::autonomousReadiness() const {
     RuntimeReadiness r;
     r.running = m_running;
     r.enabled = m_enabled && m_storageInitialized;
-    r.autonomyEnabled = m_autonomyConfig.enabled;
+    r.autonomyEnabled = m_autonomyConfig.enabled && m_autonomyConfigured;
     r.paused = m_autonomyPaused;
     r.mode = CompanionProactiveState::mode(m_proactiveStatePath);
     if (isTaskActive())
@@ -610,6 +619,9 @@ void AIBrain::requestAutonomousOpportunity(const QString &kind, const QString &c
         return;
     OpportunitySignal s;
     s.kind = kind;
+    if (kind == "important_reply")
+        for (const auto &id : eventIds)
+            m_activityRuntime->checkpointForImportantReplyAsync(id);
     s.contextId = contextId;
     s.eventIds = eventIds;
     s.readiness = autonomousReadiness();
