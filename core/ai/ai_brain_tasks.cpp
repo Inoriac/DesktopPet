@@ -1,4 +1,5 @@
 #include "ai_brain.h"
+#include "plugin/plugin_runtime.h"
 #include "runtime/agent_runtime_services.h"
 #include "task/task_orchestrator.h"
 #include "task/task_store.h"
@@ -22,12 +23,7 @@ bool complexRequest(const QString& text) {
         QRegularExpression::CaseInsensitiveOption);
     return pattern.match(input).hasMatch();
 }
-bool ownerThreadTaskTool(const QString& name) {
-    static const QSet<QString> names{"schedule_create", "schedule_list", "schedule_cancel", "schedule_snooze",
-        "set_proactive_mode", "play_animation", "show_chat_bubble", "notify_user", "request_idle_transition", "cancel_animation_request", "move_avatar",
-        "get_current_animation", "get_idle_transition_candidates", "get_action_transition_status", "get_avatar_capabilities"};
-    return names.contains(name);
-}
+
 }
 
 bool AIBrain::isTaskActive() const { return m_taskOrchestrator && m_taskOrchestrator->isActive(); }
@@ -55,7 +51,7 @@ void AIBrain::initializeTaskRuntime() {
     if (!m_taskStore->open(m_chatPreparationRuntimeMetadata.runtimeDatabasePath)) {
         m_taskStore.reset(); return;
     }
-    m_taskToolExecutor = std::make_unique<TaskToolExecutor>();
+    m_taskToolExecutor = std::make_unique<TaskToolExecutor>(&m_toolRuntime);
     m_taskOrchestrator = std::make_unique<TaskOrchestrator>(m_taskStore.get());
     const auto localCalls = std::make_shared<QHash<QString, std::shared_ptr<bool>>>();
     TaskDependencies dependencies;
@@ -106,54 +102,50 @@ void AIBrain::initializeTaskRuntime() {
         const auto handle = m_taskModelRequests.take(id);
         if (handle) handle->cancel();
     };
-    dependencies.availableTools = [this]() {
-        QJsonArray tools;
-        if (!m_toolRegistry) return tools;
-        for (const auto& schema : m_toolRegistry->allToolSchemas()) {
-            const auto name = schema.toObject().value("function").toObject().value("name").toString();
-            if (TaskOrchestrator::allowedTool(name)
-                && (TaskToolExecutor::supports(name) || ownerThreadTaskTool(name))) tools.append(schema);
+    const auto taskContext=[this] {
+        const auto& task=m_taskOrchestrator->currentTask();
+        if (task.originKind==OriginKind::LocalOwner) return ContextSpec::localOwner(task.profileId);
+        ContextSpec context; context.profileId=task.profileId; context.activityId=task.id; context.originKind=task.originKind; return context;
+    };
+    dependencies.toolMetadata=[this](const QString& name) {
+        return m_toolRegistry?m_toolRegistry->executionBinding(name).metadata:HostToolMetadata{};
+    };
+    dependencies.toolReadOnly=[this,taskContext](const QString& name,const QJsonObject& args) {
+        if (m_pluginRuntime && (name=="discover_capabilities" || name=="load_capability" || name=="invoke_capability"))
+            return m_pluginRuntime->gatewayReadOnly(name,args,taskContext());
+        return m_toolRegistry && m_toolRegistry->executionBinding(name).metadata.effect=="read";
+    };
+    dependencies.availableTools=[this,taskContext]() {
+        QJsonArray result; if (!m_toolRegistry) return result;
+        if (taskContext().originKind!=OriginKind::LocalOwner) return m_pluginRuntime?m_pluginRuntime->gatewaySchemas(taskContext()):result;
+        for (const auto& name:m_toolRegistry->toolNames()) {
+            const auto metadata=m_toolRegistry->executionBinding(name).metadata;
+            if (metadata.taskAllowed && metadata.risk<ToolRiskLevel::L3HighRiskAction && m_toolRegistry->supportsAsync(name)) result.append(m_toolRegistry->getTool(name)->toFunctionSchema());
         }
-        return tools;
+        return result;
     };
-    dependencies.toolAllowed = [this](const QString& name, const QJsonObject& arguments) {
-        auto* tool = m_toolRegistry ? m_toolRegistry->getTool(name) : nullptr;
-        return tool && TaskOrchestrator::allowedTool(name)
-            && (TaskToolExecutor::supports(name) || ownerThreadTaskTool(name))
-            && m_toolRuntime.policyEngine()->evaluate(*tool, arguments,
-                buildToolPolicyContext("user_request", m_taskOrchestrator->currentTask().goal, true)).isAllowed();
+    dependencies.toolAllowed=[this,taskContext](const QString& name,const QJsonObject& args) {
+        if (taskContext().originKind!=OriginKind::LocalOwner) return false;
+        auto* tool=m_toolRegistry?m_toolRegistry->getTool(name):nullptr;
+        return tool && tool->hostMetadata().taskAllowed && m_toolRegistry->supportsAsync(name)
+            && m_toolRuntime.policyEngine()->evaluate(*tool,args,buildToolPolicyContext("user_request",m_taskOrchestrator->currentTask().goal,true)).isAllowed();
     };
-    dependencies.executeTool = [this, localCalls](const TaskToolCall& call, TaskDependencies::ToolCompletion completion) {
-        ToolExecutionRequest request;
-        request.requestId = call.id; request.toolName = call.name; request.arguments = call.arguments;
-        request.timeoutMs = call.timeoutMs;
-        request.policyContext = buildToolPolicyContext("user_request", m_taskOrchestrator->currentTask().goal, true);
-        auto deliver = [completion = std::move(completion)](const ToolExecutionOutcome& outcome) mutable {
-            completion({outcome.result.success, outcome.result.data, outcome.result.errorMessage, !outcome.executed});
-        };
-        if (TaskToolExecutor::supports(call.name)) {
-            m_taskToolExecutor->execute(std::move(request), std::move(deliver));
-        } else if (ownerThreadTaskTool(call.name)) {
-            // These local scheduler/presentation actions do not wait for network I/O.
-            const auto cancelled = std::make_shared<bool>(false);
-            localCalls->insert(call.id, cancelled);
-            QTimer::singleShot(0, this, [this, request, localCalls, cancelled, deliver = std::move(deliver)]() mutable {
-                localCalls->remove(request.requestId);
-                if (*cancelled || !isTaskActive()) return;
-                deliver(m_toolRuntime.execute(request));
-            });
-        } else {
-            ToolExecutionOutcome outcome;
-            outcome.requestId = call.id; outcome.toolName = call.name;
-            outcome.result = ToolResult::fail(QStringLiteral("当前工具未配置非阻塞执行能力。"));
-            deliver(outcome);
-        }
+    dependencies.executeTool=[this,taskContext](const TaskToolCall& call,TaskDependencies::ToolCompletion completion) {
+        ToolExecutionRequest request; request.requestId=call.id; request.toolName=call.name; request.arguments=call.arguments; request.timeoutMs=call.timeoutMs;
+        request.policyContext=buildToolPolicyContext("user_request",m_taskOrchestrator->currentTask().goal,true);
+        request.context=taskContext(); request.activityId=m_taskOrchestrator->currentTask().id;
+        const auto metadata=m_toolRegistry->executionBinding(call.name).metadata;
+        m_taskToolExecutor->execute(request,[completion=std::move(completion),metadata,name=call.name](ToolExecutionOutcome outcome) mutable {
+            TaskToolReply reply{outcome.result.success,outcome.result.data,outcome.result.errorMessage,!outcome.executed};
+            reply.businessEvidence=metadata.businessEvidence;
+            if (name=="invoke_capability") {
+                reply.stage=outcome.result.data["stage"].toString("failed"); reply.businessEvidence=reply.stage=="completed";
+                reply.outcomeKnown=!outcome.executed || outcome.result.data["effectCertainty"]=="no_effect";
+            }
+            completion(reply);
+        });
     };
-    dependencies.cancelTool = [this, localCalls](const QString& id) {
-        const auto token = localCalls->take(id);
-        if (token) *token = true;
-        if (m_taskToolExecutor) m_taskToolExecutor->cancel(id);
-    };
+    dependencies.cancelTool=[this](const QString& id) { if (m_taskToolExecutor) m_taskToolExecutor->cancel(id); };
     dependencies.refreshContext = [this]() {
         return m_runtimeServices ? m_runtimeServices->taskIdentityContext(m_petName) : QJsonObject{};
     };

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "id",
+    "name",
+    "version",
+    "summary",
+    "entries"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": "1"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "name": {
+      "$ref": "#/$defs/text"
+    },
+    "version": {
+      "$ref": "#/$defs/text"
+    },
+    "summary": {
+      "$ref": "#/$defs/text"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "definition"
+        ],
+        "properties": {
+          "kind": {
+            "enum": [
+              "tool",
+              "skill"
+            ]
+          },
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "definition": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "sources": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "summary",
+          "definition"
+        ],
+        "properties": {
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "summary": {
+            "$ref": "#/$defs/text"
+          },
+          "definition": {
+            "$ref": "#/$defs/text"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]*(?![\\s\\S])"
+    }
+  }
+}

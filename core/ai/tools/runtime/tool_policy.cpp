@@ -134,7 +134,7 @@ ToolRiskLevel PolicyEngine::riskLevelForTool(const AITool& tool) const {
     if (it != m_toolRiskOverrides.constEnd()) {
         return it.value();
     }
-    return inferRiskLevel(tool);
+    return tool.hostMetadata().risk;
 }
 
 ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
@@ -147,7 +147,7 @@ ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
     }
 
     QString scopeReason;
-    if (!scopedArgumentsAllowed(tool.name().toLower(), arguments, context, scopeReason)) {
+    if (!scopedArgumentsAllowed(tool, arguments, context, scopeReason)) {
         return ToolPolicyDecision::deny(level, scopeReason);
     }
 
@@ -160,7 +160,7 @@ ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
     case ToolRiskLevel::L0SafeRead:
         return ToolPolicyDecision::allow(level, "safe read-only tool");
     case ToolRiskLevel::L1LocalQuery:
-        if (isLocalFileName(tool.name()) && context.allowedRootPaths.isEmpty()) {
+        if (!tool.hostMetadata().scopePathArgument.isEmpty() && context.allowedRootPaths.isEmpty()) {
             return ToolPolicyDecision::requireConfirmation(level, "local file query requires scoped roots");
         }
         return ToolPolicyDecision::allow(level, "local query in allowed scope");
@@ -174,64 +174,11 @@ ToolPolicyDecision PolicyEngine::evaluate(const AITool& tool,
     return ToolPolicyDecision::deny(ToolRiskLevel::L4Dangerous, "unknown policy state");
 }
 
-ToolRiskLevel PolicyEngine::inferRiskLevel(const AITool& tool) const {
-    const QString name = tool.name().toLower();
-    if (isSensitiveOrDangerousName(name)) {
-        return ToolRiskLevel::L4Dangerous;
-    }
-    if (isHighRiskName(name)) {
-        return ToolRiskLevel::L3HighRiskAction;
-    }
-    if (isLocalFileName(name) || name.contains("search") || name.contains("read")) {
-        return ToolRiskLevel::L1LocalQuery;
-    }
-    if (tool.category() == ToolCategory::Query) {
-        return ToolRiskLevel::L0SafeRead;
-    }
-    return ToolRiskLevel::L2LowRiskAction;
-}
-
-bool PolicyEngine::isSensitiveOrDangerousName(const QString& toolName) const {
-    return toolName.contains("delete")
-        || toolName.contains("remove")
-        || toolName.contains("format")
-        || toolName.contains("credential")
-        || toolName.contains("password")
-        || toolName.contains("secret")
-        || toolName.contains("token")
-        || toolName.contains("shutdown")
-        || toolName.contains("system_modify");
-}
-
-bool PolicyEngine::isHighRiskName(const QString& toolName) const {
-    return toolName.contains("shell")
-        || toolName.contains("execute")
-    || toolName.contains("command")
-        || toolName.contains("run_process")
-        || toolName.contains("launch")
-    || toolName.contains("write_text_file")
-    || toolName.contains("write")
-        || toolName.contains("file_write")
-        || toolName.contains("write_file");
-}
-
-bool PolicyEngine::isLocalFileName(const QString& toolName) const {
-    return toolName.startsWith("file_")
-        || toolName.contains("list_directory")
-        || toolName.contains("read_text");
-}
-
-bool PolicyEngine::isScopedLocalToolName(const QString& toolName) const {
-    return isLocalFileName(toolName)
-        || toolName == "write_text_file"
-        || toolName == "execute_whitelisted_command";
-}
-
-bool PolicyEngine::scopedArgumentsAllowed(const QString& toolName,
+bool PolicyEngine::scopedArgumentsAllowed(const AITool& tool,
                                           const QJsonObject& arguments,
                                           const ToolPolicyContext& context,
                                           QString& reason) const {
-    if (!isScopedLocalToolName(toolName)) {
+    if (tool.hostMetadata().scopePathArgument.isEmpty()) {
         return true;
     }
 
@@ -240,9 +187,7 @@ bool PolicyEngine::scopedArgumentsAllowed(const QString& toolName,
         return false;
     }
 
-    const QString path = toolName == "execute_whitelisted_command"
-        ? arguments.value("working_directory").toString().trimmed()
-        : arguments.value("path").toString().trimmed();
+    const QString path = arguments.value(tool.hostMetadata().scopePathArgument).toString().trimmed();
     if (path.isEmpty()) {
         reason = "local tool path argument is missing";
         return false;

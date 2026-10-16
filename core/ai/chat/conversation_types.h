@@ -6,6 +6,9 @@
 #include <QDateTime>
 #include <functional>
 #include <optional>
+#include <memory>
+
+struct ToolDispatchToken;
 
 enum class ConversationKind { LocalOwner, Direct, Group };
 struct ReplyTarget {
@@ -87,6 +90,8 @@ struct ReplyDispatch {
     RoutedResponse response;
     QString toolName;
     QJsonObject arguments;
+    // Shared host authority; asynchronous preparation does not begin a send.
+    std::shared_ptr<ToolDispatchToken> dispatchToken;
 };
 using ReplyCompletion = std::function<void(DeliveryReceipt)>;
 using ReplyDispatcher = std::function<void(const ReplyDispatch&, ReplyCompletion)>;

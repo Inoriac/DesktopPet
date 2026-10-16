@@ -23,8 +23,8 @@ public:
     void notifyAgencyTrigger(const QString& eventId, const QString& reason);
     // Unknown side effects must be checked externally or explicitly confirmed by the user.
     bool resolveUnknownCall(const QString& callId, bool succeeded, const QJsonObject& observation);
-    static bool allowedTool(const QString& name);
-    static bool readOnlyTool(const QString& name);
+    bool allowedTool(const QString& name) const;
+    bool readOnlyTool(const QString& name,const QJsonObject& arguments={}) const;
 signals:
     void taskChanged(const QJsonObject& task);
     void userMessage(const QString& message);

@@ -71,7 +71,7 @@ class BubbleTool : public AITool {
 public:
     bool succeeds = true;
     int executions = 0;
-    BubbleTool() : AITool("show_chat_bubble", "test reminder", ToolCategory::Action) {}
+    BubbleTool() : AITool("show_chat_bubble", "test reminder", ToolCategory::Action) { setHostMetadata(HostToolMetadata::localAction()); }
     QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
     ToolResult execute(const QJsonObject&) override {
         ++executions;
@@ -661,7 +661,7 @@ void TestModuleConnectivity::ordinaryChatBypassesAgencyAndComplexTaskVerifies() 
         else if (prompt.contains("Independently verify"))
             response = {{"complete", true}, {"supported", true}, {"contradictions", QJsonArray{}},
                 {"unresolved", QJsonArray{}}, {"evidence", QJsonArray{"user_input"}}, {"result", "一、先看资料；二、列出重点。"}};
-        else response = {{"plan", "整理给定文字"}, {"completion_criteria", "覆盖原文两项内容"},
+        else response = {{"required_source_tools",QJsonArray{}},{"plan", "整理给定文字"}, {"completion_criteria", "覆盖原文两项内容"},
             {"candidate_answer", "一、先看资料；二、列出重点。"}};
         return QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact));
     };
@@ -708,7 +708,7 @@ void TestModuleConnectivity::taskCannotDispatchAfterReentrantPause() {
     runtime.client.responder = [](const QList<ChatMessage>& messages) {
         const QJsonObject response = messages.first().content.contains("subjective agency")
             ? QJsonObject{{"decision", "accept"}, {"reason", "ready"}, {"message", "开始"}}
-            : QJsonObject{{"plan", "展示内容"}, {"completion_criteria", "内容已经显示"},
+            : QJsonObject{{"required_source_tools",QJsonArray{}},{"plan", "展示内容"}, {"completion_criteria", "内容已经显示"},
                 {"tool", QJsonObject{{"name", "show_chat_bubble"}, {"arguments", QJsonObject{{"text", "test"}}}}}};
         return QString::fromUtf8(QJsonDocument(response).toJson(QJsonDocument::Compact));
     };

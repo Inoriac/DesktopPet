@@ -35,6 +35,21 @@
 #include <iostream>
 #include <utility>
 
+namespace {
+template<class Tool,class... Args>
+void registerBuiltin(ToolRegistry* registry,HostToolMetadata metadata,Args... args) {
+    ToolRegistry::WorkerFactory factory;
+    if (metadata.executor==HostToolExecutor::Worker)
+        factory=[args...] { return std::make_unique<Tool>(args...); };
+    registry->registerTool(std::make_unique<Tool>(args...),metadata,std::move(factory));
+}
+HostToolMetadata scopedBuiltin(bool write,const QString& pathArgument) {
+    auto metadata=write?HostToolMetadata::localAction(HostToolExecutor::Worker):HostToolMetadata::safeRead(HostToolExecutor::Worker);
+    metadata.risk=write?ToolRiskLevel::L3HighRiskAction:ToolRiskLevel::L1LocalQuery;
+    metadata.taskAllowed=!write; metadata.scopePathArgument=pathArgument; return metadata;
+}
+}
+
 void PetWindow::setupAiBrain() {
     std::cerr << "[AIBrain] setup started" << std::endl;
     if (!aiBrain) {
@@ -127,7 +142,7 @@ void PetWindow::setupAiBrain() {
     }
 
     aiToolRegistry = std::make_unique<ToolRegistry>();
-    aiToolRegistry->registerTool(std::make_unique<ShowChatBubbleTool>([window](const QString& text, int durationMs) {
+    registerBuiltin<ShowChatBubbleTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), [window](const QString& text, int durationMs) {
         if (!window) return false;
         const auto show = [window, text, durationMs]() {
             if (!window || !window->showToolBubbleMessage(text, durationMs)) return false;
@@ -139,8 +154,8 @@ void PetWindow::setupAiBrain() {
         const bool dispatched = QMetaObject::invokeMethod(window.data(),
             [&accepted, show]() { accepted = show(); }, Qt::BlockingQueuedConnection);
         return dispatched && accepted;
-    }));
-    aiToolRegistry->registerTool(std::make_unique<NotifyUserTool>([this](const QString& title, const QString& message, int durationMs) {
+    });
+    registerBuiltin<NotifyUserTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), [this](const QString& title, const QString& message, int durationMs) {
         const QString bubbleText = title.trimmed().isEmpty()
             ? message
             : QString("%1：%2").arg(title, message);
@@ -148,8 +163,8 @@ void PetWindow::setupAiBrain() {
             showBubbleMessage(bubbleText, durationMs);
             speakPetReply(bubbleText, QStringLiteral("toolBubble"));
         }, Qt::QueuedConnection);
-    }));
-    aiToolRegistry->registerTool(std::make_unique<SetProactiveModeTool>([this](const QString& mode, int quietMinutes) {
+    });
+    registerBuiltin<SetProactiveModeTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), [this](const QString& mode, int quietMinutes) {
         const QString text = mode == "focus" || mode == "quiet"
             ? (quietMinutes > 0 ? QStringLiteral("好，接下来 %1 分钟我会安静陪着你。").arg(quietMinutes)
                                 : QStringLiteral("好，我会安静陪着你，需要我时叫我。"))
@@ -158,59 +173,59 @@ void PetWindow::setupAiBrain() {
             showBubbleMessage(text, 3000);
             speakPetReply(text, QStringLiteral("toolBubble"));
         }, Qt::QueuedConnection);
-    }, aiBrain->proactiveStatePath()));
+    }, aiBrain->proactiveStatePath());
     MemoryStore* memoryStore = aiBrain->memoryStore();
     connectSchedulerMemory(*agentScheduler, *memoryStore);
-    aiToolRegistry->registerTool(std::make_unique<MemoryOrganizeTool>(memoryStore));
+    registerBuiltin<MemoryOrganizeTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L2LowRiskAction,false,false,HostToolExecutor::OwnerThread,{}}, memoryStore);
     SkillStore* skillStore = aiBrain->skillStore();
-    aiToolRegistry->registerTool(std::make_unique<SkillCreateTool>(skillStore));
-    aiToolRegistry->registerTool(std::make_unique<SkillUpdateTool>(skillStore));
-    aiToolRegistry->registerTool(std::make_unique<SkillListTool>(skillStore));
-    aiToolRegistry->registerTool(std::make_unique<SkillDeleteTool>(skillStore));
-    aiToolRegistry->registerTool(std::make_unique<SkillRecordOutcomeTool>(skillStore));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleCreateTool>(agentScheduler.get(), memoryStore));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleListTool>(agentScheduler.get()));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleCancelTool>(agentScheduler.get(), memoryStore));
-    aiToolRegistry->registerTool(std::make_unique<ScheduleSnoozeTool>(agentScheduler.get(), memoryStore));
-    aiToolRegistry->registerTool(std::make_unique<GetCurrentTimeTool>());
-    aiToolRegistry->registerTool(std::make_unique<GetUserIdleStateTool>());
-    aiToolRegistry->registerTool(std::make_unique<GetBatteryStatusTool>());
-    aiToolRegistry->registerTool(std::make_unique<GetNetworkStatusTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicStatusTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicLaunchTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicPlayTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicPauseTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicSkipNextTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicSkipPrevTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicLyricTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicVolumeTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicSearchPlayTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicListPlaylistsTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicPlaylistSongsTool>());
-    aiToolRegistry->registerTool(std::make_unique<LxMusicPlayPlaylistTool>());
+    registerBuiltin<SkillCreateTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L2LowRiskAction,false,false,HostToolExecutor::OwnerThread,{}}, skillStore);
+    registerBuiltin<SkillUpdateTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L2LowRiskAction,false,false,HostToolExecutor::OwnerThread,{}}, skillStore);
+    registerBuiltin<SkillListTool>(aiToolRegistry.get(), HostToolMetadata{"read",ToolRiskLevel::L2LowRiskAction,false,false,HostToolExecutor::OwnerThread,{}}, skillStore);
+    registerBuiltin<SkillDeleteTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L4Dangerous,false,false,HostToolExecutor::OwnerThread,{}}, skillStore);
+    registerBuiltin<SkillRecordOutcomeTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L2LowRiskAction,false,false,HostToolExecutor::OwnerThread,{}}, skillStore);
+    registerBuiltin<ScheduleCreateTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), agentScheduler.get(), memoryStore);
+    registerBuiltin<ScheduleListTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::OwnerThread), agentScheduler.get());
+    registerBuiltin<ScheduleCancelTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), agentScheduler.get(), memoryStore);
+    registerBuiltin<ScheduleSnoozeTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), agentScheduler.get(), memoryStore);
+    registerBuiltin<GetCurrentTimeTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<GetUserIdleStateTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<GetBatteryStatusTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<GetNetworkStatusTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicStatusTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicLaunchTool>(aiToolRegistry.get(), HostToolMetadata{"write",ToolRiskLevel::L3HighRiskAction,false,false,HostToolExecutor::Worker,{}});
+    registerBuiltin<LxMusicPlayTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicPauseTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicSkipNextTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicSkipPrevTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicLyricTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicVolumeTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicSearchPlayTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicListPlaylistsTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicPlaylistSongsTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<LxMusicPlayPlaylistTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::Worker));
 
     // 注册文件工具
-    aiToolRegistry->registerTool(std::make_unique<ReadTextFileTool>(m_allowedRoots));
-    aiToolRegistry->registerTool(std::make_unique<ListDirectoryTool>(m_allowedRoots));
+    registerBuiltin<ReadTextFileTool>(aiToolRegistry.get(), scopedBuiltin(false,"path"), m_allowedRoots);
+    registerBuiltin<ListDirectoryTool>(aiToolRegistry.get(), scopedBuiltin(false,"path"), m_allowedRoots);
     if (toolAccessPolicy.allowFileWrite) {
-        aiToolRegistry->registerTool(std::make_unique<WriteTextFileTool>(m_allowedRoots, toolAccessPolicy.maxWriteBytes));
+        registerBuiltin<WriteTextFileTool>(aiToolRegistry.get(), scopedBuiltin(true,"path"), m_allowedRoots, toolAccessPolicy.maxWriteBytes);
     }
     if (toolAccessPolicy.allowCommandExecution && !toolAccessPolicy.commandWhitelist.isEmpty()) {
         CommandExecutionPolicy commandPolicy;
         commandPolicy.allowedRoots = m_allowedRoots;
         commandPolicy.commandWhitelist = toolAccessPolicy.commandWhitelist;
         commandPolicy.timeoutMs = toolAccessPolicy.commandTimeoutMs;
-        aiToolRegistry->registerTool(std::make_unique<ExecuteWhitelistedCommandTool>(commandPolicy));
+        registerBuiltin<ExecuteWhitelistedCommandTool>(aiToolRegistry.get(), scopedBuiltin(true,"working_directory"), commandPolicy);
     }
 
     // 注册网络工具
-    aiToolRegistry->registerTool(std::make_unique<WebFetchTool>());
-    aiToolRegistry->registerTool(std::make_unique<WebSearchTool>());
+    registerBuiltin<WebFetchTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<WebSearchTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
 
     // 注册生活助理工具
-    aiToolRegistry->registerTool(std::make_unique<WeatherQueryTool>());
-    aiToolRegistry->registerTool(std::make_unique<HolidayQueryTool>());
-    aiToolRegistry->registerTool(std::make_unique<DailyBriefingTool>());
+    registerBuiltin<WeatherQueryTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<HolidayQueryTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
+    registerBuiltin<DailyBriefingTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::Worker));
 
     agentScheduler->setToolRegistry(aiToolRegistry.get());
     agentScheduler->setUserBusyProvider([this]() {
@@ -276,14 +291,14 @@ void PetWindow::setupAiBrain() {
 void PetWindow::setupAiAnimationTools() {
     if (!aiToolRegistry || !runtimeUiBridge) return;
     auto* presentation = runtimeUiBridge->presentation();
-    aiToolRegistry->registerTool(std::make_unique<PlayAnimationTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<GetCurrentAnimationTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<GetIdleTransitionCandidatesTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<GetActionTransitionStatusTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<RequestIdleTransitionTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<CancelAnimationRequestTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<GetAvatarCapabilitiesTool>(presentation));
-    aiToolRegistry->registerTool(std::make_unique<MoveAvatarTool>(presentation));
+    registerBuiltin<PlayAnimationTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<GetCurrentAnimationTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<GetIdleTransitionCandidatesTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<GetActionTransitionStatusTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<RequestIdleTransitionTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<CancelAnimationRequestTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<GetAvatarCapabilitiesTool>(aiToolRegistry.get(), HostToolMetadata::safeRead(HostToolExecutor::OwnerThread), presentation);
+    registerBuiltin<MoveAvatarTool>(aiToolRegistry.get(), HostToolMetadata::localAction(HostToolExecutor::OwnerThread), presentation);
 }
 
 void PetWindow::teardownAiRuntime() {

@@ -18,11 +18,13 @@ struct Harness {
     QJsonObject emotion{{"energy", .6}};
     QJsonArray schemas{QJsonObject{{"name", "web_search"}}, QJsonObject{{"name", "schedule_create"}},
         QJsonObject{{"name", "execute_whitelisted_command"}}};
+    QStringList requiredSources;
     bool ready = false;
     Harness() {
         ready = store.open(directory.filePath("runtime.sqlite"));
         resetRunner();
     }
+    ~Harness() { runner.reset(); }
     void resetRunner() {
         runner.reset();
         models.clear(); tools.clear();
@@ -38,6 +40,11 @@ struct Harness {
             toolRequests.append(call); tools.append(std::move(done));
         };
         dependencies.cancelModel = dependencies.cancelTool = [this](const QString& id) { cancelled.append(id); };
+        dependencies.toolMetadata = [](const QString& name) {
+            if (name=="web_search") return HostToolMetadata::safeRead();
+            if (name=="schedule_create") return HostToolMetadata::localAction();
+            return HostToolMetadata{};
+        };
         dependencies.toolAllowed = [](const QString&, const QJsonObject&) { return true; };
         dependencies.availableTools = [this] { return schemas; };
         dependencies.refreshContext = [this] { return QJsonObject{{"relationship", QJsonObject{{"trust", .7}}},
@@ -46,6 +53,7 @@ struct Harness {
     }
     bool start(TaskBudget budget = {}, const QString& goal = QStringLiteral("比较两份资料并验证结论")) {
         TaskStartRequest request;
+        request.requiredSourceTools=requiredSources;
         request.goal = goal; request.profileId = "pet"; request.subjectId = "owner";
         request.personalityVersion = 7; request.personalitySnapshot = {{"version", 7}, {"style", "patient"}};
         request.emotionSnapshot = {{"energy", .9}}; request.budget = budget;
@@ -64,11 +72,11 @@ QJsonObject decision(const QString& value = "accept") {
     return {{"decision", value}, {"reason", "考虑了当前精力与任务范围"}, {"message", "我们继续。"}};
 }
 QJsonObject nextTool(const QString& name = "web_search", const QJsonObject& args = {{"query", "sources"}}) {
-    return {{"plan", "查找来源并比较"}, {"completion_criteria", "两项主张均有可信来源且无矛盾"},
+    return {{"required_source_tools",QJsonArray{}},{"plan", "查找来源并比较"}, {"completion_criteria", "两项主张均有可信来源且无矛盾"},
         {"tool", QJsonObject{{"name", name}, {"arguments", args}}}};
 }
 QJsonObject candidate() {
-    return {{"plan", "已有候选结果，等待独立验证"}, {"completion_criteria", "所有主张均有来源且无矛盾"}, {"candidate_answer", "候选结论"}};
+    return {{"required_source_tools",QJsonArray{}},{"plan", "已有候选结果，等待独立验证"}, {"completion_criteria", "所有主张均有来源且无矛盾"}, {"candidate_answer", "候选结论"}};
 }
 QJsonObject verification(bool complete, const QString& reference = "user_input") {
     return {{"complete", complete}, {"supported", complete}, {"contradictions", QJsonArray{}},
@@ -124,9 +132,9 @@ void TestTaskOrchestrator::unsafeToolsCannotBeEnabledByModelOrHook() {
     h.reply(nextTool("execute_whitelisted_command"));
     QCOMPARE(h.runner->currentTask().status, "Paused");
     QVERIFY(h.toolRequests.isEmpty());
-    QVERIFY(!TaskOrchestrator::allowedTool("write_text_file"));
-    QVERIFY(!TaskOrchestrator::allowedTool("desktop_click"));
-    QVERIFY(!TaskOrchestrator::allowedTool("run_script"));
+    QVERIFY(!h.runner->allowedTool("write_text_file"));
+    QVERIFY(!h.runner->allowedTool("desktop_click"));
+    QVERIFY(!h.runner->allowedTool("run_script"));
 }
 void TestTaskOrchestrator::failedToolCallsConsumeBudget() {
     Harness h; TaskBudget budget; budget.maxToolCalls = 2;
@@ -282,6 +290,7 @@ void TestTaskOrchestrator::significantEmotionChangeTriggersCheckpoint() {
 void TestTaskOrchestrator::externalTaskNeedsCapabilityBeforeAgencyAndRealEvidenceToComplete() {
     Harness h;
     h.schemas = {};
+    h.requiredSources={"web_search"};
     QVERIFY(h.start({}, QStringLiteral("检索最新旅行建议")));
     QCOMPARE(h.runner->currentTask().status, "Paused");
     QVERIFY(h.modelRequests.isEmpty());

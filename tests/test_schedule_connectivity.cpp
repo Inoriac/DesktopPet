@@ -51,10 +51,10 @@ struct Environment {
             && scheduler.load();
         if (!ready) return;
         connectSchedulerMemory(scheduler, *brain.memoryStore());
-        registry.registerTool(std::make_unique<ScheduleCreateTool>(&scheduler, brain.memoryStore()));
-        registry.registerTool(std::make_unique<ScheduleListTool>(&scheduler));
-        registry.registerTool(std::make_unique<ScheduleSnoozeTool>(&scheduler, brain.memoryStore()));
-        registry.registerTool(std::make_unique<ScheduleCancelTool>(&scheduler, brain.memoryStore()));
+        registry.registerTool(std::make_unique<ScheduleCreateTool>(&scheduler, brain.memoryStore()),HostToolMetadata::localAction());
+        registry.registerTool(std::make_unique<ScheduleListTool>(&scheduler),HostToolMetadata::safeRead());
+        registry.registerTool(std::make_unique<ScheduleSnoozeTool>(&scheduler, brain.memoryStore()),HostToolMetadata::localAction());
+        registry.registerTool(std::make_unique<ScheduleCancelTool>(&scheduler, brain.memoryStore()),HostToolMetadata::localAction());
         scheduler.setToolRegistry(&registry);
         brain.setToolRegistry(&registry);
         brain.setAgentScheduler(&scheduler);
@@ -173,7 +173,7 @@ void TestScheduleConnectivity::busyBubbleRetriesAndSimultaneousRemindersDoNotOve
             displayed.append(text);
             occupied = true;
             return true;
-        }));
+        }),HostToolMetadata::localAction());
     const auto first = env.scheduler.createTask({{"type", "once_at"}, {"title", "喝水"},
         {"delay_minutes", 1}, {"respect_quiet_hours", 0}});
     const auto second = env.scheduler.createTask({{"type", "once_at"}, {"title", "休息"},

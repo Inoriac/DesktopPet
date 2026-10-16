@@ -61,6 +61,7 @@ class TaskOrchestrator;
 class TaskToolExecutor;
 class TaskExperienceAdapter;
 
+class PluginRuntime;
 class AIBrain : public QObject {
     Q_OBJECT
 
@@ -84,6 +85,7 @@ public:
         std::function<void(Result<AcceptedMessage, DomainError>)> completion = {});
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
+    PluginRuntime* pluginRuntime() const { return m_pluginRuntime.get(); }
     void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
     void setEmotionSnapshotProvider(EmotionSnapshotProvider provider);
 
@@ -175,6 +177,9 @@ signals:
 
 private:
     void initializeTaskRuntime();
+    void initializePluginRuntime();
+    void retirePluginRuntime();
+    ContextSpec currentToolContext() const;
     void shutdownTaskRuntime();
     bool tryHandleComplexTask(const QString& text, const QString& triggerTag);
     void finishTaskResponse();
@@ -289,6 +294,7 @@ private:
 
 private:
     QString m_petName;
+    std::unique_ptr<PluginRuntime> m_pluginRuntime;
     ToolRegistry* m_toolRegistry = nullptr; // non-owning
     AgentRuntimeServices* m_runtimeServices = nullptr; // non-owning
 

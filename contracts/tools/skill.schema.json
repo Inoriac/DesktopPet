@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "id",
+    "name",
+    "version",
+    "summary",
+    "instructions",
+    "dependencies"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": "1"
+    },
+    "id": {
+      "$ref": "#/$defs/id"
+    },
+    "name": {
+      "$ref": "#/$defs/text"
+    },
+    "version": {
+      "$ref": "#/$defs/text"
+    },
+    "summary": {
+      "$ref": "#/$defs/text"
+    },
+    "instructions": {
+      "$ref": "#/$defs/text"
+    },
+    "dependencies": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "kind",
+          "id",
+          "version",
+          "operations",
+          "required"
+        ],
+        "properties": {
+          "kind": {
+            "const": "tool"
+          },
+          "id": {
+            "$ref": "#/$defs/id"
+          },
+          "version": {
+            "$ref": "#/$defs/text"
+          },
+          "operations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/$defs/id"
+            },
+            "uniqueItems": true
+          },
+          "required": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "text": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]*(?![\\s\\S])"
+    }
+  }
+}

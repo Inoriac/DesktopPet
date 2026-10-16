@@ -146,7 +146,7 @@ class EchoTool final : public AITool {
 public:
     EchoTool()
         : AITool(QStringLiteral("echo_value"), QStringLiteral("Echo a value"),
-                 ToolCategory::Query) {}
+                 ToolCategory::Query) { setHostMetadata(HostToolMetadata::safeRead()); }
 
     QJsonObject parameterSchema() const override {
         return {{QStringLiteral("type"), QStringLiteral("object")}};
@@ -163,7 +163,7 @@ public:
     CurrentTimeTool()
         : AITool(QStringLiteral("get_current_time"),
                  QStringLiteral("Return a deterministic time"),
-                 ToolCategory::Query) {}
+                 ToolCategory::Query) { setHostMetadata(HostToolMetadata::safeRead()); }
 
     QJsonObject parameterSchema() const override {
         return {{QStringLiteral("type"), QStringLiteral("object")}};
@@ -180,7 +180,7 @@ public:
         : AITool(QStringLiteral("lx_music_launch"),
                  QStringLiteral("Launch a test application"),
                  ToolCategory::Action)
-        , m_executions(executions) {}
+        , m_executions(executions) { auto metadata=HostToolMetadata::localAction(); metadata.risk=ToolRiskLevel::L3HighRiskAction; metadata.taskAllowed=false; setHostMetadata(metadata); }
 
     QJsonObject parameterSchema() const override {
         return {{QStringLiteral("type"), QStringLiteral("object")}};
@@ -275,6 +275,7 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void arbitraryWorkerAndMiddleConfirmation_preserveWholeRound();
     void bufferedInput_dispatchesWithoutWaitingForMoreInput();
     void externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory();
     void bufferedInput_keepsStreamingAndCombinesPendingMessages();
@@ -1111,9 +1112,9 @@ void StreamingDialogueTests::automaticTools_whenModeChanges_shouldNotExecuteLate
     int bubbles = 0;
     ToolRegistry tools;
     tools.registerTool(std::make_unique<SetProactiveModeTool>(
-        SetProactiveModeTool::Callback{}, brain.proactiveStatePath()));
+        SetProactiveModeTool::Callback{}, brain.proactiveStatePath()),HostToolMetadata::localAction());
     tools.registerTool(std::make_unique<ShowChatBubbleTool>(
-        [&bubbles](const QString&, int) { ++bubbles; return true; }));
+        [&bubbles](const QString&, int) { ++bubbles; return true; }),HostToolMetadata::localAction());
     brain.setToolRegistry(&tools);
     brain.triggerThink(QStringLiteral("idle_tick"), QStringLiteral("idle_action"));
     QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(), 1, 2000);
@@ -2169,6 +2170,29 @@ void StreamingDialogueTests::externalConversation_queuesSeparatelyAndKeepsBoundT
     QVERIFY(thirdPrompt.contains("群A讨论天文"));QVERIFY(thirdPrompt.contains("给群A的回答"));
     QVERIFY(!thirdPrompt.contains("群B讨论私人菜谱"));
     for(const auto& tools:client.toolBatches)QVERIFY(tools.isEmpty());
+}
+
+void StreamingDialogueTests::arbitraryWorkerAndMiddleConfirmation_preserveWholeRound() {
+    class NewWorker final : public AITool {
+    public:
+        NewWorker():AITool("new_package_query","New package query",ToolCategory::Query) {}
+        QJsonObject parameterSchema() const override { return {{"type","object"}}; }
+        ToolResult execute(const QJsonObject&) override { QThread::msleep(120); return ToolResult::ok({{"value",7}}); }
+    };
+    FakeStreamingClient client; LlmResponse response;
+    response.toolCalls={{"first","function","new_package_query",{}},{"second","function","lx_music_launch",{}},{"third","function","echo_value",{{"value","tail"}}}};
+    client.attempts={{{},true,response,{},false},{{delta("Finished")},true,textResponse("Finished"),{},false}};
+    AIBrain brain(&client,{dialogueRoutes({route("primary")})}); QTemporaryDir directory; QVERIFY(initializeBrain(brain,directory));
+    ToolRegistry registry; int launched=0;
+    registry.registerTool(std::make_unique<NewWorker>(),HostToolMetadata::safeRead(HostToolExecutor::Worker),[]{return std::make_unique<NewWorker>();});
+    registry.registerTool(std::make_unique<LaunchTool>(&launched)); registry.registerTool(std::make_unique<EchoTool>()); brain.setToolRegistry(&registry);
+    connect(&brain,&AIBrain::toolConfirmationRequired,&brain,[&](const QString& id,const QString&,const QString&,const QJsonObject&){brain.resolveToolConfirmation(id,true);});
+    QTimer ticker; ticker.setInterval(10); int ticks=0; connect(&ticker,&QTimer::timeout,&brain,[&]{++ticks;}); ticker.start();
+    brain.triggerThink("Use the supplied tools","user_request","message-async"); QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(),2,5000);
+    QCOMPARE(launched,1); QVERIFY(ticks>=3);
+    QStringList returned;
+    for (const auto& message:client.messageBatches.last()) if (message.role=="tool") returned.append(message.toolCallId);
+    QCOMPARE(returned,QStringList({"first","second","third"}));
 }
 
 QTEST_MAIN(StreamingDialogueTests)

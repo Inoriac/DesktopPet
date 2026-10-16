@@ -356,7 +356,7 @@ void TestScheduleTools::listPagesSurviveRuntimeSanitizerWithOneHundredCompletedT
     scheduler.setStoragePath(file.fileName());
     QVERIFY(scheduler.load());
     ToolRegistry registry;
-    registry.registerTool(std::make_unique<ScheduleListTool>(&scheduler));
+    registry.registerTool(std::make_unique<ScheduleListTool>(&scheduler),HostToolMetadata::safeRead());
     ToolRuntime runtime;
     runtime.setToolRegistry(&registry);
     const auto queryPage = [&](const QJsonObject& arguments) {

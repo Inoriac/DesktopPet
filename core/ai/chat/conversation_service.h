@@ -44,8 +44,7 @@ private:
             },Qt::QueuedConnection);
         });
     }
-    struct DispatchToken { bool cancelled=false; bool started=false; };
-    QHash<QString,std::shared_ptr<DispatchToken>> m_dispatchTokens;
+    QHash<QString,std::shared_ptr<ToolDispatchToken>> m_dispatchTokens;
     std::shared_ptr<std::atomic_bool> m_storageReady = std::make_shared<std::atomic_bool>(false);
     ConversationStore m_store;
     QHash<QString,HostConversationBinding> m_bindings;

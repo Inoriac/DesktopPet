@@ -141,3 +141,48 @@
 ### §3.4 最终结论
 
 代码审查通过，Wave 3 五项校验通过。完整应用/所有测试目标构建成功，最终 CTest **50/50 组通过**（42.64 秒），`git diff --check` 通过。日志 `/tmp/conversation-routing-full-build.log`、`/tmp/conversation-routing-full-ctest.log`；首轮旧迁移 fixture 的 RED 保留为 `/tmp/conversation-routing-full-ctest-legacy-fixture-red.log`，未靠删测试取得通过。受控 ToolRuntime 发送证明宿主异步路由，不代表真实 QQ 已接通。
+
+## §3.5 插件发现、按需加载与通用执行
+
+### 审查基线与分段证据
+
+- 现有 Tool 格式 1 的独立验证为 62/62，通过日志 `/tmp/task4-contract-baseline.json`；jsonschema 4.23.0 仅安装到临时目录。
+- 第一批 RED 为缺少 plugin_catalog.h；随后标准 Schema、纯 Skill 摘要/按需正文、包外路径三个行为通过。日志 `/tmp/task4-red-catalog.log`、`/tmp/task4-green-catalog-build.log`、`/tmp/task4-green-catalog-test.log`。
+- 第二批 RED 为缺少 plugin_runtime.h；command/MCP/启停首批测试为 7/7（含 Qt init/cleanup），日志 `/tmp/task4-red-execution.log`、`/tmp/task4-green-execution-test.log`。
+- 通用 registry/异步接口的 RED 保留在 `/tmp/task4-red-tool-async.log`。这些分段结果不替代本阶段完整构建、回归与生产入口验收。
+
+### 审查要求
+
+- Plugin/Skill ID 与既有 Tool ID 使用一致的末尾约束；必需 vocabulary 使用真实支持集合；配置引用种类、重复项和非法 Schema 不得静默接受。
+- 在取得 MCP 实际 Schema 前检查宿主执行绑定；缺必需结果映射时不先执行写操作；输出上限和 secret 脱敏覆盖最终结果、回执和错误路径。
+- local_owner grant 只匹配本地主人来源；外部上下文不能凭同名 conversationId 借用本地授权。
+- 取消 token 贯穿异步 gateway 与最终派发点；目录变更使未派发请求失效。原调用身份不可由执行器返回值覆盖，重复回调只结算一次。
+- 角色切换与旧服务释放后，已派发回执仍归档原库；不能提前结算正在运行的调用或在 GUI 等待完整工具超时。
+- 聊天一轮多个工具在中途确认后仍继续剩余调用；只有取消当前生成代次才阻止新派发。
+
+### 修复与覆盖映射
+
+| 计划行为 | 实际验证入口 |
+| --- | --- |
+| 纯 Skill、纯 Tool、混合插件发现与按需详情 | PluginRuntimeTests：registerPlugin_skillOnly_indexesSummaryAndLoadsOnDemand、registerPlugin_mixedDependenciesAndConflict_loadsOnlySelectedDetails |
+| script/CLI/MCP 实际执行、空值/标量与多段响应 | invokeCapability_scriptCliAndControlledMcp_returnsActualOutcome、invokeCapability_outcomesAndPreflightAdapters |
+| 启停、旧句柄失效、在途回执保留 | setPluginEnabled_disableThenEnable_blocksNewCallsAndInvalidatesOldCache、setPluginEnabled_inFlightReceiptAndQueuedCalls_keepIdentity |
+| 清单、配置、包内 Schema 引用和路径拒绝 | schema_rejectsInvalidMetaschemaVocabularyAndTrailingIdentifier、schema_localReferencesAndConditionalConstraints、registerPlugin_rejectsEscapingDefinition、hostConfiguration_duplicateIdentitiesAndDisabledUpgrade_areAtomic |
+| 外部上下文、学习文本范围与 secret 快照 | learnedSkills_localOwnerCanLoad_externalAndInternalCannot、invokeCapability_grantsScopeAndSecretEcho；切换配置后仍脱敏原调用使用的 secret |
+| 对象/路径 grant 与 MCP 真实 Schema/协议失败 | invokeCapability_objectAndPathGrants_areCheckedBeforeSpawn、invokeCapability_mcpErrorsAndActualSchema_areNotEmptySuccess |
+| 任意注册名称与界面响应 | ToolTests：registryRejectsConflictsAndAsyncFactoryUsesDeclaredMetadata；StreamingDialogueTests：arbitraryWorkerAndMiddleConfirmation_preserveWholeRound |
+| 禁用、取消、确认后替换与派发后生命周期 | PluginRuntimeTests：gateway_disableQueuedInvocation_preservesInFlightCall；ToolTests：asyncLifecycle_preservesIdentityAndSettlesAfterFacadeDestruction、pendingConfirmation_cannotExecuteReplacementBinding |
+| 实际回复映射 | PluginRuntimeTests：makeReplyDispatcher_usesRemoteReferenceAndActualReceipt，核验嵌套参数、远端引用、后端正文与时间 |
+| 关闭服务后原库回执、加载时取消 | ConversationRoutingTests：service_destroyedAfterDispatch_archivesReceiptInOriginalProfile（两种时序）、service_cancelDuringSenderPreparation_preventsNewSend（三种时序） |
+
+- 真正的行为 RED 包括非法 multipleOf=0 未被拒绝、secret 被执行器回显、服务销毁丢回执、派发 token 未贯穿异步准备；分别保留在 /tmp/task4-expanded-red.log、/tmp/task4-receipt-sink-red.log、/tmp/task4-reply-cancel-red.log。
+- 全量集成首次暴露旧测试注册缺显式宿主元数据，以及聊天工具 round continuation 清理自身捕获导致的崩溃。保留原断言补注册元数据，生产回调使用局部 continuation 副本释放，恢复 PreparingTool 状态事件；定向回归已通过。Task 测试 fixture 调整析构顺序，先释放会使用其成员回调的 runner。
+- 通用主机授权精确绑定 plugin/entry/operation，重复插件和 grant 标识拒绝；更新插件保留原禁用状态。标准 metaschema、包内引用、输出上限、业务错误与结果阶段分别验证，不以空返回、已受理或自然语言成功冒充完成。
+- 已核对生产 AIBrain 聊天/任务均使用异步 ToolRuntime，任务规划显式声明来源工具、发现/加载不算业务证据；外部任务没有隐式主人权限。SkillDeleteTool 保持原 L4 拒绝。
+- Python 契约验证扩展至 70/70，通过日志 /tmp/task4-final-contract.log；主设计 8 个切片各 7 节、59 处本地链接、接入指南 5 段 JSON 与 4 段 SQL 的两库迁移/重复执行/空库撤销均通过。
+
+### 最终结论
+
+代码审查通过，已确认修复项均闭合，Wave 4 五项校验通过。完整应用及全部测试目标构建成功，最终 CTest **51/51 组通过**（64.02 秒），Python 契约 **70/70 通过**，git diff --check 通过。日志 /tmp/task4-final-full-build.log、/tmp/task4-final-full-ctest.log、/tmp/task4-final-contract.log。最后一轮增加的禁用升级测试按目录契约检查 readiness=disabled 与拒绝加载，不要求隐藏条目；新增学习技能测试覆盖本地主人、external、internal 和另一 profile。
+
+消息发送使用真实 command/受控 MCP 与会话存储的组合验证，生命周期测试不触碰真实账号。本阶段不声明真实 QQ 接通，后续活动状态与自主选择按 §3.6—§3.9 实施。

@@ -33,7 +33,17 @@
 - [code-impl Task 3 并发与接收边界] 已同步主设计：schema v2 仅门禁，旧版本在写锁内复核迁移；会话读后写事务先预留 writer。消息/回执/导入以事务提交为成功，event_log 后续投递失败由单个后台低频 timer 重投同一 outbox，不漏输入或重发；记忆仍核验真正已提交原事件。外部上下文逐条保留宿主 speaker/message 标签与独立正文，避免参与人列表无法对应发言。显式 external/internal 旧事件同样不得走主人材料 fallback。
 - [code-impl Task 3 锚点复核] 已核对 ConversationStore::acceptMessage/prepareContext/publishResponse/recordDeliveryReceipt 与 ConversationService 异步 facade、AIBrain::submitIncomingMessage、ChatPreparationExecutor 权威历史准备、ContextAssembler::assemble 的 scope 门禁、isOriginalOwnerExperience 及反思多来源回溯。ProfileChatHistoryStore 的生产 runtime 路径由 PetWindow 注入，按值复制的存储不持有跨线程 QSqlDatabase。完整构建覆盖新增共享头依赖，统计测试目标亦需 core include，不移除原测试。
 
+- [code-impl Task 4 sanity check] §3.5 原锚点均存在：ToolRegistry::registerTool/executeTool、TaskOrchestrator::allowedTool/readOnlyTool/sourceToolsForGoal、TaskToolExecutor 工具构造、ToolRuntime::execute、PolicyEngine、McpClient/McpToolAdapter 和 SkillStore。另核实 ai_brain_tasks.cpp 有第二份线程工具名集合，PetWindow 直接注册内置工具，AITool 仅检查必填字段；已回填主设计 1.4 的生产入口与标准 Schema 边界，不能只做独立目录测试。
+
+- [code-impl Task 4 派发取消核对] ReplyDispatch 与通用执行器共享 ToolDispatchToken，异步加载不提前标记 started；真实执行前 begin、取消与销毁在同一锁下阻止尚未派发工作。三条真实 RED（空 token）见 /tmp/task4-reply-cancel-red.log，修复覆盖加载时取消、关闭服务和实际发送后取消仍归档。参数映射使用已解析远端回复 ID，回执正文/时间来自后端。主设计 §3.4/§4.3 与接入指南已同步。
+
+- [code-impl Task 4 锚点复核] PluginRuntime::registerPlugin/loadCapability/invokeCapability/setPluginEnabled、makeReplyDispatcher、ToolRuntime::executeAsync、TaskToolExecutor::execute 与 AIBrain::initializePluginRuntime 的实际签名和生产调用已核对；共享 token 仅在实际发送点 begin。标准 Schema/metadata/host grant/回执映射已回填主设计，未新增软件名称执行分支。最终完整构建、51/51 CTest、70/70 Python 契约通过。
+
 ## 设计偏差
+
+- [code-impl Task 4 回执生命周期补全] 主设计 §3.4/§3.5 明确原库回执归档独立于 UI/QObject 生命周期。旧 ReplyCompletion 先排服务事件队列再写库，会在服务释放前后两种时序丢失已发送事实；新增独立 FIFO 后台归档队列，持有按值原 profile/path，仅界面通知依赖 QPointer。沿用现有回执表、事务和幂等规则，不建第二账本。对应两个真实 RED 保留在 `/tmp/task4-receipt-sink-red.log`。
+
+- [code-impl Task 4 设计补全] 主设计 §1.3/§2.3/§3.5/§4.2—4.3 v1.4 采用 jsoncons v0.178.0 离线 2020-12 验证、profile plugins.json 的宿主配置和 grant、JSON Pointer 结果/回复映射、显式 HostToolMetadata 与工厂、三个通用 gateway 和统一异步 ToolRuntime。任务去掉工具名称/目标关键词猜测但保留真实证据门槛。取消与禁用使未派发失效，已派发保留原身份回执；沿用用户持续开发授权，不新增软件专用分支或第二动作账本。
 
 
 - [code-impl Task 2 设计补全] 主设计 1.2 明确事件预分配 UUID、writer 查询已提交来源、pending 来源、共享 ContextSpec、按上下文缓存与迁移顺序。现有 GUI 先 stage 后异步落库不能直接证明事件已提交；最终人物去重和冲突须移到/复核于 writer。新写先统一带保守归属后再批量迁移，不长时间暂停写入；这是 §3.3/§5.3 的明确修订，不改变产品范围。

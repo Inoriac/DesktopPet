@@ -63,7 +63,7 @@ public:
 class MockQueryTool : public AITool {
 public:
     MockQueryTool()
-        : AITool("mock_query", "A mock query tool for testing", ToolCategory::Query) {}
+        : AITool("mock_query", "A mock query tool for testing", ToolCategory::Query) { setHostMetadata(HostToolMetadata::safeRead()); }
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;
@@ -83,7 +83,7 @@ public:
 class MockSensitiveQueryTool : public AITool {
 public:
     MockSensitiveQueryTool()
-        : AITool("mock_sensitive_query", "A query tool returning sensitive fields", ToolCategory::Query) {}
+        : AITool("mock_sensitive_query", "A query tool returning sensitive fields", ToolCategory::Query) { setHostMetadata(HostToolMetadata::safeRead()); }
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;
@@ -103,7 +103,7 @@ public:
 class MockLargeQueryTool : public AITool {
 public:
     MockLargeQueryTool()
-        : AITool("mock_large_query", "A query tool returning a large payload", ToolCategory::Query) {}
+        : AITool("mock_large_query", "A query tool returning a large payload", ToolCategory::Query) { setHostMetadata(HostToolMetadata::safeRead()); }
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;
@@ -122,7 +122,7 @@ public:
 class MockShellTool : public AITool {
 public:
     MockShellTool()
-        : AITool("shell_execute", "A high risk shell tool", ToolCategory::Action) {}
+        : AITool("shell_execute", "A high risk shell tool", ToolCategory::Action) { auto m=HostToolMetadata::localAction(); m.risk=ToolRiskLevel::L3HighRiskAction; setHostMetadata(m); }
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;
@@ -156,7 +156,7 @@ public:
 class MockWhitelistedCommandTool : public AITool {
 public:
     MockWhitelistedCommandTool()
-        : AITool("execute_whitelisted_command", "A scoped command tool", ToolCategory::Action) {}
+        : AITool("execute_whitelisted_command", "A scoped command tool", ToolCategory::Action) { auto m=HostToolMetadata::localAction(); m.risk=ToolRiskLevel::L3HighRiskAction; m.scopePathArgument="working_directory"; setHostMetadata(m); }
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;
@@ -190,6 +190,9 @@ private slots:
 
     // --- ToolRegistry 测试 ---
     void testRegistryEmpty();
+    void registryRejectsConflictsAndAsyncFactoryUsesDeclaredMetadata();
+    void asyncLifecycle_preservesIdentityAndSettlesAfterFacadeDestruction();
+    void pendingConfirmation_cannotExecuteReplacementBinding();
     void testRegisterAndFind();
     void testRegisterMultipleTools();
     void testFindNonExistent();
@@ -319,6 +322,66 @@ void TestToolRegistry::testToolValidationMissingRequired() {
 // ============================================================
 // ToolRegistry 测试
 // ============================================================
+
+void TestToolRegistry::registryRejectsConflictsAndAsyncFactoryUsesDeclaredMetadata() {
+    ToolRegistry registry;
+    auto metadata=HostToolMetadata::safeRead(HostToolExecutor::Worker);
+    metadata.taskAllowed=true;
+    QVERIFY(registry.registerTool(std::make_unique<MockQueryTool>(),metadata,[] { return std::make_unique<MockQueryTool>(); }));
+    QVERIFY(!registry.registerTool(std::make_unique<MockQueryTool>(),metadata));
+    ToolRuntime runtime; runtime.setToolRegistry(&registry);
+    ToolExecutionRequest request; request.requestId="generic-call"; request.toolName="mock_query";
+    std::optional<ToolExecutionOutcome> outcome;
+    runtime.executeAsync(request,[&](ToolExecutionOutcome value){outcome=value;});
+    QTRY_VERIFY(outcome.has_value()); QVERIFY(outcome->executed); QCOMPARE(outcome->result.data["value"].toInt(),42);
+    QVERIFY(registry.setToolEnabled("mock_query",false)); outcome.reset();
+    runtime.executeAsync(request,[&](ToolExecutionOutcome value){outcome=value;});
+    QTRY_VERIFY(outcome.has_value()); QVERIFY(!outcome->executed);
+    QVERIFY(registry.unregisterTool("mock_query")); QCOMPARE(registry.toolCount(),0);
+}
+
+void TestToolRegistry::asyncLifecycle_preservesIdentityAndSettlesAfterFacadeDestruction() {
+    ToolRegistry registry;
+    QVERIFY(registry.registerTool(std::make_unique<MockQueryTool>()));
+    ToolExecutionRequest request; request.requestId="owner-before-destruction"; request.toolName="mock_query";
+    QList<ToolExecutionOutcome> outcomes;
+    auto runtime=std::make_unique<ToolRuntime>(); runtime->setToolRegistry(&registry);
+    runtime->executeAsync(request,[&](ToolExecutionOutcome value){outcomes.append(value);});
+    runtime.reset();
+    QTRY_COMPARE_WITH_TIMEOUT(outcomes.size(),1,1000);
+    QCOMPARE(outcomes.first().requestId,request.requestId); QVERIFY(!outcomes.first().executed);
+
+    ToolRuntime::Completion backend;
+    QVERIFY(registry.unregisterTool("mock_query"));
+    QVERIFY(registry.registerTool(std::make_unique<MockQueryTool>(),HostToolMetadata::safeRead(HostToolExecutor::Async),{},
+        [&](const ToolExecutionRequest& call,ToolRuntime::Completion done){QVERIFY(call.dispatchToken->begin()); backend=std::move(done);}));
+    runtime=std::make_unique<ToolRuntime>(); runtime->setToolRegistry(&registry);
+    request.requestId="actual-before-destruction";
+    runtime->executeAsync(request,[&](ToolExecutionOutcome value){outcomes.append(value);});
+    QVERIFY(backend); runtime.reset();
+    ToolExecutionOutcome receipt; receipt.requestId="untrusted-id"; receipt.toolName="untrusted-tool"; receipt.executed=true; receipt.result=ToolResult::ok({{"actual",true}});
+    backend(receipt); backend(receipt);
+    QTRY_COMPARE(outcomes.size(),2);
+    QCOMPARE(outcomes.last().requestId,request.requestId); QCOMPARE(outcomes.last().toolName,request.toolName);
+    QVERIFY(outcomes.last().executed); QVERIFY(outcomes.last().result.data["actual"].toBool());
+}
+
+void TestToolRegistry::pendingConfirmation_cannotExecuteReplacementBinding() {
+    for (const bool async: {false,true}) {
+        ToolRegistry registry; QVERIFY(registry.registerTool(std::make_unique<MockShellTool>()));
+        ToolRuntime runtime; runtime.setToolRegistry(&registry);
+        ToolExecutionRequest request; request.requestId="pending-original"; request.toolName="shell_execute";
+        std::optional<ToolExecutionOutcome> outcome;
+        if (async) runtime.executeAsync(request,[&](ToolExecutionOutcome value){outcome=value;});
+        else outcome=runtime.execute(request);
+        QVERIFY(outcome); QVERIFY(outcome->policyDecision.needsConfirmation());
+        QVERIFY(registry.unregisterTool(request.toolName)); QVERIFY(registry.registerTool(std::make_unique<MockShellTool>()));
+        outcome.reset();
+        if (async) runtime.resolveConfirmationAsync(request.requestId,true,[&](ToolExecutionOutcome value){outcome=value;});
+        else outcome=runtime.resolveConfirmation(request.requestId,true);
+        QTRY_VERIFY(outcome); QVERIFY(!outcome->executed); QVERIFY(!outcome->result.success);
+    }
+}
 
 void TestToolRegistry::testRegistryEmpty() {
     ToolRegistry registry;

@@ -141,11 +141,11 @@ Wave 3 五项校验通过。下一设计项为 Task 4；自主活动选择与真
 ## Task 4: 插件发现、按需加载与通用执行
 
 - 关联设计: §3.5 插件发现、按需加载与通用执行
-- 状态: [ ]
+- 状态: [x]
 - Wave: 4
 - 依赖: Task 3
 
-文件：`core/ai/tool_registry.h/.cpp`、`core/ai/tools/runtime/tool_runtime.h/.cpp`、`core/ai/tools/runtime/task_tool_executor.h/.cpp`、`core/ai/task/task_orchestrator.h/.cpp`、`core/ai/mcp/mcp_client.h/.cpp`、`core/ai/mcp/mcp_tool_adapter.h/.cpp`、`core/ai/skill/skill_store.h/.cpp`、新增插件目录与 Skill 加载模块、`contracts/tools/` 清单校验及示例；`tests/test_tool_registry.cpp`、新增 `tests/test_plugin_runtime.cpp`；`CMakeLists.txt`。
+文件：`core/ai/plugin/{capability_types,plugin_catalog,plugin_runtime,schema_validator,capability_executor,learned_skill_adapter}.h/.cpp`、`core/ai/ai_tool.h`、`core/ai/tool_registry.h/.cpp`、`core/ai/tools/runtime/{tool_runtime,task_tool_executor,tool_policy}.h/.cpp`、`core/ai/task/{task_orchestrator,task_types}.h/.cpp`（按实际已有文件）、`core/ai/mcp/mcp_client.h/.cpp`、`core/ai/mcp/mcp_tool_adapter.h/.cpp`、`core/ai/skill/skill_store.h/.cpp`；`core/ai/ai_brain_plugins.cpp` 及 `ai_brain.h/.cpp`、`ai_brain_loop.cpp`、`ai_brain_tasks.cpp`、`ui/petwindow_ai.cpp` 必要生产入口；`third_party/jsoncons`、`contracts/tools/` 清单校验/资源及正反示例；`tests/test_tool_registry.cpp`、`tests/test_task_orchestrator.cpp`、新增 `tests/test_plugin_runtime.cpp` 及 `tests/fixtures/plugin_*`；根 `CMakeLists.txt` 注册资源与测试。
 
 测试用例：
 - registerPlugin_skillToolAndMixedPackages_indexesSummaries（happy path）。
@@ -154,6 +154,27 @@ Wave 3 五项校验通过。下一设计项为 Task 4；自主活动选择与真
 - invokeCapability_emptyAcceptedFailedCompleted_distinguishesOutcomes。
 - setPluginEnabled_disableThenEnable_blocksNewCallsAndInvalidatesOldCache（happy path）。
 - setPluginEnabled_inFlightReceipt_keepsOriginalCallIdentity。
+- registerPlugin_invalidSchemaReferencesAndPackagePaths_rejectsWithoutGuessing。
+- loadCapability_scopedCatalogAndDetails_preservesHostSecretsAndLearnedSkillScope。
+- invokeCapability_hostGrantAndObjectPathScope_rejectsBeforeDispatch。
+- invokeCapability_mcpActualSchemaAndMultipartErrors_keepsProtocolAndBusinessMeaning。
+- executeAsync_arbitraryRegisteredNameAndSlowCommand_usesMetadataAndKeepsUiResponsive。
+- executeAsync_disabledQueuedCall_rejectsAndDispatchedCallKeepsReceipt。
+- makeReplyDispatcher_controlledConversation_returnsActualScopedReceipt（happy path）。
+- makeReplyDispatcher_profileSwitchOrServiceShutdown_archivesOriginalReceipt。
+
+回归兼容：`tests/test_streaming_dialogue.cpp`、`tests/test_schedule_connectivity.cpp`、`tests/test_file_and_web_tools.cpp`、既有调度/模块联通测试显式注册宿主元数据，保留原策略和断言；新增中途确认继续执行与 queued/在途生命周期场景。
+
+生产生命周期补充：`core/ai/chat/conversation_types.h`、`conversation_service.h/.cpp` 及必要的 runtime shutdown 接口参与已派发回执归档；服务或 profile 释放后不得仅因前台接收对象失效就丢失原库回执。
+
+Wave 4 校验（2026-10-16）：
+- 文件冲突：通过，单 Task 实现 agent 串行修改，父级仅负责明确划分的会话派发/回执补充与文档；已交回构建所有权，全部源码停止编辑。
+- 构建/全量测试：完整应用与所有测试目标构建成功，最终 CTest **51/51 组通过**，64.02 秒；Python 契约 **70/70 通过**，无跳过。日志 /tmp/task4-final-full-build.log、/tmp/task4-final-full-ctest.log、/tmp/task4-final-contract.log。
+- 行为覆盖：14 项计划行为均映射到测试，详见审查记录；学习文本范围、异步取消/销毁、任意名称工具、中途确认与实际消息回执均验证。
+- 测试布局：通过，新增 tests/test_plugin_runtime.cpp 和 tests/fixtures/plugin_probe.py，根 CMakeLists.txt 注册；标准库 vendoring 独立放 third_party/jsoncons 并保留 LICENSE。
+- 实现锚点与留痕：通过，目录/运行时、ToolRegistry/PolicyEngine/TaskToolExecutor、生产 AIBrain、MCP、ReplyDispatcher 与主设计一致；context.md 有 sanity check 与修订记录。文档 8 切片/8 Task、各 7 子节、59 本地链接、指南 5 段 JSON 及 4 段 SQL 演练通过。
+
+Wave 4 五项校验通过。下一设计项为 Task 5；当前验证没有连接真实 QQ。
 
 ## Task 5: 活动执行、挂起、恢复与经历
 

@@ -1,0 +1,1 @@
+{"formatVersion":"1","id":"example.mixed","name":"文本工具与整理方法","version":"1.0.0","summary":"统计文本并按方法整理用户提供的材料。","entries":[{"kind":"tool","id":"example.text","definition":"tools/text/capability.json"},{"kind":"skill","id":"example.summary","definition":"skills/summary/skill.json"}]}

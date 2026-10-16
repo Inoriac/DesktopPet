@@ -57,7 +57,11 @@ private slots:
     void acceptMessage_eventDeliveryFailure_staysAcceptedAndRecovers();
     void acceptMessage_uiAndPreparationRace_oneCommittedMessageAndOrigin();
     void service_dispatchesThroughActualToolRuntime_andArchivesReceipt();
+    void service_destroyedAfterDispatch_archivesReceiptInOriginalProfile_data();
+    void service_destroyedAfterDispatch_archivesReceiptInOriginalProfile();
     void service_cancelBetweenReservationAndDispatch_preventsSend();
+    void service_cancelDuringSenderPreparation_preventsNewSend_data();
+    void service_cancelDuringSenderPreparation_preventsNewSend();
     void service_missingDispatcher_rejectsWithoutSending();
     void service_storageWait_doesNotBlockUi();
 };
@@ -408,7 +412,10 @@ void TestConversationRouting::service_dispatchesThroughActualToolRuntime_andArch
     host.dispatcher=[&](const ReplyDispatch& dispatch,ReplyCompletion completion){
         target=dispatch.arguments["conversation_id"].toString();++calls;
         QThreadPool::globalInstance()->start([dispatch,completion=std::move(completion)]{
-            ToolRegistry registry;registry.registerTool(std::make_unique<SendTool>());ToolRuntime runtime;runtime.setToolRegistry(&registry);
+            if (!dispatch.dispatchToken->begin()) {
+                DeliveryReceipt receipt; receipt.outcome=DeliveryOutcome::NotExecuted; completion(receipt); return;
+            }
+            ToolRegistry registry;registry.registerTool(std::make_unique<SendTool>(), HostToolMetadata::localAction());ToolRuntime runtime;runtime.setToolRegistry(&registry);
             ToolExecutionRequest request;request.requestId=dispatch.response.requestId;request.toolName=dispatch.toolName;request.arguments=dispatch.arguments;
             auto outcome=runtime.execute(request);DeliveryReceipt receipt;
             receipt.outcome=outcome.executed&&outcome.result.success?DeliveryOutcome::Completed:DeliveryOutcome::NotExecuted;
@@ -426,10 +433,78 @@ void TestConversationRouting::service_dispatchesThroughActualToolRuntime_andArch
     QCOMPARE(service.storeSnapshot().loadHistory(accepted->conversationId).value().size(),2);
 }
 
+void TestConversationRouting::service_destroyedAfterDispatch_archivesReceiptInOriginalProfile_data() {
+    QTest::addColumn<bool>("arrivesBeforeDestruction");
+    QTest::newRow("receipt_queued_before_close") << true;
+    QTest::newRow("receipt_arrives_after_close") << false;
+}
+
+void TestConversationRouting::service_destroyedAfterDispatch_archivesReceiptInOriginalProfile() {
+    QFETCH(bool, arrivesBeforeDestruction);
+    QTemporaryDir directory;
+    auto service = std::make_unique<ConversationService>(profile, directory.filePath("old.sqlite"));
+    auto host = binding();
+    host.toolName = "delayed_sender";
+    ReplyCompletion deliver;
+    std::optional<ReplyDispatch> dispatch;
+    host.dispatcher = [&](const ReplyDispatch& sent, ReplyCompletion callback) {
+        QVERIFY(sent.dispatchToken->begin());
+        dispatch = sent;
+        deliver = std::move(callback);
+    };
+    QVERIFY(service->registerBinding(host));
+    std::optional<AcceptedMessage> accepted;
+    service->acceptMessageAsync(incoming(), [&](auto result) {
+        QVERIFY(result);
+        accepted = result.value();
+    });
+    QTRY_VERIFY(accepted);
+    std::optional<PreparedContext> prepared;
+    service->prepareContextAsync(contextRequest(*accepted), [&](auto result) {
+        QVERIFY(result);
+        prepared = result.value();
+    });
+    QTRY_VERIFY(prepared);
+    bool formerUiNotified = false;
+    service->publishResponseAsync(responseFor(*prepared), [&](auto) { formerUiNotified = true; });
+    QTRY_VERIFY(dispatch.has_value());
+    const auto originalStore = service->storeSnapshot();
+
+    // A different role may use the same remote account/room after the old UI closes.
+    ConversationStore nextStore("99fd5cf1-c1c7-4b4c-8aa0-26ef10b10a39", directory.filePath("next.sqlite"));
+    QVERIFY(nextStore.initialize());
+    QVERIFY(nextStore.registerBinding(binding()));
+    const auto nextInput = nextStore.acceptMessage(incoming());
+    QVERIFY(nextInput);
+    auto receipt = receiptFor(dispatch->response, "late-send");
+    receipt.requestId = "returned-wrong-request";
+    receipt.generation = 99;
+    receipt.replyTarget = nextInput.value().replyTarget;
+    if (arrivesBeforeDestruction) deliver(receipt);
+    // No event-loop turn between a received receipt and destroying the QObject.
+    service.reset();
+    if (!arrivesBeforeDestruction) deliver(receipt);
+    deliver(receipt); // A repeated receipt does not create another outgoing message.
+
+    QTRY_COMPARE_WITH_TIMEOUT(originalStore.loadHistory(accepted->conversationId).value().size(), 2, 5000);
+    QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+    const auto history = originalStore.loadHistory(accepted->conversationId);
+    QVERIFY(history);
+    QCOMPARE(history.value().size(), 2);
+    QCOMPARE(nextStore.loadHistory(nextInput.value().conversationId).value().size(), 1);
+    QVERIFY(!formerUiNotified);
+    auto unit = SqliteRuntimeUnitOfWork::begin(originalStore.databasePath());
+    QVERIFY(unit);
+    QSqlQuery query(QSqlDatabase::database(unit.value()->connectionName()));
+    QVERIFY(query.exec("SELECT status FROM agent_response_dispatches"));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toString(), "completed");
+}
+
 void TestConversationRouting::service_cancelBetweenReservationAndDispatch_preventsSend() {
     QTemporaryDir directory;ConversationService service(profile,directory.filePath("runtime.sqlite"));
     auto host=binding();host.toolName="fixture_send";int calls=0;
-    host.dispatcher=[&](const ReplyDispatch& dispatch,ReplyCompletion complete){++calls;complete(receiptFor(dispatch.response));};
+    host.dispatcher=[&](const ReplyDispatch& dispatch,ReplyCompletion complete){QVERIFY(dispatch.dispatchToken->begin());++calls;complete(receiptFor(dispatch.response));};
     QVERIFY(service.registerBinding(host));std::optional<AcceptedMessage> accepted;
     service.acceptMessageAsync(incoming(),[&](auto r){QVERIFY(r);accepted=r.value();});QTRY_VERIFY(accepted);
     std::optional<PreparedContext> prepared;
@@ -438,6 +513,60 @@ void TestConversationRouting::service_cancelBetweenReservationAndDispatch_preven
     bool finished=false;bool sent=false;
     service.publishResponseAsync(responseFor(*prepared),[&](auto r){sent=r.isOk();finished=true;});QTRY_VERIFY(finished);
     QVERIFY(!sent);QCOMPARE(calls,0);
+}
+
+void TestConversationRouting::service_cancelDuringSenderPreparation_preventsNewSend_data() {
+    QTest::addColumn<bool>("destroyService");
+    QTest::addColumn<bool>("alreadyDispatched");
+    QTest::newRow("cancel_during_async_load") << false << false;
+    QTest::newRow("close_during_async_load") << true << false;
+    QTest::newRow("cancel_after_actual_send_keeps_receipt") << false << true;
+}
+
+void TestConversationRouting::service_cancelDuringSenderPreparation_preventsNewSend() {
+    QFETCH(bool, destroyService);
+    QFETCH(bool, alreadyDispatched);
+    QTemporaryDir directory;
+    auto service = std::make_unique<ConversationService>(profile, directory.filePath("runtime.sqlite"));
+    auto host = binding();
+    host.toolName = "sender_with_delayed_preparation";
+    std::optional<ReplyDispatch> pending;
+    ReplyCompletion complete;
+    host.dispatcher = [&](const ReplyDispatch& dispatch, ReplyCompletion callback) {
+        pending = dispatch;
+        complete = std::move(callback);
+    };
+    QVERIFY(service->registerBinding(host));
+    std::optional<AcceptedMessage> accepted;
+    service->acceptMessageAsync(incoming(), [&](auto result) { QVERIFY(result); accepted = result.value(); });
+    QTRY_VERIFY(accepted);
+    std::optional<PreparedContext> prepared;
+    service->prepareContextAsync(contextRequest(*accepted), [&](auto result) { QVERIFY(result); prepared = result.value(); });
+    QTRY_VERIFY(prepared);
+    bool notified = false;
+    bool published = false;
+    service->publishResponseAsync(responseFor(*prepared), [&](auto result) { notified = true; published = result.isOk(); });
+    QTRY_VERIFY(pending);
+    QVERIFY(pending->dispatchToken);
+    const auto originalStore = service->storeSnapshot();
+    if (alreadyDispatched) QVERIFY(pending->dispatchToken->begin());
+    if (destroyService) service.reset();
+    else service->cancelRequestAsync(pending->response.requestId, pending->response.generation);
+
+    // Releasing preparation must acquire the original host authority at the
+    // actual send boundary. Cancellation cannot invalidate a completed send.
+    const bool sent = alreadyDispatched || pending->dispatchToken->begin();
+    QCOMPARE(sent, alreadyDispatched);
+    auto receipt = receiptFor(pending->response, "delayed-preparation-send");
+    if (!sent) receipt.outcome = DeliveryOutcome::NotExecuted;
+    complete(receipt);
+    if (!destroyService) {
+        QTRY_VERIFY(notified);
+        QCOMPARE(published, alreadyDispatched);
+    }
+    QVERIFY(QThreadPool::globalInstance()->waitForDone(5000));
+    QCOMPARE(originalStore.loadHistory(accepted->conversationId).value().size(), alreadyDispatched ? 2 : 1);
+    if (destroyService) QVERIFY(!notified);
 }
 
 void TestConversationRouting::acceptMessage_eventDeliveryFailure_staysAcceptedAndRecovers() {

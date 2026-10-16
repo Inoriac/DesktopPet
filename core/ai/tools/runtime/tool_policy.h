@@ -8,14 +8,6 @@
 
 #include "ai/ai_tool.h"
 
-enum class ToolRiskLevel {
-    L0SafeRead,
-    L1LocalQuery,
-    L2LowRiskAction,
-    L3HighRiskAction,
-    L4Dangerous
-};
-
 enum class ToolPolicyAction {
     Allow,
     RequireConfirmation,
@@ -60,12 +52,7 @@ public:
                                 const ToolPolicyContext& context) const;
 
 private:
-    ToolRiskLevel inferRiskLevel(const AITool& tool) const;
-    bool isSensitiveOrDangerousName(const QString& toolName) const;
-    bool isHighRiskName(const QString& toolName) const;
-    bool isLocalFileName(const QString& toolName) const;
-    bool isScopedLocalToolName(const QString& toolName) const;
-    bool scopedArgumentsAllowed(const QString& toolName,
+    bool scopedArgumentsAllowed(const AITool& tool,
                                 const QJsonObject& arguments,
                                 const ToolPolicyContext& context,
                                 QString& reason) const;

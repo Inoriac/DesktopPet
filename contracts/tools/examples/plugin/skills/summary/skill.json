@@ -1,0 +1,1 @@
+{"formatVersion":"1","id":"example.summary","name":"资料整理","version":"1.0.0","summary":"从用户提供的文本整理事实与未决事项。","instructions":"SKILL.md","dependencies":[{"kind":"tool","id":"example.text","version":"1.0.0","operations":["count"],"required":false}]}

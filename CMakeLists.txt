@@ -372,8 +372,6 @@ set(CORE_SOURCES
     core/ai/memory/semantic_index_service.cpp
     core/ai/memory/model_downloader.h
     core/ai/memory/model_downloader.cpp
-    core/ai/mcp/mcp_client.h
-    core/ai/mcp/mcp_client.cpp
     core/ai/mcp/mcp_server_process.h
     core/ai/mcp/mcp_server_process.cpp
     core/ai/mcp/mcp_tool_adapter.h
@@ -2066,3 +2064,31 @@ target_sources(Desktop_Pet PRIVATE core/animation/avatar_3d_backend.cpp core/ani
 
 target_sources(statistic_tests PRIVATE core/animation/avatar_3d_backend.cpp core/animation/avatar_3d_backend.h)
 target_link_libraries(statistic_tests avatar_presentation)
+
+# Plugin catalogue and generic capability runtime.
+add_library(plugin_support STATIC
+    core/ai/plugin/capability_types.cpp
+    core/ai/plugin/schema_validator.cpp
+    core/ai/plugin/plugin_catalog.cpp
+    core/ai/plugin/plugin_runtime.cpp
+    core/ai/plugin/capability_executor.cpp
+    core/ai/plugin/plugin_gateway.cpp
+    core/ai/plugin/learned_skill_adapter.cpp
+    core/ai/mcp/mcp_client.cpp
+    contracts/tools/plugin_contracts.qrc)
+target_include_directories(plugin_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jsoncons/include)
+target_link_libraries(plugin_support PUBLIC Qt::Core)
+add_desktop_pet_cpp_test(plugin_runtime_tests PluginRuntimeTests
+    SOURCES tests/test_plugin_runtime.cpp core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES plugin_support Qt::Core Qt::Test)
+
+target_compile_definitions(plugin_runtime_tests PRIVATE PLUGIN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugin_probe.py")
+get_property(desktop_pet_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
+foreach(desktop_pet_target IN LISTS desktop_pet_targets)
+    get_target_property(desktop_pet_target_sources ${desktop_pet_target} SOURCES)
+    if("core/ai/ai_brain.cpp" IN_LIST desktop_pet_target_sources)
+        target_sources(${desktop_pet_target} PRIVATE core/ai/ai_brain_plugins.cpp)
+        target_link_libraries(${desktop_pet_target} plugin_support)
+    endif()
+endforeach()

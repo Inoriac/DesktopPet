@@ -21,11 +21,9 @@ QJsonObject McpToolAdapter::parameterSchema() const {
 }
 
 ToolResult McpToolAdapter::execute(const QJsonObject& params) {
-    Q_UNUSED(params)
-
-    if (!m_client || !m_client->isConnected()) {
-        return ToolResult::fail("mcp_client_not_connected");
-    }
-
-    return ToolResult::fail("mcp_tool_execution_not_implemented");
+    if (!m_client || !m_client->isConnected()) return ToolResult::fail("mcp_client_not_connected");
+    auto result=m_client->callTool(m_descriptor.name,params,30000);
+    if (!result) return ToolResult::fail(result.error().code);
+    if (result.value().value("isError").toBool()) return ToolResult::fail("mcp_tool_error");
+    return ToolResult::ok(result.value());
 }

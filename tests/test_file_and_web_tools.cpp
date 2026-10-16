@@ -498,7 +498,8 @@ void TestFileAndWebTools::test_tool_runtime_requires_confirmation_for_write() {
     QVERIFY(tempDir.isValid());
 
     ToolRegistry registry;
-    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024),
+        HostToolMetadata{"write",ToolRiskLevel::L3HighRiskAction,false,false,HostToolExecutor::OwnerThread,"path"});
 
     ToolRuntime runtime;
     runtime.setToolRegistry(&registry);
@@ -520,7 +521,8 @@ void TestFileAndWebTools::test_tool_runtime_executes_confirmed_write() {
     QVERIFY(tempDir.isValid());
 
     ToolRegistry registry;
-    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024),
+        HostToolMetadata{"write",ToolRiskLevel::L3HighRiskAction,false,false,HostToolExecutor::OwnerThread,"path"});
 
     ToolRuntime runtime;
     runtime.setToolRegistry(&registry);
@@ -546,7 +548,8 @@ void TestFileAndWebTools::test_tool_runtime_rejects_denied_write() {
     QVERIFY(tempDir.isValid());
 
     ToolRegistry registry;
-    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024));
+    registry.registerTool(std::make_unique<WriteTextFileTool>(QStringList{tempDir.path()}, 1024),
+        HostToolMetadata{"write",ToolRiskLevel::L3HighRiskAction,false,false,HostToolExecutor::OwnerThread,"path"});
     ToolRuntime runtime;
     runtime.setToolRegistry(&registry);
 

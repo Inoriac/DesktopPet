@@ -1,6 +1,6 @@
-# 自主 Agent 阶段实现总结：§3.2—§3.4
+# 自主 Agent 阶段实现总结：§3.2—§3.5
 
-设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结覆盖已验收的人物识别、记忆归属和会话路由阶段。
+设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由与插件运行时的实现及验证。
 
 ## 已落地行为
 
@@ -77,4 +77,18 @@ MessageObserved 是唯一原始消息事实；会话处理日志保留多来源�
 - 完整应用和所有测试目标构建成功，最终 CTest **50/50 组通过**（42.64 秒）；未跳过测试。`git diff --check`、覆盖映射、测试布局、8 切片与 8 Task 对应及实现锚点核对通过。
 - 最终日志：`/tmp/conversation-routing-full-build.log`、`/tmp/conversation-routing-full-ctest.log`。
 
-下一项为 §3.5 插件发现、按需加载与通用执行。自主活动调度、选择和真实 QQ 尚未交付；受控发送测试不代表实际 QQ 账号验收。
+## §3.5 插件发现、按需加载与通用执行
+
+新增 Plugin/Skill 清单与标准 JSON Schema 2020-12 校验器，保留 Tool 格式 1。PluginCatalog 支持纯 Skill、纯 Tool、混合包、摘要发现、依赖核对、按需正文/参数加载及版本与内容摘要失效。学习文本通过 SkillStore adapter 接入，限定本地主人范围。
+
+PluginRuntime 使用每个 profile 的 plugins.json 管理安装、启停、配置、精确授权和结果映射。command 通过 argv/JSON stdin 执行，MCP 使用实际 stdio 初始化、枚举与 tools/call；完成、已受理、失败及结果未知分别返回。secret 只用于执行绑定，回执按本次配置快照脱敏。
+
+ToolRegistry、PolicyEngine 与任务执行采用显式宿主元数据、工厂和异步绑定，去掉工具名称构造分支。生产 AIBrain 聊天与任务共用异步 ToolRuntime，三个通用入口负责发现、加载和调用。中途确认后继续本轮剩余工具；取消、禁用和替换阻止未派发调用，在途回执保留原身份。
+
+宿主回复绑定将固定会话目标与远端消息引用装配为操作参数，验证实际远端 ID、后端正文和发送时间。ConversationService 与执行器共用派发 token，加载时取消不会继续发送；回执使用持有原库路径的独立后台队列保存，服务销毁后不丢弃已发生事实。
+
+主要变更：core/ai/plugin、ai_brain_plugins.cpp、工具 registry/runtime/policy、MCP client、TaskOrchestrator/执行适配、ConversationService、UI 注册、contracts/tools、third_party/jsoncons 与相应 tests。接入指南：contracts/tools/插件运行时接入.md。
+
+验证：完整应用及全部测试目标构建成功；最终 CTest **51/51 组通过**（64.02 秒），Python 契约 **70/70 通过**，Wave 4 五项校验与 git diff --check 通过。TDD 记录与 14 项覆盖映射见同目录审查记录；日志 /tmp/task4-final-full-build.log、/tmp/task4-final-full-ctest.log、/tmp/task4-final-contract.log。
+
+下一项为 §3.6 活动执行、挂起、恢复与经历；自主活动调度、选择和真实 QQ 尚未交付。

@@ -1,0 +1,1 @@
+{"formatVersion":"1","id":"example.invalid","name":"Invalid fixture","version":"1","summary":"Unknown entry kind must be rejected","entries":[{"kind":"workflow","id":"example.invalid","definition":"skill.json"}]}

@@ -32,7 +32,7 @@ class BubbleTool final : public AITool {
 public:
     explicit BubbleTool(QStringList* delivered)
         : AITool("show_chat_bubble", "record reminder delivery", ToolCategory::Action)
-        , m_delivered(delivered) {}
+        , m_delivered(delivered) { setHostMetadata(HostToolMetadata::localAction()); }
     QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
     ToolResult execute(const QJsonObject& parameters) override {
         m_delivered->append(parameters.value("text").toString());
@@ -46,7 +46,7 @@ class ControlledTool final : public AITool {
 public:
     ControlledTool(const QString& name, QStringList* calls, ToolResult* result)
         : AITool(name, "controlled reminder action", ToolCategory::Action)
-        , m_name(name), m_calls(calls), m_result(result) {}
+        , m_name(name), m_calls(calls), m_result(result) { setHostMetadata(HostToolMetadata::localAction()); }
     QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
     ToolResult execute(const QJsonObject&) override {
         m_calls->append(m_name);

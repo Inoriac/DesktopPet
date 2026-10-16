@@ -12,6 +12,7 @@
 | 1.1 | 2026-10-16 | §3.2 开发核对：明确绑定版本与已接受事件、来源兼容边界、身份表增量迁移 |
 | 1.2 | 2026-10-16 | §3.3 开发核对：来源提交验证、过渡期本地上下文、写入归属与分批迁移边界 |
 | 1.3 | 2026-10-16 | §3.4 开发核对：会话库唯一权威、异步生产入口、宿主连接绑定与持久发送回执、原始消息消费去重与历史导入边界 |
+| 1.4 | 2026-10-16 | §3.5 开发核对：标准 Schema 验证、宿主配置与授权、结果映射、工具元数据和生产异步调用入口 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -58,6 +59,7 @@
 6. 同一数据库的工作线程使用独立连接；迁移和写入开启外键，现有 WAL、busy timeout 与写队列约定继续适用。
 7. 模型输出是提案；身份、引用、预算、参数和状态转换由程序校验。调用是否实际发生及完成边界来自工具结果，不能由模型自述替代。
 8. 原始消息、会话处理日志和派生反思分开保存；关系、人格及日记的独立来源始终回溯实际原始消息。历史导入与自身回显不成为新的互动证据，也不触发新的自主回复（影响 §3.3、§3.4、§3.8、§3.9）。
+9. 插件目录、宿主授权与配置属于对应 profile 的 PluginRuntime；目录只在短临界区交换不可变快照，不持锁等待进程或 MCP I/O。已准备与已派发的调用分开处理：禁用、版本变化或取消使尚未派发的调用失效，已派发的实际回执仍带原 profile、callId、activityId 和版本归档，不因前台切换丢失（影响 §3.5、§3.6、§3.9）。
 
 ### 1.4 活动状态与空闲定义（影响 §3.4、§3.6—§3.9）
 
@@ -157,8 +159,9 @@ sequenceDiagram
 | 🔧 | [memory_extractor](../../core/ai/memory/memory_extractor.h)、[memory_policy](../../core/ai/memory/memory_policy.cpp)、[memory_metadata](../../core/ai/memory/memory_metadata.h) | 带主体的抽取、去重、冲突与来源合并 |
 | 🔧 | [memory_retriever](../../core/ai/memory/memory_retriever.h)、[active_memory_pool](../../core/ai/memory/active_memory_pool.h)及巩固链路 | 人物/可见范围过滤、按 context 分离话题缓存 |
 | 🆕 / 🔧 | core/ai/chat/conversation_store.*；[chat_types](../../core/ai/chat/chat_types.h)、[chat_preparation_types](../../core/ai/chat/chat_preparation_types.h) | 稳定会话与发送人、输出目标、异步结果隔离 |
-| 🆕 | core/ai/capability/* | Plugin / Skill 清单、发现目录、按需加载、运行绑定 |
+| 🆕 | core/ai/plugin/*、core/ai/ai_brain_plugins.cpp | Plugin / Skill 清单、发现目录、按需加载、宿主授权和主体调用绑定 |
 | 🔧 | [tool_registry](../../core/ai/tool_registry.h)、[tool_runtime](../../core/ai/tools/runtime/tool_runtime.h)、[mcp_client](../../core/ai/mcp/mcp_client.h) | 动态工具、异步执行、完整 MCP 调用和生命周期 |
+| 🆕 / 🔧 | core/ai/ai_tool.h、core/ai/tools/runtime/tool_policy.*、ui/petwindow_ai.cpp、third_party/jsoncons、contracts/tools/* | 内置工具宿主元数据与工厂注册、离线标准 Schema 验证、Plugin / Skill 清单及配置示例 |
 | 🆕 | core/ai/activity/* | ActivityStore、ActivityCoordinator、OpportunityScheduler、ActivitySelector |
 | 🔧 | [task_orchestrator](../../core/ai/task/task_orchestrator.cpp)、[task_store](../../core/ai/task/task_store.cpp)、[agency_decision_service](../../core/ai/task/agency_decision_service.cpp) | 复用执行检查点，支持挂起集合，移除按工具名字固定的准入分支 |
 | 🔧 | [ai_brain](../../core/ai/ai_brain.h)、[ai_brain_loop](../../core/ai/ai_brain_loop.cpp) | 单一协调入口、从专用主动聊天触发过渡到通用选择 |
@@ -437,7 +440,8 @@ Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 - HostConversationBinding 按精确连接/会话注册，包含核验过的登录 selfIdentity；只有 speakerIdentity 与其稳定账号键匹配才识别自身回显，不信任消息自报 selfEchoVerified 或“我是你”。local_owner 仅允许可信 desktop/local_owner 入口，外部消息不能借 originKind 获得主人权限。
 - prepareContext 持久化 requestId/generation、目标、ContextSpec 和 sourceMessageIds。publishResponse 校验这些字段与当前会话/人物版本，然后 CAS prepared→dispatching；重复 dispatching/unknown/completed 不重发。目标不同返回 INVALID_INPUT，旧快照返回 STALE_CONTEXT。
 - 外部发送使用宿主注入的异步 ReplyDispatcher，接收不可变派发描述并返回实际工具结果/回执。受控实现经过现有 ToolRuntime；不得在 GUI 上同步调用阻塞工具，不提前扩写按软件名字选择的执行器。缺绑定或派发器返回 DEPENDENCY_UNAVAILABLE。§3.5 的通用能力执行器接入此接口。
-- 异步 worker 预留完成到宿主调用 dispatcher 之间仍可取消：宿主同步标记尚未开始派发的 token，进入 dispatcher 前再核对。只有该 token 证明未开始时，才可将预留 dispatching 标记 cancelled；真正开始后不抹去已发生副作用，继续接收回执。派发不能仅凭稍早的预留成功绕过停止操作。
+- 异步 worker 预留完成到真正发送之间仍可取消：ReplyDispatch 携带宿主创建的共享 ToolDispatchToken，加载定义、MCP Schema 和排队过程中仅检查有效性，不提前标记 started。最终执行器在实际调用前以同一 token.begin() 原子取得派发权；服务取消或销毁同步取消尚未取得派发权的 token。只有 token 证明未开始时，才可将预留 dispatching 标记 cancelled；真正开始后不抹去已发生副作用，继续接收回执。宿主自定义 dispatcher 同样必须在真实发送点核对 token，派发不能仅凭稍早的预留成功绕过停止操作。
+- §3.5 接入真实异步执行后，已派发的发送使用独立回执归档队列，按值固定原 ConversationStore 的 profile/path。回执先进入后台持久化队列，再向仍存在的服务通知结果；不得将归档工作仅排在可能销毁的 QObject 事件队列中。每次发送的回执按到达顺序处理，原库幂等规则继续生效；角色切换、服务释放及迟到回执都不能改写当前角色库或恢复旧界面回调。
 - 本阶段绑定的工具参数为 connection_key、conversation_id（远端）、reply_to_message_id（远端，可空）、text；结构化发送回执包含 remote_message_id、content、occurred_at。宿主注册的适配器负责从 ToolExecutionOutcome 提取并验证这些字段，不将任意自然语言 success 当作回执。发送失败区分未执行和结果未知，结果未知只留记录，不自动重发。
 - recordDeliveryReceipt 只处理已登记的 requestId/generation 和原目标，dispatcher 在宿主线程异步启动，完成回到 worker；完成状态及 outgoing 消息在 runtime 单事务保存，可接受当前生成任务已经过期后的真实结果。remoteMessageId 与先到的自身回显合并，保留同一原始消息，重复回执不增加 revision 或事件。新副作用不能由过期模型结果触发。本地流式输出在首次实际展示时绑定请求；后到消息不抹掉已经开始的流式结果，终态按既有 Complete/Interrupted/Stopped/Failed 保存。尚未发生的外部发送始终检查当前 revision。
 - 自身回显先到时，回执合并同一消息的宿主 replyToId/sourceMessageIds，保留原 ID、origin 和原始时间；已有引用冲突明确拒绝，不再次制造 MessageObserved。历史迁移每批 100 条与 cursor/冲突 ID 映射同事务，真正的旧文件读取失败不标记为空历史成功。
@@ -498,7 +502,8 @@ Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 
 ```cpp
 Result<PluginRegistration, DomainError> registerPlugin(const PluginLocation& location);
-Result<LoadedCapability, DomainError> loadCapability(const CapabilityRef& ref);
+Result<LoadedCapability, DomainError> loadCapability(const CapabilityRef& ref,
+                                                    const ContextSpec& context);
 void invokeCapability(const CapabilityCall& call, CapabilityCompletion completion);
 Result<void, DomainError> setPluginEnabled(const PluginStateChange& change);
 ```
@@ -510,39 +515,50 @@ invoke 为异步接口，completion 恰好结算一次，迟到回执单独归�
 | PluginLocation | 配置默认值（来源: 宿主插件安装目录/注册路径） | 模型不能指定任意程序路径 |
 | CapabilityRef | 调用方传入 | 来自已登记目录；加载时校验版本与内容摘要 |
 | callId、activityId、ContextSpec、grantRef | 系统推导（来源: 活动与宿主授权绑定） | 模型不能生成自授予授权 |
+| catalogRevision、definitionDigest | 系统推导（来源: 已加载详情句柄） | 派发前复核，不把模型回传值当作可信授权 |
+| timeoutMs | 配置默认值（来源: 宿主执行预算） | 由调用方剩余预算夹取，插件不能延长 |
 | operationId、arguments | 调用方传入 | 操作公开定义内的业务输入 |
 | enabled、pluginId | 调用方传入 | 主体插件管理操作，更新状态 revision |
+| PluginHostConfig、resultAdapter、replyBinding | 配置默认值（来源: 宿主 profile 设置） | 安装路径、执行器、配置、授权与数据映射；不由 Skill 正文生成 |
 
 #### 3. 模块业务流程
 
 1. 按 §4.2 解析 Plugin 清单，枚举 Skill / Tool 的稳定身份、简短描述、版本和入口。纯 Skill 不要求 operations。
 2. Tool 的能力详情采用现有 capability.json#/definition；Skill 加载方法与依赖。依赖只登记引用，不因加载 Skill 就加载全部工具。
-3. 选中操作后读取参数 Schema、结果含义、effects 和绑定。JSON Schema 2020-12 采用标准实现；不支持的关键字返回明确不兼容，不能忽略。
+3. 选中操作后读取参数 Schema、结果含义、effects 和绑定。JSON Schema 2020-12 使用 vendored jsoncons v0.178.0，保留许可证和版本来源。Plugin / Skill / Tool 清单 Schema 随 Qt resource 编译入程序；标准 metaschema 离线解析，业务 `$ref` 仅可指向同文件或规范化后包内文件，不访问任意网络地址。不支持的关键字返回明确不兼容，不能忽略；关键字识别只遍历 Schema 位置，不把业务属性名误判为关键字。
 4. 在派发前绑定配置、检查依赖与自主授权，调用通用 command 或 MCP 执行器。command 按参数数组与 JSON stdin 运行，不拼接 shell。
 5. MCP 完成 initialize、tools/list、tools/call、错误和超时处理；source=mcp 取得实际 schema 才可调用。进程的启动不代表协议连接就绪。
 6. 统一返回调用阶段和业务数据引用，保留 completed、accepted、reported 语义。操作效果读取声明并经适配器约束，不以名字猜 read/write。
 7. 禁用阻止新调用、停止观察源；进行中请求按取消能力收尾。升级使旧详情缓存失效，已有活动必须重新校验兼容性；未知副作用不因升级而重发。
+8. AIBrain 随 profile 初始化 PluginRuntime，加载宿主配置，并向同一个 ToolRegistry 注册 discover_capabilities、load_capability、invoke_capability 三个简短入口。发现只给摘要，详情只在选择后加载；外部会话只看到当前 ContextSpec 已获授权的能力。SkillStore 通过 LearnedSkillAdapter 的值快照暴露，仅限 local_owner，保持原学习与管理接口。
+9. ToolRegistry 对内置工具登记 HostToolMetadata、WorkerFactory 或 AsyncExecutor，拒绝重名；元数据含 effect、risk、taskAllowed、executor 类型和可选 scopePathArgument。默认缺少元数据的条目不进入任务执行。UI 的既有工具逐项登记真实属性与线程归属；PolicyEngine 使用该宿主元数据和原配置约束，不再按工具名称猜风险或路径字段。
+10. ToolRuntime::executeAsync 统一完成策略检查、派发和事件。worker 工具在单 worker 内用注册工厂创建；plugin gateway 调用注册的异步执行器。TaskToolExecutor 成为注入 ToolRuntime 的兼容 facade，移除独立工具构造分支；AIBrain 聊天循环和复杂任务均走此入口，不在 GUI 执行 load/command/MCP，也不向同一 worker 同步等待自己排队的工作。
+11. TaskOrchestrator 通过目录与 toolReadOnly(name, arguments) 查询准入/effect，移除 sourceToolsForGoal 的文字与名称猜测。已知必需来源由 TaskStartRequest.requiredSourceTools 的宿主字段给出；模型规划提出的新 capability 需求须经目录与授权校验。真实结果/来源证据门槛继续保留，discover/load、模型自述或未调用工具不能充当已获取的外部证据。
+12. PluginRuntime::makeReplyDispatcher 将宿主 ReplyBinding 转为 §3.4 的异步发送接口。目标、原消息引用、operation/grant 与参数和回执映射由宿主固定；模型只提供回复正文。发送成功仍需真实远端消息回执，unknown/accepted 不伪装为 completed，迟到完成回到原请求与目标。
 
 #### 4. 数据变更
 
-插件包与静态清单保存在宿主管理目录；授权与配置在宿主设置，secret 值不写模型上下文。目录索引可重建，管理状态写宿主配置后更新 registry revision。调用记录由 §3.6 的 agent_action_calls 持久化；本切片不另建第二份动作账本。
+插件包与静态清单保存在宿主管理目录；PluginHostConfig 位于 profile runtime 目录的 plugins.json，保存 rootPath、启用状态、configuration、grants、MCP stdio 连接绑定及结果映射。secret 值仅供执行绑定，不写模型上下文、发现摘要或普通错误。管理状态用 QSaveFile 原子保存成功后再发布新 registry revision，保存失败不改变内存启用状态。目录索引可重建，详情摘要包含实际依赖文件的内容变化；重启后仍须重新验证磁盘内容，不仅比较内存计数。调用记录由 §3.6 的 agent_action_calls 持久化；本切片不另建第二份动作账本。
 
 #### 5. 实现锚点
 
 | 位置 | 必须落实 |
 | --- | --- |
-| ToolRegistry::registerTool / executeTool | 动态身份、卸载/禁用、按需导出 schema 与冲突报告 |
+| ToolRegistry::registerTool / executeTool | 动态身份、卸载/禁用、按需导出 schema 与冲突报告；注册 WorkerFactory/AsyncExecutor 和 HostToolMetadata |
 | TaskOrchestrator::allowedTool / readOnlyTool / sourceToolsForGoal | 按目录、声明和宿主策略替换固定名称集合与按目标文本猜必需工具 |
-| TaskToolExecutor 的工具构造分支 | 通过通用绑定调用；内置工具可注册兼容适配器 |
+| TaskToolExecutor 的工具构造分支 | 改为注入 ToolRuntime 的 facade；内置工具由 UI 显式注册工厂，删除第二份构造白名单 |
 | ToolRuntime::execute / PolicyEngine | 提供异步派发，检查 ContextSpec 与授权范围；保留执行前后事件 |
 | McpClient / McpToolAdapter | 当前原型补齐真实协议调用；协议内容与模型内容分离 |
 | SkillStore | 保留其学习工作流用途，通过独立适配器暴露；不冒充外部 Skill 清单加载器 |
+| AIBrain::thinkInternal、setToolRegistry、ai_brain_tasks.cpp、PetWindow::initAI | profile 生命周期持有 PluginRuntime，聊天/任务都接通异步发现、加载、调用；外部上下文仅导出范围内入口 |
+| ConversationService::ReplyDispatcher | 保留现有异步签名，使用 makeReplyDispatcher 的宿主绑定；结果带原请求、generation 与目标 |
 
 #### 6. 异常场景
 
 - 业务异常：条目冲突、依赖断裂、版本不同、参数不符，返回对应引用/输入错误；不自动找同名工具替代。
 - 系统异常：命令失败、MCP 断连、安装路径不可用，按 §1.5 返回依赖/执行错误。命令超时若可能产生副作用，结果为 unknown。
 - registry revision 变化后旧提案按 STALE_REVISION 处理；禁用既不删除历史，也不报告正在执行的动作已撤销。
+- 缺授权、缺结果映射、未知 Schema 关键字、包外路径或 MCP 实际 schema 缺失均明确拒绝，不根据自然语言补猜；MCP isError 保留业务失败，不能被声明的 completion 覆盖。
 
 #### 7. 关键行为场景
 
@@ -550,6 +566,10 @@ invoke 为异步接口，completion 恰好结算一次，迟到回执单独归�
 - loadCapability：选择群聊总结 Skill 后只加载其方法；需要读消息时再取得 QQ Tool 的 schema。
 - invokeCapability：脚本、CLI、可控 MCP 服务均能完成一次真实测试调用，区分查询空结果、错误、已受理与完成。
 - setPluginEnabled：关闭插件后无法发起新调用；在途回执仍可定位原 activity/callId；重新启用后旧缓存不跨版本使用。
+- registerPlugin/loadCapability：依赖精确版本、包内引用和符号链接边界可验证；未知 Schema 关键字失败，标准组合/条件/引用约束真正生效，未选择的正文和 secret 不进入发现输出。
+- invokeCapability：ContextSpec/grant/object/path 任一不符均不启动进程；reported 映射和 accepted 跟踪完整，JSON 标量可解析；MCP 错误、多内容、实际 schema、断连和超时分别处理。
+- executeAsync：生产聊天/任务可调用任意合规新名称工具，旧风险策略不放宽；GUI 在慢命令期间可处理事件，禁用/取消拒绝排队未派发工作，已派发回执保留原身份。
+- makeReplyDispatcher：受控外部会话经真实通用执行器获得远端回执，延迟/失败不跨会话或 profile 发送。
 
 ### 3.6 活动执行、挂起、恢复与经历
 
@@ -893,25 +913,40 @@ Skill 的上述字段必需，dependencies 可为空。首版依赖固定版本�
 
 CapabilityRef 为 {pluginId, entryId, entryVersion, operationId?}。Tool 的公开旧引用 id/operation 在注册时规范化为该结构；绑定和授权不由模型通过描述文本推导。加载句柄另带 catalogRevision 与定义内容摘要，更新后旧句柄失效。
 
+LoadedCapability 对模型提供 kind、正文、所选 schema、result、effects、CapabilityRef、revision/digest 与依赖状态；执行路径、实际 setting/secret 和 grant 实例保留在宿主句柄中。required 依赖缺失时保留明确 readiness，不自动替换同名条目。纯 Skill 的加载授权以 entry 为单位，Tool 的执行授权细到 operation；本地主人可以查看安装目录摘要，外部上下文只可发现宿主授权范围内条目。
+
 ### 4.3 调用、结果与管理
 
 | 接口类型 | 输入 | 返回/异常 |
 | --- | --- | --- |
 | registerPlugin | PluginLocation{rootPath}，由安装设置提供 | pluginId、entries、diagnostics、catalogRevision；格式/引用冲突返回错误 |
-| loadCapability | CapabilityRef | kind、instructions、选中操作 schema、执行绑定句柄、版本；缺依赖与版本差异明确报告 |
-| invokeCapability | callId、activityId、ContextSpec、CapabilityRef、arguments、宿主 grantRef | CapabilityOutcome；非法参数/无授权不派发，依赖/连接错误明确记录 |
+| loadCapability | CapabilityRef，宿主 ContextSpec | kind、instructions、选中操作 schema、宿主内部执行绑定句柄、版本；缺依赖与版本差异明确报告 |
+| invokeCapability | callId、activityId、ContextSpec、CapabilityRef、arguments、宿主 grantRef、catalogRevision、definitionDigest、timeoutMs | CapabilityOutcome；非法参数/无授权不派发，依赖/连接错误明确记录 |
 | setPluginEnabled | pluginId、enabled、expectedRevision | 新 registry revision；禁止/恢复条目发现与执行状态 |
 
-CapabilityOutcome 包含 callId、stage、data、receipt、error、effectCertainty：
+CapabilityOutcome 包含 callId、activityId、原 profile/context 标识与目录版本、stage、data、receipt、error、effectCertainty：
 
 - stage=completed：该操作承诺的工作完成，不推导“对方已读”等未提供的事实。
 - stage=accepted：请求被受理，必须包含可用的任务/消息引用以及后续跟踪方式。
 - stage=failed：已知调用失败；effectCertainty 明确 no_effect / partial / unknown。
 - stage=unknown：无法证明操作结果；保留 receipt/诊断，进入核对流程。
 
-宿主先按 Tool result 的 successMeaning、completion、stateDescription 解释，再转换为该内部结果；不会将任意 stdout JSON 或 MCP 第一段文本直接当作 ToolResult.data。Schema 校验业务结果的位置按 Tool 声明，reported 状态由适配器解释其状态字段。
+宿主先按 Tool result 的 successMeaning、completion、stateDescription 建立安装绑定，再用机器可执行的宿主 resultAdapter 转换为该内部结果。Tool 格式 1 不扩充未定义字段；自然语言说明不承担运行时字段定位。resultAdapter 在 plugins.json 中按能力与操作绑定，定义下列语义：
+
+| 映射 | 值来源与约束 |
+| --- | --- |
+| dataPointer | 宿主配置的 JSON Pointer，空串表示完整结果；JSON stdout 默认完整解析（含标量），有 result.schema 时验证选定业务值 |
+| statePointer / stateMap | completion=reported 必需；将实际状态值映射到 completed/accepted/failed/unknown，不允许以任意真值判断成功 |
+| receiptPointer / trackingPointer | 从真实返回定位可追踪引用/方式；accepted 必须具备两者，否则结果不明，不声称完成 |
+| errorPointer | 可选业务错误定位；进程失败、MCP isError 和协议错误仍优先保留，不被成功映射覆盖 |
+
+MCP 默认保留完整 structuredContent/content 协议结果，有业务 schema 时由 dataPointer 指向实际结构；不默认解析第一段文本作为 JSON。inline 参数同时受清单 schema 与 MCP 实际 schema 校验，source=mcp 必须先获得当前 tools/list 定义。MCP 初始化、分页枚举、notifications/initialized、tools/call 均由绑定的工作线程执行。协议不通、工具不存在、isError、进程退出和请求超时分别记录。无法证明写操作未发生时保守返回 unknown，查询空数组/null 则可按声明完成。
 
 command 与 MCP 绑定继续遵守[调用模板](../tools/能力包声明模板.md)。PolicyEngine 采用注册能力和 effect 元数据，加上宿主验证的执行器类型/对象范围检查；禁止插件自授予权限。对现有内置工具，注册时附实际 effect 元数据以替代名字猜测。
+
+PluginHostConfig 的 grants 由宿主安装/设置入口建立，每项绑定 profileId、conversationId 或 local_owner 范围、pluginId/entryId/operationId、允许 effects、执行器程序或 MCP connection、可选对象参数/允许路径及 autonomous 开关。没有匹配记录不授予执行；context/grantRef 由宿主选择，模型传同名字段不覆盖宿主值。路径限制按规范化与符号链接后的实际目标检查。执行器配置、grant 或包内容修改使旧加载句柄失效；派发点复核后才启动。禁用请求不等待执行完成再生效，正在运行的调用使用原快照结算。
+
+ReplyBinding 将 §3.4 的 channel/connection/目标与 CapabilityRef/grantRef 绑定。argumentBindings 的键是非空 JSON Pointer，装配可嵌套的参数对象，值仅为 content、remoteConversationId、replyToRemoteId；引用消息 ID 使用 ConversationService 已解析的远端 ID，不能使用宿主本地 messageId。非法 Pointer、未知来源或父子路径冲突在发送前拒绝。回执 remoteMessageIdPointer、contentPointer、occurredAtPointer 从 CapabilityOutcome.data 提取实际远端 ID、正文与 ISO 8601 时间，默认分别为 /remote_message_id、/content、/occurred_at；缺失或格式非法视为 unknown，不能用模型建议正文或本地时钟补造成功回执。这些映射复用 JSON Pointer 和通用对象装配，不添加 QQ 等软件判断。未知发送状态不重发；完成由 ConversationStore 原幂等回执路径记录。
 
 ### 4.4 可选观察源协议
 

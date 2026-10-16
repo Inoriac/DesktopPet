@@ -197,6 +197,24 @@ def main():
                            ({"type": "once"}, False)]:
         check(f"trigger_{len(checks)}", Draft202012Validator(trigger_schema).is_valid(args) == expected)
 
+    # Plugin/Skill machine manifests, independent of Tool format 1.
+    plugin_validator = Draft202012Validator(read_json(ROOT / "plugin.schema.json"))
+    skill_validator = Draft202012Validator(read_json(ROOT / "skill.schema.json"))
+    mixed = read_json(ROOT / "examples/plugin/plugin.json")
+    skill = read_json(ROOT / "examples/plugin/skills/summary/skill.json")
+    check("plugin_mixed_manifest", plugin_validator.is_valid(mixed))
+    check("skill_optional_dependency", skill_validator.is_valid(skill))
+    for kind in ("tool", "skill"):
+        single = copy.deepcopy(mixed)
+        single["entries"] = [entry for entry in single["entries"] if entry["kind"] == kind]
+        check(f"plugin_only_{kind}", plugin_validator.is_valid(single))
+    check("plugin_unknown_kind", not plugin_validator.is_valid(read_json(ROOT / "examples/invalid/plugin-kind.json")))
+    check("skill_missing_instructions", not skill_validator.is_valid(read_json(ROOT / "examples/invalid/skill-missing-instructions.json")))
+    for value, target in ((mixed, plugin_validator), (skill, skill_validator)):
+        malformed = copy.deepcopy(value)
+        malformed["id"] += "\n"
+        check(f"manifest_identifier_newline_{len(checks)}", not target.is_valid(malformed))
+
     with tempfile.TemporaryDirectory(prefix="desktop-pet-contract-") as temporary:
         work = Path(temporary)
         usage = (ROOT / "examples/script/USAGE.md").read_text(encoding="utf-8")

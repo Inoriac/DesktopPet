@@ -1,7 +1,62 @@
 #include "conversation_service.h"
+#include "ai/ai_tool.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
+#include <QDebug>
+#include <deque>
+#include <memory>
+#include <mutex>
 #include "ai/event/runtime_unit_of_work.h"
+
+namespace {
+// An already-dispatched send outlives the UI/service that initiated it. This
+// queue owns only a value snapshot of the original store and serializes receipts
+// on the application pool; destroying the service cannot discard queued writes.
+class ReplyReceiptArchive final : public std::enable_shared_from_this<ReplyReceiptArchive> {
+public:
+    using Observer = std::function<void(DeliveryOutcome, Result<void, DomainError>)>;
+
+    ReplyReceiptArchive(ConversationStore store, Observer observer)
+        : m_store(std::move(store)), m_observer(std::move(observer)) {}
+
+    void append(DeliveryReceipt receipt) {
+        std::lock_guard lock(m_mutex);
+        m_receipts.push_back(std::move(receipt));
+        if (m_draining) return;
+        m_draining = true;
+        auto self = shared_from_this();
+        QThreadPool::globalInstance()->start([self] { self->drain(); });
+    }
+
+private:
+    void drain() {
+        for (;;) {
+            DeliveryReceipt receipt;
+            {
+                std::lock_guard lock(m_mutex);
+                if (m_receipts.empty()) {
+                    m_draining = false;
+                    return;
+                }
+                receipt = std::move(m_receipts.front());
+                m_receipts.pop_front();
+            }
+            auto result = m_store.recordDeliveryReceipt(receipt);
+            if (!result) {
+                qWarning() << "[ConversationService] delivery receipt archive failed"
+                           << m_store.profileId() << receipt.requestId << result.error().code;
+            }
+            m_observer(receipt.outcome, std::move(result));
+        }
+    }
+
+    ConversationStore m_store;
+    Observer m_observer;
+    std::mutex m_mutex;
+    std::deque<DeliveryReceipt> m_receipts;
+    bool m_draining = false;
+};
+}
 
 ConversationService::ConversationService(QString profile,QString path,QObject* parent)
     : QObject(parent),m_store(std::move(profile),std::move(path)) {
@@ -17,7 +72,11 @@ ConversationService::ConversationService(QString profile,QString path,QObject* p
     });
     m_outboxRetryTimer.start();
 }
-ConversationService::~ConversationService() { m_outboxRetryTimer.stop(); m_worker.waitForDone(); }
+ConversationService::~ConversationService() {
+    m_outboxRetryTimer.stop();
+    for (const auto& token : m_dispatchTokens) token->cancel();
+    m_worker.waitForDone();
+}
 Result<void,DomainError> ConversationService::registerBinding(const HostConversationBinding& binding) {
     auto result=m_store.registerBinding(binding);
     if (result) m_bindings.insert(conversationBindingKey(binding.channel,binding.connectionKey,binding.remoteConversationId),binding);
@@ -35,8 +94,12 @@ void ConversationService::recordDeliveryReceiptAsync(DeliveryReceipt receipt,Com
 void ConversationService::cancelRequestAsync(QString requestId,quint64 generation) {
     const QString key=requestId+QLatin1Char(':')+QString::number(generation);
     const auto token=m_dispatchTokens.value(key);
-    const bool beforeDispatch=token && !token->started;
-    if(beforeDispatch) token->cancelled=true;
+    bool beforeDispatch=false;
+    if (token) {
+        QMutexLocker lock(&token->mutex);
+        beforeDispatch=!token->started;
+        if (beforeDispatch) token->cancelled=true;
+    }
     enqueue<void>([requestId=std::move(requestId),generation,beforeDispatch](ConversationStore& store){return store.cancelRequest(requestId,generation,beforeDispatch);},{});
 }
 void ConversationService::publishResponseAsync(RoutedResponse response,Completion<void> completion) {
@@ -52,7 +115,7 @@ void ConversationService::publishResponseAsync(RoutedResponse response,Completio
         completion(Result<void,DomainError>::failure(domainError("STALE_CONTEXT","Response is already queued for dispatch")));
         return;
     }
-    const auto token=std::make_shared<DispatchToken>();
+    const auto token=std::make_shared<ToolDispatchToken>();
     m_dispatchTokens.insert(tokenKey,token);
     QPointer<ConversationService> guard(this);
     enqueue<ReplyDispatch>([response=std::move(response),binding](ConversationStore& store) {
@@ -74,31 +137,34 @@ void ConversationService::publishResponseAsync(RoutedResponse response,Completio
     },[guard,binding,token,tokenKey,completion=std::move(completion)](Result<ReplyDispatch,DomainError> prepared) mutable {
         if (!guard) return;
         if (!prepared) {guard->m_dispatchTokens.remove(tokenKey);completion(Result<void,DomainError>::failure(prepared.error()));return;}
-        const auto dispatch=prepared.value();
+        auto dispatch=prepared.value();
+        dispatch.dispatchToken=token;
         emit guard->replyDispatchPrepared(dispatch.response.requestId, dispatch.response.generation);
-        if(token->cancelled) {
+        if (!guard) return;
+        if(!token->allowed()) {
             guard->m_dispatchTokens.remove(tokenKey);
             completion(Result<void,DomainError>::failure(domainError("STALE_CONTEXT","Response cancelled before dispatch")));
             return;
         }
-        token->started=true;
         auto delivered=std::make_shared<std::atomic_bool>(false);
-        ReplyCompletion callback=[guard,dispatch,completion,delivered,tokenKey](DeliveryReceipt receipt) mutable {
-            if (!guard) return;
-            // Routing identity belongs to the dispatch, never the returned payload.
-            receipt.requestId=dispatch.response.requestId;receipt.generation=dispatch.response.generation;
-            receipt.replyTarget=dispatch.response.replyTarget;
-            QMetaObject::invokeMethod(guard,[guard,receipt=std::move(receipt),completion,delivered,tokenKey]() mutable {
+        auto archive = std::make_shared<ReplyReceiptArchive>(guard->storeSnapshot(),
+            [guard, completion, delivered, tokenKey](DeliveryOutcome outcome, Result<void, DomainError> result) mutable {
                 if (!guard) return;
-                guard->m_dispatchTokens.remove(tokenKey);
-                const auto outcome=receipt.outcome;
-                guard->recordDeliveryReceiptAsync(std::move(receipt),[completion,delivered,outcome](Result<void,DomainError> result) mutable {
+                QMetaObject::invokeMethod(guard, [guard, completion, delivered, tokenKey, outcome, result = std::move(result)]() mutable {
+                    if (!guard) return;
+                    guard->m_dispatchTokens.remove(tokenKey);
+                    if (!guard->m_outboxRetryTimer.isActive()) guard->m_outboxRetryTimer.start();
                     if (delivered->exchange(true)) return;
                     if (result && outcome!=DeliveryOutcome::Completed)
                         result=Result<void,DomainError>::failure(domainError(outcome==DeliveryOutcome::Unknown?"ACTION_OUTCOME_UNKNOWN":"ACTION_NOT_EXECUTED","Message delivery did not complete"));
-                    completion(std::move(result));
-                });
-            },Qt::QueuedConnection);
+                    if (completion) completion(std::move(result));
+                }, Qt::QueuedConnection);
+            });
+        ReplyCompletion callback=[archive,dispatch](DeliveryReceipt receipt) {
+            // Routing identity belongs to the dispatch, never the returned payload.
+            receipt.requestId=dispatch.response.requestId;receipt.generation=dispatch.response.generation;
+            receipt.replyTarget=dispatch.response.replyTarget;
+            archive->append(std::move(receipt));
         };
         try { binding.dispatcher(dispatch,callback); }
         catch (...) { DeliveryReceipt receipt;receipt.outcome=DeliveryOutcome::Unknown;callback(receipt); }

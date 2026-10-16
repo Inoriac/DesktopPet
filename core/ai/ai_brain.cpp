@@ -4,6 +4,7 @@
 //
 
 #include "ai_brain.h"
+#include "plugin/plugin_runtime.h"
 #include "reflection/memory_consolidation_service.h"
 #include "memory/memory_metadata.h"
 
@@ -108,6 +109,7 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
 }
 
 AIBrain::~AIBrain() {
+    retirePluginRuntime();
     shutdownTaskRuntime();
     m_daydreamCancellation.cancel();
     m_consolidationService.reset();
@@ -202,6 +204,8 @@ void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
+    retirePluginRuntime();
+    m_toolRuntime.cancelAll();
     shutdownTaskRuntime();
     cancelDaydreamSession(QStringLiteral("runtime services changed"));
     stopCurrentResponse();
@@ -216,7 +220,7 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
         ? services->chatPreparationRuntimeMetadata()
         : ChatPreparationRuntimeMetadata{};
     m_memoryStore.setProfileId(m_chatPreparationRuntimeMetadata.profileId);
-    if (services) initializeTaskRuntime();
+    if (services) { initializeTaskRuntime(); initializePluginRuntime(); }
     if (services && m_storageInitialized) {
         const auto started = startChatSideEffectQueue();
         if (!started.isOk()) {
@@ -263,6 +267,7 @@ void AIBrain::setPetName(const QString& petName) {
 
 void AIBrain::setToolRegistry(ToolRegistry* registry) {
     if (m_toolRegistry != registry) {
+        retirePluginRuntime();
         // Tool registration also happens after startup recovery. A capability
         // change must preserve the waiting task, not act as a user's Stop.
         if (isTaskActive()) pauseTask();
@@ -279,6 +284,7 @@ void AIBrain::setToolRegistry(ToolRegistry* registry) {
     }
     m_toolRegistry = registry;
     m_toolRuntime.setToolRegistry(registry);
+    initializePluginRuntime();
 }
 
 void AIBrain::setAgentScheduler(AgentScheduler* scheduler) {
@@ -950,6 +956,7 @@ void AIBrain::stopCurrentResponse() {
 
 void AIBrain::cancelActiveResponse() {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
+    m_toolRuntime.cancelAll();
     const QString sessionId = m_activeDialogueResponse->sessionId;
     const quint64 generation = m_activeDialogueResponse->generation;
     if (m_runtimeServices && m_runtimeServices->conversationService())

@@ -1,4 +1,5 @@
 #pragma once
+#include "ai/ai_tool.h"
 
 #include <QJsonArray>
 #include <QJsonObject>
@@ -22,6 +23,7 @@ struct TaskBudgetExtension {
 };
 
 struct TaskStartRequest {
+    QStringList requiredSourceTools;
     QString profileId;
     QString subjectId;
     OriginKind originKind = OriginKind::Internal;
@@ -99,6 +101,8 @@ struct TaskToolReply {
     QString error;
     // A failed side effect is unknown unless the runtime can prove it did not occur.
     bool outcomeKnown = false;
+    bool businessEvidence = true;
+    QString stage = "completed";
 };
 struct TaskDependencies {
     using ModelCompletion = std::function<void(TaskModelReply)>;
@@ -107,7 +111,9 @@ struct TaskDependencies {
     std::function<void(const TaskToolCall&, ToolCompletion)> executeTool;
     std::function<void(const QString&)> cancelModel;
     std::function<void(const QString&)> cancelTool;
-    // This is an additional policy check. The built-in allowlist is always enforced.
+    // Host metadata and policy are independent of model proposals.
+    std::function<HostToolMetadata(const QString&)> toolMetadata;
+    std::function<bool(const QString&, const QJsonObject&)> toolReadOnly;
     std::function<bool(const QString&, const QJsonObject&)> toolAllowed;
     std::function<QJsonArray()> availableTools;
     // Only relationship/emotion keys are refreshed; task personality remains immutable.

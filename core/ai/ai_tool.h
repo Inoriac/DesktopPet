@@ -10,8 +10,37 @@
 #include <QString>
 #include <QJsonObject>
 #include <QJsonArray>
+#include <QMutex>
+#include <memory>
+#include <atomic>
 
 #include "ai_types.h"
+
+struct ToolDispatchToken {
+    QMutex mutex;
+    bool cancelled=false, started=false;
+    std::shared_ptr<std::atomic_bool> bindingEnabled;
+    void cancel() { QMutexLocker lock(&mutex); if (!started) cancelled=true; }
+    bool allowed() { QMutexLocker lock(&mutex); return !cancelled && (!bindingEnabled || bindingEnabled->load()); }
+    bool begin() { QMutexLocker lock(&mutex); if (cancelled || (bindingEnabled && !bindingEnabled->load())) return false; started=true; return true; }
+};
+
+enum class ToolRiskLevel { L0SafeRead, L1LocalQuery, L2LowRiskAction, L3HighRiskAction, L4Dangerous };
+enum class HostToolExecutor { OwnerThread, Worker, Async };
+struct HostToolMetadata {
+    QString effect = "unknown";
+    ToolRiskLevel risk = ToolRiskLevel::L4Dangerous;
+    bool taskAllowed = false;
+    bool businessEvidence = false;
+    HostToolExecutor executor = HostToolExecutor::OwnerThread;
+    QString scopePathArgument;
+    static HostToolMetadata safeRead(HostToolExecutor executor=HostToolExecutor::OwnerThread) {
+        return {"read",ToolRiskLevel::L0SafeRead,true,true,executor,{}};
+    }
+    static HostToolMetadata localAction(HostToolExecutor executor=HostToolExecutor::OwnerThread) {
+        return {"write",ToolRiskLevel::L2LowRiskAction,true,false,executor,{}};
+    }
+};
 
 class AITool {
 public:
@@ -82,11 +111,15 @@ public:
         return tool;
     }
 
+    void setHostMetadata(const HostToolMetadata& metadata) { m_hostMetadata=metadata; }
+    const HostToolMetadata& hostMetadata() const { return m_hostMetadata; }
+
     const QString& name() const { return m_name; }
     const QString& description() const { return m_description; }
     ToolCategory category() const { return m_category; }
 
 protected:
+    HostToolMetadata m_hostMetadata;
     QString m_name;
     QString m_description;
     ToolCategory m_category;

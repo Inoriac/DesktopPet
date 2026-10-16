@@ -3,6 +3,7 @@
 //
 
 #include "ai_brain.h"
+#include "plugin/plugin_runtime.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -47,8 +48,10 @@ void AIBrain::thinkInternal(const QString& reason,
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     if (suppressMutedAutomaticResponse()) return;
     const bool proactive = triggerTag == QLatin1String("proactive_chat");
-    const QJsonArray tools = m_toolRegistry && !proactive && triggerTag != QLatin1String("external_message")
-        ? m_toolRegistry->allToolSchemas() : QJsonArray{};
+    if (m_pluginRuntime) m_pluginRuntime->setLearnedSkills(m_skillStore.all());
+    const QJsonArray tools = proactive ? QJsonArray{} : triggerTag==QLatin1String("external_message")
+        ? (m_pluginRuntime?m_pluginRuntime->gatewaySchemas(currentToolContext()):QJsonArray{})
+        : (m_toolRegistry?m_toolRegistry->allToolSchemas():QJsonArray{});
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
     const QString activeMessageId = m_activeDialogueResponse->messageId;
@@ -126,7 +129,7 @@ void AIBrain::thinkInternal(const QString& reason,
         },
         [this, guard, isCurrent, requestGeneration, requestId, requestedAtMs,
          reason, triggerTag, sessionId, toolRound, workingMessages,
-         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive]
+         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive, tools]
         (Result<ModelCompletion, DomainError> modelResult) mutable {
             if (completionHandled->exchange(true, std::memory_order_acq_rel)) return;
             if (guard) m_pendingResponseLogs.remove(requestId);
@@ -224,10 +227,6 @@ void AIBrain::thinkInternal(const QString& reason,
             assistantMessage.content = response.content;
             assistantMessage.transportBlocks = response.transportBlocks;
 
-            if (triggerTag == QLatin1String("external_message") && !response.toolCalls.isEmpty()) {
-                finishActiveResponse(ChatMessageStatus::Failed, QStringLiteral("No tools are authorized for this conversation"));
-                return;
-            }
             if (response.toolCalls.isEmpty() || !m_toolRegistry || toolRound >= m_maxToolRounds) {
                 if (!response.toolCalls.isEmpty() && toolRound >= m_maxToolRounds
                     && (!m_activeDialogueResponse
@@ -242,125 +241,60 @@ void AIBrain::thinkInternal(const QString& reason,
                 return;
             }
 
+            enqueueCallLog(ChatSideEffectType::ResponseLog, requestId, sessionId, requestGeneration, responseLog);
             QJsonArray assistantToolCalls;
-            enqueueCallLog(ChatSideEffectType::ResponseLog, requestId, sessionId,
-                           requestGeneration, responseLog);
-            QList<ChatMessage> nextMessages = workingMessages;
-            nextMessages.append(assistantMessage);
-            const int assistantIndex = nextMessages.size() - 1;
+            for (const auto& call:response.toolCalls) assistantToolCalls.append(QJsonObject{{"id",call.id},{"type",call.type.isEmpty()?"function":call.type},
+                {"function",QJsonObject{{"name",call.name},{"arguments",QString::fromUtf8(QJsonDocument(call.arguments).toJson(QJsonDocument::Compact))}}}});
+            assistantMessage.toolCalls=assistantToolCalls;
             publishActiveStage(ChatActivityStage::PreparingTool);
-
-            for (const LlmToolCall& call : response.toolCalls) {
-                if (!isCurrent() || suppressMutedAutomaticResponse()) return;
-                QJsonObject functionObj;
-                functionObj["name"] = call.name;
-                functionObj["arguments"] = QString::fromUtf8(QJsonDocument(call.arguments).toJson(QJsonDocument::Compact));
-
-                QJsonObject toolCallObj;
-                toolCallObj["id"] = call.id;
-                toolCallObj["type"] = call.type.isEmpty() ? QString("function") : call.type;
-                toolCallObj["function"] = functionObj;
-                assistantToolCalls.append(toolCallObj);
-
-                QString denialReason;
-                if (!isToolCallAllowed(triggerTag, call, denialReason)) {
-                    QJsonObject deniedObj;
-                    deniedObj["success"] = false;
-                    deniedObj["error"] = denialReason;
-
-                    ChatMessage deniedToolMessage;
-                    deniedToolMessage.role = "tool";
-                    deniedToolMessage.name = call.name;
-                    deniedToolMessage.toolCallId = call.id;
-                    deniedToolMessage.content = QString::fromUtf8(QJsonDocument(deniedObj).toJson(QJsonDocument::Compact));
-                    nextMessages.append(deniedToolMessage);
-                    appendRuntimeEvent(
-                        QStringLiteral("ToolExecutionCompleted"), sessionId,
-                        {{QStringLiteral("toolName"), call.name},
-                         {QStringLiteral("success"), false},
-                         {QStringLiteral("resultSummary"),
-                          QStringLiteral("tool call denied by policy")},
-                         {QStringLiteral("errorCode"),
-                          QStringLiteral("TOOL_POLICY_DENIED")}});
-
-                    emit toolExecuted(call.name, false, deniedToolMessage.content);
-                    continue;
+            auto messages=std::make_shared<QList<ChatMessage>>(workingMessages); messages->append(assistantMessage);
+            const auto calls=response.toolCalls;
+            const ContextSpec context=currentToolContext();
+            auto next=std::make_shared<std::function<void(int)>>();
+            *next=[this,guard,isCurrent,next,messages,calls,tools,context,reason,triggerTag,sessionId,toolRound](int index) {
+                if (!isCurrent() || suppressMutedAutomaticResponse()) { *next={}; return; }
+                if (index>=calls.size()) {
+                    auto completed=*messages; *next={}; publishActiveStage(ChatActivityStage::Finalizing);
+                    thinkInternal(reason,triggerTag,sessionId,toolRound+1,completed); return;
                 }
-
-                ToolExecutionRequest executionRequest;
-                executionRequest.requestId = call.id.isEmpty()
-                                             ? QUuid::createUuid().toString(QUuid::WithoutBraces)
-                                             : call.id;
-                executionRequest.toolName = call.name;
-                executionRequest.arguments = call.arguments;
-                executionRequest.policyContext = buildToolPolicyContext(triggerTag, reason, true);
+                const auto call=calls[index];
+                auto append=[this,guard,isCurrent,next,messages,call,index,triggerTag,sessionId](ToolExecutionOutcome outcome) mutable {
+                    if (!guard) { *next={}; return; }
+                    // Runtime settles actual results independently; only the matching chat advances.
+                    if (!isCurrent()) { *next={}; return; }
+                    const auto payload=m_toolRuntime.sanitizer()->toPayload(outcome.result);
+                    rememberToolOutcome(call.name,triggerTag,true,outcome,sessionId);
+                    ChatMessage message; message.role="tool"; message.name=call.name; message.toolCallId=call.id; message.content=payload;
+                    messages->append(message); emit toolExecuted(call.name,outcome.result.success,payload);
+                    if (!outcome.result.success) scheduleIdleRetryIfBusyFailure(call.name,payload);
+                    auto advance=*next; if (advance) advance(index+1);
+                };
+                QString denial; bool exposed=false;
+                for (const auto& schema:tools) if (schema.toObject()["function"].toObject()["name"]==call.name) exposed=true;
+                if (!exposed || !isToolCallAllowed(triggerTag,call,denial)) {
+                    ToolExecutionOutcome outcome; outcome.toolName=call.name; outcome.result=ToolResult::fail(denial.isEmpty()?"Tool is not authorized in this context":denial); append(outcome); return;
+                }
+                ToolExecutionRequest execution; execution.requestId=call.id.isEmpty()?QUuid::createUuid().toString(QUuid::WithoutBraces):call.id;
+                execution.toolName=call.name; execution.arguments=call.arguments; execution.context=context;
+                execution.activityId=context.activityId.isEmpty()?sessionId:context.activityId;
+                execution.policyContext=buildToolPolicyContext(triggerTag,reason,true);
+                execution.autonomous=triggerTag!="manual" && triggerTag!="user_request" && triggerTag!="external_message";
                 publishActiveStage(ChatActivityStage::RunningTool);
-                const ToolExecutionOutcome outcome = m_toolRuntime.execute(executionRequest);
-                if (outcome.policyDecision.needsConfirmation()) {
-                    if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
-                        nextMessages[assistantIndex].toolCalls = assistantToolCalls;
-                    }
-                    const QString confirmationId = outcome.requestId;
-                    m_pendingToolConfirmations.insert(
-                        confirmationId,
-                        [this, confirmationId, call, reason, triggerTag, sessionId,
-                         toolRound, nextMessages, requestGeneration, activeMessageId]
-                        (bool approved) mutable {
-                            if (requestGeneration != m_requestGeneration
-                                || !m_activeDialogueResponse
-                                || m_activeDialogueResponse->terminal
-                                || m_activeDialogueResponse->messageId != activeMessageId) {
-                                return;
-                            }
-                            if (suppressMutedAutomaticResponse()) return;
-                            const ToolExecutionOutcome resolved =
-                                m_toolRuntime.resolveConfirmation(confirmationId, approved);
-                            const QString resolvedPayload =
-                                m_toolRuntime.sanitizer()->toPayload(resolved.result);
-                            rememberToolOutcome(call.name, triggerTag, true, resolved,
-                                                sessionId);
-
-                            ChatMessage toolMessage;
-                            toolMessage.role = "tool";
-                            toolMessage.name = call.name;
-                            toolMessage.content = resolvedPayload;
-                            toolMessage.toolCallId = call.id;
-                            nextMessages.append(toolMessage);
-                            emit toolExecuted(call.name, resolved.result.success, resolvedPayload);
-                            publishActiveStage(ChatActivityStage::Finalizing);
-                            thinkInternal(reason, triggerTag, sessionId,
-                                          toolRound + 1, nextMessages);
+                m_toolRuntime.executeAsync(execution,[this,guard,isCurrent,next,call,append=std::move(append)](ToolExecutionOutcome outcome) mutable {
+                    if (!guard || !isCurrent()) { *next={}; return; }
+                    if (outcome.policyDecision.needsConfirmation()) {
+                        const auto id=outcome.requestId;
+                        m_pendingToolConfirmations.insert(id,[this,guard,isCurrent,next,id,append=std::move(append)](bool approved) mutable {
+                            if (!guard || !isCurrent()) { *next={}; return; }
+                            m_toolRuntime.resolveConfirmationAsync(id,approved,std::move(append));
                         });
-                    emit toolConfirmationRequired(confirmationId,
-                                                  call.name,
-                                                  outcome.policyDecision.reason,
-                                                  call.arguments);
-                    return;
-                }
-                ToolResult result = outcome.result;
-                const QString payload = m_toolRuntime.sanitizer()->toPayload(result);
-                rememberToolOutcome(call.name, triggerTag, true, outcome, sessionId);
+                        emit toolConfirmationRequired(id,call.name,outcome.policyDecision.reason,call.arguments); return;
+                    }
+                    append(std::move(outcome));
+                });
+            };
+            auto startRound=*next; startRound(0);
 
-                if (!result.success) {
-                    scheduleIdleRetryIfBusyFailure(call.name, payload);
-                }
-
-                ChatMessage toolMessage;
-                toolMessage.role = "tool";
-                toolMessage.name = call.name;
-                toolMessage.content = payload;
-                toolMessage.toolCallId = call.id;
-
-                nextMessages.append(toolMessage);
-
-                emit toolExecuted(call.name, result.success, payload);
-            }
-
-            if (assistantIndex >= 0 && assistantIndex < nextMessages.size()) {
-                nextMessages[assistantIndex].toolCalls = assistantToolCalls;
-            }
-            publishActiveStage(ChatActivityStage::Finalizing);
-            thinkInternal(reason, triggerTag, sessionId, toolRound + 1, nextMessages);
         });
     if (toolRound == 0) {
         QElapsedTimer dispatchClock;
