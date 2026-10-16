@@ -233,12 +233,12 @@ private slots:
 void TestAgentRuntimeServices::taskExperience_preservesExternalOriginAcrossRestart() {
     StartedRuntime runtime; QVERIFY(runtime.ready());
     const QString path = runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath;
-    TaskStore store; QVERIFY(store.open(path));
+    TaskStore store; QVERIFY(store.open(path,kProfileId));
     TaskRecord task; task.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     task.profileId = kProfileId; task.subjectId = QStringLiteral("owner");
     task.originKind = OriginKind::External; task.goal = QStringLiteral("read message");
-    task.status = QStringLiteral("Completed"); task.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-    QVERIFY(store.save(task, true)); store.close(); QVERIFY(store.open(path));
+    task.status = QStringLiteral("Failed"); task.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    QVERIFY(store.save(task, true)); store.close(); QVERIFY(store.open(path,kProfileId));
     QCOMPARE(store.find(task.id)->originKind, OriginKind::External);
     QCOMPARE(store.pendingExperiences().first().toObject().value(QStringLiteral("origin_kind")).toString(), QStringLiteral("external"));
     TaskExperienceAdapter adapter(kProfileId, &store, runtime.services.eventLedger(), nullptr, nullptr);

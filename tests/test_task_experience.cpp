@@ -6,6 +6,8 @@
 #include <QTemporaryDir>
 #include <QUuid>
 
+#include "ai/activity/activity_runtime.h"
+#include "ai/chat/conversation_store.h"
 #include "ai/event/event_ledger.h"
 #include "ai/memory/memory_store.h"
 #include "ai/model/model_router.h"
@@ -105,10 +107,14 @@ struct Fixture {
     TaskRecord task;
     bool ready = false;
 
-    Fixture() {
+    Fixture(bool external = false) {
         memories.setDatabasePath(directory.filePath(QStringLiteral("memory.db")));
-        ready = tasks.open(directory.filePath(QStringLiteral("runtime.db")))
-            && memories.loadDatabaseOnly() && privateStore.open(directory.filePath(QStringLiteral("private.db"))).isOk();
+        ready =
+            tasks.open(directory.filePath(QStringLiteral("runtime.db")),
+                       profileId) &&
+            memories.loadDatabaseOnly() &&
+            privateStore.open(directory.filePath(QStringLiteral("private.db")))
+                .isOk();
         task.id = QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
         task.profileId = profileId;
         task.subjectId = QStringLiteral("owner");
@@ -116,8 +122,20 @@ struct Fixture {
         task.status = QStringLiteral("Completed");
         task.result = QStringLiteral("基于资料的结果与限制");
         task.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
-        task.evidence = {QStringLiteral("source-step-1")};
+        task.evidence = {QStringLiteral("user_input")};
+        task.originKind = OriginKind::LocalOwner;
+        task.accepted = true;
         task.requirementUpdates = QStringLiteral("优先比较交通便利程度");
+        if (external) {
+            task.status = "Failed";
+            task.subjectId = "friend";
+            task.originKind = OriginKind::External;
+            task.context.profileId = profileId;
+            task.context.originKind = OriginKind::External;
+            task.context.channel = "chat";
+            task.context.conversationId = "room";
+            task.context.participantPersonIds = {"friend"};
+        }
         ready = ready && tasks.save(task, true);
     }
 
@@ -129,7 +147,9 @@ struct Fixture {
             database.setDatabaseName(directory.filePath(QStringLiteral("runtime.db")));
             if (database.open()) {
                 QSqlQuery query(database);
-                ok = query.exec(QStringLiteral("UPDATE complex_task_experience_outbox SET delivered=0"));
+                ok = query.exec(
+                    QStringLiteral("DELETE FROM agent_runtime_migrations WHERE "
+                                   "migration_id LIKE 'experience:%'"));
             }
         }
         QSqlDatabase::removeDatabase(name);
@@ -141,6 +161,126 @@ struct Fixture {
 class TestTaskExperience : public QObject {
     Q_OBJECT
 private slots:
+  void subjectlessActivityRetainsVerifiedParticipantsAsParticipants() {
+      QTemporaryDir directory;
+      const auto path = directory.filePath("runtime.db");
+      ActivityRuntime runtime(profileId, path);
+      QSignalSpy ready(&runtime, &ActivityRuntime::ready);
+      QTRY_COMPARE(ready.size(), 1);
+      TaskDependencies dependencies;
+      dependencies.requestModel = [](const TaskModelRequest &,
+                                     TaskDependencies::ModelCompletion) {};
+      runtime.setDependencies(dependencies);
+      ConversationStore conversations(profileId, path);
+      QVERIFY(conversations.initialize());
+      HostConversationBinding binding;
+      binding.channel = "chat";
+      binding.connectionKey = "connection";
+      binding.remoteConversationId = "group";
+      binding.kind = ConversationKind::Group;
+      QVERIFY(conversations.registerBinding(binding));
+      IncomingMessage message;
+      message.channel = binding.channel;
+      message.connectionKey = binding.connectionKey;
+      message.remoteConversationId = binding.remoteConversationId;
+      message.kind = ConversationKind::Group;
+      message.content = "Shared activity";
+      message.occurredAt = QDateTime::currentDateTimeUtc();
+      for (const auto &person : QStringList{"first", "second"}) {
+          message.remoteMessageId = person;
+          message.speakerIdentity = {"chat", "connection", person, person};
+          QVERIFY(conversations.acceptMessage(message));
+      }
+      const auto conversationId =
+          conversationIdFor(profileId, "chat", "connection", "group");
+      const auto context = conversations.currentContext(conversationId);
+      QVERIFY(context);
+      ActivityIntent request;
+      request.goal = "Read shared material";
+      request.context = context.value();
+      QString id;
+      runtime.startActivityAsync(request, [&](auto result) {
+          QVERIFY(result);
+          id = result.value().activityId;
+      });
+      QTRY_VERIFY(!id.isEmpty());
+      QTRY_VERIFY(runtime.isActive());
+      ActivityStore store(profileId, path);
+      const auto current = store.find(id);
+      QVERIFY(current);
+      ActivityTransition done;
+      done.profileId = profileId;
+      done.activityId = id;
+      done.expectedRevision = current.value().revision;
+      done.targetState = ActivityState::Failed;
+      done.reason = "Source unavailable";
+      bool ended = false;
+      runtime.transitionActivityAsync(done, [&](auto result) {
+          QVERIFY(result);
+          ended = true;
+      });
+      QTRY_VERIFY(ended);
+      MemoryStore memories;
+      memories.setProfileId(profileId);
+      memories.setDatabasePath(directory.filePath("memory.db"));
+      QVERIFY(memories.loadDatabaseOnly());
+      Ledger ledger;
+      TaskExperienceAdapter adapter(profileId, &runtime, &ledger, &memories,
+                                    nullptr);
+      QSignalSpy drained(&adapter, &TaskExperienceAdapter::drained);
+      adapter.drain();
+      QTRY_COMPARE(drained.size(), 1);
+      const auto memory = memories.readForRecall(id);
+      QVERIFY(memory);
+      QCOMPARE(memory->attribution.people.size(), 2);
+      QVERIFY(memory->attribution.subjects().isEmpty());
+      QVERIFY(memory->attribution.origins.first().speakerPersonId.isEmpty());
+      QStringList people;
+      for (const auto &person : memory->attribution.people) {
+          QCOMPARE(person.role, MemoryPersonRole::Participant);
+          people.append(person.personId);
+      }
+      people.sort();
+      auto expected = context.value().participantPersonIds;
+      expected.sort();
+      QCOMPARE(people, expected);
+      QCOMPARE(memory->attribution.audience.conversationIds,
+               QStringList{conversationId});
+      QVERIFY(ledger.events.value(id).occurredAt.isValid());
+      const auto connection = QUuid::createUuid().toString();
+      {
+          auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+          db.setDatabaseName(memories.databasePath());
+          QVERIFY(db.open());
+          QSqlQuery query(db);
+          query.prepare("SELECT COUNT(*) FROM memory_people WHERE memory_id=? "
+                        "AND role='participant'");
+          query.addBindValue(id);
+          QVERIFY(query.exec());
+          QVERIFY(query.next());
+          QCOMPARE(query.value(0).toInt(), 2);
+      }
+      QSqlDatabase::removeDatabase(connection);
+  }
+  void externalExperience_preservesPeopleConversationAndAudience() {
+      Fixture fixture(true);
+      QVERIFY(fixture.ready);
+      TaskExperienceAdapter adapter(profileId, &fixture.tasks, &fixture.ledger,
+                                    &fixture.memories, nullptr);
+      QSignalSpy drained(&adapter, &TaskExperienceAdapter::drained);
+      adapter.drain();
+      QTRY_COMPARE(drained.size(), 1);
+      QCOMPARE(fixture.memories.all().size(), 1);
+      const auto memory = fixture.memories.all().first();
+      QCOMPARE(memory.attribution.audience.kind,
+               MemoryAudienceKind::Conversation);
+      QCOMPARE(memory.attribution.audience.conversationIds,
+               QStringList{"room"});
+      QCOMPARE(memory.attribution.origins.first().speakerPersonId, "friend");
+      QCOMPARE(memory.attribution.origins.first().conversationId, "room");
+      QVERIFY(memory.attribution.subjects().contains("friend"));
+  }
+
     void unavailablePrivateStore_preservesFactAndPendingIntent() {
         Fixture fixture;
         QVERIFY(fixture.ready);

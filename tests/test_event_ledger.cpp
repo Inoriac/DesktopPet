@@ -534,7 +534,7 @@ void TestEventLedger::runtimeSchema_upgradesVersionOneWithoutDroppingEventsAndRe
     QTemporaryDir directory;const auto path=directory.filePath("runtime.sqlite");SqliteEventRepository repository;
     QVERIFY(repository.open(path));auto draft=userMessageDraft();draft.eventId=QUuid::createUuid().toString(QUuid::WithoutBraces);draft.occurredAt=QDateTime::currentDateTimeUtc();auto event=repository.append(draft);QVERIFY(event);repository.close();
     QVERIFY(execSql(path,"PRAGMA user_version=1"));QVERIFY(repository.open(path));
-    QCOMPARE(scalar(path,"PRAGMA user_version").toInt(),2);QCOMPARE(scalar(path,"SELECT count(*) FROM event_log").toInt(),1);
+    QCOMPARE(scalar(path,"PRAGMA user_version").toInt(),3);QCOMPARE(scalar(path,"SELECT count(*) FROM event_log").toInt(),1);
     QCOMPARE(scalar(path,"SELECT count(*) FROM sqlite_master WHERE name IN ('agent_conversations','agent_messages','agent_response_dispatches','agent_runtime_migrations')").toInt(),4);
     repository.close();QVERIFY(execSql(path,"PRAGMA user_version=99"));QVERIFY(!repository.open(path));
     QCOMPARE(scalar(path,"SELECT count(*) FROM event_log").toInt(),1);

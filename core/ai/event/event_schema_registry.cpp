@@ -226,6 +226,9 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     taskExperience.optionalFields = {{QStringLiteral("origin_kind"), EventFieldType::String},
         {QStringLiteral("subject_id"), EventFieldType::String}};
     definitions.append(taskExperience);
+    auto experienceReady=taskExperience;experienceReady.type=QStringLiteral("ExperienceReady");definitions.append(experienceReady);
+    EventSchemaDefinition actionCompleted;actionCompleted.type="ActionCompleted";
+    actionCompleted.requiredFields={{"profile_id",EventFieldType::String},{"activity_id",EventFieldType::String},{"call_id",EventFieldType::String},{"source_id",EventFieldType::String},{"remote_job_id",EventFieldType::String},{"completed_at",EventFieldType::String}};definitions.append(actionCompleted);
 
     for (const EventSchemaDefinition& definition : definitions) {
         Result<void, DomainError> result = registry.registerSchema(definition);

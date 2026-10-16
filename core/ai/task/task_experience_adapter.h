@@ -9,6 +9,7 @@ class EventLedger;
 class InnerThoughtService;
 class MemoryStore;
 class TaskStore;
+class ActivityRuntime;
 
 // Retries durable task intents independently of result delivery. Only factual
 // summaries reach the event/memory stores; generated feelings stay encrypted.
@@ -19,6 +20,10 @@ public:
                           EventLedger* eventLedger, MemoryStore* memoryStore,
                           InnerThoughtService* innerThoughtService,
                           QObject* parent = nullptr);
+    TaskExperienceAdapter(QString profileId, ActivityRuntime *runtime,
+                          EventLedger *eventLedger, MemoryStore *memoryStore,
+                          InnerThoughtService *innerThoughtService,
+                          QObject *parent = nullptr);
     ~TaskExperienceAdapter() override;
     bool busy() const { return m_busy; }
 
@@ -36,6 +41,7 @@ private:
     void advance();
     QString m_profileId;
     TaskStore* m_taskStore = nullptr;
+    ActivityRuntime *m_activityRuntime = nullptr;
     EventLedger* m_eventLedger = nullptr;
     MemoryStore* m_memoryStore = nullptr;
     InnerThoughtService* m_innerThoughtService = nullptr;

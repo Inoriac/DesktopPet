@@ -21,6 +21,7 @@ public:
     Result<void, DomainError> publishResponse(const RoutedResponse& response);
     Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
     Result<void, DomainError> cancelRequest(const QString& requestId, quint64 generation, bool beforeDispatch = false);
+    Result<ContextSpec, DomainError> currentContext(const QString& conversationId) const;
     Result<void, DomainError> validateContext(const ContextSpec& context) const;
     Result<int, DomainError> recoverOutbox();
     const QString& profileId() const { return m_profileId; }

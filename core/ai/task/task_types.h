@@ -1,12 +1,13 @@
 #pragma once
 #include "ai/ai_tool.h"
 
+#include "ai/context/context_spec.h"
+#include "ai/identity/identity_types.h"
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QString>
 #include <QStringList>
 #include <functional>
-#include "ai/identity/identity_types.h"
 
 struct TaskBudget {
     int maxToolCalls = 12;
@@ -23,6 +24,7 @@ struct TaskBudgetExtension {
 };
 
 struct TaskStartRequest {
+    ContextSpec context;
     QStringList requiredSourceTools;
     QString profileId;
     QString subjectId;
@@ -36,6 +38,9 @@ struct TaskStartRequest {
 };
 
 struct TaskRecord {
+    ContextSpec context;
+    qint64 activityRevision = 0;
+    quint64 activityGeneration = 0;
     QString id;
     QString profileId;
     QString subjectId;
@@ -76,6 +81,9 @@ struct TaskRecord {
 };
 
 struct TaskModelRequest {
+    QString activityId;
+    quint64 generation = 0;
+    ContextSpec scope;
     QString requestId;
     QString role;
     QString phase;
@@ -89,6 +97,9 @@ struct TaskModelReply {
     QString error;
 };
 struct TaskToolCall {
+    QString activityId, goal;
+    quint64 generation = 0;
+    ContextSpec context;
     QString id;
     QString name;
     QJsonObject arguments;
@@ -104,11 +115,18 @@ struct TaskToolReply {
     bool businessEvidence = true;
     QString stage = "completed";
 };
+struct TaskToolPermission {
+    bool allowed = false;
+    bool readOnly = false;
+};
 struct TaskDependencies {
     using ModelCompletion = std::function<void(TaskModelReply)>;
     using ToolCompletion = std::function<void(TaskToolReply)>;
     std::function<void(const TaskModelRequest&, ModelCompletion)> requestModel;
     std::function<void(const TaskToolCall&, ToolCompletion)> executeTool;
+    std::function<void(const TaskToolCall &,
+                       std::function<void(TaskToolPermission)>)>
+        prepareTool;
     std::function<void(const QString&)> cancelModel;
     std::function<void(const QString&)> cancelTool;
     // Host metadata and policy are independent of model proposals.

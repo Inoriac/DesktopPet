@@ -1,9 +1,10 @@
-#include <QtTest>
+#include "ai/chat/conversation_store.h"
+#include "ai/task/task_orchestrator.h"
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QtTest>
 #include <memory>
-#include "ai/task/task_orchestrator.h"
 
 namespace {
 struct Harness {
@@ -21,7 +22,8 @@ struct Harness {
     QStringList requiredSources;
     bool ready = false;
     Harness() {
-        ready = store.open(directory.filePath("runtime.sqlite"));
+        ready = store.open(directory.filePath("runtime.sqlite"),
+                           "11111111-1111-4111-8111-111111111111");
         resetRunner();
     }
     ~Harness() { runner.reset(); }
@@ -54,7 +56,10 @@ struct Harness {
     bool start(TaskBudget budget = {}, const QString& goal = QStringLiteral("比较两份资料并验证结论")) {
         TaskStartRequest request;
         request.requiredSourceTools=requiredSources;
-        request.goal = goal; request.profileId = "pet"; request.subjectId = "owner";
+        request.originKind = OriginKind::LocalOwner;
+        request.goal = goal;
+        request.profileId = "11111111-1111-4111-8111-111111111111";
+        request.subjectId = "owner";
         request.personalityVersion = 7; request.personalitySnapshot = {{"version", 7}, {"style", "patient"}};
         request.emotionSnapshot = {{"energy", .9}}; request.budget = budget;
         return runner->start(request);
@@ -107,6 +112,10 @@ private slots:
     void externalTaskNeedsCapabilityBeforeAgencyAndRealEvidenceToComplete();
     void clarificationIsNotOutcomeFeedback();
     void cancelledCandidateIsLabeledAsUnfinished();
+    void pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint();
+    void lateToolReceiptArchivesAfterRunnerDestroyed();
+    void lateReceiptStorageFailureDoesNotPauseReplacementActivity();
+    void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
 };
 
 void TestTaskOrchestrator::stopCallingToolsDoesNotCompleteUntilVerification() {
@@ -145,8 +154,7 @@ void TestTaskOrchestrator::failedToolCallsConsumeBudget() {
     QCOMPARE(h.runner->currentTask().status, "Paused");
     QCOMPARE(h.runner->currentTask().toolCalls, 2);
     QCOMPARE(h.toolRequests.size(), 2);
-    QVERIFY(h.runner->resume());
-    h.reply(nextTool());
+    QVERIFY(!h.runner->resume());
     QCOMPARE(h.runner->currentTask().toolCalls, 2);
     QCOMPARE(h.runner->currentTask().status, "Paused");
 }
@@ -209,8 +217,10 @@ void TestTaskOrchestrator::timeoutAndActiveBudgetActuallyPause() {
 void TestTaskOrchestrator::secondRequestPreservesUnfinishedTask() {
     Harness h; QVERIFY(h.start()); const auto id = h.runner->currentTask().id;
     QVERIFY(!h.start()); QCOMPARE(h.runner->currentTask().id, id);
-    h.reply(decision("negotiate")); QVERIFY(!h.start()); QCOMPARE(h.runner->currentTask().id, id);
-    QCOMPARE(h.modelRequests.size(), 1);
+    h.reply(decision("negotiate"));
+    QVERIFY(h.start());
+    QVERIFY(h.runner->currentTask().id != id);
+    QCOMPARE(h.modelRequests.size(), 2);
 }
 void TestTaskOrchestrator::restartPreservesSnapshotAndBudgetAndDoesNotReplayAction() {
     Harness h; QVERIFY(h.start()); h.reply(decision());
@@ -220,7 +230,7 @@ void TestTaskOrchestrator::restartPreservesSnapshotAndBudgetAndDoesNotReplayActi
     h.runner->shutdown();
     const qint64 consumed = h.runner->currentTask().activeMs;
     QTest::qWait(30); h.resetRunner(); QVERIFY(h.runner->recover());
-    QCOMPARE(h.runner->currentTask().status, "WaitingForUser");
+    QCOMPARE(h.runner->currentTask().status, "Paused");
     QCOMPARE(h.runner->currentTask().activeMs, consumed);
     QCOMPARE(h.runner->currentTask().personalityVersion, 7);
     QCOMPARE(h.runner->currentTask().personalitySnapshot.value("version").toInt(), 7);
@@ -326,6 +336,128 @@ void TestTaskOrchestrator::cancelledCandidateIsLabeledAsUnfinished() {
     QVERIFY(message.contains(QStringLiteral("未标记为完成结果")));
     QVERIFY(message.contains(QStringLiteral("候选结论")));
     QCOMPARE(h.store.pendingExperiences().first().toObject().value("confidence").toString(), "limited");
+}
+
+void TestTaskOrchestrator::
+    pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint() {
+    Harness h;
+    QVERIFY(h.start());
+    h.reply(decision());
+    h.reply(nextTool());
+    h.tool();
+    h.runner->pause();
+    const auto first = h.runner->currentTask();
+    QVERIFY(h.start({}, QStringLiteral("处理另一项已授权的任务")));
+    QVERIFY(h.runner->currentTask().id != first.id);
+    const auto saved = h.store.find(first.id);
+    QVERIFY(saved.has_value());
+    QCOMPARE(saved->status, QStringLiteral("Paused"));
+    QCOMPARE(saved->steps, first.steps);
+    QCOMPARE(saved->toolCalls, first.toolCalls);
+}
+
+void TestTaskOrchestrator::lateToolReceiptArchivesAfterRunnerDestroyed() {
+    Harness h;
+    QVERIFY(h.start());
+    h.reply(decision());
+    h.reply(nextTool("schedule_create", {{"title", "one action"}}));
+    const auto taskId = h.runner->currentTask().id;
+    auto completion = h.tools.takeFirst();
+    h.runner->stop();
+    h.runner.reset();
+    completion({true, {{"receipt_id", "actual-remote-result"}}, {}, true});
+    QTRY_COMPARE(h.store.find(taskId)
+                     ->steps.last()
+                     .toObject()
+                     .value("status")
+                     .toString(),
+                 QStringLiteral("succeeded"));
+    QCOMPARE(h.store.find(taskId)->status, QStringLiteral("Cancelled"));
+    QCOMPARE(h.store.find(taskId)->toolCalls, 1);
+    QCOMPARE(h.toolRequests.size(), 1);
+    completion({true, {{"receipt_id", "actual-remote-result"}}, {}, true});
+    QCoreApplication::processEvents();
+    QCOMPARE(h.store.find(taskId)->toolCalls, 1);
+}
+
+void TestTaskOrchestrator::
+    lateReceiptStorageFailureDoesNotPauseReplacementActivity() {
+    Harness h;
+    QVERIFY(h.start());
+    h.reply(decision());
+    h.reply(nextTool("schedule_create", {{"title", "first activity"}}));
+    auto completeFirst = h.tools.takeFirst();
+    h.runner->pause();
+    QVERIFY(h.start({}, QStringLiteral("第二项活动")));
+    const auto secondId = h.runner->currentTask().id;
+    const auto connection = QUuid::createUuid().toString();
+    {
+        auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+        db.setDatabaseName(h.directory.filePath("runtime.sqlite"));
+        QVERIFY(db.open());
+        QSqlQuery query(db);
+        QVERIFY(query.exec(
+            "CREATE TRIGGER reject_late_observation BEFORE UPDATE ON "
+            "agent_action_calls BEGIN SELECT RAISE(ABORT,'archive "
+            "unavailable'); END"));
+    }
+    QSqlDatabase::removeDatabase(connection);
+    completeFirst({true, {{"receipt", "completed externally"}}, {}, true});
+    QCoreApplication::processEvents();
+    QCOMPARE(h.runner->currentTask().id, secondId);
+    QVERIFY(h.runner->isActive());
+    QVERIFY(h.store.find(secondId)->status != "Paused");
+}
+
+void TestTaskOrchestrator::
+    resumeRefreshesGroupParticipantsInRunnerAndModelScope() {
+    Harness h;
+    const QString profile = "11111111-1111-4111-8111-111111111111";
+    ConversationStore messages(profile, h.directory.filePath("runtime.sqlite"));
+    QVERIFY(messages.initialize());
+    HostConversationBinding binding;
+    binding.channel = "chat";
+    binding.connectionKey = "connection";
+    binding.remoteConversationId = "group";
+    binding.kind = ConversationKind::Group;
+    QVERIFY(messages.registerBinding(binding));
+    IncomingMessage message;
+    message.channel = binding.channel;
+    message.connectionKey = binding.connectionKey;
+    message.remoteConversationId = binding.remoteConversationId;
+    message.kind = ConversationKind::Group;
+    message.remoteMessageId = "first";
+    message.speakerIdentity = {binding.channel, binding.connectionKey,
+                               "person-1", "First"};
+    message.content = "Please read this";
+    message.occurredAt = QDateTime::currentDateTimeUtc();
+    const auto first = messages.acceptMessage(message);
+    QVERIFY(first);
+    TaskStartRequest request;
+    request.profileId = profile;
+    request.goal = "Read supplied group material";
+    request.context = first.value().context;
+    request.originKind = OriginKind::External;
+    QVERIFY(h.runner->start(request));
+    h.runner->pause();
+    const auto oldRevision =
+        h.runner->currentTask().context.conversationRevision;
+    message.remoteMessageId = "second";
+    message.speakerIdentity.remoteActorId = "person-2";
+    message.speakerIdentity.displayName = "Second";
+    QVERIFY(messages.acceptMessage(message));
+    const auto current = messages.currentContext(first.value().conversationId);
+    QVERIFY(current);
+    QCOMPARE(current.value().participantPersonIds.size(), 2);
+    QVERIFY(h.runner->resume());
+    QCOMPARE(h.runner->currentTask().context.participantPersonIds,
+             current.value().participantPersonIds);
+    QVERIFY(h.runner->currentTask().context.conversationRevision > oldRevision);
+    QCOMPARE(h.modelRequests.last().scope.participantPersonIds,
+             current.value().participantPersonIds);
+    QCOMPARE(
+        h.store.find(h.runner->currentTask().id)->context.participantPersonIds,
+        current.value().participantPersonIds);
 }
 
 QTEST_GUILESS_MAIN(TestTaskOrchestrator)

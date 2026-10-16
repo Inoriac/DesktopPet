@@ -37,7 +37,11 @@ public:
     ToolResult execute(const QJsonObject&) override { return ToolResult::fail("Capability gateway requires asynchronous execution"); }
 };
 }
-void PluginRuntime::setLearnedSkills(QList<SkillEntry> snapshot) { QMutexLocker lock(&m_state->mutex); m_state->learned=std::move(snapshot); }
+void PluginRuntime::setLearnedSkills(QList<SkillEntry> snapshot) {
+    QMutexLocker lock(&m_state->mutex);
+    m_state->learned = std::move(snapshot);
+    ++m_state->learnedRevision;
+}
 void PluginRuntime::attach(ToolRegistry* registry) {
     if (!registry) return;
     QPointer<PluginRuntime> guard(this);

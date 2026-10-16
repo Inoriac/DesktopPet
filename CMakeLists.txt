@@ -200,7 +200,14 @@ set(OWNER_DIARY_SOURCES
     core/ai/owner/owner_diary_server.cpp
 )
 
+set(ACTIVITY_SOURCES
+    core/ai/activity/activity_types.h core/ai/activity/activity_types.cpp
+    core/ai/activity/activity_store.h core/ai/activity/activity_store.cpp
+    core/ai/activity/activity_runtime.h core/ai/activity/activity_runtime.cpp
+)
+
 set(TASK_ORCHESTRATION_SOURCES
+    ${ACTIVITY_SOURCES}
     core/ai/task/task_types.h
     core/ai/task/task_types.cpp
     core/ai/task/task_store.h
@@ -2026,8 +2033,15 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif ()
 
 # Personality evolution and bounded complex tasks.
+add_desktop_pet_cpp_test(activity_runtime_tests ActivityRuntimeTests
+    SOURCES tests/test_activity_runtime.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
 add_desktop_pet_cpp_test(task_orchestrator_tests TaskOrchestratorTests
-    SOURCES tests/test_task_orchestrator.cpp ${TASK_ORCHESTRATION_SOURCES}
+    SOURCES tests/test_task_orchestrator.cpp ${TASK_ORCHESTRATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/chat/conversation_types.cpp core/ai/chat/conversation_store.cpp core/ai/chat/chat_types.cpp core/ai/plugin/capability_types.cpp
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
         core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
     LIBRARIES Qt::Core Qt::Sql Qt::Test)

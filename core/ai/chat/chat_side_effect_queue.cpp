@@ -39,6 +39,7 @@ struct ChatSideEffectQueue::QueueState {
     bool pumpScheduled = false;
     bool stopRequested = false;
     bool drainAcceptedWork = true;
+    bool workerClosed = false;
 };
 
 class ChatSideEffectQueue::Worker final : public QObject {
@@ -117,6 +118,11 @@ public:
     void shutdownAndQuit() {
         if (m_closed) return;
         m_closed = true;
+        {
+            QMutexLocker lock(&m_state->mutex);
+            m_state->workerClosed = true;
+            m_state->accepting = false;
+        }
         m_logger.reset();
         m_memoryStore.reset();
         m_eventLedger.reset();
@@ -722,13 +728,17 @@ void ChatSideEffectQueue::enqueueBarrier(QString sessionId,
 void ChatSideEffectQueue::stop(bool drainAcceptedWork) {
     m_accepting.store(false, std::memory_order_release);
     const auto state = m_state;
-    Worker* const worker = m_worker.data();
-    if (!state || !worker) return;
+    if (!state)
+        return;
     m_stopping = true;
 
-    bool schedulePump = false;
     {
         QMutexLocker lock(&state->mutex);
+        if (state->workerClosed)
+            return;
+        Worker *const worker = m_worker.data();
+        if (!worker)
+            return;
         state->accepting = false;
         state->stopRequested = true;
         state->drainAcceptedWork = drainAcceptedWork;
@@ -741,12 +751,11 @@ void ChatSideEffectQueue::stop(bool drainAcceptedWork) {
         }
         if (!state->pumpScheduled) {
             state->pumpScheduled = true;
-            schedulePump = true;
+            // Shutdown publishes workerClosed under the same mutex before
+            // deletion. Keep the short queued post inside this lifetime fence.
+            QMetaObject::invokeMethod(
+                worker, [worker]() { worker->pump(); }, Qt::QueuedConnection);
         }
-    }
-    if (schedulePump) {
-        QMetaObject::invokeMethod(worker, [worker]() { worker->pump(); },
-                                  Qt::QueuedConnection);
     }
 }
 

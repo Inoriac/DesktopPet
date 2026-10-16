@@ -1,12 +1,14 @@
 #include "task_orchestrator.h"
 #include "agency_decision_service.h"
 
-#include <QDateTime>
 #include <QCryptographicHash>
+#include <QDateTime>
 #include <QJsonDocument>
 #include <QPointer>
-#include <QSet>
 #include <QRegularExpression>
+#include <QSet>
+#include <QThread>
+#include <QThreadPool>
 #include <QUuid>
 #include <algorithm>
 #include <cmath>
@@ -46,7 +48,12 @@ bool TaskOrchestrator::allowedTool(const QString& name) const {
 }
 
 void TaskOrchestrator::accountTime() {
-    if (m_active && m_clock.isValid()) m_task.activeMs += m_clock.restart();
+    if (m_active && m_clock.isValid()) {
+        const auto elapsed = m_clock.restart();
+        const auto remaining =
+            std::numeric_limits<qint64>::max() - m_task.activeMs;
+        m_task.activeMs += qMin(elapsed, remaining);
+    }
 }
 void TaskOrchestrator::setActive(bool active) {
     if (m_active == active) return;
@@ -149,7 +156,7 @@ void TaskOrchestrator::finish(const QString& status, const QString& reason, cons
 }
 
 bool TaskOrchestrator::start(const TaskStartRequest& request) {
-    if (hasUnfinishedTask() || (m_store && m_store->unfinished().has_value())) {
+    if (m_active) {
         emit userMessage(QStringLiteral("还有一项未结束的复杂任务。请先继续或停止当前任务，再开始新任务。")); return false;
     }
     if (request.goal.trimmed().isEmpty() || !m_store || !m_store->isOpen() || !m_dependencies.requestModel) {
@@ -159,6 +166,7 @@ bool TaskOrchestrator::start(const TaskStartRequest& request) {
     m_task.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_task.profileId = request.profileId; m_task.subjectId = request.subjectId;
     m_task.originKind = request.originKind;
+    m_task.context = request.context;
     m_task.goal = request.goal; m_task.personalityVersion = request.personalityVersion;
     m_task.requiredSourceTools = request.requiredSourceTools;
     m_task.personalitySnapshot = request.personalitySnapshot; m_task.relationshipSnapshot = request.relationshipSnapshot;
@@ -177,15 +185,74 @@ bool TaskOrchestrator::start(const TaskStartRequest& request) {
     assess(false);
     return true;
 }
-bool TaskOrchestrator::recover() {
+qint64 TaskOrchestrator::currentActiveMs() {
+    accountTime();
+    return m_task.activeMs;
+}
+void TaskOrchestrator::releaseCurrent() {
+    cancelPending();
+    setActive(false);
+    // A typed lifecycle transition already committed with the worker clock
+    // sample. Reload its revision/state; never save our previous projection.
+    reloadCurrent();
+}
+bool TaskOrchestrator::reloadCurrent() {
+    const auto current = m_store ? m_store->find(m_task.id) : std::nullopt;
+    if (!current)
+        return false;
+    m_task = *current;
+    return true;
+}
+bool TaskOrchestrator::activate(const QString &activityId) {
+    if (m_active || !m_store || !m_dependencies.requestModel)
+        return false;
+    auto saved = m_store->find(activityId);
+    if (!saved)
+        return false;
+    auto row = m_store->activityStore()
+                   ? m_store->activityStore()->find(activityId)
+                   : Result<ActivitySnapshot, DomainError>::failure(domainError(
+                         "STORE_UNAVAILABLE", "Activity backend unavailable"));
+    if (!row || row.value().state != ActivityState::Running)
+        return false;
+    cancelPending();
+    m_task = *saved;
+    setActive(true);
+    if (m_task.accepted) {
+        m_task.needsRevalidation = true;
+        checkpointThenPlan();
+    } else
+        assess(false);
+    return true;
+}
+bool TaskOrchestrator::recover(const QString &activityId) {
     if (m_active || !m_store) return false;
-    auto saved = m_store->unfinished();
+    auto saved = activityId.isEmpty() ? m_store->unfinished()
+                                      : m_store->find(activityId);
     if (!saved) return false;
     cancelPending(); m_task = *saved;
     for (int i = 0; i < m_task.steps.size(); ++i) {
         auto step = m_task.steps.at(i).toObject();
         if (step.value("status").toString() == "dispatched" || step.value("status").toString() == "accepted") {
-            step["status"] = step.value("read_only").toBool() ? "interrupted" : "unknown";
+            if (m_store->activityStore()) {
+                auto call =
+                    m_store->activityStore()->findAction(step["id"].toString());
+                if (!call)
+                    return false;
+                ActionObservation observation;
+                observation.profileId = m_task.profileId;
+                observation.activityId = m_task.id;
+                observation.callId = call.value().callId;
+                observation.dispatchGeneration = call.value().generation;
+                observation.outcome = step["read_only"].toBool()
+                                          ? ActionOutcome::Failed
+                                          : ActionOutcome::Unknown;
+                observation.observedAt = QDateTime::currentDateTimeUtc();
+                if (!m_store->activityStore()->observeAction(observation))
+                    return false;
+            }
+            step["status"] =
+                step.value("read_only").toBool() ? "failed" : "unknown";
             m_task.steps[i] = step;
         }
     }
@@ -193,7 +260,8 @@ bool TaskOrchestrator::recover() {
     m_task.reason = hasUnknownAction()
         ? QStringLiteral("已恢复任务；有动作结果尚不明确，请先核对实际结果，再确认继续。")
         : QStringLiteral("已恢复任务检查点。请确认继续；将重新检查权限、数据时效和剩余预算。");
-    if (!transition("WaitingForUser")) return false;
+    if (!transition("Paused"))
+        return false;
     emit userMessage(m_task.reason); return true;
 }
 bool TaskOrchestrator::hasUnknownAction() const {
@@ -223,6 +291,22 @@ bool TaskOrchestrator::resolveUnknownCall(const QString& id, bool succeeded, con
             step["status"] = succeeded ? "succeeded" : "failed";
             step["output"] = observation; step["externally_resolved"] = true;
             m_task.steps[i] = step;
+            if (m_store->activityStore()) {
+                auto call = m_store->activityStore()->findAction(id);
+                if (!call)
+                    return false;
+                ActionObservation observed;
+                observed.profileId = m_task.profileId;
+                observed.activityId = m_task.id;
+                observed.callId = id;
+                observed.dispatchGeneration = call.value().generation;
+                observed.outcome = succeeded ? ActionOutcome::Succeeded
+                                             : ActionOutcome::Failed;
+                observed.receipt = observation;
+                observed.observedAt = QDateTime::currentDateTimeUtc();
+                if (!m_store->activityStore()->observeAction(observed))
+                    return false;
+            }
             if (!persist()) return false;
             emit taskChanged(m_task.toJson()); return true;
         }
@@ -231,6 +315,12 @@ bool TaskOrchestrator::resolveUnknownCall(const QString& id, bool succeeded, con
 }
 bool TaskOrchestrator::resume(const QString& feedback, const TaskBudgetExtension& extension) {
     if (!hasUnfinishedTask() || m_active) return false;
+    if (m_store && m_store->activityStore()) {
+        auto saved = m_store->find(m_task.id);
+        if (!saved)
+            return false;
+        m_task = *saved;
+    }
     if (hasUnknownAction()) { emit userMessage(QStringLiteral("请先核对结果不明的动作；为避免重复执行，当前无法继续。")); return false; }
     if (extension.toolCalls < 0 || extension.replans < 0 || extension.activeMs < 0
         || extension.toolCalls > std::numeric_limits<int>::max() - m_task.budget.maxToolCalls
@@ -252,6 +342,22 @@ bool TaskOrchestrator::resume(const QString& feedback, const TaskBudgetExtension
         persist(); emit userMessage(m_task.reason); return false;
     }
     if (!persist()) return false;
+    if (m_store->activityStore()) {
+        ResumeActivityRequest r;
+        r.profileId = m_task.profileId;
+        r.activityId = m_task.id;
+        r.expectedRevision = m_task.activityRevision;
+        r.resumeActor = ResumeActor::User;
+        auto resumed = m_store->activityStore()->resumeActivity(r);
+        if (!resumed) {
+            emit userMessage(resumed.error().message);
+            return false;
+        }
+        if (!reloadCurrent()) {
+            emit userMessage(m_store->lastError());
+            return false;
+        }
+    }
     setActive(true);
     if (m_task.accepted) {
         // Revalidate from preserved observations. Never replay a stored dispatch.
@@ -291,6 +397,9 @@ QJsonObject TaskOrchestrator::modelContext() const {
 void TaskOrchestrator::callModel(TaskModelRequest request, std::function<void(TaskModelReply)> callback) {
     if (!checkTimeBudget()) return;
     if (!m_dependencies.requestModel) { pause(QStringLiteral("任务模型暂时不可用，进度已保存。")); return; }
+    request.activityId = m_task.id;
+    request.generation = m_task.activityGeneration;
+    request.scope = m_task.context;
     request.requestId = m_task.id + ":model:" + QString::number(++m_requestSequence);
     request.timeoutMs = int(std::min<qint64>(m_task.budget.modelTimeoutMs, m_task.budget.maxActiveMs - m_task.activeMs));
     m_pendingId = request.requestId; m_pendingTool = false;
@@ -391,6 +500,38 @@ void TaskOrchestrator::plan(bool replanning, int attempt) {
 }
 
 void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
+    if (!m_dependencies.prepareTool) {
+        dispatchValidatedTool(tool, readOnlyTool(tool["name"].toString(),
+                                                 tool["arguments"].toObject()));
+        return;
+    }
+    TaskToolCall proposed;
+    proposed.name = tool["name"].toString();
+    proposed.arguments = tool["arguments"].toObject();
+    proposed.activityId = m_task.id;
+    proposed.context = m_task.context;
+    proposed.goal = m_task.goal;
+    proposed.generation = m_task.activityGeneration;
+    QPointer<TaskOrchestrator> self(this);
+    const auto generation = m_generation;
+    m_dependencies.prepareTool(
+        proposed, [self, generation, tool](TaskToolPermission permission) {
+            if (self)
+                QMetaObject::invokeMethod(
+                    self, [self, generation, tool, permission] {
+                        if (!self || !self->m_active ||
+                            self->m_generation != generation)
+                            return;
+                        if (!permission.allowed) {
+                            self->pause("Tool permission is unavailable");
+                            return;
+                        }
+                        self->dispatchValidatedTool(tool, permission.readOnly);
+                    });
+        });
+}
+void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
+                                             bool readOnly) {
     if (!checkTimeBudget()) return;
     const QString name = tool.value("name").toString();
     const auto args = tool.value("arguments").toObject();
@@ -398,7 +539,6 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
         || !m_dependencies.toolAllowed(name, args)) {
         pause(QStringLiteral("当前工具能力或权限不允许执行 %1，任务进度已保存。").arg(name)); return;
     }
-    const bool readOnly = readOnlyTool(name,args);
     const QString key = signature(name, args);
     // Persisted semantic dedup supplements stable dispatch IDs, including across process restarts.
     if (!readOnly) for (const auto& value : m_task.steps) {
@@ -420,7 +560,12 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
     call.id = m_task.id + ":tool:" + QString::number(m_task.toolCalls + 1);
     call.name = name; call.arguments = args; call.readOnly = readOnly;
     call.timeoutMs = int(std::min<qint64>(m_task.budget.toolTimeoutMs, m_task.budget.maxActiveMs - m_task.activeMs));
-    ++m_task.toolCalls;
+    call.activityId = m_task.id;
+    call.generation = m_task.activityGeneration;
+    call.context = m_task.context;
+    call.goal = m_task.goal;
+    if (!m_store->activityStore())
+        ++m_task.toolCalls;
     m_task.steps.append(QJsonObject{{"id", call.id}, {"name", name}, {"arguments", args},
         {"read_only", readOnly}, {"signature", key}, {"status", "dispatched"}, {"at", now()}});
     // Count and intent are durable before invoking the external tool.
@@ -438,33 +583,149 @@ void TaskOrchestrator::dispatchTool(const QJsonObject& tool) {
         if (persist()) emit taskChanged(m_task.toJson());
         return;
     }
+    if (m_store->activityStore()) {
+        ActionPreparation preparation;
+        preparation.profileId = m_task.profileId;
+        preparation.activityId = m_task.id;
+        preparation.expectedRevision = m_task.activityRevision;
+        preparation.generation = m_task.activityGeneration;
+        preparation.logicalStepId = call.id;
+        preparation.arguments = args;
+        preparation.readOnly = readOnly;
+        preparation.capabilityRef =
+            name == "invoke_capability"
+                ? CapabilityRef::fromJson(args["ref"].toObject())
+                : CapabilityRef{"builtin", name, "1", "invoke"};
+        auto prepared = m_store->activityStore()->prepareAction(preparation);
+        if (!prepared) {
+            pause(prepared.error().message);
+            return;
+        }
+        if (prepared.value().status != "prepared") {
+            pause("Action already exists; inspect its archived result before "
+                  "continuing");
+            return;
+        }
+        auto dispatched = m_store->activityStore()->markActionDispatched(
+            {m_task.profileId, m_task.id, prepared.value().callId,
+             m_task.activityRevision, m_task.activityGeneration});
+        if (!dispatched) {
+            pause(dispatched.error().message);
+            return;
+        }
+        const auto projected = m_store->find(m_task.id);
+        if (!projected) {
+            pause(m_store->lastError());
+            return;
+        }
+        m_task.toolCalls = projected->toolCalls;
+    }
     const QString id = call.id; const quint64 generation = m_generation;
     m_pendingId = id; m_pendingTool = true;
     QPointer<TaskOrchestrator> self(this);
-    auto completed = [self, id, generation](TaskToolReply reply) {
-        if (!self) return;
-        QMetaObject::invokeMethod(self, [self, id, generation, reply] {
-            if (!self || self->m_generation != generation || self->m_pendingId != id || !self->m_active) return;
-            self->m_deadline.stop(); self->m_deadline.disconnect(self); self->m_pendingId.clear(); self->m_pendingTool = false;
-            for (int i = 0; i < self->m_task.steps.size(); ++i) {
-                auto step = self->m_task.steps.at(i).toObject();
-                if (step.value("id").toString() != id) continue;
-                step["business_evidence"] = reply.businessEvidence && reply.stage=="completed";
-                step["stage"] = reply.stage;
-                step["status"] = reply.success ? (reply.stage=="accepted"?"accepted":"succeeded") :
-                    (step.value("read_only").toBool() || reply.outcomeKnown ? "failed" : "unknown");
-                step["output"] = reply.output; step["error"] = reply.error;
-                self->m_task.steps[i] = step;
+    const auto archive =
+        m_store->activityStore()
+            ? std::make_shared<ActivityStore>(*m_store->activityStore())
+            : nullptr;
+    const auto originalTask = m_task;
+    QThread *const runnerThread = thread();
+    auto completed = [self, id, generation, archive, originalTask, readOnly,
+                      runnerThread](TaskToolReply reply) {
+        auto deliver = [self, id, generation, reply, archive, originalTask,
+                        readOnly]() {
+            if (archive) {
+                ActionObservation observed;
+                observed.profileId = originalTask.profileId;
+                observed.activityId = originalTask.id;
+                observed.callId = id;
+                observed.dispatchGeneration = originalTask.activityGeneration;
+                observed.observedAt = QDateTime::currentDateTimeUtc();
+                observed.outcome =
+                    reply.success
+                        ? (reply.stage == "accepted" ? ActionOutcome::Accepted
+                                                     : ActionOutcome::Succeeded)
+                        : (readOnly || reply.outcomeKnown
+                               ? ActionOutcome::Failed
+                               : ActionOutcome::Unknown);
+                observed.receipt = reply.output;
+                observed.receipt["business_evidence"] = reply.businessEvidence;
+                auto saved = archive->observeAction(observed);
+                if (!saved) {
+                    if (self)
+                        QMetaObject::invokeMethod(
+                            self,
+                            [self, id, generation, error = saved.error()] {
+                                if (self && self->m_generation == generation &&
+                                    self->m_pendingId == id && self->m_active)
+                                    self->pause(error.message);
+                            });
+                    return;
+                }
             }
-            self->m_task.consecutiveFailures = reply.success ? 0 : self->m_task.consecutiveFailures + 1;
-            if (!self->transition("Observing")) return;
-            if (reply.stage=="accepted") { self->suspend("WaitingForUser",QStringLiteral("操作已受理，须取得后续完成回执才能继续验证。")); return; }
-            if (self->hasUnknownAction()) {
-                self->suspend("WaitingForUser", QStringLiteral("动作未返回明确结果，请先核对实际执行情况，避免重复执行。"));
+            if (!self)
                 return;
-            }
-            if (self->checkTimeBudget()) self->afterObservation();
-        }, Qt::QueuedConnection);
+            QMetaObject::invokeMethod(
+                self,
+                [self, id, generation, reply] {
+                    if (!self || self->m_generation != generation ||
+                        self->m_pendingId != id || !self->m_active)
+                        return;
+                    self->m_deadline.stop();
+                    self->m_deadline.disconnect(self);
+                    self->m_pendingId.clear();
+                    self->m_pendingTool = false;
+                    for (int i = 0; i < self->m_task.steps.size(); ++i) {
+                        auto step = self->m_task.steps.at(i).toObject();
+                        if (step.value("id").toString() != id)
+                            continue;
+                        step["business_evidence"] = reply.businessEvidence &&
+                                                    reply.stage == "completed";
+                        step["stage"] = reply.stage;
+                        step["status"] =
+                            reply.success
+                                ? (reply.stage == "accepted" ? "accepted"
+                                                             : "succeeded")
+                                : (step.value("read_only").toBool() ||
+                                           reply.outcomeKnown
+                                       ? "failed"
+                                       : "unknown");
+                        step["output"] = reply.output;
+                        step["error"] = reply.error;
+                        self->m_task.steps[i] = step;
+                    }
+                    self->m_task.consecutiveFailures =
+                        reply.success ? 0
+                                      : self->m_task.consecutiveFailures + 1;
+                    if (!self->transition("Observing"))
+                        return;
+                    if (reply.stage == "accepted") {
+                        self->suspend("WaitingForUser",
+                                      QStringLiteral("操作已受理，须取得后续完"
+                                                     "成回执才能继续验证。"));
+                        return;
+                    }
+                    if (self->hasUnknownAction()) {
+                        self->suspend(
+                            "WaitingForUser",
+                            QStringLiteral("动作未返回明确结果，请先核对实际执"
+                                           "行情况，避免重复执行。"));
+                        return;
+                    }
+                    if (self->checkTimeBudget())
+                        self->afterObservation();
+                },
+                Qt::QueuedConnection);
+        };
+        if (QThread::currentThread() == runnerThread)
+            deliver();
+        else {
+            static QThreadPool *receipts = [] {
+                auto *pool = new QThreadPool;
+                pool->setMaxThreadCount(1);
+                return pool;
+            }();
+            receipts->start(std::move(deliver));
+        }
     };
     m_deadline.disconnect(this);
     connect(&m_deadline, &QTimer::timeout, this, [this, readOnly] {

@@ -69,6 +69,54 @@ CapabilityCall makeCall(const LoadedCapability& loaded) {
 class PluginRuntimeTests : public QObject {
     Q_OBJECT
 private slots:
+  void
+  activityValidatorUsesCurrentGrantsVersionAndRetirementWithoutQObjectAccess() {
+      QTemporaryDir dir;
+      const auto root = dir.filePath("package");
+      makeTool(root);
+      auto runtime =
+          std::make_unique<PluginRuntime>("pet", dir.filePath("plugins.json"));
+      auto config = hostConfig(root);
+      QVERIFY(runtime->setHostConfiguration(config));
+      const auto validator = runtime->makeCapabilityValidator();
+      const CapabilityRef ref{"example.plugin", "example.tool", "1", "probe"};
+      const auto local = ContextSpec::localOwner("pet");
+      QVERIFY(validator({ref}, local));
+      auto stale = ref;
+      stale.entryVersion = "old";
+      auto result = validator({stale}, local);
+      QVERIFY(!result);
+      QCOMPARE(result.error().code, "STALE_REVISION");
+      QVERIFY(runtime->setPluginEnabled(
+          {ref.pluginId, false, runtime->catalogRevision()}));
+      result = validator({ref}, local);
+      QVERIFY(!result);
+      QCOMPARE(result.error().code, "PLUGIN_DISABLED");
+      QVERIFY(runtime->setPluginEnabled(
+          {ref.pluginId, true, runtime->catalogRevision()}));
+      auto restricted = local;
+      restricted.originKind = OriginKind::Internal;
+      result = validator({ref}, restricted);
+      QVERIFY(!result);
+      QCOMPARE(result.error().code, "PERMISSION_DENIED");
+      restricted.originKind = OriginKind::External;
+      restricted.conversationId = "room";
+      auto permission = config["grants"].toArray()[0].toObject();
+      permission["conversationId"] = restricted.conversationId;
+      config["grants"] = QJsonArray{permission};
+      QVERIFY(runtime->setHostConfiguration(config));
+      QVERIFY(validator({ref}, restricted));
+      permission["executor"] = "different-executable";
+      config["grants"] = QJsonArray{permission};
+      QVERIFY(runtime->setHostConfiguration(config));
+      result = validator({ref}, restricted);
+      QVERIFY(!result);
+      QCOMPARE(result.error().code, "PERMISSION_DENIED");
+      runtime.reset();
+      result = validator({ref}, local);
+      QVERIFY(!result);
+      QCOMPARE(result.error().code, "CANCELLED");
+  }
     void hostConfiguration_duplicateIdentitiesAndDisabledUpgrade_areAtomic() {
         QTemporaryDir dir; const auto root=dir.filePath("package"); makeTool(root);
         PluginRuntime runtime("pet",dir.filePath("plugins.json")); const auto config=hostConfig(root);

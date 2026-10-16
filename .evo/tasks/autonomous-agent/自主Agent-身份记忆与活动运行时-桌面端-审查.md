@@ -186,3 +186,67 @@
 代码审查通过，已确认修复项均闭合，Wave 4 五项校验通过。完整应用及全部测试目标构建成功，最终 CTest **51/51 组通过**（64.02 秒），Python 契约 **70/70 通过**，git diff --check 通过。日志 /tmp/task4-final-full-build.log、/tmp/task4-final-full-ctest.log、/tmp/task4-final-contract.log。最后一轮增加的禁用升级测试按目录契约检查 readiness=disabled 与拒绝加载，不要求隐藏条目；新增学习技能测试覆盖本地主人、external、internal 和另一 profile。
 
 消息发送使用真实 command/受控 MCP 与会话存储的组合验证，生命周期测试不触碰真实账号。本阶段不声明真实 QQ 接通，后续活动状态与自主选择按 §3.6—§3.9 实施。
+
+
+## §3.6 活动执行、挂起、恢复与经历
+
+### 审查基线
+
+- 基线提交 87b8651，完整构建及 51/51 CTest 通过；本阶段从干净工作树开始。
+- 现有 TaskOrchestrator 两项真实 RED：暂停任务后仍拒绝另一个活动；runner 销毁后迟到工具结果仍停留 unknown。日志 /tmp/task5-existing-red.log。
+- 主设计 v1.5 已补齐 runtime SQLite 3、ActivityStore/后台 ActivityRuntime、兼容任务投影、动作账本与回执归档、恢复依据和经历 outbox 接管。8 个切片各 7 节及两库 4 段 SQL 的迁移/重复执行/空库撤销已通过。
+
+### 核对重点
+
+- 一个前台与多个挂起集合，状态、预算、动作结果只有一份权威；旧 TaskStore/old outbox 不在 v3 继续写。
+- 实际结果先归档原 activity/profile，再考虑是否推进；取消或销毁不丢真实回执，也不触发新步骤。
+- 等待消息的锚点必须是同会话已归档的真实发出消息，不能用任意字符串或无归档的 receipt 自证；恢复读取已提交事件和当前上下文。
+- 生产 runner/store/timer 属后台串行 worker，GUI 只读快照/发命令，模型/工具 DTO 显式带原活动身份。
+- 空查询有真实证据即可结束且不写长期经历；模型失败不冒充检查完成。
+
+### 覆盖映射
+
+以下为已加入代码的验收入口；最终通过结果以本阶段最终构建和 CTest 日志为准。
+
+| 契约 | 实际测试 |
+| --- | --- |
+| 连续多步占前台、Ready 不抢占、过期 revision 拒绝 | ActivityRuntimeTests：startActivity_multistepRead_holdsForegroundAcrossSteps |
+| 真实发出消息锚点、等待释放前台 | transitionActivity_sentReceiptWaiting_releasesForeground |
+| 匹配回复恢复聊天、保存并恢复阅读检查点 | resumeActivity_matchingReply_resumesChatThenReadingCheckpoint |
+| 重启后未知动作只结算一次、同一成功写动作不重发 | observeAction_verifiedLateReceipt_settlesOnceWithoutResend |
+| 用户/重启暂停的恢复权限、累计预算与 schema 3 | resumeActivity_restart_keepsBudgetsAndRequiresValidResumeAuthority |
+| 有证据的空查询结束、不把模型失败当作完成 | transitionActivity_emptyCheckCompleted_modelFailureNotCompleted |
+| 错 profile/generation、损坏预算、派发存储失败 | actionPreparation_rejectsWrongIdentityBudgetAndGeneration、invalidBudgetAndFailedDispatch_neverInventBudgetOrExecute |
+| 旧任务重复签名/预算/调用 ID、重复迁移、旧写连接拒绝 | migration_preservesRepeatedCallsAndBlocksBothLegacyWriteModes |
+| 原经历 ID、只读旧 outbox 与消费标记 | migration_experienceUsesOriginalSourceAndReadOnlyLegacyOutbox |
+| 终态与 outbox 同事务、失败不发布新版本 | terminalOutboxFailure_rollsBackStateAndCallerRevision |
+| worker 实际驱动活动、SQLite 写锁期间 GUI 响应 | asyncRuntime_drivesSelectedActivityAndKeepsGuiResponsive |
+| 明确无副作用失败允许新步骤、unknown/succeeded 禁止重发 | knownFailedWriteCanRetryButUnknownOrSuccessCannot |
+| accepted 跟踪完成事件与恢复规则 | acceptedTrackedActionWaitsAndResumesOnlyAfterVerifiedCompletion |
+| 原执行器多任务兼容、销毁后实际回执归原库 | TaskOrchestratorTests：pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint、lateToolReceiptArchivesAfterRunnerDestroyed |
+| 外部经历保留人物/会话/audience | TaskExperienceTests：externalExperience_preservesPeopleConversationAndAudience |
+| 更换 runtime 后旧模型队列不得新发 | ModuleConnectivityTests：queuedTaskModelDoesNotCrossRuntimeReplacement |
+| 插件实际 data 空查询、非空数据不能由空 receipt 伪装 | ActivityRuntimeTests：transitionActivity_emptyCheckCompleted_modelFailureNotCompleted、emptyCheckRejectsNonemptyCapabilityDataEvenWithEmptyReceipt |
+| 非空能力引用的启动/恢复与 live 授权/版本/退役校验 | ActivityRuntimeTests：runtimeUsesLiveCapabilityValidatorOnStartAndResume；PluginRuntimeTests：activityValidatorUsesCurrentGrantsVersionAndRetirementWithoutQObjectAccess |
+| 非前台活动不覆盖 GUI 快照、转换/切换保留最后一段累计耗时 | ActivityRuntimeTests：typedTransitionPreservesForegroundSnapshotAndElapsedBudget |
+| 本地会话存储失败同样不得使用旧 ContextSpec 回退 | ActivityRuntimeTests：resumePropagatesContextStorageErrorsInsteadOfUsingOwnerFallback |
+
+### 审查修复记录
+
+- callId 按活动命名空间隔离；旧重复查询/重试签名保留各自原调用，迁移后的未知/成功写动作仍受等价签名保护。
+- 旧 TaskStore 拒绝 schema 3 时清理连接，每次旧写事务复核版本，防止早已打开的连接越过升级门禁。
+- 动作账本投影与预算读取传播错误，不把缺失字段、SQL 失败或部分列表当作空结果；仅在提交后发布 revision/generation。
+- 使用真实 ConversationStore 发送归档构造等待锚点；恢复通过只读 currentContext 刷新完整范围，再在事务内复查会话/身份版本。
+- AIBrain 通过不可变请求与后台执行器通信；宿主工具准入异步返回真实效果分类，完成回执先独立保存，再检查前台实例是否仍有效。
+- 外部经历归属测试取得实际 owner_only 错误后修复；终态 ready 事件与原任务经历源 ID 分开，旧 outbox 由新消费标记接管。
+- 保留旧主动聊天模式和节奏含义；新旧循环切换属于 §3.7 的明确自主开关，不能以 ActivityRuntime 对象存在代替启用状态。
+- 主设计 §5.3 原句混合了旧写入口与主动循环切换时机，已明确两者：schema 3 关闭旧写，autonomyEnabled 显式启用后才切换通用自主机会；与 §3.7 保持一致。
+- 三组定向复核与插件真实数据形状测试通过后，全量回归发现 StreamingDialogueTests 在 ChatSideEffectQueue::stop 的退出竞态触发 SIGSEGV。QPointer 检查后 raw worker 仍可能在 invokeMethod 前被销毁；最小修复用共享 mutex 下的关闭标志与排队投递保护生命周期，保留原持久化语义。崩溃证据与最终修复验证纳入本阶段报告。
+
+最后一批回归包括 TaskOrchestratorTests::resumeRefreshesGroupParticipantsInRunnerAndModelScope、lateReceiptStorageFailureDoesNotPauseReplacementActivity，ActivityRuntimeTests::completionRejectsEveryUnsettledActionInTypedAndCompatibilityPaths，TaskExperienceTests::subjectlessActivityRetainsVerifiedParticipantsAsParticipants 和 ChatSideEffectQueueTests::stopRepeatedlyDuringWorkerClose_isSafe。分别验证实际模型范围、迟到错误隔离、全部未结算状态、memory_people 的 Participant 行与关闭窗口；均有真实失败记录或全量崩溃证据，修复后通过。
+
+### §3.6 最终结论
+
+代码审查通过，已确认问题全部闭合，Wave 5 五项校验通过。最终完整应用与所有测试目标构建成功；CTest **52/52 通过**（69.25 秒），Python 契约 **70/70 通过**，git diff --check 干净。最终日志 /tmp/task5-handoff-build.log、/tmp/task5-handoff-ctest.log、/tmp/task5-final-contract.log；主设计结构、链接和 SQL 演练记录 /tmp/task5-doc-checks.log。
+
+Task 6—8 尚未实施，内部无会话自主 grant 按 context.md 的 §3.8 pending 项处理。当前均为临时数据库和测试后端验证，不声明真实 QQ 可用。

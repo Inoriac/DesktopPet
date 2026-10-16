@@ -157,6 +157,7 @@ private slots:
     void fragmentSynchronousCompletionAndDeletionDuringRequest();
     void ordinaryChatBypassesAgencyAndComplexTaskVerifies();
     void taskStopRejectsLateAgencyAndReleasesChat();
+    void queuedTaskModelDoesNotCrossRuntimeReplacement();
     void taskCannotDispatchAfterReentrantPause();
     void shutdownAndToolRegistrationPreserveRecoveredTask();
     void disabledAiCancelsAndDoesNotRestartTaskReflection();
@@ -680,21 +681,28 @@ void TestModuleConnectivity::ordinaryChatBypassesAgencyAndComplexTaskVerifies() 
     QVERIFY(memories.size() <= 4000);
 }
 
+void TestModuleConnectivity::queuedTaskModelDoesNotCrossRuntimeReplacement() {
+    Runtime runtime;QVERIFY(runtime.ready);runtime.client.deferred=true;
+    runtime.brain.triggerThink("/task summarize supplied material","user_request");
+    runtime.brain.shutdownTaskRuntime();runtime.brain.initializeTaskRuntime();
+    QTest::qWait(100);QVERIFY(runtime.client.systemPrompts.isEmpty());QVERIFY(!runtime.client.pending);
+}
+
 void TestModuleConnectivity::taskStopRejectsLateAgencyAndReleasesChat() {
     Runtime runtime; QVERIFY(runtime.ready);
     runtime.client.deferred = true;
     runtime.brain.triggerThink(QStringLiteral("/task 请梳理我提供的文字"), "user_request");
     QVERIFY(runtime.brain.isTaskActive());
-    QVERIFY(bool(runtime.client.pending));
+    QTRY_VERIFY(bool(runtime.client.pending));
     auto late = std::move(runtime.client.pending);
     runtime.brain.stopCurrentResponse();
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
     QVERIFY(!runtime.brain.isBusy());
     LlmResponse response;
     response.content = R"({"decision":"accept","reason":"ready","message":"continue"})";
     late(true, response, {});
     QCoreApplication::processEvents();
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Cancelled"));
     QCOMPARE(runtime.client.systemPrompts.size(), 1);
 }
 
@@ -730,24 +738,25 @@ void TestModuleConnectivity::shutdownAndToolRegistrationPreserveRecoveredTask() 
     Runtime runtime; QVERIFY(runtime.ready);
     runtime.client.deferred = true;
     runtime.brain.triggerThink(QStringLiteral("/task 请梳理我提供的文字"), "user_request");
+    QTRY_VERIFY(!runtime.brain.taskSnapshot().isEmpty());
     const auto started = runtime.brain.taskSnapshot();
     QVERIFY(runtime.brain.isTaskActive());
     runtime.brain.stop(); // Window close uses shutdown semantics, not user cancellation.
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
     QVERIFY(!runtime.brain.isBusy());
     const auto paused = runtime.brain.taskSnapshot();
     runtime.brain.shutdownTaskRuntime();
     runtime.brain.initializeTaskRuntime();
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
     QCOMPARE(runtime.brain.taskSnapshot().value("id"), started.value("id"));
     QCOMPARE(runtime.brain.taskSnapshot().value("personality_snapshot"), started.value("personality_snapshot"));
     QCOMPARE(runtime.brain.taskSnapshot().value("active_ms"), paused.value("active_ms"));
     ToolRegistry registry;
     registry.registerTool(std::make_unique<BubbleTool>());
     runtime.brain.setToolRegistry(&registry); // Production attaches tools after bootstrap.
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
     runtime.brain.setToolRegistry(nullptr);
-    QCOMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("WaitingForUser"));
+    QTRY_COMPARE(runtime.brain.taskSnapshot().value("status").toString(), QString("Paused"));
 }
 
 void TestModuleConnectivity::disabledAiCancelsAndDoesNotRestartTaskReflection() {

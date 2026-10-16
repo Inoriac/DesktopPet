@@ -533,3 +533,8 @@ Result<int, DomainError> ConversationStore::recoverOutbox() {
     if(!q.exec() || !q.next())return Result<int,DomainError>::failure(storeError(q.lastError().text()));
     return Result<int,DomainError>::success(q.value(0).toInt());
 }
+
+Result<ContextSpec,DomainError> ConversationStore::currentContext(const QString& id) const {
+    auto begun=SqliteRuntimeUnitOfWork::begin(m_databasePath);if(!begun)return Result<ContextSpec,DomainError>::failure(begun.error());
+    auto database=QSqlDatabase::database(begun.value()->connectionName());return readContext(database,m_profileId,id);
+}

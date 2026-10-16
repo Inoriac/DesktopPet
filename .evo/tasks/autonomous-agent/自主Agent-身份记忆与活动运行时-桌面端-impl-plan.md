@@ -179,11 +179,11 @@ Wave 4 五项校验通过。下一设计项为 Task 5；当前验证没有连接
 ## Task 5: 活动执行、挂起、恢复与经历
 
 - 关联设计: §3.6 活动执行、挂起、恢复与经历
-- 状态: [ ]
+- 状态: [x]
 - Wave: 5
 - 依赖: Task 3、Task 4
 
-文件：新增 `core/ai/activity/`、`core/ai/task/`、`core/ai/runtime/`、runtime schema；`tests/test_task_orchestrator.cpp`、`tests/test_task_experience.cpp`、新增 `tests/test_activity_runtime.cpp`；`CMakeLists.txt`。
+文件：新增 `core/ai/activity/` 下类型、存储、运行时与串行 worker；修改 `core/ai/task/{task_store,task_types,task_orchestrator,task_experience_adapter}.*`，按实际接口调整 `agency_decision_service.*`；`core/ai/ai_brain.h/.cpp`、`ai_brain_tasks.cpp` 及必要活动接入文件；`core/ai/runtime/agent_runtime_services.*`、事件仓库/校验器/事件与 outbox 接口、`core/ai/reflection/sleep_session_repository.cpp`；如 DTO/派发绑定需要，调整 `core/ai/tools/runtime/` 与 `core/ai/plugin/`。测试：`tests/test_task_orchestrator.cpp`、`tests/test_task_experience.cpp`、新增 `tests/test_activity_runtime.cpp`；生产和版本回归在现有 streaming_dialogue、event_ledger、agent_runtime_services、sleep_cycle 等对应套件，根 `CMakeLists.txt` 注册。父级维护主设计/过程文档，单实现 agent 独占 build。
 
 测试用例：
 - startActivity_multistepRead_holdsForegroundAcrossSteps（happy path）。
@@ -192,6 +192,25 @@ Wave 4 五项校验通过。下一设计项为 Task 5；当前验证没有连接
 - observeAction_verifiedLateReceipt_settlesOnceWithoutResend（happy path）。
 - resumeActivity_restart_keepsBudgetsAndRequiresValidResumeAuthority。
 - transitionActivity_emptyCheckCompleted_modelFailureNotCompleted。
+- prepareAction_sameLogicalWriteStep_returnsOriginalCallAndRejectsStaleOrOverBudget（happy path 与异常）。
+- markActionDispatched_storeFailure_doesNotInvokeExecutor。
+- migration_runtimeV2ToV3_preservesTaskBudgetUnknownActionsAndRejectsLegacyWrites（happy path，重复迁移）。
+- experience_emptyCheckSkipped_meaningfulExternalFactPreservesContextAndConsumesOnce（happy path，失败重试）。
+- activityRuntime_slowStorageAndTool_keepsGuiResponsive。
+- pausedActivityAllowsAnotherAndKeepsOriginalCheckpoint；lateToolReceiptArchivesAfterRunnerDestroyed（原生产执行器回归）。
+
+具体工程契约以主设计 v1.5 §3.6 为准；旧同步 runner 在后台 owner 线程使用，AIBrain 使用已发布快照与异步命令。
+
+必要集成补充：ConversationStore::currentContext 供恢复刷新范围；PluginRuntime 的共享状态 validator 及 `tests/test_plugin_runtime.cpp` 验证动态授权。全量回归定位的 `ChatSideEffectQueue::stop` 退出竞态纳入最小修复，必要变更位于 `core/ai/chat/chat_side_effect_queue.cpp` 及其既有测试套件。保留旧主动聊天行为，§3.7 使用明确自主开关切换。
+
+Wave 5 校验（2026-10-16）：
+- 文件冲突：通过，单实现 agent 串行负责源码和 build，父级维护设计与审查；最终源码/build 所有权已交回，无并发修改。
+- 构建/全量测试：完整应用及所有测试目标成功，最终 CTest **52/52 通过**，69.25 秒；Python 工具契约 **70/70 通过**。日志 /tmp/task5-handoff-build.log、/tmp/task5-handoff-ctest.log、/tmp/task5-final-contract.log。
+- 行为覆盖：全部计划行为映射到实际测试，见审查记录；补充实际插件数据、双活动切换、旧写门禁、完整参与人、真实恢复范围、迟到错误和退出竞态，均通过。未以删减断言取得通过。
+- 测试布局：通过，新增 tests/test_activity_runtime.cpp，由根 CMakeLists.txt 注册；其他回归放既有对应套件。
+- 实现锚点与留痕：通过，活动 Store/worker、兼容 runner、生产 AIBrain、共享状态能力校验、会话当前上下文和经历消费者均核对；context.md 已留痕。8 切片各 7 节、8 Task、本地链接与两库 SQL 演练通过，git diff --check 干净。
+
+Wave 5 五项校验通过。下一设计项为 Task 6；本阶段验证使用测试后端，不代表真实 QQ 已接通。
 
 ## Task 6: 空闲判定与自主机会调度
 

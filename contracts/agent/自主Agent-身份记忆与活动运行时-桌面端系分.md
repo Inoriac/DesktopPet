@@ -13,6 +13,7 @@
 | 1.2 | 2026-10-16 | §3.3 开发核对：来源提交验证、过渡期本地上下文、写入归属与分批迁移边界 |
 | 1.3 | 2026-10-16 | §3.4 开发核对：会话库唯一权威、异步生产入口、宿主连接绑定与持久发送回执、原始消息消费去重与历史导入边界 |
 | 1.4 | 2026-10-16 | §3.5 开发核对：标准 Schema 验证、宿主配置与授权、结果映射、工具元数据和生产异步调用入口 |
+| 1.5 | 2026-10-16 | §3.6 开发核对：runtime schema 3、后台活动执行、旧任务投影、动作回执、恢复依据与经历消费接管 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -162,14 +163,14 @@ sequenceDiagram
 | 🆕 | core/ai/plugin/*、core/ai/ai_brain_plugins.cpp | Plugin / Skill 清单、发现目录、按需加载、宿主授权和主体调用绑定 |
 | 🔧 | [tool_registry](../../core/ai/tool_registry.h)、[tool_runtime](../../core/ai/tools/runtime/tool_runtime.h)、[mcp_client](../../core/ai/mcp/mcp_client.h) | 动态工具、异步执行、完整 MCP 调用和生命周期 |
 | 🆕 / 🔧 | core/ai/ai_tool.h、core/ai/tools/runtime/tool_policy.*、ui/petwindow_ai.cpp、third_party/jsoncons、contracts/tools/* | 内置工具宿主元数据与工厂注册、离线标准 Schema 验证、Plugin / Skill 清单及配置示例 |
-| 🆕 | core/ai/activity/* | ActivityStore、ActivityCoordinator、OpportunityScheduler、ActivitySelector |
+| 🆕 | core/ai/activity/* | ActivityStore、ActivityRuntime/串行执行 worker、OpportunityScheduler、ActivitySelector |
 | 🔧 | [task_orchestrator](../../core/ai/task/task_orchestrator.cpp)、[task_store](../../core/ai/task/task_store.cpp)、[agency_decision_service](../../core/ai/task/agency_decision_service.cpp) | 复用执行检查点，支持挂起集合，移除按工具名字固定的准入分支 |
 | 🔧 | [ai_brain](../../core/ai/ai_brain.h)、[ai_brain_loop](../../core/ai/ai_brain_loop.cpp) | 单一协调入口、从专用主动聊天触发过渡到通用选择 |
 | 🔧 | [event schema](../../core/ai/event/event_schema_registry.h)、[runtime growth](../../core/ai/runtime/agent_runtime_growth.cpp)、[反思类型](../../core/ai/reflection/reflection_types.h) | 带人物与上下文的来源、运行记录与长期经历分流 |
 | 🔧 | [runtime personality](../../core/ai/runtime/agent_runtime_personality.cpp)、[personality consolidation](../../core/ai/reflection/personality_consolidation_stage.cpp)、[runtime services](../../core/ai/runtime/agent_runtime_services.cpp) | MessageObserved 原始证据、聚合处理日志的多来源回溯、历史导入排除及本地主人人格范围 |
 | 🔧 | launcher、配置与测试 | 当前活动、暂停/恢复、等待原因、身份对应和插件状态；按切片补回归 |
 
-现有关系表按 profile_id + subject_id + version 保存版本，可复用。现有记忆去重主要按 type + summary，偏好冲突解析默认 subject=user，须在多人输入前修正。现有聊天 history 缺稳定 conversationId；ActiveMemoryPool 只有一组 topic 状态。TaskStore 的 `complex_tasks_single_unfinished` 唯一索引与单任务接口不能直接承载挂起集合。MCP 适配器目前返回 `mcp_tool_execution_not_implemented`，现有契约检查通过不证明其能执行。
+实施前基线：关系表按 profile_id + subject_id + version 保存版本，可复用。现有记忆去重主要按 type + summary，偏好冲突解析默认 subject=user，须在多人输入前修正。现有聊天 history 缺稳定 conversationId；ActiveMemoryPool 只有一组 topic 状态。TaskStore 的 `complex_tasks_single_unfinished` 唯一索引与单任务接口不能直接承载挂起集合。MCP 适配器目前返回 `mcp_tool_execution_not_implemented`，现有契约检查通过不证明其能执行。
 
 ## 3. 详细设计
 
@@ -389,6 +390,7 @@ memory 库 user_version 从 1 增至 2；0/1 库增量升级，未知高版本�
 ```cpp
 Result<AcceptedMessage, DomainError> acceptMessage(const IncomingMessage& message);
 Result<PreparedContext, DomainError> prepareContext(const ContextRequestV2& request);
+Result<ContextSpec, DomainError> currentContext(const QString& conversationId) const;
 Result<void, DomainError> publishResponse(const RoutedResponse& response);
 Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 ```
@@ -416,6 +418,7 @@ Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 现有生产入口与异步接入：
 
 - ConversationStore 按 profileId/runtimeDatabasePath 工作，仅持有可跨线程复制的路径和配置；每次存储操作使用当前线程独立连接与原有单库事务。ConversationService 作为 QObject 单 worker 异步 facade，提供 acceptMessageAsync/prepareContextAsync/publishResponseAsync，完成值使用既有 Result；组合存储、人物目录和宿主派发器，runtime 暴露访问器。同步 Store 方法只做数据读写和派发预留，不执行网络。不存在可用服务时明确失败，不静默改写其他角色库。
+- currentContext(conversationId) 供宿主活动恢复读取当前会话、人物集合、origin、channel、audience 与 revision，conversationId 来自已保存活动或已接受消息。复用会话库的 readContext，不创建 response_dispatch 预留，不假定将要发送回复；未知会话或读取失败明确报错。实际发送仍须 prepareContext/publishResponse 的固定目标校验。
 - ProfileChatHistoryStore::open 保留原 JSONL 导入规则，再将已有历史幂等导入 local_owner；完成后 load/appendFinal 均使用 agent_messages，旧文件保留为迁移来源。SQLite 迁移已完成时重新打开直接使用权威库，不再要求旧 JSONL 可读；未完成时真实读取 I/O 失败与可跳过的坏行警告分别处理，前者不得标记导入完成。options.runtimeDatabasePath 由生产 UI 明确传入并启用 v2；空路径仅保留旧 JSONL 解析/兼容入口，不用于生产会话。v2 失败不能回退为 JSONL 写入。UI 继续使用现有串行异步持久化，不把 SQLite 连接跟着被复制的 store 跨线程传递。
 - 本地 UI 与 AIBrain 准备可能先后提交同一输入；以 UI 的稳定消息 ID 去重。ChatPreparationExecutor 的 worker 在准备前确认原输入已入会话库，必要时幂等补入，再读权威历史和版本；不能依赖另一个 worker 已恰好完成写入。原始消息与来源事件保持一一对应，聚合输入不创造独立来源，重试记忆仍使用原 originId。
 - AIBrain 提供通用会话输入入口，接收/落库异步完成后进入既有单前台队列；本地 submitUserMessage 为兼容包装。队列只聚合同一 conversation 的片段，按 conversation 保存窗口；外部历史不进入桌面窗口。§3.9 将观察源接入此入口，不另造聊天状态机。此阶段不增加自主活动选择。
@@ -460,6 +463,7 @@ Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 | ChatHistoryEntry、ChatPreparationRequest | 增加 ContextSpec / speakerId / ReplyTarget；sessionId 仍是一次处理 |
 | AIBrain::m_memory、m_activeDialogueResponse | 状态按 conversation 保留；只有前台快照进入当前模型调用 |
 | ChatPreparationExecutor::prepare | 现有 requestId + generation 外增加 contextRevision 与身份 revision 校验 |
+| ConversationStore::currentContext(conversationId) | 活动恢复复用当前 readContext 只读投影；不预留回复，返回最新参与人、范围与版本 |
 | ContextAssembler::assemble(ModelRole, ContextRequest) | 角色可见范围与场景 audience 共同投影 |
 | ui/petwindow.cpp、ChatConversationModel::appendToStore | 提供 runtimeDatabasePath，沿用串行后台持久化和原 UI 消息生命周期 |
 | include/ai_types.h 的 ContextRequest / ContextProjection | 宿主 ContextSpec 与投影范围，无范围材料不流入显式外部/内部请求 |
@@ -481,6 +485,7 @@ Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 
 - acceptMessage：同一远端消息重试三次只保存一次；两个群相同远端局部消息 ID 不冲突。
 - prepareContext：桌面主人对话切到 QQ 私聊再切回，历史和续问话题分别恢复。
+- currentContext：群内新人物消息入库后读取返回更新的人物集合、会话/身份版本与原范围，不增加回复派发表记录；未知会话及读取故障返回错误。
 - publishResponse：回复群 A 时恰好收到私聊 B，A 的内容仍只发到 A；B 不修改 A 已保存的目标。
 - 已过期的模型回复不被发送；已经成功发送的回执仍入正确会话。
 - recordDeliveryReceipt：派发后切换会话或取消生成，原发送成功回执仍只进入原会话；重复回执和先到自身回显合并，不能再次发消息。
@@ -586,6 +591,8 @@ Result<ActivitySnapshot, DomainError> startActivity(const ActivityIntent& intent
 Result<ActivitySnapshot, DomainError> transitionActivity(const ActivityTransition& transition);
 Result<ActivitySnapshot, DomainError> resumeActivity(const ResumeActivityRequest& request);
 Result<void, DomainError> observeAction(const ActionObservation& observation);
+Result<ActionSnapshot, DomainError> prepareAction(const ActionPreparation& request);
+Result<ActionSnapshot, DomainError> markActionDispatched(const ActionDispatch& request);
 ```
 
 | 输入 | 值来源 | 说明 |
@@ -596,6 +603,18 @@ Result<void, DomainError> observeAction(const ActionObservation& observation);
 | budget | 配置默认值（来源: 宿主任务/自主预算） | 模型可建议成本，不自行提高上限 |
 | targetState、checkpoint、waitingCondition | 调用方传入 | 执行器或控制操作；程序检查合法转换 |
 | callId、outcome、receipt | 调用方传入 | 真实工具回调；不能由一般模型文本结算 |
+| logicalStepId、logicalKey、argumentRef | 系统推导（来源: 已保存执行步骤、规范化操作/参数摘要及受控参数槽） | 新查询可创建新步骤；同一写动作核对/重试沿用原逻辑键 |
+| expectedForegroundId/Revision | 系统推导（来源: 当前前台检查点） | 恢复时需要挂起另一活动则在同一事务核对双方版本 |
+| ActivityTransition.activeMs、ResumeActivityRequest.foregroundActiveMs | 系统推导（来源: worker 内 runner 的单调计时累计值） | 默认 -1 表示未提供；不从模型提案读取，不修改预算上限 |
+| validatedContext、capabilityValidation、triggerRef | 系统推导（来源: 宿主会话准备、插件目录/授权及已提交事件） | 不接收模型提供的 trusted 标志或自行声明的匹配结论 |
+
+接口及线程落点：
+
+- ActivityStore(profileId, databasePath) 只持有路径/角色值，initialize、find(activityId)、list(states)、状态/CAS/动作/经历读写每次使用独立连接；写前预留 writer 并使用 RuntimeUnitOfWork。上述 Result 方法属于此核心服务，不执行模型、网络或等待其他线程。
+- ActivityRuntime 是生产 QObject facade，提供上述生命周期命令的 Async 版本、listActivitiesAsync 及已发布的活动/前台快照。它拥有专属串行 worker，TaskStore 与 TaskOrchestrator 及其 QTimer 在 worker 内创建、使用和销毁；模型/工具请求经不可变 DTO 发到宿主线程，完成值回 worker。不跨线程读取 runner.currentTask()，不把 GUI 上的同步保存作为生产兼容方案。
+- TaskStore::open(path, profileId) 使用 ActivityStore 后端；原 open(path) 只服务旧库读取/迁移 fixture，遇到 schema 3 必须拒绝旧写模式。TaskRecord 是活动行的兼容投影，新增 context、activityRevision、activityGeneration 字段用于宿主传输，SQL 状态与预算仍是权威。TaskOrchestrator 增加按 activityId 恢复/激活入口，驱动已选中的实例；原同步方法只在其 owner worker 或单测调用。
+- AIBrain 持有 ActivityRuntime 及已发布快照，start/resume/pause/stop 发送异步命令，旧 bool 入口表示命令是否被受理，实际结果由现有 taskProgressChanged/userMessage 等信号传递。模型与工具请求附 activityId/generation/ContextSpec，不再依赖 GUI 读取当前 runner。普通回复占用期间不得抢占已运行活动；用户输入引起切换时先在检查点挂起活动。没有活动 runtime 的旧独立测试入口保留兼容；生产 runtime schema 3 只走新路径。
+- TaskDependencies 增加异步 prepareTool(call, completion) 宿主准入入口。TaskToolCall 携带原 activityId/generation/ContextSpec、工具引用及参数；AIBrain 在自身线程使用对应 profile 的 PluginRuntime/PolicyEngine 检查当前授权和真实参数，返回允许结果、错误及宿主判定的 readOnly。worker 等待准入时仍占前台，回调须复核原实例/generation/请求身份，再创建动作准备记录；取消或切换后不能因旧准入结果继续派发。实际 ToolRuntime 在执行前再次检查权限与共享 token。同步 metadata/policy 回调仅用于同线程测试或不可变宿主快照，禁止 worker 直接访问 GUI registry、使用阻塞式 GUI 调用或让模型声明 readOnly。
 
 #### 3. 模块业务流程
 
@@ -607,21 +626,55 @@ Result<void, DomainError> observeAction(const ActionObservation& observation);
 6. 恢复读取最新会话、关系与能力状态，检查 remaining budget；沿用原任务人格版本，实时关系/情绪使用检查点快照。用户暂停只由用户恢复。
 7. 终结时同事务写状态和 ExperienceReady outbox。有意义事实经幂等消费者进入情景记忆/反思；空消息检查等只更新运行记录，避免污染长期记忆。
 
+动作与迟到结果：
+
+- prepareAction 在同一事务校验 activity/profile/generation/前台和预算，保存固定 callId、结构化 capabilityRef、logicalKey、argumentRef，重复同一键返回原调用。logicalKey 由宿主已保存步骤及规范化操作/参数推导，写动作去重还沿用原签名；模型不能自行换键绕过未知/成功写动作记录。参数只存 profile 受控执行槽并以 argumentRef 引用，不写普通日志、事件正文或宿主 secret。
+- markActionDispatched 在提交后才向异步执行器交出调用；该状态表示可能执行，不证明外部副作用成功。它复核 revision/generation、前台及剩余预算，累计失败/重试也计入的工具用量。最终执行仍受共享 ToolDispatchToken 控制；交出后取消但执行器能证明未执行，可记 cancelled/failed；断连/重启没有证明则记 unknown。
+- 已有明确无副作用的失败或取消结果时，宿主可建立新的重试步骤并累计预算，保留原调用及失败事实；同一宿主步骤的重复请求仍返回原 callId。结果未知或成功的写动作不得通过新步骤名、更换逻辑键或旧任务迁移绕过去重；旧签名与新操作/参数身份须等价核对。
+- 每次实际执行的 completion 先使用按值原 profile/path/action 身份的归档器保存 ActionObservation，再向仍有效的 runner 投递推进通知。runner 销毁、任务切换或 generation 过期只影响推进，不丢弃真实回执。重复终态回执幂等；不能用任意模型 JSON 修改调用状态，不能将后续旧 TaskRecord checkpoint 覆盖动作账本中的结果。
+- execution_json 保存计划、阶段、人格/关系/情绪和执行检查点；steps 的调用状态/结果由 agent_action_calls 投影，预算由 budget_json 投影，排除 id/profile/state/revision/generation/budget/counters 的第二份权威值。恢复沿用 personalitySnapshot，实时关系/情绪及外部上下文由宿主重新准备。
+
+恢复与等待：
+
+- waitingCondition 包含 kind、conversationId/sourceId、原消息/动作锚点、resumeRule 及实际 receipt/tracking 引用。WaitingExternal 只接受已归档完成发送的消息等待，或 accepted 且有有效跟踪方式的远端事件等待；仍在工具返回、观察或验证阶段保持 Running。
+- accepted 远端任务的原回执 tracking 至少包含非空 sourceId、remoteJobId，并保存于原动作；kind=event 的等待绑定同一 callId/sourceId/remoteJobId。后续真实成功回执须匹配原 tracking，observeAction 才在结算动作的同一事务写 ActionCompleted outbox。其 payload 使用 profile_id、activity_id、call_id、source_id、remote_job_id 和实际完成时间，eventId 由 profile/activity/call/type 确定性生成；重复回执只产生一个完成事件。身份不匹配的结果不得结算或唤醒。Event/Scheduler 恢复读取已提交事件并核对这些字段；Scheduler 还要求 resumeRule 明确允许 scheduler，不能将 event 规则视为调度授权。
+- event 恢复必须读取已提交 MessageObserved/允许的完成事件，核对 profile、conversation/source、原等待锚点之后的消息水位及非自身回显；找不到证据则拒绝。user 恢复只来自宿主明确用户入口；scheduler 仅可处理原 waitingCondition 明确允许且已经就绪的等待，不能恢复 user pause 或 restart pause。
+- 宿主重新准备 ContextSpec 并核对人物、会话 revision、所需能力的版本/启用/授权及剩余预算；校验结果不能由选择模型传入。进入事务再核对活动、前台及会话 revision。若目标需替换当前前台，只有当前没有未结算工具/验证且可保存检查点时，才在一个事务将原前台 Paused/checkpoint、目标 Running；失败保持两者原状。无匹配事件不得唤醒，Cancelled/Completed/Failed 不恢复。
+- 有会话的活动在写事务外通过 ConversationStore::currentContext 取得最新完整范围，再以该范围验证能力；写事务内复核 conversationRevision 与 identityRevision，不复制人物目录算法或仅给旧 ContextSpec 增加版本号。不含会话的 Internal 活动保持自身真实来源与已授权范围，不借用 local_owner。
+- worker 在活动转换或切换前读取当前 runner 的累计 activeMs，随内部 DTO 交给对应事务，以 max(原累计,宿主累计) 更新预算。双活动切换将原前台最后一个活跃时段与暂停状态一并提交，再释放 runner 并刷新投影；不先做一笔使 expectedRevision 失效的独立保存，也不在切换后拿旧 TaskRecord 覆盖新状态。小于 -1 的输入和整数溢出拒绝，等待与停机不计入。
+- PluginRuntime 提供捕获共享状态的能力校验器 factory，ActivityRuntime 将其交给 worker/ActivityStore 使用。校验器通过短锁取得当前配置与目录快照，复用现有 scope/grant 规则，检查启用、版本、引用和宿主授权；退役后拒绝新启动/恢复。不得捕获 GUI QObject 并跨线程调用，也不得把一次启动时的授权快照永久当成当前权限；实际执行仍进行最终权限检查。
+- startActivity 前台空闲时取得前台，有 Running 时保存 Ready 候选；选择预留有效时不得越过其所有权。Ready 的普通候选不自动抢前台。用户暂停标记 user，重启统一标记 restart；预算/依赖/模型错误分别保留原因。
+- 已验证为空的查询可用实际 completed 调用证据结束活动，无需伪造聊天或文档结果；此类检查不生成长期经历。模型失败只能 Failed/Paused，模型文本的“没有消息”不是空查询证据。
+- Completed 的类型化和 TaskRecord 兼容入口都须确认该活动没有 prepared/dispatched/accepted/unknown 调用，再核对成功证据；不能用一个已成功步骤掩盖仍未结算的另一个动作。Cancelled/Failed 可以保留未知动作事实供后续核对。
+
 #### 4. 数据变更
 
 新增 agent_activities、agent_action_calls、agent_runtime_state。agent_activities 的 focus_owned 部分唯一索引限制每个 profile 一个前台；execution_json 内复用 TaskRecord 的计划、步骤和证据，预算只以 budget_json 为权威。
 
-v2 活动库成为执行状态权威。旧 complex_tasks 的非终结记录按原 id 幂等导入为 Paused/restart，旧表与单任务唯一索引保留为迁移来源；启用 v2 后旧 TaskStore 不再写。未投递的旧经历 outbox 完成消费，经历来源沿用原 taskId，不能在新活动里再产生一份。
+runtime SQLite user_version 由 2 升至 3，在同一事务增量建立上述活动表并提交版本；0/1/2 库都可升级，3 的 fast path 不重复 DDL，未知高版本拒绝。SqliteEventRepository 为版本权威，SleepSessionRepository 允许 3 且不得降低版本。主设计中“activity v2”指活动新模型，不等同 SQLite user_version=2；附录完整 runtime-up 的最终版本为 3。
+
+活动库成为执行状态权威。旧 complex_tasks 按原 id/profile 幂等导入：非终结记录 Paused/restart，终结记录保留原事实；正在派发的写调用 unknown，原 callId/签名/预算/人格版本保留，迁移 cursor 与记录同事务提交。旧表、单任务唯一索引及旧 outbox 留作只读来源；生产和 v3 兼容层不再 INSERT/UPDATE 旧表。
+
+旧 TaskStore 在 open 时拒绝 schema 3 后必须关闭连接并保持 isOpen=false；每次旧模式写入还须在事务内复核版本，防止先打开的旧连接在其他连接完成升级后继续修改只读来源。读投影、迁移标记和活动列表查询失败须作为存储错误返回，不以空集合或部分列表代替成功。
+
+ExperienceReady 的 eventId 为固定 namespace 下 profile/activityId/type 的确定性 UUID，与原 taskId 不同；它是消费意图，不是第二份原始经历。原 taskId 继续作为 TaskExperienceRecorded 和经历记忆的幂等 ID。ready payload 只包含受限事实及 ContextSpec/来源引用，不包含模型推演、完整步骤参数或 secret。
+
+TaskExperienceAdapter 通过异步活动后端读取未消费 Ready（包含已投递 event_log 或仍在 event_outbox 的原记录）并复用现有事实落库、记忆与私密感受流程；完成标记使用 agent_runtime_migrations 的 experience:<activityId> 条目，cursor 保存原来源引用，state=completed。终结时如已有同 taskId 的旧经历 outbox/已落事件，不再创建第二份事实；旧 outbox 的 delivered 状态只读，未消费内容由新 marker 接管，原已消费状态同样映射 marker。失败保留待消费，消费或 outbox 投递失败不撤销已提交终态。
+
+通用活动没有明确 subject 时，经历仍将已验证 ContextSpec.participantPersonIds 保存为 Participant 关联，支持按参与人物召回；不把参与人猜成 subject 或原话 speaker。活动创建/终结时间由宿主提供，确保真实 TaskExperienceRecorded 的 occurredAt 有效；不依赖手工旧任务记录补齐时间。
 
 #### 5. 实现锚点
 
 | 位置/现有接口 | 复用与调整 |
 | --- | --- |
-| TaskStore::unfinished() 与 complex_tasks_single_unfinished | 改为 ActivityStore 的可列举挂起集合；兼容层按 activityId 读写而非 LIMIT 1 |
+| TaskStore::open / unfinished / find / save | 新 open(path,profileId) 代理 ActivityStore；list 与按 activityId 激活替代 LIMIT 1；旧无profile入口不得写 schema 3 |
 | TaskOrchestrator::start / assess / plan / verify | 复用规划与验证流程，拆开“执行实例”与“全局只有一项未完成”的限制 |
 | AgencyDecisionService::request(task, checkpoint) | 保留受理/检查点判断，活动选择在其上游；不让两个角色重复协商同一事件 |
 | RuntimeUnitOfWork::connectionName / commit | 活动检查点和事件 outbox 使用同一 runtime 连接事务 |
-| TaskExperienceAdapter | 复用事实先落库、私密感受异步处理；加入人物与 ContextSpec |
+| TaskExperienceAdapter::drain / processNext | 增加异步活动后端，复用事实先落库与私密感受处理；旧 outbox 只读接管，消费 marker 在 runtime 同库 |
+| AIBrain::initializeTaskRuntime / taskSnapshot / isTaskActive | worker 内创建 runner/store，GUI 使用缓存快照与异步控制；模型/工具 DTO 携带原活动上下文 |
+| PluginRuntime::makeCapabilityValidator / ActivityRuntime::setCapabilityValidator | 共享状态校验器交给活动 worker，当前启停/版本/授权与退役状态在启动和恢复时核对 |
+| SqliteEventRepository::migrateSchema / SleepSessionRepository::migrateSchema | 支持 runtime schema 3，与活动 DDL 同事务且不降级 |
 | task_budget / callId | 预算包含失败与重试，callId 固定；恢复不重复执行已成功写动作 |
 
 #### 6. 异常场景
@@ -637,6 +690,10 @@ v2 活动库成为执行状态权威。旧 complex_tasks 的非终结记录按�
 - resumeActivity：匹配回复到达后，阅读在检查点挂起，聊天恢复；结束聊天后阅读从原进度继续。
 - observeAction：重启后的未知发送收到可验证回执，调用只结算一次且不重发；预算累计值保持。
 - 已确认“没有新内容”的查看活动可以 Completed；模型请求失败只能 Failed/Paused，不能伪装为“看完了”。
+- prepareAction：相同逻辑写步骤重试取得原 callId，缺活动/超预算/旧 generation 不创建调用；markActionDispatched 成功后才进入实际执行，存储失败时外部调用数为零。
+- v2 旧库升级为 3 后，多次初始化不重复导入任务或经历；原预算与 unknown 写调用保留，旧 TaskStore 写入口拒绝。
+- 外部来源经历保留人物、会话和 audience；空查询不产生记忆，消费失败重试不重复记录 TaskExperienceRecorded。
+- 生产活动慢存储/慢工具期间 GUI 计时器正常处理；切换前台和销毁 runner 后，迟到回执仍入原活动且不启动下一步。
 
 ### 3.7 空闲判定与自主机会调度
 
@@ -846,8 +903,9 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ActivityIntent | goal、reason、origin=user/self/event、ContextSpec、evidenceRefs、capabilityRefs、stopWhen、reconsiderWhen；预算由宿主附加 |
 | ActivitySnapshot | activityId、profileId、state、revision、context、intent、executionPhase、checkpoint、waitingCondition、budget、generation |
 | ActivityTransition | profileId、activityId、expectedRevision、targetState、reason、checkpoint；进入等待附 waitingCondition，终结附 result 与 evidenceRefs |
-| ResumeActivityRequest | profileId、activityId、expectedRevision、triggerRef、resumeActor=user/event/scheduler；按 pauseReason 校验谁可恢复 |
-| ActionObservation | profileId、activityId、callId、dispatchGeneration、outcome、receipt、observedAt；从实际执行器生成 |
+| ResumeActivityRequest | profileId、activityId、expectedRevision、triggerRef、resumeActor=user/event/scheduler、expectedForegroundId/Revision；validatedContext/能力验证由宿主服务获取，按 pauseReason 和等待证据校验谁可恢复 |
+| ActionObservation | profileId、activityId、callId、dispatchGeneration、outcome、receipt、observedAt；从实际执行器生成并绑定原派发身份 |
+| ActionPreparation / ActionDispatch | 前者包含活动版本、宿主 logicalStepId、CapabilityRef、参数与预算引用；后者包含已准备 callId、活动版本与generation。logicalKey/argumentRef由宿主生成 |
 | RuntimeReadiness / IdleDecision | 输入前台活动/选择预留、readyObligations、pendingResults；返回 isIdle、reason、blockingRefs |
 | OpportunitySignal / OpportunityTicket | signal 含 kind、contextId、eventIds；ticket 含 ticketId、runtimeRevision、inputWatermark、预算预留、expiresAt |
 | SelectionRequest / SelectionProposal | request 含 ticket、快照和有界材料；proposal 含 ticketId、decision=start/resume/continue/wait、activityId 或 intent、evidenceRefs、reason、nextConsiderAt 可空 |
@@ -998,7 +1056,7 @@ erDiagram
 | agent_activities | (profile_id, id)，profile 的 focus_owned=1 唯一 | state、revision、context_json、intent_json、execution_json、waiting_json、budget_json、generation、next_eligible_at |
 | agent_action_calls | (profile_id, call_id)，activity 内 logical_key 唯一 | capability_ref_json、argument_ref、status、result_json、generation；敏感参数留在受控存储引用 |
 | agent_runtime_state | profile_id | revision、control_json；自主开关、暂停、选择预留、来源游标、预算与退避 |
-| agent_runtime_migrations | (profile_id, migration_id) | cursor_json、state；启动恢复与旧任务/history 导入位置 |
+| agent_runtime_migrations | (profile_id, migration_id) | cursor_json、state；启动恢复、旧任务/history 导入位置及 experience:<activityId> 消费完成标记 |
 | memory_attribution | memory_id | profile_id、resolution、claim_kind、audience_json、revision |
 | memory_people | (memory_id, person_id, role) | 描述对象与参与人，来源发言人位于 memory_origins |
 | memory_origins | (memory_id, origin_id) | conversation_id、speaker_id、original_at、evidence_ref；保留未确定字段 |
@@ -1032,7 +1090,7 @@ JSON 在 C++ 边界用明确 schema 校验，附录不依赖 SQLite JSON 扩展�
 4. 先切换所有新写入口到带归属模式，缺来源的新记录保守写 unresolved/owner_only；随后在串行 writer 上异步按稳定 memoryId 每批 100 条迁移旧关联，批次间允许正常带归属写入。旧读路径限已有主人场景；新 UUID 即使排在 cursor 前也已经有归属，避免漏迁移。没有可靠来源的旧记录明确 unresolved/owner_only，正文、强度及时间均不改。
 5. 旧主人 history 幂等导入 local_owner 会话；保留原 message ID，有冲突时采用记录在 migration 中的确定性命名空间 ID，不改变原 reply 链含义。
 6. 旧 complex_tasks 逐条按原 id 导入活动，非终结状态变 Paused/restart。若正在派发写工具，记录 unknown；旧 task experience outbox 先完成或关联接管，沿用原 taskId 防重复经历。
-7. 开启 activity v2 时停用旧任务写入口和专用主动聊天派发；存量表保留只读。选择新活动默认仍关闭，直到 §7 对应阶段完成并启用。
+7. 活动存储迁入 schema 3 时停用旧任务写入口，存量表保留只读。新自主选择默认关闭，保留原主动聊天模式及节奏；§3.7—§3.8 完成且宿主明确启用 autonomyEnabled 后，停用专用主动聊天派发，改由通用机会调度选择，不能让两套循环同时运行。数据库版本或 ActivityRuntime 对象存在本身不代表新自主功能已启用。
 
 迁移器每批事务保存数据和 cursor，重跑结果一致。旧版本缺少多人范围与活动语义，不能在 v2 写入后直接降级启动；启动版本门禁需要拒绝不兼容的旧写入模式。
 
@@ -1244,7 +1302,7 @@ CREATE TABLE IF NOT EXISTS agent_runtime_migrations (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY(profile_id, migration_id)
 );
-PRAGMA user_version=2;
+PRAGMA user_version=3;
 COMMIT;
 ```
 

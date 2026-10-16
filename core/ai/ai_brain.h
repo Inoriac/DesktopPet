@@ -57,6 +57,7 @@ struct ChatPreparationResult;
 
 class MemoryConsolidationService;
 class TaskStore;
+class ActivityRuntime;
 class TaskOrchestrator;
 class TaskToolExecutor;
 class TaskExperienceAdapter;
@@ -177,14 +178,16 @@ signals:
 
 private:
     void initializeTaskRuntime();
+    void refreshTaskDependencies();
     void initializePluginRuntime();
     void retirePluginRuntime();
     ContextSpec currentToolContext() const;
     void shutdownTaskRuntime();
     bool tryHandleComplexTask(const QString& text, const QString& triggerTag);
     void finishTaskResponse();
-    std::unique_ptr<TaskStore> m_taskStore;
-    std::unique_ptr<TaskOrchestrator> m_taskOrchestrator;
+    std::unique_ptr<ActivityRuntime> m_activityRuntime;
+    bool m_taskCommandPending=false;
+    QSet<QString> m_suspendedTaskIds;
     std::unique_ptr<TaskToolExecutor> m_taskToolExecutor;
     std::unique_ptr<TaskExperienceAdapter> m_taskExperienceAdapter;
     QHash<QString, std::shared_ptr<LlmRequestHandle>> m_taskModelRequests;

@@ -39,7 +39,22 @@
 
 - [code-impl Task 4 锚点复核] PluginRuntime::registerPlugin/loadCapability/invokeCapability/setPluginEnabled、makeReplyDispatcher、ToolRuntime::executeAsync、TaskToolExecutor::execute 与 AIBrain::initializePluginRuntime 的实际签名和生产调用已核对；共享 token 仅在实际发送点 begin。标准 Schema/metadata/host grant/回执映射已回填主设计，未新增软件名称执行分支。最终完整构建、51/51 CTest、70/70 Python 契约通过。
 
+- [code-impl Task 5 sanity check] §3.6 七子节齐全；TaskStore::open/unfinished/find/save、TaskOrchestrator::start/assess/plan/verify、AgencyDecisionService::request、RuntimeUnitOfWork::connectionName/commit、TaskExperienceAdapter 均存在。旧单 unfinished 索引与旧 completed 回调确实不支持挂起集合/迟到结果；现有 TaskStore 同步存储要求将生产 runner 整体迁入 worker，不能在 GUI 等待新存储。
+
+- [code-impl Task 5 worker 准入补全] 主设计 §3.6 明确 TaskDependencies::prepareTool(call, completion)：原活动/context/generation 随 DTO 进入宿主线程，PluginRuntime/PolicyEngine 复核参数与效果，worker 只收不可变准入结果且再次检查实例；实际派发仍检查权限/token。不让 worker 直接读取 GUI registry 或阻塞等待 GUI。旧 TaskStore 写门禁同事务复核 schema，拒绝打开后清理连接；存储读取失败不得伪装为空集合。均为 v1.5 已定线程与只读迁移契约的工程细化，沿用持续开发授权。
+
+- [code-impl Task 5 恢复范围补全] §3.4/§3.6 增加 ConversationStore::currentContext(conversationId) 只读宿主接口，复用 readContext 取得真实人物、来源、audience 和版本；不为单纯恢复创建发送预留。能力验证使用刷新后范围，活动写事务内再次校验会话/身份版本。主设计已同步，属于恢复已保存活动的既定语义。
+
+- [code-impl Task 5 完成事件与重试] §3.6 明确 ActionCompleted 由真实回执与原 accepted tracking(sourceId/remoteJobId) 匹配后同事务写出，确定性 eventId 与原 profile/activity/call 绑定；恢复须验证已提交来源及 resumeRule。只有明确无副作用的 failed/cancelled 写动作允许新宿主重试步骤，unknown/succeeded 与迁移旧签名不可绕过去重。旧主动聊天在 autonomyEnabled 切换前保留，ActivityRuntime 存在本身不代表启用新自主循环。
+
+- [code-impl Task 5 耗时与能力校验] ActivityTransition.activeMs / ResumeActivityRequest.foregroundActiveMs 由 worker 单调计时累计填入（-1 表示未提供），活动事务合并最后一个活跃时段，切换后刷新权威投影；不从模型解析、不重置上限。PluginRuntime 以共享 State factory 交出线程安全校验器，实时读取目录/授权及退役状态，复用原 grant 语义，不跨线程持有 GUI QObject。已回填 §3.6。
+
+- [code-impl Task 5 锚点复核] ActivityStore 的六项核心方法、ActivityRuntime 异步命令/单 worker、TaskOrchestrator::activate/resume、ConversationStore::currentContext、PluginRuntime::makeCapabilityValidator、TaskExperienceAdapter 异步 backend 与 runtime schema 3 已接入生产并核对。真实 runner 恢复重载人物范围，类型化活动经历保留 Participant 且不猜 subject/speaker。最终完整构建、52/52 CTest（69.25 秒）、70/70 工具契约通过。
+- [code-impl Task 5 生命周期回归] 全量回归复现 ChatSideEffectQueue::stop 在 worker 销毁窗口 SIGSEGV；共享 mutex 下发布 workerClosed 并排队投递修复，重复 stop 回归通过。迟到回执归档失败也核对原 generation/pendingId/active，不能暂停新活动；Completed 两个入口共用未结算动作门禁。全部保留实际 RED 与最终 GREEN 日志。
+
 ## 设计偏差
+
+- [code-impl Task 5 设计补全] 按 evoloop-gen-tech-design 补全模式将六项接口细化写入主设计 v1.5：runtime SQLite 3、按值 ActivityStore 与后台 ActivityRuntime、TaskStore 活动投影/旧写入口门禁、动作准备/派发/独立回执归档、宿主依据与双活动 CAS 恢复、ExperienceReady 独立 UUID 和旧经历只读接管。消费 marker 复用 agent_runtime_migrations，原 taskId 保持经历幂等源。属于已确认 §3.6 的工程落点，不新增活动选择或具体 QQ 后端。用户持续开发授权适用。
 
 - [code-impl Task 4 回执生命周期补全] 主设计 §3.4/§3.5 明确原库回执归档独立于 UI/QObject 生命周期。旧 ReplyCompletion 先排服务事件队列再写库，会在服务释放前后两种时序丢失已发送事实；新增独立 FIFO 后台归档队列，持有按值原 profile/path，仅界面通知依赖 QPointer。沿用现有回执表、事务和幂等规则，不建第二账本。对应两个真实 RED 保留在 `/tmp/task4-receipt-sink-red.log`。
 
@@ -55,4 +70,6 @@
 
 ## 待回溯设计的发现
 
-无待回溯契约项。inactive 人物管理、合并与拆分尚无本切片入口，后续增加这些操作时须先定义解析/历史更正规则，不能把预留 schema 当作已完成能力。
+- [pending，§3.8 启动前核对] 自主内部活动的插件授权范围需要显式落点。现有 grant 的 local_owner 只匹配 LocalOwner，其余匹配非空 conversationId；Internal 且无会话的自主阅读不能借用主人身份。§3.8 必须定义宿主内部活动 grant 范围并保持 autonomous 独立开关，再接自主调用，不能仅把 originKind 改成 LocalOwner 取得权限。
+
+inactive 人物管理、合并与拆分尚无本切片入口，后续增加这些操作时须先定义解析/历史更正规则，不能把预留 schema 当作已完成能力。

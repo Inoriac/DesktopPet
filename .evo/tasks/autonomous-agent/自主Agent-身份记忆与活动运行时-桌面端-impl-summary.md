@@ -1,4 +1,4 @@
-# 自主 Agent 阶段实现总结：§3.2—§3.5
+# 自主 Agent 阶段实现总结：§3.2—§3.6
 
 设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由与插件运行时的实现及验证。
 
@@ -91,4 +91,16 @@ ToolRegistry、PolicyEngine 与任务执行采用显式宿主元数据、工厂�
 
 验证：完整应用及全部测试目标构建成功；最终 CTest **51/51 组通过**（64.02 秒），Python 契约 **70/70 通过**，Wave 4 五项校验与 git diff --check 通过。TDD 记录与 14 项覆盖映射见同目录审查记录；日志 /tmp/task4-final-full-build.log、/tmp/task4-final-full-ctest.log、/tmp/task4-final-contract.log。
 
-下一项为 §3.6 活动执行、挂起、恢复与经历；自主活动调度、选择和真实 QQ 尚未交付。
+## §3.6 活动执行、挂起、恢复与经历
+
+新增 ActivityStore 与 ActivityRuntime。runtime SQLite 升至 schema 3，旧任务及经历按原 ID 幂等接管；旧写入口在打开及写事务内拒绝新库。活动拥有一个前台位置，可保留多个 Ready/等待/暂停实例；状态、动作记录、累计预算及经历 outbox 以 SQLite 为权威。
+
+生产 runner、store、计时器位于专属串行 worker；AIBrain 使用快照与异步命令，模型/工具请求携带原活动和会话范围。开始与恢复使用当前插件版本/启用/授权校验；实际派发再次检查权限。发送后的真实消息锚点或 accepted 跟踪条件允许释放前台；恢复核对已提交事件，原子保存另一活动进度。用户和重启暂停须明确恢复，预算不会重置。
+
+写动作记录在外部派发前提交，未知或成功动作不重发；迟到成功与失败均绑定原实例，执行器销毁后真实回执仍归原库。完成前必须没有未结算动作并具备成功证据；插件真实 data 中的空查询可完成但不写长期经历。类型化活动的经历保留参与人、会话、来源与受众，无明确 subject 时不虚构发言人。
+
+主要文件：core/ai/activity、TaskStore/TaskOrchestrator/TaskExperienceAdapter、ai_brain_tasks.cpp、PluginRuntime 校验器、ConversationStore 当前范围读取、runtime schema 与对应 tests。完整回归还发现并修复 ChatSideEffectQueue 退出时的 worker 销毁竞态；旧主动聊天保留到明确自主开关启用。
+
+验证：最终完整应用及所有测试目标构建成功；CTest **52/52 通过**（69.25 秒），Python 工具契约 **70/70 通过**。Wave 5 五项校验、设计结构/链接/SQL 演练与 git diff --check 通过。TDD 实际失败包括多活动、迟到回执、真实结果形状、恢复人物范围、未结算完成、无 subject 参与人及析构崩溃，详见审查记录。
+
+最终日志：/tmp/task5-handoff-build.log、/tmp/task5-handoff-ctest.log、/tmp/task5-final-contract.log。下一项是 §3.7 空闲判定与自主机会调度；真实 QQ 仍未连接。

@@ -1,30 +1,60 @@
 #include "task_types.h"
+#include "ai/chat/conversation_types.h"
 
 bool TaskRecord::terminal() const {
     return status == "Completed" || status == "Declined" || status == "Failed" || status == "Cancelled";
 }
 
 QJsonObject TaskRecord::toJson() const {
-    return {{"id", id}, {"profile_id", profileId}, {"subject_id", subjectId}, {"origin_kind", originKindToString(originKind)}, {"goal", goal},
-        {"status", status}, {"plan", plan}, {"result", result}, {"reason", reason},
-        {"completion_criteria", completionCriteria}, {"personality_version", personalityVersion},
-        {"required_source_tools", QJsonArray::fromStringList(requiredSourceTools)},
-        {"personality_snapshot", personalitySnapshot}, {"relationship_snapshot", relationshipSnapshot},
-        {"initial_emotion", initialEmotion}, {"current_emotion", currentEmotion}, {"steps", steps},
-        {"decisions", decisions}, {"evidence", evidence}, {"checkpoints", checkpoints},
-        {"handled_triggers", handledTriggers}, {"pending_trigger", pendingTrigger},
-        {"user_feedback", userFeedback}, {"requirement_updates", requirementUpdates},
-        {"created_at", createdAt}, {"updated_at", updatedAt},
-        {"tool_calls", toolCalls}, {"replans", replans}, {"consecutive_failures", consecutiveFailures},
-        {"active_ms", activeMs}, {"last_agency_active_ms", lastAgencyActiveMs},
-        {"accepted", accepted}, {"needs_revalidation", needsRevalidation},
-        {"budget", QJsonObject{{"max_tool_calls", budget.maxToolCalls}, {"max_replans", budget.maxReplans},
-            {"max_active_ms", budget.maxActiveMs}, {"model_timeout_ms", budget.modelTimeoutMs},
-            {"tool_timeout_ms", budget.toolTimeoutMs}}}};
+    return {{"context", contextSpecToJson(context)},
+            {"activity_revision", activityRevision},
+            {"activity_generation", qint64(activityGeneration)},
+            {"id", id},
+            {"profile_id", profileId},
+            {"subject_id", subjectId},
+            {"origin_kind", originKindToString(originKind)},
+            {"goal", goal},
+            {"status", status},
+            {"plan", plan},
+            {"result", result},
+            {"reason", reason},
+            {"completion_criteria", completionCriteria},
+            {"personality_version", personalityVersion},
+            {"required_source_tools",
+             QJsonArray::fromStringList(requiredSourceTools)},
+            {"personality_snapshot", personalitySnapshot},
+            {"relationship_snapshot", relationshipSnapshot},
+            {"initial_emotion", initialEmotion},
+            {"current_emotion", currentEmotion},
+            {"steps", steps},
+            {"decisions", decisions},
+            {"evidence", evidence},
+            {"checkpoints", checkpoints},
+            {"handled_triggers", handledTriggers},
+            {"pending_trigger", pendingTrigger},
+            {"user_feedback", userFeedback},
+            {"requirement_updates", requirementUpdates},
+            {"created_at", createdAt},
+            {"updated_at", updatedAt},
+            {"tool_calls", toolCalls},
+            {"replans", replans},
+            {"consecutive_failures", consecutiveFailures},
+            {"active_ms", activeMs},
+            {"last_agency_active_ms", lastAgencyActiveMs},
+            {"accepted", accepted},
+            {"needs_revalidation", needsRevalidation},
+            {"budget", QJsonObject{{"max_tool_calls", budget.maxToolCalls},
+                                   {"max_replans", budget.maxReplans},
+                                   {"max_active_ms", budget.maxActiveMs},
+                                   {"model_timeout_ms", budget.modelTimeoutMs},
+                                   {"tool_timeout_ms", budget.toolTimeoutMs}}}};
 }
 
 TaskRecord TaskRecord::fromJson(const QJsonObject& j) {
     TaskRecord r;
+    r.context = contextSpecFromJson(j["context"].toObject());
+    r.activityRevision = j["activity_revision"].toInteger();
+    r.activityGeneration = quint64(j["activity_generation"].toInteger());
     r.id = j.value("id").toString(); r.profileId = j.value("profile_id").toString();
     r.subjectId = j.value("subject_id").toString(); r.goal = j.value("goal").toString();
     r.originKind = j.contains("origin_kind")

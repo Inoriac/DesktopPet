@@ -171,6 +171,7 @@ private slots:
     void enqueue_whenQueueIsFull_shouldDropLogsBeforeCriticalEffects();
     void enqueue_whenBarrierWasAccepted_shouldRejectLaterSessionEffects();
     void stop_whenWorkIsPending_shouldReturnWithoutWaitingAndSettleDepth();
+    void stopRepeatedlyDuringWorkerClose_isSafe();
     void stop_whenStartedImmediately_shouldCloseOldWorkerBeforeOpeningNewWorker();
     void destructor_whenWorkIsPending_shouldCloseWorkerBeforeReturning();
 };
@@ -570,6 +571,30 @@ stop_whenWorkIsPending_shouldReturnWithoutWaitingAndSettleDepth() {
     QVERIFY2(elapsed.elapsed() < 50, qPrintable(QString::number(elapsed.elapsed())));
     QTRY_COMPARE_WITH_TIMEOUT(queue.queueDepth(), 0, 1000);
     QTRY_COMPARE_WITH_TIMEOUT(closed.load(), 1, 1000);
+}
+
+void ChatSideEffectQueueTests::stopRepeatedlyDuringWorkerClose_isSafe() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setDatabasePath(directory.filePath(QStringLiteral("memory.db")));
+    store.setStoragePath(directory.filePath(QStringLiteral("memory.json")));
+    QVERIFY(store.load());
+    for (int round = 0; round < 24; ++round) {
+        ChatSideEffectQueue queue;
+        QVERIFY(queue.start(environmentFor(directory)).isOk());
+        queue.stop(true);
+        // Repeat stop while the worker closes, before the GUI has processed its
+        // finished signal. A QPointer check alone cannot protect this window.
+        for (int attempt = 0;
+             attempt < 2000 && queue.isWorkerThreadRunningForTests();
+             ++attempt) {
+            queue.stop(false);
+            QThread::yieldCurrentThread();
+        }
+        QTRY_VERIFY_WITH_TIMEOUT(!queue.isWorkerThreadRunningForTests(), 1000);
+        QCOMPARE(queue.queueDepth(), 0);
+        QVERIFY(!queue.isAccepting());
+    }
 }
 
 void ChatSideEffectQueueTests::

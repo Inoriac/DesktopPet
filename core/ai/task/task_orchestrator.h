@@ -11,7 +11,11 @@ public:
     ~TaskOrchestrator() override;
     void setDependencies(TaskDependencies dependencies);
     bool start(const TaskStartRequest& request);
-    bool recover();
+    bool recover(const QString &activityId = {});
+    bool activate(const QString &activityId);
+    void releaseCurrent();
+    qint64 currentActiveMs();
+    bool reloadCurrent();
     bool resume(const QString& feedback = {}, const TaskBudgetExtension& extension = {});
     void pause(const QString& reason = QStringLiteral("用户暂停了任务。"));
     void stop(const QString& reason = QStringLiteral("用户停止了任务。"));
@@ -44,6 +48,7 @@ private:
     void verify(int attempt = 0);
     void replan(const QString& reason);
     void dispatchTool(const QJsonObject& tool);
+    void dispatchValidatedTool(const QJsonObject &tool, bool readOnly);
     void afterObservation();
     void checkpointThenPlan();
     void refreshContext();

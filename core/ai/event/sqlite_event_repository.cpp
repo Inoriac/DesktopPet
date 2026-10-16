@@ -178,7 +178,57 @@ const QStringList kSchemaStatements = {
     QStringLiteral("CREATE TABLE IF NOT EXISTS agent_response_dispatches ( profile_id TEXT NOT NULL, request_id TEXT NOT NULL, generation INTEGER NOT NULL CHECK(generation >= 0), conversation_id TEXT NOT NULL, context_json TEXT NOT NULL DEFAULT '{}', target_json TEXT NOT NULL DEFAULT '{}', source_ids_json TEXT NOT NULL DEFAULT '[]', content TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT 'prepared' CHECK(status IN ('prepared','dispatching','completed','failed','unknown','cancelled')), receipt_json TEXT NOT NULL DEFAULT '{}', created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(profile_id, request_id, generation), FOREIGN KEY(profile_id, conversation_id) REFERENCES agent_conversations(profile_id, id) )"),
     QStringLiteral("CREATE INDEX IF NOT EXISTS idx_agent_response_conversation ON agent_response_dispatches(profile_id, conversation_id, status)"),
     QStringLiteral("CREATE TABLE IF NOT EXISTS agent_runtime_migrations ( profile_id TEXT NOT NULL, migration_id TEXT NOT NULL, cursor_json TEXT NOT NULL DEFAULT '{}', state TEXT NOT NULL DEFAULT 'running' CHECK(state IN ('running','completed','failed')), updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')), PRIMARY KEY(profile_id, migration_id) )"),
-    QStringLiteral("PRAGMA user_version=2"),
+    QStringLiteral(R"SQL(CREATE TABLE IF NOT EXISTS agent_activities (
+    profile_id TEXT NOT NULL,
+    id TEXT NOT NULL,
+    state TEXT NOT NULL DEFAULT 'Ready'
+        CHECK(state IN ('Ready','Running','WaitingExternal','WaitingUser','Paused',
+                        'Completed','Cancelled','Failed')),
+    focus_owned INTEGER NOT NULL DEFAULT 0 CHECK(focus_owned IN (0,1)),
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    generation INTEGER NOT NULL DEFAULT 0 CHECK(generation >= 0),
+    context_json TEXT NOT NULL DEFAULT '{}',
+    intent_json TEXT NOT NULL DEFAULT '{}',
+    execution_json TEXT NOT NULL DEFAULT '{}',
+    waiting_json TEXT NOT NULL DEFAULT '{}',
+    budget_json TEXT NOT NULL DEFAULT '{}',
+    next_eligible_at TEXT,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(profile_id, id),
+    CHECK((state = 'Running' AND focus_owned = 1) OR
+          (state <> 'Running' AND focus_owned = 0))
+);)SQL"),
+    QStringLiteral(R"SQL(CREATE UNIQUE INDEX IF NOT EXISTS uk_agent_activity_foreground
+    ON agent_activities(profile_id) WHERE focus_owned = 1;)SQL"),
+    QStringLiteral(R"SQL(CREATE INDEX IF NOT EXISTS idx_agent_activity_ready
+    ON agent_activities(profile_id, state, next_eligible_at, updated_at, id);)SQL"),
+    QStringLiteral(R"SQL(CREATE TABLE IF NOT EXISTS agent_action_calls (
+    profile_id TEXT NOT NULL,
+    call_id TEXT NOT NULL,
+    activity_id TEXT NOT NULL,
+    logical_key TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    capability_ref_json TEXT NOT NULL,
+    argument_ref TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('prepared','dispatched','accepted','succeeded',
+                                         'failed','unknown','cancelled')),
+    result_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(profile_id, call_id),
+    UNIQUE(profile_id, activity_id, logical_key),
+    FOREIGN KEY(profile_id, activity_id) REFERENCES agent_activities(profile_id, id)
+);)SQL"),
+    QStringLiteral(R"SQL(CREATE INDEX IF NOT EXISTS idx_agent_action_unresolved
+    ON agent_action_calls(profile_id, activity_id, status);)SQL"),
+    QStringLiteral(R"SQL(CREATE TABLE IF NOT EXISTS agent_runtime_state (
+    profile_id TEXT PRIMARY KEY,
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    control_json TEXT NOT NULL DEFAULT '{}',
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+);)SQL"),
+
     QStringLiteral("CREATE TABLE IF NOT EXISTS self_model_version ("
                    "version_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, parent_version_id TEXT,"
                    "narrative_json TEXT NOT NULL, evidence_json TEXT NOT NULL,"
@@ -279,11 +329,11 @@ Result<void, DomainError> SqliteEventRepository::migrateSchema(QSqlDatabase& dat
             sqliteError(QStringLiteral("failed to read runtime schema version"), pragma.lastError()));
     }
     const int version = pragma.value(0).toInt();
-    if (version > 2) {
+    if (version > 3) {
         return Result<void, DomainError>::failure(
             sqliteError(QStringLiteral("runtime schema version is newer than supported")));
     }
-    if (version == 2) return Result<void, DomainError>::success();
+    if (version == 3) return Result<void, DomainError>::success();
     if (!pragma.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
         return Result<void, DomainError>::failure(
             sqliteError(QStringLiteral("failed to begin runtime schema migration"),
@@ -294,11 +344,11 @@ Result<void, DomainError> SqliteEventRepository::migrateSchema(QSqlDatabase& dat
         return Result<void, DomainError>::failure(sqliteError(QStringLiteral("failed to recheck runtime schema version"), pragma.lastError()));
     }
     const int lockedVersion = pragma.value(0).toInt();
-    if (lockedVersion > 2 || lockedVersion < 0) {
+    if (lockedVersion > 3 || lockedVersion < 0) {
         database.rollback();
         return Result<void, DomainError>::failure(sqliteError(QStringLiteral("runtime schema version is newer than supported")));
     }
-    if (lockedVersion == 2) {
+    if (lockedVersion == 3) {
         if (!database.commit()) return Result<void, DomainError>::failure(sqliteError(QStringLiteral("failed to finish runtime schema check"), database.lastError()));
         return Result<void, DomainError>::success();
     }
@@ -310,7 +360,7 @@ Result<void, DomainError> SqliteEventRepository::migrateSchema(QSqlDatabase& dat
                 sqliteError(QStringLiteral("failed to migrate runtime schema"), query.lastError()));
         }
     }
-    if (!query.exec(QStringLiteral("PRAGMA user_version=2")) || !database.commit()) {
+    if (!query.exec(QStringLiteral("PRAGMA user_version=3")) || !database.commit()) {
         database.rollback();
         return Result<void, DomainError>::failure(
             sqliteError(QStringLiteral("failed to commit runtime schema migration"),

@@ -4,6 +4,7 @@
 //
 
 #include "ai_brain.h"
+#include "activity/activity_runtime.h"
 #include "plugin/plugin_runtime.h"
 #include "reflection/memory_consolidation_service.h"
 #include "memory/memory_metadata.h"
@@ -220,7 +221,7 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
         ? services->chatPreparationRuntimeMetadata()
         : ChatPreparationRuntimeMetadata{};
     m_memoryStore.setProfileId(m_chatPreparationRuntimeMetadata.profileId);
-    if (services) { initializeTaskRuntime(); initializePluginRuntime(); }
+    if (services) { initializeTaskRuntime(); initializePluginRuntime(); refreshTaskDependencies(); }
     if (services && m_storageInitialized) {
         const auto started = startChatSideEffectQueue();
         if (!started.isOk()) {
@@ -285,6 +286,7 @@ void AIBrain::setToolRegistry(ToolRegistry* registry) {
     m_toolRegistry = registry;
     m_toolRuntime.setToolRegistry(registry);
     initializePluginRuntime();
+    refreshTaskDependencies();
 }
 
 void AIBrain::setAgentScheduler(AgentScheduler* scheduler) {
@@ -357,7 +359,7 @@ void AIBrain::stop() {
     m_taskExperienceTimer.stop();
     if (m_taskExperienceAdapter) m_taskExperienceAdapter->cancel();
     // Closing preserves a resumable checkpoint instead of cancelling the task.
-    if (m_taskOrchestrator) m_taskOrchestrator->shutdown();
+    if (m_activityRuntime) m_activityRuntime->shutdownAsync();
     if (m_daydreamRunning) {
         cancelDaydreamSession(QStringLiteral("AI brain stopped"));
     }
@@ -557,7 +559,7 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
 
 bool AIBrain::canStartProactiveChat() const {
     if (!automaticTextAllowed()) return false;
-    return m_enabled && m_storageInitialized && !m_busy && m_pendingUserMessages.isEmpty()
+    return m_enabled && m_storageInitialized && !m_busy && !isTaskActive() && m_pendingUserMessages.isEmpty()
         && (!m_conversationCooldown.isValid()
             || m_conversationCooldown.elapsed() >= (m_cooldownAfterProactive
                 ? proactiveChatTiming(m_proactiveBaseIntervalMs).cooldownMs : 60000));

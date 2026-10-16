@@ -27,6 +27,12 @@ public:
     Result<void,DomainError> setHostConfiguration(const QJsonObject& configuration);
     Result<PluginRegistration,DomainError> registerPlugin(const PluginLocation& location);
     Result<LoadedCapability,DomainError> loadCapability(const CapabilityRef& ref,const ContextSpec& context);
+    using CapabilityValidator = std::function<Result<void, DomainError>(
+        const QList<CapabilityRef> &, const ContextSpec &)>;
+    // Value/shared-state closure for worker-side lifecycle validation; no
+    // QObject or network access, and retirement invalidates every previously
+    // issued closure.
+    CapabilityValidator makeCapabilityValidator() const;
     void invokeCapability(const CapabilityCall& call,CapabilityCompletion completion);
     Result<void,DomainError> setPluginEnabled(const PluginStateChange& change);
     QJsonArray discoverCapabilities(const ContextSpec& context) const;
@@ -44,10 +50,27 @@ signals:
     void capabilityDispatching(const QString& callId);
 private:
     struct Pending { CapabilityCompletion completion; std::optional<CapabilityOutcome> outcome; bool settled=false; };
-    struct State { QMutex mutex; QJsonObject config; QHash<QString,LoadedCapability> loaded; QList<SkillEntry> learned; std::shared_ptr<PluginCatalog> catalog=std::make_shared<PluginCatalog>(); bool stopping=false; };
+    struct State {
+        QMutex mutex;
+        QJsonObject config;
+        QHash<QString, LoadedCapability> loaded;
+        QList<SkillEntry> learned;
+        quint64 learnedRevision = 0;
+        std::shared_ptr<PluginCatalog> catalog =
+            std::make_shared<PluginCatalog>();
+        bool stopping = false;
+    };
     Result<void,DomainError> save(const QJsonObject& config) const;
     Result<QJsonObject,DomainError> grant(const CapabilityRef& ref,const ContextSpec& context,const QString& id={}) const;
-    Result<void,DomainError> authorize(const LoadedCapability& loaded,const CapabilityCall& call,const QJsonObject& grant,const CapabilityBinding& binding) const;
+    static Result<QJsonObject, DomainError>
+    findGrant(const QString &profile, const QJsonObject &configuration,
+              const CapabilityRef &ref, const ContextSpec &context,
+              const QString &id = {});
+    static CapabilityBinding bindingFor(const QJsonObject &configuration,
+                                        const CapabilityRef &ref);
+    static Result<void, DomainError>
+    authorize(const LoadedCapability &loaded, const CapabilityCall &call,
+              const QJsonObject &grant, const CapabilityBinding &binding);
     Result<LoadedCapability,DomainError> loadForDispatch(const CapabilityRef& ref,const ContextSpec& context,const std::shared_ptr<ToolDispatchToken>& token);
     CapabilityBinding binding(const CapabilityRef& ref) const;
     QJsonValue publicValue(const QJsonValue& value,const LoadedCapability& loaded) const;
