@@ -15,6 +15,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import time
 
 from jsonschema import Draft202012Validator
 
@@ -81,6 +82,109 @@ def reference_issues(package, directory):
                 issues.append(f"missing, optional, or incompatible setting: {key}")
     return issues
 
+
+def source_reference_issues(source):
+    settings = {item['key']: item for item in source['configuration']}
+    issues = []
+    for collection, key in [('configuration', 'key'), ('requirements', 'id')]:
+        ids = [item[key] for item in source[collection]]
+        if len(ids) != len(set(ids)):
+            issues.append('duplicate ' + collection)
+    for binding in [source['invocation']['program']] + source['invocation']['arguments']:
+        if not isinstance(binding, dict):
+            continue
+        declared = settings.get(binding['setting'], {})
+        if not declared.get('required') or declared.get('kind') not in ('executable', 'path', 'text', 'secret'):
+            issues.append('invalid required setting')
+    program = settings.get(source['invocation']['program']['setting'], {})
+    if program.get('kind') != 'executable':
+        issues.append('program must be executable')
+    return issues
+
+
+def controlled_chat_checks(check, plugin_validator, tool_validator):
+    package = ROOT / 'examples/controlled-chat'
+    schema = read_json(ROOT / 'source.schema.json')
+    Draft202012Validator.check_schema(schema)
+    source_validator = Draft202012Validator(schema)
+    source = read_json(package / 'source.json')
+    check('controlled_plugin_schema', plugin_validator.is_valid(read_json(package / 'plugin.json')))
+    check('controlled_tool_schema', tool_validator.is_valid(read_json(package / 'tool.json')))
+    check('source_schema_positive', source_validator.is_valid(source))
+    check('source_required_settings', not source_reference_issues(source))
+    for name in ('source-protocol', 'source-model-argv'):
+        check(name, not source_validator.is_valid(read_json(ROOT / 'examples/invalid' / (name + '.json'))))
+    for kind in ('optional', 'missing', 'wrong_kind', 'duplicate'):
+        value = copy.deepcopy(source)
+        if kind == 'optional':
+            value['configuration'][0]['required'] = False
+        elif kind == 'missing':
+            value['invocation']['program']['setting'] = 'undeclared'
+        elif kind == 'wrong_kind':
+            value['configuration'][0]['kind'] = 'text'
+        else:
+            value['configuration'].append(value['configuration'][0])
+        check('source_reference_' + kind, bool(source_reference_issues(value)))
+    with tempfile.TemporaryDirectory(prefix='controlled-chat-contract-') as temporary:
+        journal = Path(temporary) / 'journal.sqlite'
+        base = [sys.executable, str(package / 'adapter.py'), '--database', str(journal), '--operation']
+        def invoke(op, value):
+            result = subprocess.run(base + [op], input=json.dumps(value), capture_output=True,
+                                    text=True, timeout=10)
+            if result.returncode:
+                raise RuntimeError('Controlled adapter failed: ' + result.stderr)
+            return json.loads(result.stdout)
+        first = invoke('inject', dict(chat_id='group-a', speaker_id='alice', text='原始消息'))
+        sent = invoke('send', dict(chat_id='group-a', text='实际回复', reply_to=first['remote_message_id']))
+        check('controlled_list', invoke('list', {}) == {'conversations': [{'chat_id': 'group-a', 'kind': 'group'}]})
+        items = invoke('read', dict(chat_id='group-a'))['items']
+        check('controlled_read', len(items) == 2 and items[0]['text'] == '原始消息' and items[1]['text'] == sent['content'])
+        check('controlled_pagination', invoke('read', dict(chat_id='group-a', limit=1))['items'] == items[:1]
+              and invoke('read', dict(chat_id='group-a', cursor=items[0]['cursor']))['items'] == items[1:])
+        check('controlled_empty_query', invoke('read', dict(chat_id='group-b')) == {'items': []})
+        check('controlled_receipt', invoke('receipt', dict(message_id=sent['remote_message_id']))['message'] == items[1])
+        controls = [dict(type='start', cursor=''), dict(type='ack', eventId=items[0]['event_id'], cursor=items[0]['cursor']), dict(type='stop')]
+        stream = subprocess.run(base + ['source'], input=''.join(json.dumps(c)+'\n' for c in controls), capture_output=True, text=True, timeout=10)
+        observed = [json.loads(line) for line in stream.stdout.splitlines()]
+        check('controlled_source_actual_jsonl', stream.returncode == 0 and len(observed) == 2
+              and [v['eventId'] for v in observed] == [v['event_id'] for v in items]
+              and [v['message']['remoteMessageId'] for v in observed] == [v['message_id'] for v in items])
+        with sqlite3.connect(journal) as db:
+            check('controlled_source_ack', db.execute('SELECT event_id,cursor FROM acknowledgements').fetchall() == [(items[0]['event_id'], items[0]['cursor'])])
+        controls = [dict(type='start', cursor=items[0]['cursor']), dict(type='stop')]
+        replay = subprocess.run(base + ['source'], input=''.join(json.dumps(c)+'\n' for c in controls), capture_output=True, text=True, timeout=10)
+        check('controlled_source_committed_resume', replay.returncode == 0 and [json.loads(line)['eventId'] for line in replay.stdout.splitlines()] == [items[1]['event_id']])
+        live = subprocess.Popen(base + ['source'], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        try:
+            controls = [dict(type='start', cursor=items[-1]['cursor'])] + [dict(type='ack', eventId=v['event_id'], cursor=v['cursor']) for v in items]
+            live.stdin.write(''.join(json.dumps(c)+'\n' for c in controls))
+            live.stdin.flush()
+            acknowledged = 0
+            deadline = time.monotonic() + 3
+            while time.monotonic() < deadline:
+                with sqlite3.connect(journal) as db:
+                    acknowledged = db.execute('SELECT count(*) FROM acknowledgements').fetchone()[0]
+                if acknowledged == 2:
+                    break
+                time.sleep(.01)
+            check('controlled_multiple_ack_with_stdin_open', acknowledged == 2)
+            live.communicate(json.dumps(dict(type='stop'))+'\n', timeout=5)
+        finally:
+            if live.poll() is None:
+                live.kill()
+                live.communicate()
+        for value in (0, 257, '2'):
+            invalid = subprocess.run(base + ['read'], input=json.dumps(dict(chat_id='group-a', limit=value)), capture_output=True, text=True, timeout=10)
+            check('controlled_invalid_page_' + str(value), invalid.returncode != 0 and not invalid.stdout)
+        for no_source in (False, True):
+            command = [sys.executable, str(package / 'make_host_config.py'), '--profile', '5bb00e6d-937a-4f46-9c87-e3933c078f5a', '--database', str(journal), '--python', sys.executable]
+            if no_source:
+                command.append('--without-source')
+            result = subprocess.run(command, capture_output=True, text=True, timeout=10, check=True)
+            config = json.loads(result.stdout)
+            observation = config['observationBindings'][0]
+            check('controlled_host_config_' + str(no_source), bool(config['grants']) and bool(config['replyBindings']) and config['observationAdapters'][0]['ref']['operationId'] == 'read'
+                  and (('source' not in observation) if no_source else observation['source']['enabled'] is False))
 
 def main():
     checks = []
@@ -214,6 +318,8 @@ def main():
         malformed = copy.deepcopy(value)
         malformed["id"] += "\n"
         check(f"manifest_identifier_newline_{len(checks)}", not target.is_valid(malformed))
+
+    controlled_chat_checks(check, plugin_validator, validator)
 
     with tempfile.TemporaryDirectory(prefix="desktop-pet-contract-") as temporary:
         work = Path(temporary)

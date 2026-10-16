@@ -1,9 +1,10 @@
 #pragma once
-#include "ai/domain/domain_result.h"
+#include "ai/ai_tool.h"
+#include "ai/chat/conversation_types.h"
 #include "ai/context/context_spec.h"
+#include "ai/domain/domain_result.h"
 #include <QJsonArray>
 #include <functional>
-#include "ai/ai_tool.h"
 
 struct PluginLocation { QString rootPath; };
 struct CapabilityRef {
@@ -41,6 +42,7 @@ struct CapabilityCall {
     int timeoutMs = 30000;
     bool autonomous = false;
     std::shared_ptr<ToolDispatchToken> dispatchToken;
+    std::optional<RoutedResponse> preparedResponse;
 };
 struct CapabilityOutcome {
     ContextSpec context;
@@ -49,6 +51,8 @@ struct CapabilityOutcome {
     QJsonValue data, receipt, tracking;
     DomainError error;
     bool executed = false;
+    std::optional<DeliveryReceipt>
+        deliveryReceipt; // Host-only; excluded from public JSON.
     QJsonObject toJson() const;
 };
 using CapabilityCompletion = std::function<void(CapabilityOutcome)>;

@@ -1,0 +1,37 @@
+{
+  "formatVersion": "1",
+  "id": "example.controlled-events",
+  "protocol": "agent-observation-1",
+  "requirements": [],
+  "configuration": [
+    {
+      "key": "program",
+      "kind": "executable",
+      "required": true,
+      "description": "Trusted Python interpreter"
+    },
+    {
+      "key": "script",
+      "kind": "path",
+      "required": true,
+      "description": "Absolute immutable adapter script"
+    },
+    {
+      "key": "database",
+      "kind": "path",
+      "required": true,
+      "description": "Adapter journal outside the package"
+    }
+  ],
+  "invocation": {
+    "kind": "command",
+    "program": {
+      "setting": "program"
+    },
+    "arguments": [
+      {
+        "input": "/command"
+      }
+    ]
+  }
+}

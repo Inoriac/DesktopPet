@@ -138,9 +138,17 @@ VoidResult queueObserved(RuntimeUnitOfWork& unit, SqliteEventOutbox& outbox, con
     EventDraft event;
     event.eventId=payload["originId"].toString(); event.profileId=profile;
     event.type="MessageObserved"; event.source="ConversationStore"; event.occurredAt=occurredAt;
-    event.payload={{"message_id",id},{"conversation_id",conversation},{"speaker_id",speaker},
-                   {"subject_id",speaker},{"text",payload["text"]}, {"sender_kind",payload["senderKind"]},
-                   {"origin_kind",originKindToString(kind)},{"historical_import",payload["historical_import"].toBool()}};
+    event.payload = {
+        {"message_id", id},
+        {"conversation_id", conversation},
+        {"speaker_id", speaker},
+        {"subject_id", speaker},
+        {"text", payload["text"]},
+        {"sender_kind", payload["senderKind"]},
+        {"origin_kind", originKindToString(kind)},
+        {"historical_import", payload["historical_import"].toBool()},
+        {"original_time_known", payload["originalTimeKnown"].toBool(true)},
+        {"received_at", payload["receivedAt"].toString()}};
     const auto queued=outbox.enqueue(unit,event);
     return queued ? VoidResult::success() : VoidResult::failure(queued.error());
 }
@@ -203,67 +211,178 @@ VoidResult ConversationStore::registerBinding(const HostConversationBinding& b) 
     m_bindings.insert(conversationBindingKey(b.channel,b.connectionKey,b.remoteConversationId),b);
     return VoidResult::success();
 }
-Result<AcceptedMessage, DomainError> ConversationStore::acceptMessage(const IncomingMessage& message) {
-    using R=Result<AcceptedMessage,DomainError>;
-    const auto binding=m_bindings.constFind(conversationBindingKey(message.channel,message.connectionKey,message.remoteConversationId));
-    if (binding==m_bindings.cend()) return R::failure(domainError("DEPENDENCY_UNAVAILABLE","Conversation connection is not registered"));
-    const bool local=binding->kind==ConversationKind::LocalOwner;
-    if (message.kind!=binding->kind || (local ? message.originKind!=OriginKind::LocalOwner : message.originKind!=OriginKind::External)
-        || message.content.trimmed().isEmpty() || message.content.size()>8000 || !message.occurredAt.isValid()
-        || (local ? message.localMessageId.isEmpty() : (!message.localMessageId.isEmpty()
-            || (message.remoteMessageId.isEmpty() && message.sourceEventId.isEmpty()))))
-        return R::failure(invalid("Invalid incoming message or origin"));
-    const QString conversation=conversationIdFor(m_profileId,message.channel,message.connectionKey,message.remoteConversationId);
-    const QString remote=message.remoteMessageId;
-    const QString id=local ? message.localMessageId : stableId("message",m_profileId,
-        conversation+json(QJsonObject{{"remote",remote},{"event",remote.isEmpty()?message.sourceEventId:QString()}}));
-    const bool self=!local && sameIdentity(message.speakerIdentity,binding->selfIdentity);
-    EventSchemaRegistry schemas; registerBuiltInEventSchemas(schemas);
-    SqliteEventOutbox outbox(m_databasePath,&schemas,m_profileId);
-    SqliteRuntimeUnitOfWorkFactory factory(m_databasePath);
-    PersonResolution resolution;
-    if (!self) {
-        SqliteIdentityRepository identities; auto opened=identities.open(m_databasePath); if (!opened) return R::failure(opened.error());
-        PersonDirectory people(m_profileId,&identities,&factory,&outbox);
-        ResolvePersonRequest request; request.profileId=m_profileId; request.ownerLocal=local;
-        if (!local) request.externalIdentity=message.speakerIdentity;
-        auto resolved=people.resolvePerson(request); if (!resolved) return R::failure(resolved.error());
-        resolution=resolved.value();
-    }
-    auto begun=factory.begin(); if (!begun) return R::failure(begun.error());
-    auto& unit=*begun.value(); auto db=QSqlDatabase::database(unit.connectionName());
-    auto ensured=ensureConversation(db,m_profileId,conversation,message.channel,message.connectionKey,message.remoteConversationId,message.kind,message.title);
-    if (!ensured) return R::failure(ensured.error());
-    QSqlQuery q(db); q.prepare("SELECT id,speaker_id,payload_json FROM agent_messages WHERE profile_id=? AND conversation_id=? AND (id=? OR (?<>'' AND remote_id=?))");
-    q.addBindValue(m_profileId); q.addBindValue(conversation); q.addBindValue(id); q.addBindValue(nonnull(remote)); q.addBindValue(nonnull(remote));
-    if (!q.exec()) return R::failure(storeError(q.lastError().text()));
-    AcceptedMessage accepted; accepted.messageId=id; accepted.conversationId=conversation; accepted.personResolution=resolution;
-    accepted.selfMessage=self; accepted.originId=stableId("origin",m_profileId,id);
-    if (q.next()) {
-        auto p=parsedObject(q.value(2)); if (!p) return R::failure(p.error());
-        if (p.value()["text"].toString()!=message.content || q.value(1).toString()!=resolution.personId.value_or(QString())
-            || (p.value()["senderKind"]=="self")!=self)
-            return R::failure(invalid("Repeated message identity has conflicting content or speaker"));
-        accepted.duplicate=true; accepted.messageId=q.value(0).toString(); accepted.originId=p.value()["originId"].toString();
-    } else {
-        QJsonObject p={{"text",message.content},{"senderKind",self?"self":resolution.personId?"person":"unknown"},
-            {"role",self?"assistant":"user"},{"status","complete"},{"replyToRemoteId",message.replyToRemoteId},
-            {"originId",accepted.originId},{"sourceEventId",message.sourceEventId},
-            {"externalSpeaker",QJsonObject{{"provider",message.speakerIdentity.provider},{"namespace",message.speakerIdentity.nameSpace},{"remoteActorId",message.speakerIdentity.remoteActorId}}}};
-        auto inserted=run(db,"INSERT INTO agent_messages(profile_id,id,conversation_id,remote_id,speaker_id,direction,payload_json,occurred_at) VALUES(?,?,?,?,?,?,?,?)",
-            {m_profileId,id,conversation,remote.isEmpty()?QVariant():QVariant(remote),resolution.personId?QVariant(*resolution.personId):QVariant(),
-             self?"outgoing":"incoming",json(p),message.occurredAt.toUTC().toString(Qt::ISODateWithMs)});
-        if (!inserted) return R::failure(inserted.error());
-        auto event=queueObserved(unit,outbox,m_profileId,id,conversation,resolution.personId.value_or(QString()),p,message.occurredAt,message.originKind);
-        if (!event) return R::failure(event.error());
-        auto increased=incrementRevision(db,m_profileId,conversation); if (!increased) return R::failure(increased.error());
-    }
-    auto context=readContext(db,m_profileId,conversation); if (!context) return R::failure(context.error());
-    accepted.context=context.value(); accepted.revision=context.value().conversationRevision;
-    accepted.replyTarget={message.channel,message.connectionKey,conversation,message.remoteConversationId,accepted.messageId};
-    auto committed=unit.commit(); if (!committed) return R::failure(committed.error());
-    outbox.dispatchPending(100); // Message and origin outbox are already committed.
-    return R::success(accepted);
+Result<AcceptedMessage, DomainError>
+ConversationStore::acceptMessage(const IncomingMessage &message,
+                                 const AcceptanceCommit &commit) {
+  using R = Result<AcceptedMessage, DomainError>;
+  const auto binding = m_bindings.constFind(conversationBindingKey(
+      message.channel, message.connectionKey, message.remoteConversationId));
+  if (binding == m_bindings.cend())
+    return R::failure(domainError("DEPENDENCY_UNAVAILABLE",
+                                  "Conversation connection is not registered"));
+  const bool local = binding->kind == ConversationKind::LocalOwner;
+  if (message.kind != binding->kind ||
+      (local ? message.originKind != OriginKind::LocalOwner
+             : message.originKind != OriginKind::External) ||
+      message.content.trimmed().isEmpty() || message.content.size() > 8000 ||
+      (local && !message.occurredAt.isValid()) ||
+      (local ? message.localMessageId.isEmpty()
+             : (!message.localMessageId.isEmpty() ||
+                (message.remoteMessageId.isEmpty() &&
+                 message.sourceEventId.isEmpty()))))
+    return R::failure(invalid("Invalid incoming message or origin"));
+  const QDateTime receivedAt = message.receivedAt.isValid()
+                                   ? message.receivedAt
+                                   : QDateTime::currentDateTimeUtc();
+  const bool originalTimeKnown =
+      message.originalTimeKnown && message.occurredAt.isValid();
+  const QString conversation =
+      conversationIdFor(m_profileId, message.channel, message.connectionKey,
+                        message.remoteConversationId);
+  const QString remote = message.remoteMessageId;
+  const QString id =
+      local
+          ? message.localMessageId
+          : stableId("message", m_profileId,
+                     conversation +
+                         json(QJsonObject{{"remote", remote},
+                                          {"event", remote.isEmpty()
+                                                        ? message.sourceEventId
+                                                        : QString()}}));
+  const bool self =
+      !local && sameIdentity(message.speakerIdentity, binding->selfIdentity);
+  EventSchemaRegistry schemas;
+  registerBuiltInEventSchemas(schemas);
+  SqliteEventOutbox outbox(m_databasePath, &schemas, m_profileId);
+  SqliteRuntimeUnitOfWorkFactory factory(m_databasePath);
+  PersonResolution resolution;
+  if (!self) {
+    SqliteIdentityRepository identities;
+    auto opened = identities.open(m_databasePath);
+    if (!opened)
+      return R::failure(opened.error());
+    PersonDirectory people(m_profileId, &identities, &factory, &outbox);
+    ResolvePersonRequest request;
+    request.profileId = m_profileId;
+    request.ownerLocal = local;
+    if (!local)
+      request.externalIdentity = message.speakerIdentity;
+    auto resolved = people.resolvePerson(request);
+    if (!resolved)
+      return R::failure(resolved.error());
+    resolution = resolved.value();
+  }
+  auto begun = factory.begin();
+  if (!begun)
+    return R::failure(begun.error());
+  auto &unit = *begun.value();
+  auto db = QSqlDatabase::database(unit.connectionName());
+  auto ensured = ensureConversation(
+      db, m_profileId, conversation, message.channel, message.connectionKey,
+      message.remoteConversationId, message.kind, message.title);
+  if (!ensured)
+    return R::failure(ensured.error());
+  QSqlQuery q(db);
+  q.prepare("SELECT id,speaker_id,payload_json,occurred_at,received_at FROM "
+            "agent_messages WHERE profile_id=? AND conversation_id=? AND (id=? "
+            "OR (?<>'' AND remote_id=?))");
+  q.addBindValue(m_profileId);
+  q.addBindValue(conversation);
+  q.addBindValue(id);
+  q.addBindValue(nonnull(remote));
+  q.addBindValue(nonnull(remote));
+  if (!q.exec())
+    return R::failure(storeError(q.lastError().text()));
+  AcceptedMessage accepted;
+  accepted.messageId = id;
+  accepted.conversationId = conversation;
+  accepted.personResolution = resolution;
+  accepted.selfMessage = self;
+  accepted.historicalImport = message.historicalImport;
+  accepted.originalTimeKnown = originalTimeKnown;
+  accepted.receivedAt = receivedAt;
+  accepted.originId = stableId("origin", m_profileId, id);
+  if (q.next()) {
+    auto p = parsedObject(q.value(2));
+    if (!p)
+      return R::failure(p.error());
+    if (p.value()["text"].toString() != message.content ||
+        q.value(1).toString() != resolution.personId.value_or(QString()) ||
+        (p.value()["senderKind"] == "self") != self)
+      return R::failure(invalid(
+          "Repeated message identity has conflicting content or speaker"));
+    accepted.duplicate = true;
+    accepted.messageId = q.value(0).toString();
+    accepted.originId = p.value()["originId"].toString();
+    accepted.historicalImport = p.value()["historical_import"].toBool();
+    accepted.originalTimeKnown =
+        p.value()["originalTimeKnown"].toBool(!q.value(3).isNull());
+    accepted.receivedAt =
+        QDateTime::fromString(q.value(4).toString(), Qt::ISODateWithMs);
+  } else {
+    QJsonObject p = {
+        {"text", message.content},
+        {"senderKind", self                  ? "self"
+                       : resolution.personId ? "person"
+                                             : "unknown"},
+        {"role", self ? "assistant" : "user"},
+        {"status", "complete"},
+        {"replyToRemoteId", message.replyToRemoteId},
+        {"originId", accepted.originId},
+        {"sourceEventId", message.sourceEventId},
+        {"originalTimeKnown", originalTimeKnown},
+        {"receivedAt", receivedAt.toUTC().toString(Qt::ISODateWithMs)},
+        {"historical_import", message.historicalImport},
+        {"externalSpeaker",
+         QJsonObject{
+             {"provider", message.speakerIdentity.provider},
+             {"namespace", message.speakerIdentity.nameSpace},
+             {"remoteActorId", message.speakerIdentity.remoteActorId}}}};
+    auto inserted = run(
+        db,
+        "INSERT INTO "
+        "agent_messages(profile_id,id,conversation_id,remote_id,speaker_id,"
+        "direction,payload_json,occurred_at,received_at) "
+        "VALUES(?,?,?,?,?,?,?,?,?)",
+        {m_profileId, id, conversation,
+         remote.isEmpty() ? QVariant() : QVariant(remote),
+         resolution.personId ? QVariant(*resolution.personId) : QVariant(),
+         self ? "outgoing" : "incoming", json(p),
+         originalTimeKnown
+             ? QVariant(message.occurredAt.toUTC().toString(Qt::ISODateWithMs))
+             : QVariant(),
+         receivedAt.toUTC().toString(Qt::ISODateWithMs)});
+    if (!inserted)
+      return R::failure(inserted.error());
+    auto event =
+        queueObserved(unit, outbox, m_profileId, id, conversation,
+                      resolution.personId.value_or(QString()), p,
+                      originalTimeKnown ? message.occurredAt : receivedAt,
+                      message.originKind);
+    if (!event)
+      return R::failure(event.error());
+    auto increased = incrementRevision(db, m_profileId, conversation);
+    if (!increased)
+      return R::failure(increased.error());
+  }
+  auto context = readContext(db, m_profileId, conversation);
+  if (!context)
+    return R::failure(context.error());
+  accepted.context = context.value();
+  accepted.revision = context.value().conversationRevision;
+  accepted.replyTarget = {message.channel, message.connectionKey, conversation,
+                          message.remoteConversationId, accepted.messageId};
+  if (commit) {
+    auto extended = commit(unit, accepted);
+    if (!extended)
+      return R::failure(extended.error());
+  }
+  auto committed = unit.commit();
+  if (!committed)
+    return R::failure(committed.error());
+  outbox.dispatchPending(
+      100); // Message and origin outbox are already committed.
+  return R::success(accepted);
 }
 Result<QList<ChatHistoryEntry>, DomainError> ConversationStore::loadHistory(const QString& conversation,int limit) const {
     auto begun=SqliteRuntimeUnitOfWork::begin(m_databasePath);

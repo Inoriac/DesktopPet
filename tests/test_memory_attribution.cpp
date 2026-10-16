@@ -28,6 +28,7 @@ private slots:
     void schemaUpgradePreservesBodyAndRejectsFutureVersion();
     void ingestTwoSpeakersAndOrigins();
     void pendingSourceAndMismatch();
+    void unknownOriginalTimeRemainsNull();
     void audienceAndJsonRoundTrip();
     void migrationIsAtomicAndIdempotent();
     void associationFailureRollsBack();
@@ -112,6 +113,40 @@ void MemoryAttributionTests::ingestTwoSpeakersAndOrigins() {
             QCOMPARE(to->attribution.subjects(), QStringList{"alice"});
         }
     QCOMPARE(conflicts, 1);
+}
+void MemoryAttributionTests::unknownOriginalTimeRemainsNull() {
+  QTemporaryDir d;
+  MemoryStore store;
+  store.setProfileId("p");
+  store.setDatabasePath(d.filePath("m.db"));
+  QVERIFY(store.loadDatabaseOnly());
+  auto i = input("alice", "unknown-time");
+  auto original = source(i);
+  original.originalTimeKnown = false;
+  MemoryAttributionService service(
+      "p", &store,
+      [&](const QString &, const QString &) {
+        return SourceResult::success(original);
+      },
+      [](const QString &, const QString &) {
+        return Result<bool, DomainError>::success(true);
+      });
+  QVERIFY(service.ingestMemory(i));
+  QCOMPARE(store.all().size(), 1);
+  QVERIFY(
+      !store.all().first().attribution.origins.first().originalAt.isValid());
+  const auto connection = QUuid::createUuid().toString();
+  {
+    auto db = QSqlDatabase::addDatabase("QSQLITE", connection);
+    db.setDatabaseName(d.filePath("m.db"));
+    QVERIFY(db.open());
+    QSqlQuery q(db);
+    QVERIFY(q.exec("SELECT original_at FROM memory_origins WHERE "
+                   "origin_id='unknown-time'"));
+    QVERIFY(q.next());
+    QVERIFY(q.value(0).isNull());
+  }
+  QSqlDatabase::removeDatabase(connection);
 }
 void MemoryAttributionTests::pendingSourceAndMismatch() {
     QTemporaryDir d;

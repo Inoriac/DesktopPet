@@ -1,4 +1,5 @@
 #pragma once
+#include "ai/observation/observation_types.h"
 #include "capability_types.h"
 #include <QHash>
 #include <QMutex>
@@ -9,13 +10,20 @@ public:
     Result<PluginRegistration,DomainError> registerPlugin(const PluginLocation& location);
     Result<LoadedCapability,DomainError> loadCapability(const CapabilityRef& ref) const;
     Result<void,DomainError> setPluginEnabled(const PluginStateChange& change);
+    Result<LoadedObservationSource, DomainError>
+    loadSource(const QString &pluginId, const QString &sourceId) const;
     QJsonArray discover() const;
     quint64 revision() const;
     void invalidate();
     bool enabled(const QString& pluginId) const;
 private:
     struct Entry { QJsonObject summary; QString path; QStringList operationIds; QJsonArray dependencies; };
-    struct Package { QString root, digest; QStringList entryIds; bool enabled=true; };
+    struct Package {
+      QString root, digest;
+      QStringList entryIds;
+      bool enabled = true;
+      QHash<QString, QString> sources;
+    };
     static Result<QString,DomainError> digestPackage(const QString& root);
     mutable QMutex m_mutex;
     QHash<QString,Entry> m_entries;

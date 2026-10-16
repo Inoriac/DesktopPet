@@ -142,7 +142,10 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
         {QStringLiteral("speaker_id"), EventFieldType::String},
         {QStringLiteral("text"), EventFieldType::String},
         {QStringLiteral("origin_kind"), EventFieldType::String}};
-    observed.optionalFields = {{QStringLiteral("historical_import"), EventFieldType::Boolean}};
+    observed.optionalFields = {
+        {QStringLiteral("historical_import"), EventFieldType::Boolean},
+        {QStringLiteral("original_time_known"), EventFieldType::Boolean},
+        {QStringLiteral("received_at"), EventFieldType::String}};
     definitions.append(observed);
 
     EventSchemaDefinition assistant;

@@ -109,6 +109,9 @@ set(EVENT_LEDGER_SOURCES
 )
 
 set(CONVERSATION_SOURCES
+    core/ai/chat/delivery_receipt_archive.cpp core/ai/chat/delivery_receipt_archive.h
+    core/ai/observation/observation_store.cpp core/ai/observation/observation_types.h
+    core/ai/observation/observation_service.cpp core/ai/observation/observation_service.h
     core/ai/chat/conversation_types.h core/ai/chat/conversation_types.cpp
     core/ai/chat/conversation_store.h core/ai/chat/conversation_store.cpp
     core/ai/chat/conversation_service.h core/ai/chat/conversation_service.cpp
@@ -2047,6 +2050,12 @@ endif ()
 if(Python3_EXECUTABLE)
     add_test(NAME AutonomyConfigTests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autonomy_config.py)
 endif()
+add_desktop_pet_cpp_test(autonomous_chat_tests AutonomousChatTests
+    SOURCES tests/test_autonomous_chat.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
+target_compile_definitions(autonomous_chat_tests PRIVATE CONTROLLED_CHAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/contracts/tools/examples/controlled-chat")
 add_desktop_pet_cpp_test(activity_selector_tests ActivitySelectorTests
     SOURCES tests/test_activity_selector.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
@@ -2064,7 +2073,7 @@ add_desktop_pet_cpp_test(activity_runtime_tests ActivityRuntimeTests
     APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
 add_desktop_pet_cpp_test(task_orchestrator_tests TaskOrchestratorTests
     SOURCES tests/test_task_orchestrator.cpp ${TASK_ORCHESTRATION_SOURCES} ${EVENT_LEDGER_SOURCES}
-        core/ai/chat/conversation_types.cpp core/ai/chat/conversation_store.cpp core/ai/chat/chat_types.cpp core/ai/plugin/capability_types.cpp
+        core/ai/chat/conversation_types.cpp core/ai/chat/conversation_store.cpp core/ai/chat/chat_types.cpp core/ai/plugin/capability_types.cpp core/ai/observation/observation_store.cpp
         core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
         core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -2108,18 +2117,23 @@ add_library(plugin_support STATIC
     core/ai/plugin/capability_types.cpp
     core/ai/plugin/schema_validator.cpp
     core/ai/plugin/plugin_catalog.cpp
+    core/ai/observation/observation_types.cpp
     core/ai/plugin/plugin_runtime.cpp
     core/ai/plugin/capability_executor.cpp
     core/ai/plugin/plugin_gateway.cpp
+    core/ai/plugin/plugin_reply_bridge.cpp
     core/ai/plugin/learned_skill_adapter.cpp
     core/ai/mcp/mcp_client.cpp
     contracts/tools/plugin_contracts.qrc)
 target_include_directories(plugin_support PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/jsoncons/include)
-target_link_libraries(plugin_support PUBLIC Qt::Core)
+target_link_libraries(plugin_support PUBLIC Qt::Core Qt::Sql)
 add_desktop_pet_cpp_test(plugin_runtime_tests PluginRuntimeTests
-    SOURCES tests/test_plugin_runtime.cpp core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+    SOURCES tests/test_plugin_runtime.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+      core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+      core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+      core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
-    LIBRARIES plugin_support Qt::Core Qt::Test)
+    LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
 
 target_compile_definitions(plugin_runtime_tests PRIVATE PLUGIN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugin_probe.py")
 get_property(desktop_pet_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
@@ -2130,3 +2144,16 @@ foreach(desktop_pet_target IN LISTS desktop_pet_targets)
         target_link_libraries(${desktop_pet_target} plugin_support)
     endif()
 endforeach()
+
+add_desktop_pet_cpp_test(external_observation_tests ExternalObservationTests
+    SOURCES tests/test_external_observation.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+      core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+      core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+      core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
+
+target_compile_definitions(external_observation_tests PRIVATE CONTROLLED_CHAT_PATH="${CMAKE_CURRENT_SOURCE_DIR}/contracts/tools/examples/controlled-chat")
+
+target_compile_definitions(external_observation_tests PRIVATE OBSERVATION_SOURCE_PROBE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observation_source_probe.py")
+target_compile_definitions(autonomous_chat_tests PRIVATE OBSERVATION_SOURCE_PROBE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observation_source_probe.py")

@@ -100,6 +100,10 @@ QJsonObject verification(bool complete, const QString& reference = "user_input")
 class TestTaskOrchestrator : public QObject {
     Q_OBJECT
 private slots:
+  void ordinaryObservedMessageDoesNotMatchAnExternalWait();
+  void taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground();
+  void invalidWaitProposalCannotInventHostAnchors_data();
+  void invalidWaitProposalCannotInventHostAnchors();
   void safeCheckpointPreservesReturnedPlanAndVerification();
   void importantReplyDuringToolPreparationStopsDispatch();
   void failedCheckpointStopsToolDispatch();
@@ -129,6 +133,110 @@ private slots:
   void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
 };
 
+void TestTaskOrchestrator::ordinaryObservedMessageDoesNotMatchAnExternalWait() {
+  Harness h;
+  QVERIFY(h.start());
+  h.reply(decision());
+  ConversationStore messages("11111111-1111-4111-8111-111111111111",
+                             h.directory.filePath("runtime.sqlite"));
+  HostConversationBinding binding;
+  binding.channel = "controlled";
+  binding.connectionKey = "one";
+  binding.remoteConversationId = "unrelated";
+  binding.kind = ConversationKind::Group;
+  QVERIFY(messages.registerBinding(binding));
+  IncomingMessage msg;
+  msg.channel = binding.channel;
+  msg.connectionKey = binding.connectionKey;
+  msg.remoteConversationId = binding.remoteConversationId;
+  msg.kind = binding.kind;
+  msg.remoteMessageId = "new";
+  msg.content = "A normal new group topic";
+  msg.speakerIdentity = {"controlled", "one", "alice", {}};
+  msg.occurredAt = QDateTime::currentDateTimeUtc();
+  auto accepted = messages.acceptMessage(msg);
+  QVERIFY(accepted);
+  QVERIFY(!h.store.activityStore()->validateImportantReply(
+      accepted.value().originId));
+  QVERIFY(h.runner->isActive());
+}
+void TestTaskOrchestrator::
+    taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground() {
+  Harness h;
+  QVERIFY(h.ready);
+  QVERIFY(h.start());
+  h.reply(decision());
+  h.reply(nextTool("schedule_create", {{"job", "tracked"}}));
+  QVERIFY(!h.tools.isEmpty());
+  auto done = h.tools.takeFirst();
+  TaskToolReply receipt;
+  receipt.success = true;
+  receipt.stage = "accepted";
+  receipt.output = {{"stage", "accepted"},
+                    {"tracking", QJsonObject{{"sourceId", "controlled-jobs"},
+                                             {"remoteJobId", "job-42"}}}};
+  done(receipt);
+  QCoreApplication::processEvents();
+  QCOMPARE(h.runner->currentTask().status, QString("Planning"));
+  QVERIFY(!h.models.isEmpty());
+  const auto callId = h.toolRequests.last().id;
+  auto proposal = candidate();
+  proposal.remove("candidate_answer");
+  proposal["wait"] = QJsonObject{{"kind", "event"},
+                                 {"afterStepId", callId},
+                                 {"reason", "Wait for the tracked job"}};
+  h.reply(proposal);
+  QVERIFY(!h.runner->isActive());
+  const auto saved = h.store.activityStore()->find(h.runner->currentTask().id);
+  QVERIFY(saved);
+  QCOMPARE(saved.value().state, ActivityState::WaitingExternal);
+  QCOMPARE(saved.value().waitingCondition["sourceId"].toString(),
+           QString("controlled-jobs"));
+  QCOMPARE(saved.value().waitingCondition["remoteJobId"].toString(),
+           QString("job-42"));
+  QCOMPARE(saved.value().waitingCondition["callId"].toString(), callId);
+}
+void TestTaskOrchestrator::invalidWaitProposalCannotInventHostAnchors_data() {
+  QTest::addColumn<QString>("problem");
+  for (const auto &problem :
+       {"foreign-step", "host-field", "long-reason", "alternative"})
+    QTest::newRow(problem) << QString(problem);
+}
+void TestTaskOrchestrator::invalidWaitProposalCannotInventHostAnchors() {
+  QFETCH(QString, problem);
+  Harness h;
+  QVERIFY(h.start());
+  h.reply(decision());
+  h.reply(nextTool("schedule_create", {{"job", "tracked"}}));
+  auto done = h.tools.takeFirst();
+  TaskToolReply receipt;
+  receipt.success = true;
+  receipt.stage = "accepted";
+  receipt.output = {{"stage", "accepted"},
+                    {"tracking", QJsonObject{{"sourceId", "jobs"},
+                                             {"remoteJobId", "job-42"}}}};
+  done(receipt);
+  QCoreApplication::processEvents();
+  auto proposal = candidate();
+  proposal.remove("candidate_answer");
+  QJsonObject wait{{"kind", "event"},
+                   {"afterStepId", h.toolRequests.last().id},
+                   {"reason", "Await actual job"}};
+  if (problem == "foreign-step")
+    wait["afterStepId"] = "another-activity-step";
+  if (problem == "host-field")
+    wait["resumeRule"] = "scheduler";
+  if (problem == "long-reason")
+    wait["reason"] = QString(257, 'x');
+  proposal["wait"] = wait;
+  if (problem == "alternative")
+    proposal["candidate_answer"] = "done";
+  h.reply(proposal);
+  QCOMPARE(h.toolRequests.size(), 1);
+  QVERIFY(
+      h.store.activityStore()->find(h.runner->currentTask().id).value().state !=
+      ActivityState::WaitingExternal);
+}
 void TestTaskOrchestrator::stopCallingToolsDoesNotCompleteUntilVerification() {
     Harness h; QVERIFY(h.ready); QVERIFY(h.start());
     QCOMPARE(h.modelRequests.last().role, "agency_decision");
@@ -247,6 +355,10 @@ void TestTaskOrchestrator::restartPreservesSnapshotAndBudgetAndDoesNotReplayActi
     QCOMPARE(h.runner->currentTask().personalitySnapshot.value("version").toInt(), 7);
     QCOMPARE(h.runner->currentTask().toolCalls, 1);
     QVERIFY(!h.runner->resume()); QCOMPARE(h.toolRequests.size(), 1);
+    QVERIFY(!h.store.activityStore()->resolveWaitCondition(
+        h.runner->currentTask().id, id, "event"));
+    QVERIFY(!h.store.activityStore()->resolveWaitCondition(
+        h.runner->currentTask().id, id, "message"));
     QVERIFY(h.runner->resolveUnknownCall(id, true, {{"schedule_id", "existing-reminder"}}));
     QVERIFY(h.runner->resume());
     QVERIFY(h.modelRequests.last().context.value("needs_revalidation").toBool());

@@ -32,6 +32,9 @@ struct IncomingMessage {
     QString content;
     QString replyToRemoteId;
     QDateTime occurredAt;
+    QDateTime receivedAt;
+    bool originalTimeKnown = true;
+    bool historicalImport = false;
     ConversationKind kind = ConversationKind::Direct;
     QString title;
     OriginKind originKind = OriginKind::External;
@@ -42,6 +45,9 @@ struct AcceptedMessage {
     PersonResolution personResolution;
     bool duplicate = false;
     bool selfMessage = false;
+    bool historicalImport = false;
+    bool originalTimeKnown = true;
+    QDateTime receivedAt;
     qint64 revision = 0;
     QString originId;
     ContextSpec context;

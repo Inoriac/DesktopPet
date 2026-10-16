@@ -11,6 +11,7 @@ struct MemoryOriginSource {
     QDateTime occurredAt;
     OriginKind originKind = OriginKind::Internal;
     QList<MemoryPersonReference> resolvedPeople;
+    bool originalTimeKnown = true;
 };
 struct AttributedMemoryInput {
     MemoryEntry entry;

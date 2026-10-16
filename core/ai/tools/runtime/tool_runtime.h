@@ -1,15 +1,16 @@
 #ifndef DESKTOP_PET_TOOL_RUNTIME_H
 #define DESKTOP_PET_TOOL_RUNTIME_H
 
-#include <QObject>
-#include <QThreadPool>
-#include <functional>
-#include <memory>
-#include <atomic>
+#include "ai/chat/conversation_types.h"
 #include "ai/context/context_spec.h"
 #include <QHash>
 #include <QJsonObject>
+#include <QObject>
 #include <QString>
+#include <QThreadPool>
+#include <atomic>
+#include <functional>
+#include <memory>
 
 #include "tool_policy.h"
 #include "tool_result_sanitizer.h"
@@ -25,6 +26,7 @@ struct ToolExecutionRequest {
     QString activityId;
     bool autonomous = false;
     std::shared_ptr<ToolDispatchToken> dispatchToken;
+    std::optional<RoutedResponse> preparedResponse;
 };
 
 struct ToolExecutionOutcome {

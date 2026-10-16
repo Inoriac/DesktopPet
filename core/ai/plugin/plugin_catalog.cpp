@@ -97,9 +97,63 @@ Result<PluginRegistration,DomainError> PluginCatalog::registerPlugin(const Plugi
         }
         staged.insert(id,entry);
     }
+    QHash<QString, QString> sources;
     for (const auto& source:manifest.value()["sources"].toArray()) {
-        auto path=SchemaValidator::packagePath(root,source.toObject()["definition"].toString());
-        if (!path) return Result<PluginRegistration,DomainError>::failure(path.error());
+      const auto id = source.toObject()["id"].toString();
+      if (sources.contains(id))
+        return fail<PluginRegistration>("INVALID_INPUT",
+                                        "Duplicate source identity");
+      auto path = SchemaValidator::packagePath(
+          root, source.toObject()["definition"].toString());
+      if (!path)
+        return Result<PluginRegistration, DomainError>::failure(path.error());
+      auto definition = readObject(path.value());
+      if (!definition)
+        return Result<PluginRegistration, DomainError>::failure(
+            definition.error());
+      auto checked =
+          SchemaValidator::validateManifest("source", definition.value());
+      if (!checked)
+        return Result<PluginRegistration, DomainError>::failure(
+            checked.error());
+      if (definition.value()["id"] != id)
+        return fail<PluginRegistration>(
+            "INVALID_INPUT", "Source identity disagrees with manifest");
+      QHash<QString, QJsonObject> settings;
+      QSet<QString> requirements;
+      for (const auto &value : definition.value()["requirements"].toArray()) {
+        const auto key = value.toObject()["id"].toString();
+        if (requirements.contains(key))
+          return fail<PluginRegistration>("INVALID_INPUT",
+                                          "Duplicate source requirement");
+        requirements.insert(key);
+      }
+      for (const auto &value : definition.value()["configuration"].toArray()) {
+        const auto item = value.toObject();
+        const auto key = item["key"].toString();
+        if (settings.contains(key) || item["kind"] == "mcp_connection")
+          return fail<PluginRegistration>("INVALID_INPUT",
+                                          "Invalid source setting");
+        settings.insert(key, item);
+      }
+      const auto invocation = definition.value()["invocation"].toObject();
+      auto refs = invocation["arguments"].toArray();
+      refs.append(invocation["program"]);
+      for (const auto &ref : refs)
+        if (ref.isObject()) {
+          const auto setting =
+              settings.value(ref.toObject()["setting"].toString());
+          if (setting.isEmpty() || !setting["required"].toBool())
+            return fail<PluginRegistration>(
+                "INVALID_INPUT",
+                "Source references undeclared or optional setting");
+        }
+      if (settings.value(
+              invocation["program"].toObject()["setting"].toString())["kind"] !=
+          "executable")
+        return fail<PluginRegistration>("INVALID_INPUT",
+                                        "Source requires executable setting");
+      sources.insert(id, path.value());
     }
     auto digest=digestPackage(root); if (!digest) return Result<PluginRegistration,DomainError>::failure(digest.error());
     QMutexLocker lock(&m_mutex);
@@ -111,7 +165,7 @@ Result<PluginRegistration,DomainError> PluginCatalog::registerPlugin(const Plugi
         const auto old=m_packages.value(pluginId); isEnabled=old.enabled;
         for (const auto& id:old.entryIds) m_entries.remove(id);
     }
-    Package package{root,digest.value(),staged.keys(),isEnabled};
+    Package package{root, digest.value(), staged.keys(), isEnabled, sources};
     m_packages.insert(pluginId,package);
     PluginRegistration registration; registration.pluginId=pluginId; registration.catalogRevision=++m_revision;
     for (auto it=staged.cbegin();it!=staged.cend();++it) { m_entries.insert(it.key(),it.value()); registration.entries.append(it.value().summary); }
@@ -165,3 +219,34 @@ QJsonArray PluginCatalog::discover() const {
 quint64 PluginCatalog::revision() const { QMutexLocker lock(&m_mutex); return m_revision; }
 void PluginCatalog::invalidate() { QMutexLocker lock(&m_mutex); ++m_revision; }
 bool PluginCatalog::enabled(const QString& id) const { QMutexLocker lock(&m_mutex); return m_packages.contains(id) && m_packages[id].enabled; }
+
+Result<LoadedObservationSource, DomainError>
+PluginCatalog::loadSource(const QString &pluginId,
+                          const QString &sourceId) const {
+  using R = Result<LoadedObservationSource, DomainError>;
+  Package package;
+  quint64 revision;
+  {
+    QMutexLocker lock(&m_mutex);
+    if (!m_packages.contains(pluginId) ||
+        !m_packages[pluginId].sources.contains(sourceId))
+      return fail<LoadedObservationSource>(
+          "UNKNOWN_REFERENCE", "Source is not declared by this plugin");
+    package = m_packages[pluginId];
+    revision = m_revision;
+    if (!package.enabled)
+      return fail<LoadedObservationSource>("PLUGIN_DISABLED",
+                                           "Source plugin is disabled");
+  }
+  auto digest = digestPackage(package.root);
+  if (!digest)
+    return R::failure(digest.error());
+  if (digest.value() != package.digest)
+    return fail<LoadedObservationSource>("STALE_REVISION",
+                                         "Source package content changed");
+  auto definition = readObject(package.sources[sourceId]);
+  if (!definition)
+    return R::failure(definition.error());
+  return R::success({pluginId, sourceId, package.root, package.digest, revision,
+                     definition.value()});
+}

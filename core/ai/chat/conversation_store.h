@@ -4,13 +4,19 @@
 #include "chat_types.h"
 #include <QHash>
 
+class RuntimeUnitOfWork;
+
 // No QSqlDatabase survives a call. Copies may be used by independent workers.
 class ConversationStore {
 public:
     ConversationStore(QString profileId, QString databasePath);
     Result<void, DomainError> initialize();
     Result<void, DomainError> registerBinding(const HostConversationBinding& binding);
-    Result<AcceptedMessage, DomainError> acceptMessage(const IncomingMessage& message);
+    using AcceptanceCommit = std::function<Result<void, DomainError>(
+        RuntimeUnitOfWork &, AcceptedMessage &)>;
+    Result<AcceptedMessage, DomainError>
+    acceptMessage(const IncomingMessage &message,
+                  const AcceptanceCommit &commit = {});
     Result<QList<ChatHistoryEntry>, DomainError> loadHistory(const QString& conversationId,
                                                            int limit = 10000) const;
     Result<void, DomainError> appendLocalHistory(const ChatHistoryEntry& entry);

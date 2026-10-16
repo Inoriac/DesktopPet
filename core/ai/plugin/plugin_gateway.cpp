@@ -86,7 +86,11 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
         }
         CapabilityCall call; call.callId=request.requestId; call.activityId=request.activityId; call.context=request.context; call.ref=ref;
         call.arguments=request.arguments["arguments"].toObject(); call.catalogRevision=loaded.catalogRevision; call.definitionDigest=loaded.definitionDigest;
-        call.grantRef=permission.value()["id"].toString(); call.timeoutMs=request.timeoutMs>0?request.timeoutMs:30000; call.autonomous=request.autonomous; call.dispatchToken=request.dispatchToken;
+        call.grantRef = permission.value()["id"].toString();
+        call.timeoutMs = request.timeoutMs > 0 ? request.timeoutMs : 30000;
+        call.autonomous = request.autonomous;
+        call.dispatchToken = request.dispatchToken;
+        call.preparedResponse = request.preparedResponse;
         invokeCapability(call,[finish=std::move(finish)](CapabilityOutcome outcome) mutable {
             ToolResult result; result.success=outcome.stage=="completed" || outcome.stage=="accepted"; result.data=outcome.toJson(); result.errorMessage=outcome.error.code;
             finish(std::move(result),outcome.executed);
@@ -127,7 +131,11 @@ ReplyDispatcher PluginRuntime::makeReplyDispatcher(const CapabilityReplyBinding&
             QMetaObject::invokeMethod(QCoreApplication::instance(),[guard,replyBinding,dispatch,receipt,loaded,completion=std::move(completion)]() mutable {
                 if (!guard) { receipt.outcome=DeliveryOutcome::NotExecuted; completion(receipt); return; }
                 CapabilityCall call; call.callId=receipt.requestId+":send:"+QString::number(receipt.generation); call.activityId=dispatch.response.context.activityId.isEmpty()?receipt.requestId:dispatch.response.context.activityId;
-                call.context=dispatch.response.context; call.dispatchToken=dispatch.dispatchToken; call.ref=replyBinding.ref; call.grantRef=replyBinding.grantRef;
+                call.context = dispatch.response.context;
+                call.preparedResponse = dispatch.response;
+                call.dispatchToken = dispatch.dispatchToken;
+                call.ref = replyBinding.ref;
+                call.grantRef = replyBinding.grantRef;
                 call.catalogRevision=loaded.result.data["catalogRevision"].toInteger(); call.definitionDigest=loaded.result.data["definitionDigest"].toString();
                 for (auto it=replyBinding.argumentBindings.begin();it!=replyBinding.argumentBindings.end();++it) {
                     QJsonValue value;
@@ -137,18 +145,40 @@ ReplyDispatcher PluginRuntime::makeReplyDispatcher(const CapabilityReplyBinding&
                     else { receipt.outcome=DeliveryOutcome::NotExecuted; completion(receipt); return; }
                     if (!insertArgument(call.arguments,it.key(),value)) { receipt.outcome=DeliveryOutcome::NotExecuted; completion(receipt); return; }
                 }
-                guard->invokeCapability(call,[replyBinding,receipt,completion=std::move(completion)](CapabilityOutcome outcome) mutable {
-                    receipt.evidence=outcome.toJson(); auto id=CapabilityExecutor::pointer(outcome.data,replyBinding.remoteMessageIdPointer);
-                    const auto content=CapabilityExecutor::pointer(outcome.data,replyBinding.contentPointer);
-                    const auto occurred=CapabilityExecutor::pointer(outcome.data,replyBinding.occurredAtPointer);
-                    const auto actualTime=occurred?QDateTime::fromString(occurred.value().toString(),Qt::ISODateWithMs):QDateTime{};
-                    if (outcome.stage=="completed" && id && id.value().isString() && !id.value().toString().isEmpty()
-                        && content && content.value().isString() && actualTime.isValid()) {
-                        receipt.outcome=DeliveryOutcome::Completed; receipt.remoteMessageId=id.value().toString();
-                        receipt.content=content.value().toString(); receipt.occurredAt=actualTime;
-                    } else receipt.outcome=outcome.executed?DeliveryOutcome::Unknown:DeliveryOutcome::NotExecuted;
-                    completion(std::move(receipt));
-                });
+                guard->invokeCapability(
+                    call,
+                    [replyBinding, receipt, completion = std::move(completion)](
+                        CapabilityOutcome outcome) mutable {
+                      if (outcome.deliveryReceipt) {
+                        completion(*outcome.deliveryReceipt);
+                        return;
+                      }
+                      receipt.evidence = outcome.toJson();
+                      auto id = CapabilityExecutor::pointer(
+                          outcome.data, replyBinding.remoteMessageIdPointer);
+                      const auto content = CapabilityExecutor::pointer(
+                          outcome.data, replyBinding.contentPointer);
+                      const auto occurred = CapabilityExecutor::pointer(
+                          outcome.data, replyBinding.occurredAtPointer);
+                      const auto actualTime =
+                          occurred ? QDateTime::fromString(
+                                         occurred.value().toString(),
+                                         Qt::ISODateWithMs)
+                                   : QDateTime{};
+                      if (outcome.stage == "completed" && id &&
+                          id.value().isString() &&
+                          !id.value().toString().isEmpty() && content &&
+                          content.value().isString() && actualTime.isValid()) {
+                        receipt.outcome=DeliveryOutcome::Completed;
+                        receipt.remoteMessageId = id.value().toString();
+                        receipt.content=content.value().toString();
+                        receipt.occurredAt = actualTime;
+                      } else
+                        receipt.outcome = outcome.executed
+                                              ? DeliveryOutcome::Unknown
+                                              : DeliveryOutcome::NotExecuted;
+                      completion(std::move(receipt));
+                    });
             },Qt::QueuedConnection);
         });
     };

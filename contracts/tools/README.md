@@ -13,9 +13,12 @@
 | [capability.schema.json](./capability.schema.json) | 检查 Tool 格式 1 的声明结构和部分条件，不用于验证纯 Skill |
 | [plugin.schema.json](./plugin.schema.json)、[skill.schema.json](./skill.schema.json) | Plugin 安装清单与纯方法 Skill 的声明结构 |
 | [插件运行时接入](./插件运行时接入.md) | plugins.json、授权、结果适配、会话回复绑定及取消/回执语义 |
+| [观察源与聊天插件接入](./观察源与聊天插件接入.md) | 主动查询、可选 JSONL source、账号身份、监听游标及真实回执 |
+| [source.schema.json](./source.schema.json) | agent-observation-1 来源进程声明 |
+| [受控聊天示例](./examples/controlled-chat/README.md) | 可运行的本地聊天日志、宿主配置生成与可选监听 |
 | [准入检查规则与示例核对](./准入检查规则与示例核对.md) | 区分结构检查、语义核对和当前运行条件 |
 | [现有工具契约适配验证](./现有工具契约适配验证.md) | 现有 46 个注册入口的现状与接入差距，范围已按外部 Skill/Tool 定位修正 |
-| [examples](./examples) | 脚本、通用 CLI、MCP 三类作者示例 |
+| [examples](./examples) | 脚本、通用 CLI、MCP 及受控聊天作者示例 |
 | [verify_contract.py](./verify_contract.py) | 可重复运行的有限验证，包含正反例与临时数据测试 |
 
 ## 复现验证
@@ -28,9 +31,11 @@ python3 -m pip install --target "$contract_deps" jsonschema==4.23.0
 PYTHONPATH="$contract_deps" python3 contracts/tools/verify_contract.py
 ```
 
-需要 Python 3 和 Git。脚本输出逐项 JSON 结果；所有检查符合预期时退出码为 0，反例未被拒绝、正例未通过或执行异常均使验证失败。2026-10-16 增加 Plugin/Skill 正反例后结果为 **70/70**；原有 Tool 验证保留。
+需要 Python 3 和 Git。脚本输出逐项 JSON 结果；所有检查符合预期时退出码为 0，反例未被拒绝、正例未通过或执行异常均使验证失败。2026-10-17 增加观察源与受控聊天验证后结果为 **94/94**；原有 Tool/Plugin/Skill 验证保留。
 
 Python 验证包括声明结构、示例中的简单引用、业务参数正反例、参考计数脚本、临时 Git 仓库以及已有歌单脚本的查询函数。歌单查询只读取验证脚本创建的临时 SQLite 数据。该脚本不连接 MCP、不启动 LX Music 或桌宠，也不读取实际用户数据库。加载器和真实 stdio MCP 流程另由 C++ PluginRuntimeTests 的临时插件与受控服务验证。
+
+观察源验证还会启动本地 controlled-chat 进程，以独立临时日志核对分页读取、实际发送与回执、JSONL 来源、ack、游标重放及宿主配置生成。完整主体的等待、阅读和恢复链路由 C++ AutonomousChatTests 验证；这些测试均不登录真实 QQ 账号。
 
 引用核对仅支持这些示例中的直接配置引用和顶层属性映射，不是通用准入检查器；调度参数组合用例是用于验证标准表达能力的精简样例，不代替 C++ 调度器测试。脚本与 CLI 测试按示例约定直接执行，也不构成宿主加载器实现。
 

@@ -80,7 +80,8 @@ MemoryAttributionService::attribute(const AttributedMemoryInput& input) const {
         return m_personLookup(m_profileId, person);
     };
     origin.committed = true;
-    origin.originalAt = source->occurredAt;
+    origin.originalAt =
+        source->originalTimeKnown ? source->occurredAt : QDateTime{};
     origin.conversationId = source->conversationId;
     auto speaker = known(source->speakerPersonId);
     if (!speaker)

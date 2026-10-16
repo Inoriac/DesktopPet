@@ -1,0 +1,236 @@
+{
+  "formatVersion": "1",
+  "id": "example.controlled-chat",
+  "name": "Controlled chat",
+  "version": "1.0.0",
+  "summary": "A reusable local chat journal for host integration verification",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [],
+    "configuration": [
+      {
+        "key": "program",
+        "kind": "executable",
+        "required": true,
+        "description": "Trusted Python interpreter"
+      },
+      {
+        "key": "script",
+        "kind": "path",
+        "required": true,
+        "description": "Absolute immutable adapter script"
+      },
+      {
+        "key": "database",
+        "kind": "path",
+        "required": true,
+        "description": "Adapter journal outside the package"
+      }
+    ],
+    "operations": [
+      {
+        "id": "list",
+        "description": "List local controlled conversations",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--database",
+            {
+              "setting": "database"
+            },
+            "--operation",
+            "list"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "Read the controlled local journal"
+        },
+        "result": {
+          "format": "json",
+          "description": "Actual local adapter result",
+          "successMeaning": "The requested journal operation completed",
+          "failureMeaning": "No verified completion",
+          "completion": "completed"
+        }
+      },
+      {
+        "id": "read",
+        "description": "Read a page of actual journal messages",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "chat_id": {
+                "type": "string"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 256
+              }
+            },
+            "required": [
+              "chat_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--database",
+            {
+              "setting": "database"
+            },
+            "--operation",
+            "read"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "Read the controlled local journal"
+        },
+        "result": {
+          "format": "json",
+          "description": "Actual local adapter result",
+          "successMeaning": "The requested journal operation completed",
+          "failureMeaning": "No verified completion",
+          "completion": "completed"
+        }
+      },
+      {
+        "id": "send",
+        "description": "Send a controlled local message",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "chat_id": {
+                "type": "string"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              },
+              "reply_to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "chat_id",
+              "text"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--database",
+            {
+              "setting": "database"
+            },
+            "--operation",
+            "send"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "Write only to the controlled local journal"
+        },
+        "result": {
+          "format": "json",
+          "description": "Actual local adapter result",
+          "successMeaning": "The requested journal operation completed",
+          "failureMeaning": "No verified completion",
+          "completion": "completed"
+        }
+      },
+      {
+        "id": "receipt",
+        "description": "Inspect an existing message receipt",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "message_id": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "message_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--database",
+            {
+              "setting": "database"
+            },
+            "--operation",
+            "receipt"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "Read the controlled local journal"
+        },
+        "result": {
+          "format": "json",
+          "description": "Actual local adapter result",
+          "successMeaning": "The requested journal operation completed",
+          "failureMeaning": "No verified completion",
+          "completion": "completed"
+        }
+      }
+    ]
+  }
+}

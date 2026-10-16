@@ -1,0 +1,21 @@
+{
+  "formatVersion": "1",
+  "id": "example.controlled-chat-plugin",
+  "name": "Controlled chat example",
+  "version": "1.0.0",
+  "summary": "Local controlled chat; no real network account",
+  "entries": [
+    {
+      "kind": "tool",
+      "id": "example.controlled-chat",
+      "definition": "tool.json"
+    }
+  ],
+  "sources": [
+    {
+      "id": "example.controlled-events",
+      "summary": "Optional controlled journal observation stream",
+      "definition": "source.json"
+    }
+  ]
+}

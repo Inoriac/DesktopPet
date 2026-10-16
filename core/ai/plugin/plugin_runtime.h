@@ -1,12 +1,13 @@
 #pragma once
-#include "plugin_catalog.h"
-#include "capability_executor.h"
-#include "ai/skill/skill_types.h"
 #include "ai/chat/conversation_types.h"
+#include "ai/observation/observation_service.h"
+#include "ai/skill/skill_types.h"
 #include "ai/tools/runtime/tool_runtime.h"
+#include "capability_executor.h"
+#include "plugin_catalog.h"
+#include <QMutex>
 #include <QObject>
 #include <QThreadPool>
-#include <QMutex>
 #include <memory>
 #include <optional>
 struct CapabilityReplyBinding {
@@ -42,6 +43,9 @@ public:
     quint64 catalogRevision() const;
     void attach(ToolRegistry* registry);
     void retire();
+    void setObservationDatabase(QString path);
+    void ingestObservation(ObservationEnvelope, ObservationCompletion);
+    void setObservationSource(SourceControl, SourceCompletion);
     QList<HostConversationBinding> conversationBindings();
     QJsonArray gatewaySchemas(const ContextSpec &context,
                               bool autonomous = false) const;
@@ -50,8 +54,11 @@ public:
     ReplyDispatcher makeReplyDispatcher(const CapabilityReplyBinding& binding);
     void executeGateway(const ToolExecutionRequest& request,ToolRuntime::Completion completion);
 signals:
-    void capabilityFinished(const QJsonObject& outcome);
-    void capabilityDispatching(const QString& callId);
+  void configurationChanged();
+  void observationAccepted(const AcceptedMessage &);
+  void observationSourceState(const SourceState &);
+  void capabilityFinished(const QJsonObject &outcome);
+  void capabilityDispatching(const QString &callId);
 private:
     struct Pending { CapabilityCompletion completion; std::optional<CapabilityOutcome> outcome; bool settled=false; };
     struct State {
@@ -63,7 +70,11 @@ private:
         std::shared_ptr<PluginCatalog> catalog =
             std::make_shared<PluginCatalog>();
         bool stopping = false;
+        int receiptFaults = 0;
+        QString observationPath;
+        ObservationConfiguration observations;
     };
+    void refreshObservationSources();
     Result<void,DomainError> save(const QJsonObject& config) const;
     Result<QJsonObject, DomainError> grant(const CapabilityRef &ref,
                                            const ContextSpec &context,
@@ -86,6 +97,7 @@ private:
     QJsonValue publicValue(const QJsonValue& value,const LoadedCapability& loaded) const;
     void settle(const std::shared_ptr<Pending>& pending);
     QString m_profileId,m_settingsPath;
+    std::unique_ptr<ObservationService> m_observationService;
     std::shared_ptr<State> m_state=std::make_shared<State>();
     QThreadPool m_worker;
     QList<std::shared_ptr<Pending>> m_pending;

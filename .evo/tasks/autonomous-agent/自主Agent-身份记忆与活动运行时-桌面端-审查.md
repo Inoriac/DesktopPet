@@ -349,3 +349,64 @@ Task 6—8 尚未实施，内部无会话自主 grant 按 context.md 的 §3.8 p
 代码审查通过，已发现问题全部闭合。完整应用及全部测试目标构建成功；CTest **55/55 通过**（75.44 秒），选择器 21/21、任务执行器 30/30，工具契约 **70/70**。主设计结构/链接/SQL、测试布局/覆盖/锚点和 git diff --check 通过；Wave 7 五项校验通过。
 
 最终日志 /tmp/task7-final-build.log、/tmp/task7-final-ctest.log、/tmp/task7-final-contract.log。实现报告 /tmp/task7-implementation-report.md。验证采用真实本地插件进程和受控模型 provider；本阶段没有连接真实 QQ，外部观察与真实 runner 等待接入属于 §3.9。
+
+## §3.9 外部观察与 QQ 式自主使用验证
+
+### 审查范围与源码预检
+
+- 对 source.json 校验整个定义、配置引用、包内路径、实际 executor 和代次；不以文件存在代替可启动性。source 可选，主动查询无须声明虚假的后台源。
+- JSONL 真实进程支持半行/多行、线长与队列上限、backpressure、断连重放及禁用/退役；ack 只能指向已提交结果。
+- 消息、原始 outbox、source marker、cursor 与待处理线索共用原 runtime 库事务。序列为稳定正十进制字符串，opaque cursor 不按字典序比较；低序号迟到不能回退水位。
+- poll/push 共用真实消息 ID 与来源；陌生会话/身份、错误形状、status 和模型文本不得伪造消息事实。原始时间未知保持 NULL，receivedAt 不能在记忆中变成 original_at。
+- 直接自主发送复用 replyBindings 和原派发账本；已由 ConversationService 准备的发送携带 host-only 引用，不从名称/字符串后缀猜测。真实迟到结果归原库，持久失败保留结果且不重新发送。
+- TaskOrchestrator 真实 wait 提案只引用已经提供的步骤，由宿主校验原 outgoing/跟踪回执并填写等待权限。未知写操作、未结算步骤不能被“等待”掩盖。
+- 已接收外部线索在忙碌、暂停、outbox 延迟、代次变化后可恢复，Internal tick 不能覆盖上下文；同一消息只能走一次回复路径，自身回显/历史不重复触发成长或回复。
+- 最终端到端必须经过真实 AIBrain、ModelRouter 受控 provider、runner、command/source 子进程和数据库，验证等待释放、阅读、真实回复、安全切换/恢复；更换包与操作名称、关闭 source 后仍成立。
+
+预检发现已回填设计：ConversationStore::acceptMessage 原先拥有独立事务，需共用事务步骤才能保证 cursor 原子提交；ReplyReceiptArchive 原先写失败后丢弃已弹出回执，须保留待归档结果；MemoryOriginSource 原先直接把 event_log 时间写入 original_at，须透传 unknown。主设计 v1.8 与 Task 8 文件/测试清单已记录，不通过实施计划隐式扩大契约。
+
+### §3.9 实现期审查发现
+
+- 分群查询只覆盖部分日志，不能以最高 sequence 推进整个账号的 source cursor。主设计 §3.9/§4.4 已补宿主 Source/Query 区分；Query 仍原子归档事实、来源与线索，Source 有序流才推进监听水位。真实两群 query→source 用例验证低序号消息不遗漏。
+- 普通线索按会话每次提供至多 8 条，未提供的 marker 留待后续消费。实际等待匹配不能只检查当前排在前面的普通会话；否则忙碌期间另一会话的回复无法请求安全检查点。
+- 原始消息时间未知须贯穿事件到记忆归属；重复消息 DTO 使用原记录的历史/时间标记。sourceKey 包含连接与自身身份，改绑账号不能继承旧游标；持久游标结构损坏须报告错误。
+- 已发送结果在回执归档成功前不通知 runner；每个失败回执独立计数，不能因另一回执成功而错误解除发送门禁。旧 ConversationService 路径没有原生 reply-to 参数时仍保留宿主源消息引用。
+- 真实回执先从原始能力结果提取，公开结果另行脱敏；不能把脱敏后的正文写成远端实际消息。持久化失败保留回执，退役后仍使用原库路径补归档。
+- 源的协议错误停止该流；事务失败保留已绑定事实并阻止后续水位越过失败事件。facade 退役后 worker 排空已接收队列，禁止新活动和重连。
+
+### §3.9 行为覆盖映射
+
+| 契约 | 实际验证入口 |
+| --- | --- |
+| poll/push 原消息幂等、跨群相同远端 ID 隔离 | ExternalObservationTests::ingestObservation_pollAndPushSameMessage_oneMessageAndOrigin、sameRemoteIdAcrossGroups_isolated |
+| 消息/outbox/marker/cursor 任一写入失败整笔回滚，低序号失败阻止越过水位 | ingestObservation_messageOutboxCursorFailure_rollsBackAndDoesNotAck（四组故障）、failedPoll_thenSourceReplay_preservesBothFacts |
+| 稳定序号、迟到重放、换账号隔离、持久游标损坏拒绝 | ingestObservation_sequenceConflictAndLateReplay_doesNotRollBackCursor、corruptedCursorStorage_failsClosed（四组） |
+| 分群查询不推进账号监听水位 | partialConversationQuery_doesNotSkipOtherConversationWhenSourceStarts（实际 query→source 进程） |
+| outbox 延迟保留线索，每次 8 条，未提供的继续保留 | outboxDeliveryDelay_preservesCueUntilOriginalEventExists |
+| 暂停/忙碌/重启及 Internal tick 保持外部上下文与原事件 | AutonomousChatTests::externalCue_busyPauseRestartAndInternalTick_preservesPendingConversationAndEvents |
+| source 启停、崩溃重连、半行/多行/错误/超限及旧 generation | setObservationSource_enableReconnectDisable_preservesCommittedCursor、processCrash_reconnectStartsAtCommittedCursor、partialMultipleLinesBoundsAndRetiredGeneration_noUncommittedAck |
+| 已接收事实在 facade 销毁后继续原库归档，退役不发新机会 | failedFirstSourceFact_blocksSecondAndDrainsAfterFacadeDestruction、queryCompletesAfterRetire_archivesWithoutNewObservationNotification |
+| source 定义、配置、包路径与 executor 错误拒绝 | sourceContract_validDefinition_isAccepted、sourceContract_invalidDefinitionConfigurationPathAndExecutor_rejectsBeforeStart（七组） |
+| 仅 completed 准确映射进入消息，无 source 包可实际主动查询 | pollResult_exactCompletedMappingOnly_normalizesMessages（source-disabled / package-without-sources） |
+| 实际发送先归档，标准/服务器规范化/含脱敏值正文不失真，self echo 幂等 | autonomousSend_actualReceiptArchivedBeforeWaiting_keepsOriginalScope（plain / normalized / secret） |
+| 插件及会话服务销毁后保留失败回执，兼容无原生 reply-to 参数 | lateReceiptStorageFailure_retainsActualFactAfterPluginDestruction、conversationArchive_storageFailureAndDestruction_retainsReceipt、preparedConversationReply_withoutNativeReplyMapping_sendsOnce |
+| 真实 runner 等待只用实际步骤，拒绝伪造字段/外来步骤/过长说明/互斥冲突 | TestTaskOrchestrator::taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground、invalidWaitProposalCannotInventHostAnchors |
+| 未知写操作不能变成消息/事件等待，也不能自动重发 | restartPreservesSnapshotAndBudgetAndDoesNotReplayAction 中 resolveWaitCondition 两种拒绝断言，以及既有未知动作恢复回归 |
+| 普通消息不请求检查点，历史洪流不挤掉真回复 | ordinaryObservedMessageDoesNotMatchAnExternalWait、TestActivityRuntime::pendingReplyEvents_filtersHistoricalFloodBeforeLimit（260 条历史消息） |
+| user 等待保留 Event 恢复，自主 ActionCompleted 路由幂等且保留预算 | acceptedTrackedActionWaitsAndResumesOnlyAfterVerifiedCompletion（user / self / event） |
+| 未知人物/原始时间保持未知，记忆数据库 original_at 为 NULL | missingTimeOrSpeaker_preservesUnknownIdentityAndTime、MemoryAttributionTests::unknownOriginalTimeRemainsNull |
+| 实际 AIBrain→ModelRouter provider→runner→command/source→数据库，等待/阅读/回复/检查点/恢复 | AutonomousChatTests::autonomousChat_checkDiscussWaitReadAndResume_preservesPeopleAndContexts（两套包名和操作名） |
+| 可运行样例及配置生成，source 长连接保持 stdin 打开时连续 ack 可处理 | verify_contract.py controlled-chat 组；父级文档 CLI 临时日志烟测 |
+
+定向验证已核实；最终 all-target build/CTest 进一步覆盖补充的回执 outbox 故障和非法等待提案。最终套件为外部观察 42/42、活动运行时 24/24、记忆归属 27/27、任务编排 36/36、自主聊天 5/5；工具契约 94/94。
+
+真实 RED→GREEN 包括未知原始时间被拒绝、source schema 缺失、已 accepted 的步骤不能进入真实等待、普通会话线索挡住等待匹配，以及 Python source 在 stdin 保持打开时因文本缓冲未处理连续 ack。突发流测试曾把累计接收数等同于瞬时队列上限，已按队列容量与拒绝后不 ack 的实际契约修正；未降低 256 队列上限。中间用例的 Result.error() 误用和非 const JSON 下标插入 null 属测试/实现错误，修复后重新验证，不作为业务 RED 或成功证据。
+
+
+### §3.9 最终结论
+
+代码审查通过，已发现问题均已闭合，无未同步设计偏差。真实事实归档、原始人物/会话范围、单前台、累计预算、未知动作去重和用户恢复权限保持。最终全量构建退出码 0，CTest **57/57 通过**（105.56 秒）；工具契约 **94/94**，未跳过测试。主设计结构/SQL、文件链接、覆盖映射、测试布局及实现锚点检查通过，Wave 8 五项通过。
+
+主 agent 另外实际执行接入文档的 inject/read/send/receipt 和两种配置生成命令，全部使用新的临时消息日志。实现 agent 交还所有权后，最终 CTest 由主 agent 执行；原 all-target 会话退出码已复核为 0。
+
+日志：/tmp/task8-final-build.log、/tmp/task8-final-ctest.log、/tmp/task8-contract-final.log。详细报告：/tmp/task8-implementation-report.md。交付了可复用聊天示例及宿主配置生成器；验证后端为本地 SQLite，未提供或连接真实 QQ 后端/账号，未发送真实外部聊天。

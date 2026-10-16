@@ -1,7 +1,10 @@
 #include "activity_runtime.h"
+#include "ai/event/runtime_unit_of_work.h"
+#include "ai/observation/observation_store.h"
 #include "ai/task/task_orchestrator.h"
 #include "ai/task/task_store.h"
 #include <QJsonDocument>
+#include <QSqlQuery>
 #include <QThreadPool>
 #include <QTimer>
 struct ActivityRuntime::Worker : QObject {
@@ -421,8 +424,20 @@ void ActivityRuntime::publishReadinessAsync(OpportunitySignal signal) {
 void ActivityRuntime::requestOpportunityAsync(OpportunitySignal signal) {
     auto *w = m_worker;
     QMetaObject::invokeMethod(w, [w, signal = std::move(signal)] {
-        if (w->opportunities)
-            w->opportunities->consider(signal);
+      QStringList events;
+      if (w->tasks && w->tasks->activityStore()) {
+        auto pending = w->tasks->activityStore()->pendingReplyEvents();
+        if (pending)
+          events = pending.value();
+      }
+      if (w->tasks && w->tasks->activityStore())
+        for (const auto &event : events) {
+          auto routed = w->tasks->activityStore()->routeObservedReply(event);
+          if (routed && routed.value() && w->runner)
+            w->runner->requestSafeCheckpoint(event);
+        }
+      if (w->opportunities)
+        w->opportunities->consider(signal);
     });
 }
 void ActivityRuntime::setAutonomyPausedAsync(bool paused, ControlCompletion done) {

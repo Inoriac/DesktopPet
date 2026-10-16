@@ -16,6 +16,7 @@
 | 1.5 | 2026-10-16 | §3.6 开发核对：runtime schema 3、后台活动执行、旧任务投影、动作回执、恢复依据与经历消费接管 |
 | 1.6 | 2026-10-16 | §3.7 开发核对：宿主 readiness、机会租约、默认关闭设置、每次模型发送的共享预算与生产接线 |
 | 1.7 | 2026-10-17 | §3.8 开发核对：宿主范围与引用材料、内部活动授权、原子采用选择、持续意图及真实生产选择器 |
+| 1.8 | 2026-10-17 | §3.9 开发核对：可选观察源、实际查询与发送映射、消息/游标同事务、持久线索及真实 runner 等待恢复 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -181,6 +182,8 @@ sequenceDiagram
 | 🔧 | [ai_brain](../../core/ai/ai_brain.h)、[ai_brain_loop](../../core/ai/ai_brain_loop.cpp) | 单一协调入口、从专用主动聊天触发过渡到通用选择 |
 | 🔧 | [event schema](../../core/ai/event/event_schema_registry.h)、[runtime growth](../../core/ai/runtime/agent_runtime_growth.cpp)、[反思类型](../../core/ai/reflection/reflection_types.h) | 带人物与上下文的来源、运行记录与长期经历分流 |
 | 🔧 | [runtime personality](../../core/ai/runtime/agent_runtime_personality.cpp)、[personality consolidation](../../core/ai/reflection/personality_consolidation_stage.cpp)、[runtime services](../../core/ai/runtime/agent_runtime_services.cpp) | MessageObserved 原始证据、聚合处理日志的多来源回溯、历史导入排除及本地主人人格范围 |
+| 🆕 / 🔧 | core/ai/observation/*、core/ai/plugin/*、core/ai/chat/*、core/ai/activity/*、core/ai/task/*、core/ai/ai_brain* | 可选 source 的 worker、查询/发送事实桥接、同事务游标、持久外部线索及真实等待/恢复 |
+| 🆕 / 🔧 | contracts/tools/source.schema.json、contracts/tools/examples/controlled-chat/*、tests/test_external_observation.cpp、tests/test_autonomous_chat.cpp | 安装契约与可运行样例、真实子进程和端到端验收 |
 | 🔧 | launcher、配置与测试 | 当前活动、暂停/恢复、等待原因、身份对应和插件状态；按切片补回归 |
 
 实施前基线：关系表按 profile_id + subject_id + version 保存版本，可复用。现有记忆去重主要按 type + summary，偏好冲突解析默认 subject=user，须在多人输入前修正。现有聊天 history 缺稳定 conversationId；ActiveMemoryPool 只有一组 topic 状态。TaskStore 的 `complex_tasks_single_unfinished` 唯一索引与单任务接口不能直接承载挂起集合。MCP 适配器目前返回 `mcp_tool_execution_not_implemented`，现有契约检查通过不证明其能执行。
@@ -885,63 +888,97 @@ Result<AppliedSelection, DomainError> applySelection(const SelectionProposal& pr
 
 ### 3.9 外部观察与 QQ 式自主使用验证
 
-> 依赖：前述全部切片；后台观察源是可选扩展，主动查看路径不依赖它。
+> 依赖：§3.2—§3.8；观察源是可选扩展，主动查看路径不依赖常驻监听。
 
 #### 1. 模块定位
 
-以消息软件验证“只交付能力包即可使用”的完整流程，包括主体主动查看、认识不同人物、聊天等待和恢复。具体 QQ 接入程序属于插件实现，主体不导入其 SDK。
+以可运行的消息插件验证“交付能力包及宿主绑定即可使用”的全过程：主体主动查询，认出不同人物，选择交流或旁观，依据真实发送回执等待并恢复。插件封装具体软件与登录连接；主体不导入 QQ SDK、不根据软件或操作名称猜测语义。
 
 #### 2. 核心服务接口
 
 ```cpp
-Result<ObservationAck, DomainError> ingestObservation(const ObservationEnvelope& observation);
-Result<SourceStatus, DomainError> setObservationSource(const SourceControl& control);
+void ingestObservation(ObservationEnvelope observation, ObservationCompletion completion);
+void setObservationSource(SourceControl control, SourceCompletion completion);
 ```
 
-插件侧的查询/发送操作继续使用 §3.5 的调用接口。观察传输和载荷见 §4.4。
+这是生产异步语义接口；验证、归档和 source 生命周期在独立串行 worker 上执行。查询/发送沿用 §3.5 的实际调用，宿主注册归一化和回执映射。
 
 | 输入 | 值来源 | 说明 |
 | --- | --- | --- |
-| provider、sourceId、eventId、cursor | 调用方传入 | 适配器给出可去重标识和可恢复游标 |
-| conversation、speaker、message、occurredAt | 调用方传入 | 外部事实，不获得主人控制权限 |
-| profileId、connectionKey、sourceGrant | 系统推导（来源: 已绑定插件源） | 不由载荷自选 profile 或权限 |
-| source enabled、configuration | 调用方传入 | 宿主管理操作；配置秘密不写入事件正文 |
+| eventId、sequence、cursor、conversation、speaker、message、occurredAt | 调用方传入 | 插件的真实观察；sequence 为源内稳定、递增、可重放的十进制序号，cursor 为 opaque 字符串 |
+| profileId、pluginId/sourceId、connectionKey、channel、允许会话与自身身份 | 系统推导（来源: 已登记的宿主 source/query/reply 绑定） | 载荷不得切换 profile、连接、provider namespace、会话授权或冒充主人 |
+| receivedAt、source generation、catalogRevision、executor grant | 系统推导（来源: 宿主接收时钟及已核验配置快照） | receivedAt 不冒充原始消息发生时间 |
+| ObservationTransport（Source / Query） | 系统推导（来源: 宿主 source worker 或实际查询归一化入口） | 插件载荷不得指定；只有 Source 的有序流可以推进监听重放游标 |
+| enabled、configuration、expectedGeneration | 调用方传入 | 宿主管理入口；秘密通过执行配置传递，不写普通事件正文 |
+| query 结果与 send 回执的 JSON Pointer 映射 | 配置默认值（来源: 宿主 plugins.json 的显式能力语义绑定） | 绑定准确 CapabilityRef/连接，不能从自然语言说明或模型自述生成外部事实 |
+| observation acknowledgements | 系统推导（来源: 消息/来源/游标同事务提交结果） | 包含 eventId、当前已提交 cursor、duplicate、committed；存储失败不 ack |
+
+工程边界：
+
+- source.json 使用 formatVersion="1"、protocol=agent-observation-1，声明 requirements/configuration/固定 command argv；配置 setting 引用与包内路径均校验。增加独立 source.schema.json、资源注册和正反例，不修改普通 Tool stdout 的单结果规则。
+- 宿主 observationBindings 为查询和可选源共同绑定 pluginId、connectionKey、channel、已核验身份与允许会话；可选 source 子项精确绑定声明的 sourceId、配置键及实际 executor，enabled 默认 false。没有 sources 的包仍可注册仅供主动查询的 observation binding。source 是否启用与 autonomy 是否允许独立：来源可以归档事实，模型是否处理另受主体调度。缺 source grant/依赖/合法定义时明确不可用，不能因为安装了插件自动开始监听。
+- 每个源一条异步 JSONL 流，QProcess 生命周期在 worker。stdin 为 start{cursor}、ack{eventId,cursor}、stop；stdout 仅 observation/status，stderr 为有界脱敏诊断。64 KiB 限制指单条 UTF-8 JSONL，消息正文仍遵守 ConversationStore 的 8000 UTF-16 code unit 上限；超限拒绝并要求补拉，不截断后当完整消息接收。处理半行/多行/异常退出/256 条队列上限与有界重连退避。
+- 序号与 eventId 是适配器持久日志标识；重新投递保持一致。同一源更低序号的迟到事实可以归档，但不回退已提交 cursor；同序号不同事件/游标或同事件不同内容拒绝。源需要真实重放/顺序语义，不能按 opaque cursor 字典序比较。轮询与推送使用同一 adapter 源标识和消息 ID；没有稳定源序号的后端由适配器建立持久序列，不由主体猜测。
+- 查询可以只读取一个会话或某一页，不能证明整个账号日志此前已全部接收。宿主将实际查询归一化为 Query：消息、outbox、同源 event/sequence marker 和待处理线索仍同事务归档，但不推进 sourceCursors 的监听重放水位。Source 的实际有序流提交后才推进该水位；查询分页继续使用实际查询结果中的 cursor。例：群 B 的序号 1 尚未读取、群 A 查询到序号 2，此时启用 source 仍从原水位重放 1 和 2，后者幂等。不能通过修改示例查询范围来替代宿主门禁。
+- 会话来源须符合宿主绑定；新的远端会话只能由明确允许的宿主配置建立，消息正文不能给自己授权。缺稳定发言人 ID 保留 unresolved；未知 provider/namespace 不当作可信身份。自身回显由连接的 selfIdentity 验证。
+- 原始 occurredAt 缺失时存 NULL，payload 保留 originalTimeKnown=false，receivedAt 使用宿主接收时钟；账本事件时间可使用 receivedAt，但显示/记忆不得宣称它是远端发生时间。原有调用方提供的有效时间保持兼容。重复消息跨 poll/push 不因一方缺时间而创造新消息。消息原事件保留该时间标记；ChatSideEffectQueue 的 MemoryOriginSource 查询透传 originalTimeKnown，MemoryAttributionService 写 memory_origins.original_at 时未知保持 NULL。接收/提及时钟可继续用于 lastMentionedAt 等内部排序，不作为远端原始时间。
 
 #### 3. 模块业务流程
 
-1. 先提供可控消息适配器，按 Tool 格式公开会话查找、分页读消息、发送、发送结果核对。操作名字是该插件的契约，主体只识别已注册引用。
-2. 主体选择“去看看”后调用查询，结果转换成统一观察并走 §3.4 输入路径；同一消息的轮询与推送使用相同远端身份去重。
-3. 没有新内容则完成查看并退避；有话题则可形成/继续聊天，按真实发送回执进入 WaitingExternal。
-4. 如启用观察源，后台只接收并归一化事件，提交后更新游标；模型是否处理仍由主体调度决定。
-5. 插件禁用时停止源并阻止新调用；重新启用按游标补拉，防止“收到过”被重复写为新经历。
-6. 真实 QQ 后端按账号身份和实际接口能力选择；机器人接口、普通账号桥接、GUI 自动化使用各自能力声明。没有历史查询/发送回执等能力时明确报告限制，不能由文档示例推定支持。
+1. 校验 source/能力声明与宿主绑定，取得不可变 profile/连接/目录版本。启用时从同 runtime 库读取已提交 cursor，启动已授权程序；禁用/目录换代/退役阻止新派发与重连。
+2. 源的真实事件或 query 的真实 completed 数据进入同一归一化入口。query 的语义绑定明确数组/消息字段/来源 ID 的 JSON Pointer，并校验结果形状。未配置映射的普通结果仍是普通工具结果；模型文本、工具日志和 status 不成为 MessageObserved。
+3. 沿用 ConversationStore 人物/消息验证与确定性远端消息 ID。将接收记录、MessageObserved outbox 和 sourceCursors 的 read/merge/CAS 放入同一个 runtime 写事务。复用/抽取 acceptMessage 内部事务步骤，不先调用已提交的 acceptMessage 再单独写 cursor；人物目录可预先解析，消息事实与游标提交失败全部回滚。
+4. 提交后回复 ack，投递原 outbox 并向主体发出 AcceptedMessage/原始 event 引用。event_log 暂时写入失败沿用 outbox 重投；在事件真正可查前不凭空满足等待恢复。按会话保留有界待处理线索/消费水位（或从原事件与消费水位重建），忙碌、暂停、代次变化及原事件延迟投递不能丢掉外部 context/eventIds；不能被下一次普通 Internal tick 覆盖。重复消息不重放关系/人格成长，不重复加入回复机会。
+5. 归档与模型调度分开。外部自主观察采用 §3.8 的明确会话机会，不同时走旧立即对话和新活动回复。未分流输入先阻止选择；完成分流后普通线索不永久占 readyObligation。自身回显和历史补录不触发自主回复；本地主人输入优先，匹配真实等待的回复请求安全检查点切换。
+6. 主动发送必须先在已有 agent_response_dispatches 中登记不可变目标/来源/callId 绑定再调用真实能力。复用 replyBindings 的参数/回执映射：ContextSpec 与实际调用参数均核验会话，不能将 Internal 的自由文本或授权带入外部。派发 token 仍在真实执行点 begin；先前已由 ConversationService 准备的回复不得重复准备/二次发送。
+7. 已发送结果先按原 profile/path 归档动作与 ConversationStore 的实际远端 ID、正文和时间，再推进 runner。仅真实可核对回执才取得消息等待锚点；accepted/unknown 不能冒充已发送。取消、配置切换与 facade 销毁只阻止推进，不丢已发生事实；归档故障保留原回执、阻止新发送，不能用再发一次修复。
+8. TaskOrchestrator 的真实规划/执行路径接收有界等待提案，并由宿主从已归档动作解析实际消息/远端任务锚点及恢复规则，调用原 WaitingExternal 事务后释放前台；不能只在测试中手动调用类型化转换来替代生产等待。规划输出新增 `wait={kind:message/event, afterStepId, reason}`，与 tool/candidate_answer/needs_user 互斥；reason 最长 256 字符，afterStepId 只能引用本活动已提供的真实步骤 ID（既有宿主 callId），宿主核验该动作及其 outgoing/跟踪回执，自己填入 conversationId/afterMessageId/sourceId/resumeRule。模型不能填写任意恢复权限或消息 ID。真实空查询可结束查看并更新 lastCheckedAt，随后可继续阅读或休息；有新话题则按人物/会话范围选择交流。收到匹配回复后在安全边界恢复原活动，保留 checkpoint、预算和原始证据。
+9. 提供可复用受控聊天插件：列会话、分页读取、发送、核对回执和可选 source，共享确定性消息库与序列。以两个不同包/操作名称运行相同测试，证明主体没有软件名称分支。真实 QQ 后端若未提供，明确列为未接通；不能把 fixture 当作登录了普通 QQ 账号。
+
+交付参考：[观察源与聊天插件接入](../tools/观察源与聊天插件接入.md)、[受控聊天插件与配置生成](../tools/examples/controlled-chat/README.md)。
+
+等待就绪的宿主接入：ActivityStore 增加内部 `pendingReplyEvents()` 与 `routeObservedReply(eventId)`，由 ActivityRuntime 的串行 worker 取得真实匹配候选后调用。候选查询独立于普通线索队列，按完整匹配条件过滤后至多返回 256 个事件，避免前面的其他群线索或较新的 self/history 消息遮住真实回复。路由在同一 UoW 再次查询真实 MessageObserved/ActionCompleted 和原 WaitingExternal，沿用原 profile、会话、outgoing 后续消息水位或 action/source/job 三元组、非 self/history 与 event 恢复规则校验；普通无匹配消息返回无匹配，不请求检查点。对已获准的自主意图 origin=self/event，把匹配活动置 Ready，保存原触发引用，保持 checkpoint、预算、人物/会话和等待证据，重复路由幂等；之后仍凭选择票据和当前权限/预算完成 Ready→Running。仅发现真实匹配等待时，才请求当前自主阅读活动在安全边界保存进度。明确用户意图沿用原 ResumeActor::Event 的授权恢复路径，不得改为自主选择权限或转入无法被选择的 Ready；user/restart 暂停与未获准的恢复规则不受此入口影响。
 
 #### 4. 数据变更
 
-消息保存到 agent_messages，源游标和去重水位保存在 agent_runtime_state 的 sourceCursors。接收记录、游标与事件 outbox 同 runtime 事务，提交后 ack。原始 QQ 账号仍通过 ExternalIdentity 对应 personId；插件仅保存自己的登录/连接状态。
+沿用 runtime schema 3，消息/回执写既有 agent_messages、agent_response_dispatches、agent_action_calls 和 event_outbox。sourceCursors[宿主sourceKey] 保存 Source 有序流已提交的 sequence/cursor/generation；Query 只归档事实与来源 marker，不推进该监听水位。写入复用 control_json 的 read/merge/CAS，保留机会、预算和其他源游标。持久化 sourceCursors、源节点、序号或 cursor 类型损坏时报告存储错误，不默认为空游标。
+
+来源幂等可复用 agent_runtime_migrations 的有命名空间 marker，保留 source event/sequence 到实际 message/origin 的映射，不能用无限增长的 hot JSON 数组承载所有历史；与消息/cursor 同事务。新增只读索引或必要字段时先补主设计 SQL 再实现，不引入第二消息/预算权威。
+
+原消息 occurred_at 已允许 NULL；补 receivedAt/originalTimeKnown DTO/payload 投影，不伪造远端时间。清单与 source schema 是安装契约，秘密仍留在 profile 宿主配置。插件只保存自己的受控会话状态，不直接读写主体数据库。
 
 #### 5. 实现锚点
 
-| 参照 | 复用/扩展 |
+| 现有位置 | 接入 |
 | --- | --- |
-| [Tool MCP 示例](../tools/examples/mcp/capability.json)、[CLI 示例](../tools/examples/cli/capability.json) | 声明方式沿用；示例不等于已安装 QQ 服务 |
-| EventSchemaRegistry、EventLedger、EventOutbox | 注册 MessageObserved/ActivityExperience 等版本化事件及消费幂等 |
-| LauncherChatServer / 既有本地 IPC | 仅作输入/控制分层参考；外部源不伪装成已认证本地主人 |
-| §4.4 的 SourceEnvelope | 独立观察连接，不将 Tool 的 stdout 日志混作业务消息 |
+| PluginCatalog::registerPlugin / PluginRuntime::setHostConfiguration/setPluginEnabled/retire | source 定义验证、不可变加载快照、宿主授权及目录代次 |
+| PluginRuntime::executeGateway/invokeCapability / plugin_gateway.cpp | 真实查询结果归一化与发送事实桥接；共享授权、自主属性及派发 token |
+| ConversationStore::acceptMessage / SqliteRuntimeUnitOfWork | 提取共同事务步骤，同提交消息、原事件和 cursor；失败不推进游标 |
+| ConversationStore::prepareContext/publishResponse/recordDeliveryReceipt | 复用派发绑定/原库回执幂等；受控动作发送避免重复进入 dispatcher |
+| ConversationService 独立归档队列 | 已发送事实不依赖 GUI 存活，完成通知只推进仍有效活动 |
+| AIBrain::submitIncomingMessage / §3.8 consumer / ActivityRuntime | 只归档一次并唯一分流，优先本地输入与已证实回复，普通观察可旁观 |
+| ActivityStore::resumeActivity / pendingReplyEvents / routeObservedReply（新增内部入口） | 复用完整真实事件匹配规则后限量读取候选，把获准自主等待置 Ready；保留旧 Event 恢复授权，只有匹配等待才请求当前 runner 检查点 |
+| EventSchemaRegistry、EventOutbox、PersonDirectory | MessageObserved 原始来源、重投不重复成长及稳定身份 |
+| existing CLI/command fixtures 与根 CMakeLists.txt | 真实子进程协议及隔离临时数据库，不用纯 mock 代替最终链路 |
 
 #### 6. 异常场景
 
-- 业务异常：重复、乱序、缺人物 ID 的消息，分别去重、按远端时间与接收顺序记录、保留 unresolved；不误确认身份。
-- 系统异常：断连后按已提交 cursor 重连与有界退避；不把服务断连解释为无人回复。GUI 操作失焦不能宣称发送完成。
-- 无法核对的发送进入 ACTION_OUTCOME_UNKNOWN；按 §1.5 保存并停止相同动作重试。
+- INVALID_INPUT/UNKNOWN_REFERENCE：未知源/会话、冲突消息/序号、超长/错误 JSON 与非法包路径拒绝，游标不推进；缺发言人 ID 按原未解析路径处理，不默认 owner。
+- STORE_UNAVAILABLE：整笔接收事务回滚且不 ack；outbox 投递失败重投原事件，不重发外部消息。已执行发送的持久化失败保留原回执并报告故障。
+- DEPENDENCY_UNAVAILABLE/PLUGIN_DISABLED：源停止或按有界退避重连，从已提交 cursor 恢复；旧 generation 无权重启。已接收到且绑定已核验的事实继续按原 profile 归档，退役后不再触发新自主活动。
+- ACTION_OUTCOME_UNKNOWN：实际发送不可核对时保存未知并停止相同动作重试，不以缺回执解释为未发送。
+- 原始时间缺失、self echo、historical import、只收到 status 与后台源关闭分别保持语义；不形成虚假对话经历或“没有人回复”的推断。
 
 #### 7. 关键行为场景
 
-- ingestObservation：轮询与推送取得同一消息，最终只有一条消息和一份原始经历来源。
-- setObservationSource：启用、断连重连、禁用不会重复触发或遗失已提交游标；不启用源也可主动查询。
-- 端到端：主动看群 → 识别人和话题 → 决定发言或旁观 → 等待回复 → 继续其他活动 → 回复到达后恢复。
-- 扩展性：替换成另一可控聊天插件，仅更换包和绑定；人物、记忆、空闲与活动主体不增加软件专用分支。
-- 真实 QQ 验收单列后端、账号类型、支持操作及实际结果；可控适配器通过只证明主体与契约链路。
+- ingestObservation：同一消息 poll/push/重连重复取得，只有一条消息和原始来源；不同群里相同远端 ID 不互相覆盖，消息/游标/outbox 故障注入全部回滚。
+- 分群 Query 先读取较高序号后启用 Source，较低序号的另一群消息仍被接收；查询不能推进账号监听游标，重放已查询消息仍保持单条事实。
+- setObservationSource：真实进程启用、半行/多行输入、ack、断连重连、禁用和退役均正确；只使用已提交 cursor，乱序重放不回退水位，非法/超限事件不 ack。
+- 查询真实结果能够归一化，status/模型宣称与无语义绑定结果不产生消息；原始时间未知保持 NULL，人物 ID 缺失不投影给主人。
+- 实际自主发送在原会话保存回执，WaitingExternal 引用真实 outgoing 消息；迟到回执、self echo 和 poll 重读幂等，不双发、不双回、不重复成长。
+- 生产端到端：AIBrain 选择 → 真实 ModelRouter 受控 provider → ActivityRuntime runner → 实际 command/source 进程 → runtime 消息/来源/回执 → 等待释放前台 → 阅读 → 真实回复 → 保存进度后恢复；保留人物和材料范围。
+- 更换另一套包/操作名和宿主绑定仍通过端到端；关闭常驻 source 后主体仍可主动查询新消息。
+- 受控插件作为可运行示例交付；验收说明准确列出后端、账号类型、支持操作、执行结果及未验证的真实 QQ 边界。
 
 ## 4. 公开契约与数据格式
 
@@ -962,7 +999,7 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | AttributionMigrationRequest / MigrationProgress | profileId、cursor、batchSize；返回 nextCursor、processed、unresolved、complete、deferredForRecovery；cursor 以稳定 memoryId 扫描，不依赖会被更新的时间 |
 | ContextSpec | profileId、channel、conversationId 可空、activityId 可空、participantPersonIds、originKind=local_owner/external/internal、conversationRevision、identityRevision、audienceProjectionRef；内部活动可以没有会话；宿主授权投影 allowOwnerMemory=false、authorizedConversationIds=[]、allowInternalMemory=false |
 | ReplyTarget | channel、connectionKey、conversationId、remoteConversationId、replyToMessageId 可空；host 绑定，外部目标必须是当前连接可访问的会话 |
-| IncomingMessage / AcceptedMessage | 输入远端定位、speakerIdentity、remoteMessageId 可空、sourceEventId、content、occurredAt、引用消息、kind/title、可信本地 localMessageId；originKind 由宿主入口核验；返回 messageId、conversationId、personResolution、duplicate、revision、originId、ContextSpec、ReplyTarget；外部重复投递须有稳定 messageId 或来源事件 ID |
+| IncomingMessage / AcceptedMessage | 输入远端定位、speakerIdentity、remoteMessageId 可空、sourceEventId、content、occurredAt 可空、receivedAt、originalTimeKnown、historicalImport、引用消息、kind/title、可信本地 localMessageId；originKind 由宿主入口核验；返回 messageId、conversationId、personResolution、duplicate、revision、originId、ContextSpec、ReplyTarget；外部重复投递须有稳定 messageId 或来源事件 ID |
 | ContextRequestV2 / PreparedContext | 输入 ContextSpec、requestId、generation、reason、replyTarget、sourceMessageIds；返回 messages、允许的能力引用、快照版本、来源引用和 subjectPersonId 可空；群无明确回复对象时使用参与人投影 |
 | RoutedResponse | requestId、generation、ContextSpec、replyTarget、content、sourceMessageIds；执行前再次核对目标与版本 |
 | HostConversationBinding | 宿主配置的 channel、connectionKey、remoteConversationId、kind、selfIdentity 可空、toolName、ToolPolicyContext 和异步 ReplyDispatcher；没有派发器不允许外部发送 |
@@ -980,6 +1017,9 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ModelBudgetRequest / ModelBudgetReservation | 宿主 attemptId、profileId、ticketId 或 activityId、purpose=selection/activity、完整输入估计、maxOutputTokens、routeEstimatedCostMicros 与时钟；返回持久预留及剩余额度 |
 | ModelBudgetSettlement | 原 profile/attemptId、实际 usage 或 unknown、已发送状态与宿主时间；按原账本幂等，不从当前前台取归属 |
 | SelectionRequest / SelectionProposal | request 含精确 ticket（含 hostEpoch）、host ContextSpec、catalogRevision、快照和有界真实引用材料；proposal 含 decision=start/resume/continue/wait、至多四个候选、activityId 或 intent、evidenceRefs、reason、nextConsiderAt 可空。票据由宿主绑定，不由模型回填；模型不得填写授权/profile/任意会话，实际采用由宿主再次校验 |
+| ObservationEnvelope / ObservationAck | §4.4 的已绑定消息载荷；ack 返回 eventId、当前已提交 cursor、duplicate、committed，成功来自消息/marker/outbox/cursor 同事务 |
+| SourceControl / SourceStatus | 宿主 bindingId、enabled、expectedGeneration；状态包含启动/就绪/重连/停止/补拉原因与已提交 cursor；载荷不选择 profile 或程序 |
+| PreparedDispatchRef | 仅宿主 DTO 携带已准备的 requestId/generation/原目标及绑定身份；不进入模型工具参数，用于复用既有 response dispatch |
 | AppliedSelection | accepted、activityId 可空、nextConsiderAt 可空、stateRevision、reason；未采用提案不代表创建活动 |
 
 audience 为宿主结构化属性：
@@ -1077,27 +1117,71 @@ PluginHostConfig 的 grants 由宿主安装/设置入口建立，每项绑定 pr
 
 ReplyBinding 将 §3.4 的 channel/connection/目标与 CapabilityRef/grantRef 绑定。argumentBindings 的键是非空 JSON Pointer，装配可嵌套的参数对象，值仅为 content、remoteConversationId、replyToRemoteId；引用消息 ID 使用 ConversationService 已解析的远端 ID，不能使用宿主本地 messageId。非法 Pointer、未知来源或父子路径冲突在发送前拒绝。回执 remoteMessageIdPointer、contentPointer、occurredAtPointer 从 CapabilityOutcome.data 提取实际远端 ID、正文与 ISO 8601 时间，默认分别为 /remote_message_id、/content、/occurred_at；缺失或格式非法视为 unknown，不能用模型建议正文或本地时钟补造成功回执。这些映射复用 JSON Pointer 和通用对象装配，不添加 QQ 等软件判断。未知发送状态不重发；完成由 ConversationStore 原幂等回执路径记录。
 
-### 4.4 可选观察源协议
+### 4.4 可选观察源与真实消息映射
 
-Plugin.sources 每项为 {id, summary, definition}，definition 指向包内 source.json；这是插件可选入口，不是第三类模型技能。source.json 定义 formatVersion=1、id、protocol=agent-observation-1、requirements、configuration，以及 invocation={kind:command, program:{setting:…}, arguments:[固定字符串或setting引用]}。配置类型沿用 Tool 格式，观察源不接受模型任意 argv。
+Plugin.sources 每项为 `{id, summary, definition}`，definition 指向包内 source.json；这是插件可选入口。source.json 的顶层为 `formatVersion: "1"`、id、protocol=`agent-observation-1`、requirements、configuration、invocation。requirements/configuration 的项目结构与 Tool 格式 1 一致；invocation 仅允许 kind=command、program={setting:…} 和 arguments=[固定字符串或 setting 引用]。单独的 source.schema.json 验证完整定义，注册时检查 ID/路径/setting 引用；加载和启动时检查实际配置、依赖、包摘要与执行授权。模型不提供命令参数。
 
-首版使用独立进程的 UTF-8 JSONL 双向流：host 在 stdin 发送 start{cursor}、ack{eventId,cursor}、stop；source 在 stdout 发送 observation 或 status，诊断写 stderr。底层服务可为 HTTP、QQ 桥接或其他软件，适配器负责转接。普通 Tool 的 stdout 仍只返回一次结果，不混用此流；MCP Tool 调用也不会自动具备事件输入。
+宿主配置扩展两个字段，均归当前 PluginRuntime 的 profile 所有：
 
-ObservationEnvelope 字段：
+| 字段 | 结构与授权来源 |
+| --- | --- |
+| observationBindings | 数组；每项 id、pluginId、channel、connectionKey、provider、namespace、selfIdentity、conversations；可选 source |
+| observationBindings[].conversations | 显式允许的 `{remoteConversationId, kind: direct/group, title?}` 数组；stable conversationId 按既有 profile/channel/connection/remote ID 算法生成 |
+| observationBindings[].source | 可选 `{sourceId, configurationKey, executor, enabled}`；sourceId 必须属于绑定的 pluginId，configurationKey 指向宿主 configuration 项，executor 是获准的绝对程序路径，enabled 缺省 false |
+| observationAdapters | 数组；每项 ref（完整 CapabilityRef）、observationBindingId、itemsPointer、fields；精确绑定实际完成的操作结果 |
+| observationAdapters[].fields | 归一化字段名到 JSON Pointer 的映射，Pointer 相对于 itemsPointer 得到的每一项；必需 eventId、sequence、cursor、remoteConversationId、remoteMessageId、text；可选 remoteActorId、speakerDisplayName、occurredAt、replyToRemoteId、historicalImport |
+
+上述配置严格验证类型、唯一 ID 和交叉引用。同一准确能力与连接不能有含糊的多重映射。provider/namespace/selfIdentity 来自宿主绑定，输入 speaker 不能切换它们。缺 remoteActorId 保留 unresolved；不得按昵称匹配主人。conversations 声明建立接收范围，发送仍需独立 replyBindings/grants。无 sources 的插件也能配置 observationBindings 和主动查询。source enabled 与 autonomy enabled 互不替代。
+
+示例中的 paths、profile、具体能力引用和身份由实际接入方配置；下列映射只展示格式，不宣称已连接 QQ：
+
+```json
+{
+  "observationBindings": [{
+    "id": "chat-account",
+    "pluginId": "example.chat-plugin",
+    "channel": "example-chat",
+    "connectionKey": "account-one",
+    "provider": "example-chat",
+    "namespace": "account-one",
+    "selfIdentity": {"provider": "example-chat", "namespace": "account-one", "remoteActorId": "pet-account"},
+    "conversations": [{"remoteConversationId": "approved-chat", "kind": "group"}],
+    "source": {"sourceId": "example.chat-events", "configurationKey": "example.chat-events", "executor": "/absolute/path/python3", "enabled": false}
+  }],
+  "observationAdapters": [{
+    "ref": {"pluginId": "example.chat-plugin", "entryId": "example.chat", "entryVersion": "1.0.0", "operationId": "read"},
+    "observationBindingId": "chat-account",
+    "itemsPointer": "/items",
+    "fields": {"eventId": "/event_id", "sequence": "/sequence", "cursor": "/cursor", "remoteConversationId": "/chat_id", "remoteMessageId": "/message_id", "text": "/text", "remoteActorId": "/speaker_id", "occurredAt": "/occurred_at"}
+  }]
+}
+```
+
+只有 completed CapabilityOutcome.data 经以上映射可成为外部事实；accepted、unknown、日志、模型文本、status 或无映射的工具结果不进入消息库。itemsPointer 必须指向数组，每批至多 256 项，超过时拒绝并要求适配器分页，不能静默截断；空数组表示检查完成但没有消息。单项错误不生成伪造事实，不 ack 该项；已成功提交的其他项保持原身份，重试仍幂等。映射字段不允许以模型参数填补事实值。
+
+源使用独立进程 UTF-8 JSONL 双向流：host stdin 发送 `{"type":"start","cursor":"…"}`、`{"type":"ack","eventId":"…","cursor":"…"}`、`{"type":"stop"}`；source stdout 仅 observation 或 status，诊断写 stderr。所有读写在 worker，处理半行/多行、有界 stdin/stderr 和重连。普通 Tool stdout 仍返回一个 JSON 值。
+
+ObservationEnvelope：
 
 | 字段 | 约束 |
 | --- | --- |
-| type | observation |
-| eventId、cursor | 来源内稳定、不因重连变化；没有远端游标时适配器提供持久化序列 |
-| kind | 首版支持 message；新增 kind 需要独立事件 schema，未知类型明确拒绝 |
-| occurredAt | 远端发生时间；缺失时原始发生时间为空并另存 receivedAt；进入既有事件账本时以 receivedAt 作为账本时间，同时注明 originalTimeKnown=false |
-| conversation | remoteConversationId、kind=direct/group、title 可选 |
-| speaker | ExternalIdentity；缺稳定 ID 时保留 unresolved |
-| message | remoteMessageId、text、replyToRemoteId 可空、附件引用可空 |
+| type、kind | 固定 observation、message；未知类型拒绝 |
+| eventId | adapter 日志内稳定，不因 poll/push/重连变化 |
+| sequence | 源日志内递增的正十进制字符串，格式 `[1-9][0-9]*`，最大 9223372036854775807；不允许 JSON number、前导零、小数或指数 |
+| cursor | 同一事件的稳定 opaque 字符串；不得字典序比较或解释其语义 |
+| occurredAt | 可选有效 ISO 8601；缺失时原始时间保持 NULL，另存宿主 receivedAt 与 originalTimeKnown=false |
+| conversation | remoteConversationId、kind=direct/group、title 可选；必须匹配绑定的允许列表 |
+| speaker | provider、namespace、remoteActorId 可空、displayName 可选；命名空间由宿主核验，自身回显按 selfIdentity 识别 |
+| message | remoteMessageId、text、replyToRemoteId 可空；稳定远端 ID 是跨 poll/push 消息幂等键 |
+| historicalImport | 可选布尔值，默认 false；历史补录不产生回复义务或重新计入成长 |
 
-单条消息默认上限 64 KiB，源队列上限 256；超限返回拒绝/补拉要求，不截断后当完整消息接收。宿主将 sourceId 与其 profile/connection 绑定，载荷不能切换身份。ObservationAck 返回 eventId、cursor、duplicate、committed；只有 committed 才更新源的提交游标。status 只报告连接状态，不触发虚假消息。
+单条 UTF-8 JSONL 线最大 64 KiB，待接收队列最大 256；消息 text 仍最大 8000 UTF-16 code unit。超限拒绝并进入可见的补拉/重放状态，不截断后接收。只有消息、原始 MessageObserved outbox、source marker 和 cursor 同事务提交后才 ack；存储失败不 ack。同事件内容冲突、同 sequence 不同事件或 cursor 拒绝；低 sequence 迟到事实可归档，但不回退当前 cursor。duplicate ack 返回当前已提交 cursor。去重历史放原 runtime migrations marker，不能无限追加到 control_json。
 
-轮询 Tool 读出的消息使用相同来源标识转换为 ObservationEnvelope。轮询没有平台消息 ID 时，适配器必须公开其去重和可重复读取限制；宿主不得以“同样文字”吞掉不同的真实消息。
+轮询与流式源共用绑定 id 对应的 sourceKey、sequence 和 remoteMessageId；缺平台序列时由适配器提供持久 journal，不以相同文字吞掉不同消息。ObservationTransport 为宿主内部 DTO 字段，不能从以上 wire payload 设置：实际查询为 Query，不推进监听 sourceCursors；有序监听流为 Source，提交后才推进该游标。查询可能只覆盖单个会话，分页使用真实查询结果 cursor，不能把查询到的最高序号当作账号日志已全部接收。已接收且绑定核验的事实在原 profile 独立归档，禁用/退役阻止新启动、重连和新活动。
+
+直接自主发送沿用 replyBindings 的参数与真实回执 Pointer。执行前以不可变 callId 建立既有 response dispatch，ContextSpec 与实际参数必须同会话；ConversationService 已准备的派发通过宿主 DTO 携带 prepared dispatch 引用，不能解析 callId 后缀来猜测。真实已发回执先归档原库，再通知 runner；错误/退役不通过重新发送修复。WaitingExternal 的锚点由宿主查询已归档 outgoing 消息/动作得到，模型等待提案只表达等待意愿与有界说明，不提供恢复权限或自造消息 ID。
+
+未处理外部线索使用持久消费水位/marker 与有界热投影，在忙碌、暂停、outbox 延迟和配置换代后仍可重建；普通 Internal tick 不覆盖真实外部 context/eventIds。自身回显、历史、重复投递不重复进入回复队列。
 
 ## 5. 存储与迁移
 
@@ -1139,14 +1223,14 @@ erDiagram
 
 | 字段 | 结构 | 事实来源 |
 | --- | --- | --- |
-| agent_messages.payload_json | {text, externalSpeaker, senderKind, replyToRemoteId, attachments, originId, role, status, replyToId, sourceMessageIds, errorMessage} | 适配器输入经宿主校验；senderKind=person/self/unknown，由连接身份与解析结果确定；SQL speaker_id 只表示已解析人物 |
+| agent_messages.payload_json | {text, externalSpeaker, senderKind, replyToRemoteId, attachments, originId, role, status, replyToId, sourceMessageIds, errorMessage, receivedAt, originalTimeKnown, historical_import} | 适配器输入经宿主校验；senderKind=person/self/unknown，由连接身份与解析结果确定；SQL speaker_id 只表示已解析人物 |
 | agent_response_dispatches.status / receipt_json | prepared/dispatching/completed/failed/unknown/cancelled；receipt 为已校验的实际工具结果 | 发布预留与回执服务；unknown/dispatching 不自动重发 |
 | context_json | §4.1 ContextSpec + replyTarget | 宿主上下文绑定；记录快照值，不用远端名字做 join |
 | intent_json | goal、reason、origin、evidenceRefs、capabilityRefs、stopWhen、reconsiderWhen | 已接受的意图；并不证明执行发生 |
 | execution_json | executionPhase、plan、steps、completionCriteria、evidence、checkpoint、personalitySnapshot、relationshipSnapshot、emotionSnapshot | 执行器保存；从 TaskRecord 投影，排除其 id/status/budget 等重复权威字段 |
 | waiting_json | kind=message/event/user/dependency、conversationId/sourceId、afterMessageId/cursor、wakeAfter、resumeRule | 转等待时由宿主核对；约束对象，不能任意消息唤醒任意活动 |
 | budget_json | limits、used、reservations | 宿主预算器；活动行的唯一预算事实来源，恢复按原值结算 |
-| control_json | autonomyEnabled、paused、selectionReservation、nextConsiderAt、lastDecision、backoff、hourlyBudget、sourceCursors、inputWatermarks、identityRevision | 协调器 CAS 更新；配置变化与预算更新使用同一串行写入口 |
+| control_json | autonomyEnabled、paused、selectionReservation、nextConsiderAt、lastDecision、backoff、hourlyBudget、sourceCursors、pendingExternalCues/消费水位、inputWatermarks、identityRevision | 协调器 CAS 更新；配置变化与预算更新使用同一串行写入口 |
 | result_json | stage、effectCertainty、receipt、dataRef、error、observedAt | 实际执行器回执；重复回执按 callId 幂等 |
 | audience_json | {kind, conversationIds:[]} | 归属/范围策略；conversation 要求非空目标集合 |
 | cursor_json | {source, lastImportedId, sourceSnapshotRef, schemaVersion} | 迁移器；不在升级中改写旧数据证明其已迁移 |

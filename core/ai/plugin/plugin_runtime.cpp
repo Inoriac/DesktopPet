@@ -1,13 +1,16 @@
 #include "plugin_runtime.h"
+#include "ai/chat/delivery_receipt_archive.h"
 #include "learned_skill_adapter.h"
+#include "plugin_reply_bridge.h"
+#include <QCoreApplication>
+#include <QDir>
 #include <QFile>
 #include <QFileInfo>
-#include <QDir>
-#include <QSaveFile>
 #include <QJsonDocument>
 #include <QPointer>
-#include <QTimer>
+#include <QSaveFile>
 #include <QSet>
+#include <QTimer>
 
 namespace {
 template<class T> Result<T,DomainError> fail(const QString& code,const QString& message) { return Result<T,DomainError>::failure(domainError(code,message)); }
@@ -23,6 +26,8 @@ QString canonicalPath(const QString& path) {
 PluginRuntime::PluginRuntime(QString profile,QString settings,QObject* parent):QObject(parent),m_profileId(std::move(profile)),m_settingsPath(std::move(settings)) { m_worker.setMaxThreadCount(1); }
 PluginRuntime::~PluginRuntime() {
     { QMutexLocker lock(&m_state->mutex); m_state->stopping=true; }
+    if (m_observationService)
+      m_observationService->stopSources();
     m_worker.waitForDone();
     const auto pending=m_pending; for (const auto& call:pending) settle(call);
 }
@@ -70,12 +75,44 @@ Result<void,DomainError> PluginRuntime::setHostConfiguration(const QJsonObject& 
         if (grantIds.contains(grant["id"].toString())) return fail<void>("INVALID_INPUT","Duplicate host grant identity");
         grantIds.insert(grant["id"].toString());
     }
+    auto observations = ObservationConfiguration::parse(config);
+    if (!observations)
+      return Result<void, DomainError>::failure(observations.error());
+    for (const auto &b : observations.value().bindings) {
+      if (!pluginIds.contains(b.pluginId))
+        return fail<void>("UNKNOWN_REFERENCE",
+                          "Observation plugin is not registered");
+      if (!b.source.isEmpty()) {
+        auto source =
+            catalog->loadSource(b.pluginId, b.source["sourceId"].toString());
+        if (!source && source.error().code != "PLUGIN_DISABLED")
+          return Result<void, DomainError>::failure(source.error());
+        if (source && b.source["enabled"].toBool()) {
+          auto launch = prepareSourceLaunch(
+              b, source.value(),
+              config["configuration"]
+                  .toObject()[b.source["configurationKey"].toString()]
+                  .toObject());
+          if (!launch)
+            return Result<void, DomainError>::failure(launch.error());
+        }
+      }
+    }
+    for (const auto &a : observations.value().adapters) {
+      auto loaded = catalog->loadCapability(a.ref);
+      if (!loaded && loaded.error().code != "PLUGIN_DISABLED")
+        return Result<void, DomainError>::failure(loaded.error());
+    }
     normalized["plugins"]=normalizedPlugins;
     QMutexLocker lock(&m_state->mutex);
     auto saved=save(normalized); if (!saved) return saved;
     // Preserve a monotonic generation through complete settings replacement.
     while (catalog->revision()<=m_state->catalog->revision()) catalog->invalidate();
     m_state->catalog=catalog; m_state->config=normalized; m_state->loaded.clear();
+    m_state->observations = observations.value();
+    lock.unlock();
+    refreshObservationSources();
+    emit configurationChanged();
     return Result<void,DomainError>::success();
 }
 Result<PluginRegistration,DomainError> PluginRuntime::registerPlugin(const PluginLocation& location) {
@@ -330,6 +367,16 @@ void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityComple
     QPointer<PluginRuntime> guard(this);
     m_worker.start([this,guard,pending,call] {
         std::optional<LoadedCapability> executedDefinition;
+        ObservationConfiguration observations;
+        QString observationPath;
+        QJsonObject hostConfiguration;
+        {
+          QMutexLocker lock(&m_state->mutex);
+          observations = m_state->observations;
+          observationPath = m_state->observationPath;
+          hostConfiguration = m_state->config;
+        }
+        std::optional<PreparedCapabilityReply> preparedReply;
         auto execute=[&]() -> CapabilityOutcome {
             if (call.callId.isEmpty() || call.activityId.isEmpty() || call.context.profileId!=m_profileId || call.ref.operationId.isEmpty()) return errorOutcome(call,domainError("INVALID_INPUT","Incomplete host capability call"));
             std::shared_ptr<PluginCatalog> catalog; { QMutexLocker lock(&m_state->mutex); catalog=m_state->catalog; }
@@ -340,10 +387,19 @@ void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityComple
             auto permission=grant(call.ref,call.context,call.grantRef); if (!permission) return errorOutcome(call,permission.error());
             executedDefinition=loaded.value();
             const auto bound=binding(call.ref); executedDefinition->hostConfiguration=bound.configuration; auto authorized=authorize(loaded.value(),call,permission.value(),bound); if (!authorized) return errorOutcome(call,authorized.error());
+            auto prepared = prepareCapabilityReply(call, hostConfiguration,
+                                                   observationPath);
+            if (!prepared)
+              return errorOutcome(call, prepared.error());
+            preparedReply = prepared.value();
             auto recheck=[&,catalog](bool start) -> Result<void,DomainError> {
                 // No lock survives process/network I/O. This check is immediately before dispatch.
                 { QMutexLocker lock(&m_state->mutex);
                     if (m_state->stopping) return fail<void>("CANCELLED","Capability runtime is closing");
+                    if (m_state->receiptFaults > 0 && preparedReply)
+                      return fail<void>("STORE_UNAVAILABLE",
+                                        "A prior physical send receipt is "
+                                        "awaiting durable archive");
                     if (!m_state->catalog->enabled(call.ref.pluginId)) return fail<void>("PLUGIN_DISABLED","Plugin is disabled");
                     if (m_state->catalog!=catalog || call.catalogRevision!=catalog->revision()) return fail<void>("STALE_REVISION","Capability configuration changed");
                 }
@@ -362,12 +418,114 @@ void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityComple
         };
         try { pending->outcome=execute(); }
         catch (...) { auto out=errorOutcome(call,domainError("ACTION_OUTCOME_UNKNOWN","Capability execution raised an exception")); out.stage="unknown"; out.effectCertainty="unknown"; pending->outcome=out; }
+        if (pending->outcome->stage == "completed")
+          for (const auto &adapter : observations.adapters)
+            if (adapter.ref == call.ref) {
+              if (observationPath.isEmpty()) {
+                pending->outcome->error =
+                    domainError("DEPENDENCY_UNAVAILABLE",
+                                "Observation database is unavailable");
+                pending->outcome->stage = "failed";
+                break;
+              }
+              const auto binding = observations.bindings[adapter.bindingId];
+              auto normalized = ObservationStore::normalize(adapter, binding,
+                                                            *pending->outcome);
+              if (!normalized) {
+                pending->outcome->error = normalized.error();
+                pending->outcome->stage = "failed";
+                break;
+              }
+              std::optional<DomainError> failure;
+              for (const auto &envelope : normalized.value()) {
+                auto accepted = ObservationStore(m_profileId, observationPath)
+                                    .ingest(binding, envelope);
+                if (!accepted) {
+                  failure = accepted.error();
+                  break;
+                }
+                QMetaObject::invokeMethod(
+                    QCoreApplication::instance(),
+                    [guard, message = accepted.value().message] {
+                      if (guard) {
+                        QMutexLocker lock(&guard->m_state->mutex);
+                        if (!guard->m_state->stopping) {
+                          lock.unlock();
+                          emit guard->observationAccepted(message);
+                        }
+                      }
+                    });
+              }
+              if (failure) {
+                pending->outcome->error = *failure;
+                pending->outcome->stage = "failed";
+              }
+            }
+        if (preparedReply)
+          pending->outcome->deliveryReceipt =
+              capabilityDeliveryReceipt(*pending->outcome, *preparedReply);
         if (executedDefinition) {
             pending->outcome->data=publicValue(pending->outcome->data,*executedDefinition);
             pending->outcome->receipt=publicValue(pending->outcome->receipt,*executedDefinition);
             pending->outcome->tracking=publicValue(pending->outcome->tracking,*executedDefinition);
         }
         pending->outcome->context=call.context; pending->outcome->catalogRevision=call.catalogRevision;
+        if (preparedReply) {
+          auto outcome = std::move(*pending->outcome);
+          pending->outcome.reset();
+          auto receipt = *outcome.deliveryReceipt;
+          if (receipt.outcome == DeliveryOutcome::Completed) {
+            auto factual = outcome.receipt.toObject();
+            factual["remoteMessageId"] = receipt.remoteMessageId;
+            factual["conversationId"] = receipt.replyTarget.conversationId;
+            outcome.receipt = factual;
+          } else if (outcome.executed) {
+            outcome.stage = "unknown";
+            outcome.effectCertainty = "unknown";
+            outcome.error =
+                domainError("ACTION_OUTCOME_UNKNOWN",
+                            "Send has no verifiable actual receipt");
+          }
+          auto faulted = std::make_shared<bool>(false);
+          archiveDeliveryReceipt(
+              ConversationStore(call.context.profileId, observationPath),
+              receipt,
+              [state = m_state, guard, pending, outcome,
+               faulted](auto archived) mutable {
+                {
+                  QMutexLocker lock(&state->mutex);
+                  if (archived && *faulted) {
+                    --state->receiptFaults;
+                    *faulted = false;
+                  }
+                }
+                if (!archived) {
+                  outcome.stage = "unknown";
+                  outcome.effectCertainty = "unknown";
+                  outcome.error = archived.error();
+                }
+                QMetaObject::invokeMethod(
+                    QCoreApplication::instance(),
+                    [guard, pending, outcome = std::move(outcome)]() mutable {
+                      pending->outcome = std::move(outcome);
+                      if (guard)
+                        guard->settle(pending);
+                      else if (!pending->settled) {
+                        pending->settled = true;
+                        if (pending->completion)
+                          pending->completion(std::move(*pending->outcome));
+                      }
+                    });
+              },
+              [state = m_state, faulted](auto) {
+                QMutexLocker lock(&state->mutex);
+                if (!*faulted) {
+                  ++state->receiptFaults;
+                  *faulted = true;
+                }
+              });
+          return;
+        }
         if (guard) QMetaObject::invokeMethod(guard,[guard,pending]{ if (guard) guard->settle(pending); },Qt::QueuedConnection);
     });
 }
@@ -382,11 +540,20 @@ Result<void,DomainError> PluginRuntime::setPluginEnabled(const PluginStateChange
     if (!found) return fail<void>("UNKNOWN_REFERENCE","Plugin is not in host settings");
     config["plugins"]=plugins; auto saved=save(config); if (!saved) return saved;
     auto changed=m_state->catalog->setPluginEnabled(change); if (changed) m_state->config=config;
+    lock.unlock();
+    refreshObservationSources();
+    if (changed)
+      emit configurationChanged();
     return changed;
 }
 
 void PluginRuntime::retire() {
-    { QMutexLocker lock(&m_state->mutex); m_state->stopping=true; }
+  if (m_observationService)
+    m_observationService->stopSources();
+  {
+    QMutexLocker lock(&m_state->mutex);
+    m_state->stopping = true;
+  }
     auto* timer=new QTimer(this); timer->setInterval(25);
     connect(timer,&QTimer::timeout,this,[this,timer]{
         if (m_worker.activeThreadCount()==0 && m_pending.isEmpty()) { timer->stop(); deleteLater(); }
@@ -406,4 +573,156 @@ QJsonValue PluginRuntime::publicValue(const QJsonValue& value,const LoadedCapabi
         return v;
     };
     return redact(value);
+}
+
+void PluginRuntime::setObservationDatabase(QString path) {
+  {
+    QMutexLocker lock(&m_state->mutex);
+    m_state->observationPath = path;
+  }
+  m_observationService =
+      std::make_unique<ObservationService>(m_profileId, std::move(path));
+  connect(m_observationService.get(), &ObservationService::messageAccepted,
+          this, [this](const AcceptedMessage &message) {
+            QMutexLocker lock(&m_state->mutex);
+            if (m_state->stopping)
+              return;
+            lock.unlock();
+            emit observationAccepted(message);
+          });
+  connect(m_observationService.get(), &ObservationService::sourceStateChanged,
+          this, &PluginRuntime::observationSourceState);
+  refreshObservationSources();
+}
+void PluginRuntime::refreshObservationSources() {
+  if (!m_observationService)
+    return;
+  m_observationService->stopSources();
+  ObservationConfiguration observations;
+  QJsonObject config;
+  std::shared_ptr<PluginCatalog> catalog;
+  {
+    QMutexLocker lock(&m_state->mutex);
+    if (m_state->stopping)
+      return;
+    observations = m_state->observations;
+    config = m_state->config;
+    catalog = m_state->catalog;
+  }
+  for (const auto &b : observations.bindings) {
+    if (b.source.isEmpty() || !b.source["enabled"].toBool())
+      continue;
+    auto definition =
+        catalog->loadSource(b.pluginId, b.source["sourceId"].toString());
+    if (!definition) {
+      emit observationSourceState({b.id,
+                                   "unavailable",
+                                   definition.error().code,
+                                   {},
+                                   catalog->revision()});
+      continue;
+    }
+    auto launch = prepareSourceLaunch(
+        b, definition.value(),
+        config["configuration"]
+            .toObject()[b.source["configurationKey"].toString()]
+            .toObject());
+    if (!launch) {
+      emit observationSourceState(
+          {b.id, "unavailable", launch.error().code, {}, catalog->revision()});
+      continue;
+    }
+    const auto revision = catalog->revision();
+    launch.value().validate = [state = m_state, catalog, revision,
+                               b]() -> Result<void, DomainError> {
+      {
+        QMutexLocker lock(&state->mutex);
+        if (state->stopping || state->catalog != catalog ||
+            catalog->revision() != revision)
+          return fail<void>("STALE_REVISION", "Source host generation retired");
+      }
+      auto checked =
+          catalog->loadSource(b.pluginId, b.source["sourceId"].toString());
+      return checked ? Result<void, DomainError>::success()
+                     : Result<void, DomainError>::failure(checked.error());
+    };
+    m_observationService->setObservationSource(launch.value(), true);
+  }
+}
+void PluginRuntime::ingestObservation(ObservationEnvelope envelope,
+                                      ObservationCompletion completion) {
+  ObservationBinding binding;
+  {
+    QMutexLocker lock(&m_state->mutex);
+    if (m_state->stopping ||
+        !m_state->observations.bindings.contains(envelope.bindingId) ||
+        (envelope.generation &&
+         envelope.generation != m_state->catalog->revision())) {
+      completion(
+          Result<ObservationAcknowledgement, DomainError>::failure(domainError(
+              "STALE_REVISION", "Observation host binding is unavailable")));
+      return;
+    }
+    binding = m_state->observations.bindings[envelope.bindingId];
+    envelope.generation = m_state->catalog->revision();
+  }
+  if (!m_observationService) {
+    completion(
+        Result<ObservationAcknowledgement, DomainError>::failure(domainError(
+            "DEPENDENCY_UNAVAILABLE", "Observation database is unavailable")));
+    return;
+  }
+  m_observationService->ingestObservation(binding, std::move(envelope),
+                                          std::move(completion));
+}
+void PluginRuntime::setObservationSource(SourceControl control,
+                                         SourceCompletion completion) {
+  QJsonObject config;
+  {
+    QMutexLocker lock(&m_state->mutex);
+    if (m_state->stopping ||
+        control.expectedGeneration != m_state->catalog->revision()) {
+      completion(Result<SourceState, DomainError>::failure(
+          domainError("STALE_REVISION", "Source host generation changed")));
+      return;
+    }
+    config = m_state->config;
+  }
+  auto bindings = config["observationBindings"].toArray();
+  bool found = false;
+  for (int i = 0; i < bindings.size(); ++i) {
+    auto binding = bindings[i].toObject();
+    if (binding["id"] != control.bindingId)
+      continue;
+    auto source = binding["source"].toObject();
+    if (source.isEmpty())
+      break;
+    found = true;
+    source["enabled"] = control.enabled;
+    binding["source"] = source;
+    bindings[i] = binding;
+    if (!control.configuration.isEmpty()) {
+      auto settings = config["configuration"].toObject();
+      settings[source["configurationKey"].toString()] = control.configuration;
+      config["configuration"] = settings;
+    }
+    break;
+  }
+  if (!found) {
+    completion(Result<SourceState, DomainError>::failure(domainError(
+        "UNKNOWN_REFERENCE", "Observation source is not configured")));
+    return;
+  }
+  config["observationBindings"] = bindings;
+  auto changed = setHostConfiguration(config);
+  if (!changed) {
+    completion(Result<SourceState, DomainError>::failure(changed.error()));
+    return;
+  }
+  completion(Result<SourceState, DomainError>::success(
+      {control.bindingId,
+       control.enabled ? "starting" : "disabled",
+       {},
+       {},
+       catalogRevision()}));
 }

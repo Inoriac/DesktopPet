@@ -1,12 +1,13 @@
 #include "conversation_service.h"
 #include "ai/ai_tool.h"
+#include "ai/event/runtime_unit_of_work.h"
+#include "delivery_receipt_archive.h"
+#include <QDebug>
 #include <QSqlDatabase>
 #include <QSqlQuery>
-#include <QDebug>
 #include <deque>
 #include <memory>
 #include <mutex>
-#include "ai/event/runtime_unit_of_work.h"
 
 namespace {
 // An already-dispatched send outlives the UI/service that initiated it. This
@@ -41,12 +42,21 @@ private:
                 receipt = std::move(m_receipts.front());
                 m_receipts.pop_front();
             }
-            auto result = m_store.recordDeliveryReceipt(receipt);
-            if (!result) {
-                qWarning() << "[ConversationService] delivery receipt archive failed"
-                           << m_store.profileId() << receipt.requestId << result.error().code;
-            }
-            m_observer(receipt.outcome, std::move(result));
+            auto self = shared_from_this();
+            archiveDeliveryReceipt(
+                m_store, receipt,
+                [self, outcome = receipt.outcome](auto result) {
+                  self->m_observer(outcome, std::move(result));
+                  self->drain();
+                },
+                [self, outcome = receipt.outcome](auto error) {
+                  qWarning() << "[ConversationService] receipt retained for "
+                                "persistence retry"
+                             << error.code;
+                  self->m_observer(outcome,
+                                   Result<void, DomainError>::failure(error));
+                });
+            return;
         }
     }
 

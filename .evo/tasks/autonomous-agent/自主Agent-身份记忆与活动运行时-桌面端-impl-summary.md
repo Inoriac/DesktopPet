@@ -1,6 +1,6 @@
-# 自主 Agent 阶段实现总结：§3.2—§3.8
+# 自主 Agent 阶段实现总结：§3.2—§3.9
 
-设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由、插件与活动运行时，以及空闲机会调度、自主活动选择的实现及验证。
+设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由、插件与活动运行时，以及空闲机会调度、自主活动选择、外部观察与聊天接入的实现及验证。
 
 ## 已落地行为
 
@@ -132,3 +132,22 @@ AIBrain 安装真实 ActivitySelector consumer，使用原 ModelRouter 和按实
 验证：完整构建成功，CTest **55/55 通过**（75.44 秒）；选择器 21/21、执行器 30/30、工具契约 70/70。真实两套包/操作名、权限撤销、同 ID 记忆改义、原子采用 SQL 回滚、fallback/修复计费、空查询归档和检查点故障均覆盖。真实 RED 与 GREEN、覆盖映射和 Wave 7 记录见审查文档；没有未同步设计偏差。
 
 日志：/tmp/task7-final-build.log、/tmp/task7-final-ctest.log、/tmp/task7-final-contract.log；报告 /tmp/task7-implementation-report.md。此阶段使用受控后端，不代表真实 QQ 已接通。
+
+
+## §3.9 外部观察与 QQ 式自主使用验证
+
+新增宿主 observationBindings/observationAdapters、可选 source schema 和独立进程 worker。实际 completed 查询与 source 消息共用稳定人物、消息和原事件路径；消息/outbox/来源 marker/线索在原 runtime SQLite 同事务归档。每次选择提供至多 8 条实际线索，剩余线索在忙碌、暂停、重启与 Internal tick 后仍保留。
+
+宿主明确区分 Query 与 Source。分群查询不推进整个账号的监听游标；只有有序 source 提交后确认水位，从而避免查到群 A 的高序号后漏掉群 B 的旧消息。64 KiB 单行、256 队列、有界读缓冲与诊断、失败头事件保留、崩溃重连和目录代次均受控；错误/损坏游标不默认为空。unknown 原始时间贯穿消息、事件和记忆，memory_origins.original_at 保持 NULL。
+
+直接自主发送复用 replyBindings 和既有派发记录；已有 ConversationService 回复携带宿主 prepared 引用，兼容没有原生 reply-to 参数的接口。实际回执在公开结果脱敏前提取，归档后才推进 runner；写入失败保留原回执补归档，服务退出后仍归原库，不能重发修复。退役实例不再给新主体投递机会。
+
+真实规划增加互斥 wait 提案，由宿主从实际步骤解析消息或远端任务锚点，进入 WaitingExternal 并释放前台。完整等待匹配后才限量获取候选，普通消息与历史洪流不会挤掉真回复。自主匹配等待经 Ready、选择票据及当前权限恢复，用户意图仍保留 Event 授权路径；恢复保留人物范围、进度、原证据及累计预算。
+
+交付 [受控聊天示例](../../../contracts/tools/examples/controlled-chat/README.md) 和 [观察源接入指南](../../../contracts/tools/观察源与聊天插件接入.md)。示例包含 list/read/send/receipt、可选 JSONL source 与宿主配置生成器；可变日志在包外。真实 AIBrain/ModelRouter 受控 provider/runner/进程/数据库链路用两套包名和操作名验证，不依赖主体里的软件名称分支。
+
+主要文件：core/ai/observation、plugin_reply_bridge、delivery_receipt_archive，及原 PluginRuntime/Catalog、ConversationStore/Service、ActivityStore/Runtime/OpportunityStore、TaskOrchestrator、AIBrain、记忆归属投影、contracts/tools 和根 CMakeLists.txt。新增 test_external_observation.cpp、test_autonomous_chat.cpp，回归保留在原活动、记忆与任务套件；沿用 runtime schema 3，没有第二消息或预算权威。
+
+验证：完整应用与全部测试目标构建成功；最终 CTest **57/57 组通过**（105.56 秒），工具契约 **94/94**。外部观察 42/42、自主聊天 5/5、活动运行时 24/24、任务编排 36/36、记忆归属 27/27；文档命令也在新建临时日志中实际跑通。真实 RED→GREEN、行为映射和 Wave 8 五项验证见审查与计划文档，无未同步设计偏差。日志：/tmp/task8-final-build.log、/tmp/task8-final-ctest.log、/tmp/task8-contract-final.log。
+
+验收后端为本地 SQLite 受控适配器，身份为本地 pet-account/Alice/Bob；没有提供或连接真实 QQ 后端、账号。以上实现及测试不代表已经登录 QQ，也不替代真实模型在开放聊天中的行为评估。

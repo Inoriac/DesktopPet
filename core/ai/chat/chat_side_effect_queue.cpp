@@ -333,6 +333,8 @@ private:
                 if (type == "UserMessageReceived" && payload.contains("original_origin_ids"))
                     return R::failure(domainError("UNKNOWN_REFERENCE", "A session processing log is not an original memory source"));
                 origin.occurredAt = QDateTime::fromString(q.value(4).toString(), Qt::ISODateWithMs);
+                origin.originalTimeKnown =
+                    payload["original_time_known"].toBool(true);
                 origin.originKind = originKindFromString(payload.value("origin_kind").toString())
                                         .value_or(OriginKind::Internal);
                 if (!payload.contains("origin_kind") && type == "UserMessageReceived" &&

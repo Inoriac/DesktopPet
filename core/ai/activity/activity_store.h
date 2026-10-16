@@ -20,6 +20,11 @@ class ActivityStore {
     applySelection(const SelectionAdoption &);
     Result<void, DomainError>
     validateImportantReply(const QString &eventId) const;
+    Result<QStringList, DomainError> pendingReplyEvents() const;
+    Result<bool, DomainError> routeObservedReply(const QString &eventId);
+    Result<QJsonObject, DomainError>
+    resolveWaitCondition(const QString &activityId, const QString &callId,
+                         const QString &kind) const;
     Result<ActivitySnapshot, DomainError>
     startActivity(const ActivityIntent &intent);
     Result<ActivitySnapshot, DomainError>

@@ -881,62 +881,147 @@ class TestActivityRuntime : public QObject {
             QVERIFY(store.pendingExperiences().value().isEmpty());
         }
     }
+    void pendingReplyEvents_filtersHistoricalFloodBeforeLimit() {
+      QTemporaryDir dir;
+      const auto path = dir.filePath("runtime.db");
+      ActivityStore store(profile, path);
+      QVERIFY(store.initialize());
+      ConversationStore messages(profile, path);
+      QVERIFY(messages.initialize());
+      HostConversationBinding binding;
+      binding.channel = "chat";
+      binding.connectionKey = "conn";
+      binding.remoteConversationId = "room";
+      QVERIFY(messages.registerBinding(binding));
+      IncomingMessage message;
+      message.channel = "chat";
+      message.connectionKey = "conn";
+      message.remoteConversationId = "room";
+      message.remoteMessageId = "first";
+      message.content = "First message";
+      message.speakerIdentity = {"chat", "conn", "friend", "Friend"};
+      message.occurredAt = QDateTime::currentDateTimeUtc();
+      auto first = messages.acceptMessage(message);
+      QVERIFY(first);
+      auto i = intent("chat");
+      i.origin = "self";
+      i.context = first.value().context;
+      auto activity = store.startActivity(i);
+      QVERIFY(activity);
+      auto call = dispatch(store, activity.value(), false);
+      QVERIFY(call);
+      QVERIFY(store.observeAction(observed(activity.value(), call.value())));
+      const auto anchor = sendMessage(messages, first.value());
+      QVERIFY(!anchor.isEmpty());
+      activity = store.find(activity.value().activityId);
+      auto waiting =
+          transition(activity.value(), ActivityState::WaitingExternal);
+      waiting.waitingCondition = {
+          {"kind", "message"},
+          {"conversationId", first.value().conversationId},
+          {"afterMessageId", anchor},
+          {"callId", call.value().callId},
+          {"resumeRule", "event"}};
+      QVERIFY(store.transitionActivity(waiting));
+      message.remoteMessageId = "matching-reply";
+      message.content = "The actual reply";
+      auto reply = messages.acceptMessage(message);
+      QVERIFY(reply);
+      message.historicalImport = true;
+      for (int index = 0; index < 260; ++index) {
+        message.remoteMessageId = "history-" + QString::number(index);
+        message.content = "Imported history";
+        QVERIFY(messages.acceptMessage(message));
+      }
+      auto candidates = store.pendingReplyEvents();
+      QVERIFY(candidates);
+      QCOMPARE(candidates.value(), QStringList{reply.value().originId});
+      QVERIFY(store.routeObservedReply(reply.value().originId).value());
+    }
+    void
+    acceptedTrackedActionWaitsAndResumesOnlyAfterVerifiedCompletion_data() {
+      QTest::addColumn<QString>("origin");
+      for (const auto &origin : {"user", "self", "event"})
+        QTest::newRow(origin) << QString(origin);
+    }
     void acceptedTrackedActionWaitsAndResumesOnlyAfterVerifiedCompletion() {
-        QTemporaryDir dir;
-        const auto path = dir.filePath("runtime.db");
-        ActivityStore store(profile, path);
-        QVERIFY(store.initialize());
-        auto a = store.startActivity(intent());
-        QVERIFY(a);
-        auto call = dispatch(store, a.value(), false);
-        QVERIFY(call);
-        auto accepted =
-            observed(a.value(), call.value(), ActionOutcome::Accepted);
-        accepted.receipt = {
-            {"tracking", QJsonObject{{"sourceId", "job-service"},
-                                     {"remoteJobId", "job-1"}}}};
-        QVERIFY(store.observeAction(accepted));
-        auto t = transition(a.value(), ActivityState::WaitingExternal);
-        t.waitingCondition = {{"kind", "event"},
-                              {"callId", call.value().callId},
-                              {"sourceId", "job-service"},
-                              {"remoteJobId", "job-1"},
-                              {"resumeRule", "event"}};
-        auto waiting = store.transitionActivity(t);
-        QVERIFY(waiting);
-        auto completed = observed(a.value(), call.value());
-        completed.receipt = {{"sourceId", "job-service"},
-                             {"remoteJobId", "job-1"},
-                             {"done", true}};
-        auto incorrect = completed;
-        incorrect.receipt["sourceId"] = "other-service";
-        QVERIFY(!store.observeAction(incorrect));
-        incorrect = completed;
-        incorrect.receipt["remoteJobId"] = "other-job";
-        QVERIFY(!store.observeAction(incorrect));
-        QCOMPARE(store.findAction(call.value().callId).value().status,
-                 "accepted");
-        QVERIFY(store.observeAction(completed));
-        QVERIFY(store.observeAction(completed));
-        ConversationStore events(profile, path);
-        QVERIFY(events.recoverOutbox());
-        QCOMPARE(
-            sql(path,
-                "SELECT COUNT(*) FROM event_log WHERE type='ActionCompleted'")
-                .toInt(),
-            1);
-        const auto trigger =
-            sql(path,
-                "SELECT event_id FROM event_log WHERE type='ActionCompleted'")
-                .toString();
-        QVERIFY(!trigger.isEmpty());
-        auto r = resume(waiting.value());
-        r.resumeActor = ResumeActor::Scheduler;
-        r.triggerRef = trigger;
-        QVERIFY(!store.resumeActivity(r));
-        r.resumeActor = ResumeActor::Event;
-        auto resumed = store.resumeActivity(r);
-        QVERIFY(resumed);
+      QFETCH(QString, origin);
+      QTemporaryDir dir;
+      const auto path = dir.filePath("runtime.db");
+      ActivityStore store(profile, path);
+      QVERIFY(store.initialize());
+      auto i = intent();
+      i.origin = origin;
+      auto a = store.startActivity(i);
+      QVERIFY(a);
+      auto call = dispatch(store, a.value(), false);
+      QVERIFY(call);
+      auto accepted =
+          observed(a.value(), call.value(), ActionOutcome::Accepted);
+      accepted.receipt = {{"tracking", QJsonObject{{"sourceId", "job-service"},
+                                                   {"remoteJobId", "job-1"}}}};
+      QVERIFY(store.observeAction(accepted));
+      auto t = transition(a.value(), ActivityState::WaitingExternal);
+      t.waitingCondition = {{"kind", "event"},
+                            {"callId", call.value().callId},
+                            {"sourceId", "job-service"},
+                            {"remoteJobId", "job-1"},
+                            {"resumeRule", "event"}};
+      auto waiting = store.transitionActivity(t);
+      QVERIFY(waiting);
+      auto completed = observed(a.value(), call.value());
+      completed.receipt = {{"sourceId", "job-service"},
+                           {"remoteJobId", "job-1"},
+                           {"done", true}};
+      auto incorrect = completed;
+      incorrect.receipt["sourceId"] = "other-service";
+      QVERIFY(!store.observeAction(incorrect));
+      incorrect = completed;
+      incorrect.receipt["remoteJobId"] = "other-job";
+      QVERIFY(!store.observeAction(incorrect));
+      QCOMPARE(store.findAction(call.value().callId).value().status,
+               "accepted");
+      QVERIFY(store.observeAction(completed));
+      QVERIFY(store.observeAction(completed));
+      ConversationStore events(profile, path);
+      QVERIFY(events.recoverOutbox());
+      QCOMPARE(
+          sql(path,
+              "SELECT COUNT(*) FROM event_log WHERE type='ActionCompleted'")
+              .toInt(),
+          1);
+      const auto trigger =
+          sql(path,
+              "SELECT event_id FROM event_log WHERE type='ActionCompleted'")
+              .toString();
+      QVERIFY(!trigger.isEmpty());
+      auto pending = store.pendingReplyEvents();
+      QVERIFY(pending);
+      if (origin != "user") {
+        QVERIFY(pending.value().contains(trigger));
+        auto routed = store.routeObservedReply(trigger);
+        QVERIFY(routed && routed.value());
+        QVERIFY(!store.routeObservedReply(trigger).value());
+        auto ready = store.find(a.value().activityId);
+        QVERIFY(ready);
+        QCOMPARE(ready.value().state, ActivityState::Ready);
+        QCOMPARE(ready.value().waitingCondition["resumeEventId"].toString(),
+                 trigger);
+        QCOMPARE(ready.value().budget.toJson(),
+                 waiting.value().budget.toJson());
+        return;
+      }
+      QVERIFY(pending.value().isEmpty());
+      QVERIFY(!store.routeObservedReply(trigger).value());
+      QCOMPARE(store.find(a.value().activityId).value().state,
+               ActivityState::WaitingExternal);
+      auto r = resume(waiting.value());
+      r.resumeActor = ResumeActor::Scheduler;
+      r.triggerRef = trigger;
+      QVERIFY(!store.resumeActivity(r));
+      r.resumeActor = ResumeActor::Event;
+      auto resumed = store.resumeActivity(r);
+      QVERIFY(resumed);
     }
 };
 QTEST_GUILESS_MAIN(TestActivityRuntime)

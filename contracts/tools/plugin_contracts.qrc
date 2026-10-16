@@ -1,3 +1,3 @@
 <RCC><qresource prefix="/plugin-contracts">
-<file>plugin.schema.json</file><file>skill.schema.json</file><file>capability.schema.json</file>
+<file>plugin.schema.json</file><file>source.schema.json</file><file>skill.schema.json</file><file>capability.schema.json</file>
 </qresource></RCC>

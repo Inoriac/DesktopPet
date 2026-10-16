@@ -9,6 +9,21 @@
 
 ## 决策记录
 
+- [code-impl Task 8 最终核对] 全量构建退出码 0、主 agent 执行的 CTest 57/57（105.56 秒）、工具契约 94/94。Query/Source 游标隔离、完整等待匹配、原库回执恢复、退役通知、未知原始时间及两套包/操作名链路均有实际回归；文档命令与链接也已核对。验收范围是本地受控适配器，无真实 QQ 后端/账号。详细进度以 impl-plan 为准，修复证据见审查文档。
+
+- [code-impl Task 8 sanity check] 已核对 PluginCatalog::registerPlugin/loadSource、PluginRuntime::setHostConfiguration/invokeCapability/setObservationSource/retire、ConversationStore::acceptMessage（共同 UoW 扩展）/prepareContext/publishResponse/recordDeliveryReceipt、ConversationService 独立归档、AIBrain 实例/profile 门禁、TaskOrchestrator::waitForExternal 及 ActivityStore::pendingReplyEvents/routeObservedReply/resolveWaitCondition。实际 query/source、消息/outbox/游标与原库回执沿用原 runtime schema 3；测试组织遵循根 tests 与 CMake。设计细化均已回填主设计，没有未处理接口偏差。
+
+- [code-impl Task 8 等待候选边界] pendingReplyEvents 与 routeObservedReply 共用完整匹配规则，独立于普通消息队列，过滤后再限量 256；避免其他会话的待处理线索或 self/history 事件挤掉真实回复。旧 runtime 退役时断开主体通知，并核对当前实例/profile；原库事实归档继续，不能给新角色发起机会。
+
+- [code-impl Task 8 查询覆盖边界] 实际分群 read 不能证明整个账号日志的前缀已接收；推进统一 source cursor 会跳过另一群较低序号。主设计 §3.9 补全宿主 ObservationTransport（Source/Query），实际查询固定 Query，只归档消息/outbox/来源 marker/线索；只有 Source 有序流推进监听水位，查询分页使用真实结果 cursor。新增两群 query→source 的生产进程回归；不改数据库 schema 或插件 wire payload。
+
+- [code-impl Task 8 等待就绪接口补全] §3.8 选择候选不含 WaitingExternal，已在主设计 §3.9 增加宿主内部 routeObservedReply(eventId)：同 UoW 校验实际原事件/等待锚点/恢复权限后，将自主匹配等待置 Ready 并保留触发证据，后续仍经票据与当前权限恢复。普通消息不请求检查点；用户意图保留原 Event 授权恢复，不变成不可选 Ready；user/restart 暂停不动。此补全落实 §1.5 已允许的匹配事件就绪，不另建调度权威。
+
+- [code-impl Task 8 时间语义核对] 现 MemoryOriginSource 直接使用 event_log.occurred_at；观察缺远端时间时该值是 receivedAt，不能继续写成 memory_origins.original_at。主设计 §3.9 已明确透传 originalTimeKnown，未知原始时间保持 NULL，提及/排序时钟保留接收时间；现列本身可空，无 SQL 变更。规划 wait 的 afterStepId 仅引用原实际步骤，由宿主解析消息/任务锚点；query 每批 256 项需分页。
+
+- [code-impl Task 8 设计补全] 按 evoloop-gen-tech-design 补全模式写入主设计 v1.8：observationBindings/精确 query adapters、独立 source schema 与 worker、正十进制 sequence 和 opaque cursor、消息/outbox/marker/cursor 同事务、未知远端时间、沿用 replyBindings 的宿主 prepared dispatch 与原库迟到回执。实际 runner 接受宿主验证的等待提案，外部待处理线索持久化并与旧立即对话唯一分流；不以测试手动状态转换替代生产链路。复用原 SQLite schema 3，不创建第二消息/预算权威。该修订是既定 §3.9 的工程细化，沿用用户连续开发与分阶段提交授权。
+- [code-impl Task 8 执行边界] 主 agent 维护主设计和过程记录；单实现 agent 串行拥有本阶段源码、测试、工具安装契约/可运行样例与 build。真实进程 + 受控模型 provider 验证两套不同包/操作名称及无 source 主动查询；未提供真实 QQ 后端/账号，不宣称已登录 QQ。
+
 - [code-impl Task 7 sanity check] §3.8 的 ActivityRuntime::setOpportunityConsumer/modelBudgetHooks/applySelectionAsync、ModelRouter::completeAsync、ActivityStore::startActivity/resumeActivity/applySelection、PluginRuntime::findGrant/makeCapabilityValidator/executeGateway、InnerThoughtService::recentUnresolvedAsync 和 TaskOrchestrator::requestSafeCheckpoint 均与源码核对。没有增加第二机会/预算权威；真实调用保留自主标记、原 profile/范围与实际回执。
 - [code-impl Task 7 审查闭合] 空 schema、只读连接、近期记录挤占、来源上限、scope 类型、实际超额采用、同 ID 记忆改义、消息材料、真实空查询、状态更新及 memoryAccess 撤权均已回归。延迟工具准入与 checkpoint SQL 失败取得真实 RED 后修复最终派发门禁；返回验证结果先处理再考虑暂停。最终全量构建/55 组回归及 70 项工具契约通过，详细证据见审查记录与 impl-plan。
 

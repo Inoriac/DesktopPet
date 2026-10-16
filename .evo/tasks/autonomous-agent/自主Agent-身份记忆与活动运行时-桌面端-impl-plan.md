@@ -1,6 +1,6 @@
 # 自主 Agent 实现计划
 
-系分文档：[自主 Agent 系分](../../../../contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)。本文件是实施进度的唯一来源；设计文档只维护契约和验收条件。
+系分文档：[自主 Agent 系分](../../../contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)。本文件是实施进度的唯一来源；设计文档只维护契约和验收条件。
 
 按已确认顺序分为 8 个 Task / 8 个 Wave，串行推进。用户已授权持续开发，每阶段验证后 commit 并继续，不重复请求确认。
 
@@ -288,17 +288,37 @@ Wave 7 校验（2026-10-17）：
 ## Task 8: 外部观察与 QQ 式自主使用验证
 
 - 关联设计: §3.9 外部观察与 QQ 式自主使用验证
-- 状态: [ ]
+- 状态: [x]
 - Wave: 8
 - 依赖: Task 1—Task 7
 
-文件：观察入口/连接模块、消息与活动协调器、受控消息插件 fixture、插件接入说明；新增 `tests/test_external_observation.cpp`、`tests/test_autonomous_chat.cpp`；`CMakeLists.txt`。
+文件：新增 `core/ai/observation/` 观察类型/入口与独立 source worker；修改 `core/ai/plugin/{plugin_catalog,plugin_runtime,plugin_gateway,capability_types,capability_executor,schema_validator}.*`（按现有文件），`core/ai/chat/{conversation_types,conversation_store,conversation_service}.*`，`core/ai/activity/{activity_types,activity_store,activity_runtime,opportunity_store,opportunity_coordinator,activity_selector,selection_types}.*`、`core/ai/scheduler/opportunity_types.*`、`core/ai/task/{task_types,task_orchestrator}.*`、`core/ai/tools/runtime/` 与 `core/ai/ai_brain*.cpp/.h`。必要来源 schema/消费者投影位于 `core/ai/event/` 与 `core/ai/runtime/`，共享 DTO 位于 `include/ai_types.h`；未知原始时间的透传同时调整 `core/ai/chat/chat_side_effect_queue.cpp`、`core/ai/memory/memory_attribution_service.h/.cpp` 及现有 attribution/write_queue 回归；沿用原 SQLite schema 3，若新增 SQL 先上报。安装契约：`contracts/tools/source.schema.json`、`plugin.schema.json`、`plugin_contracts.qrc`、`verify_contract.py`、正反示例与 `contracts/tools/examples/controlled-chat/` 的可运行插件。说明：`contracts/tools/插件运行时接入.md`、观察源接入指南与 README。新增 `tests/test_external_observation.cpp`、`tests/test_autonomous_chat.cpp`，回归放既有 plugin_runtime、conversation_routing、activity_runtime/opportunities/selector、task_orchestrator、module_connectivity、agent_runtime_services 等套件；根 `CMakeLists.txt` 注册。单实现 agent 独占源码/tests/CMake/build 与工具契约/示例文件，主 agent 维护主设计与过程文档。
 
-测试用例：
-- ingestObservation_pollAndPushSameMessage_oneMessageAndOrigin（happy path）。
-- setObservationSource_enableReconnectDisable_preservesCommittedCursor（happy path）。
-- autonomousChat_checkDiscussWaitReadAndResume_preservesPeopleAndContexts（happy path）。
-- autonomousChat_replaceChatPlugin_noCoreSoftwareSpecificChanges。
+测试用例（来源主设计 v1.8 §3.9.7）：
+- ingestObservation_pollAndPushSameMessage_oneMessageAndOrigin（happy path）；sameRemoteIdAcrossGroups_isolated。
+- pollOneConversation_thenEnableSource_doesNotSkipOtherConversation：真实查询只读取群 A 的较高序号，不推进监听水位；随后实际 source 接收群 B 的较低序号，重复群 A 消息不增加事实。
+- ingestObservation_messageOutboxCursorFailure_rollsBackAndDoesNotAck；outboxDeliveryDelay_preservesCueUntilOriginalEventExists。
+- ingestObservation_sequenceConflictAndLateReplay_doesNotRollBackCursor；missingTimeOrSpeaker_preservesUnknownIdentityAndTime。
+- setObservationSource_enableReconnectDisable_preservesCommittedCursor（happy path，真实进程）；partialMultipleLinesBoundsAndRetiredGeneration_noUncommittedAck。
+- sourceContract_invalidDefinitionConfigurationPathAndExecutor_rejectsBeforeStart。
+- pollResult_exactCompletedMappingOnly_normalizesMessages；emptyAndStatusDoNotInventConversation。
+- autonomousSend_actualReceiptArchivedBeforeWaiting_keepsOriginalScope；lateReceiptAndSelfEcho_noDuplicateSendOrGrowth。
+- taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground；unknownOutcomeCannotWaitOrResend。
+- externalCue_busyPauseRestartAndInternalTick_preservesPendingConversationAndEvents。
+- autonomousChat_checkDiscussWaitReadAndResume_preservesPeopleAndContexts（happy path，真实 AIBrain/ModelRouter fake provider/runner/进程/数据库链路）。
+- autonomousChat_replaceChatPluginAndOperationNames_noCoreSoftwareSpecificChanges。
 - autonomousChat_noBackgroundSource_proactiveQueryStillWorks。
 
-真实 QQ 验收须单列具体后端、账号及实际结果；受控插件通过不等于真实 QQ 已接通。
+工程契约以主设计 v1.8 §3.9、§4.4 及既有各切片为准。查询事实与发送回执只取实际能力结果；一次消息接收不得同时触发旧立即对话和自主回复。已有 user/restart 暂停权限、单前台、累计预算与未知写动作去重保持。
+
+真实 QQ 验收须单列具体后端、账号及实际结果；当前没有真实后端/账号，受控插件通过不等于真实 QQ 已接通。不连接真实账号，不发送实际外部聊天。
+
+
+Wave 8 校验（2026-10-17）：
+- 文件冲突：通过，单实现 agent 串行拥有源码/测试/build；主 agent 维护主设计、过程文档和明确交接的纯说明文档。实现 agent 已交还全部所有权，最终全量 CTest 由主 agent 执行。
+- 构建/全量测试：all-target build 退出码 0；CTest **57/57 组通过**（105.56 秒），未跳过测试。最终套件：外部观察 42/42、自主聊天 5/5、活动运行时 24/24、任务编排 36/36、记忆归属 27/27；工具契约 **94/94**。
+- 行为覆盖：计划用例均有对应实际测试，详见审查映射。包括两套包名/操作名的真实模型路由与进程链路、无 source 主动查询、跨群游标、事务回滚、原库回执、真正等待/恢复、用户授权保留和未知原始时间。
+- 测试布局：通过，新增 tests/test_external_observation.cpp、tests/test_autonomous_chat.cpp，由根 CMakeLists.txt 注册；共享 fixture 位于 tests/，进程 fixture 位于 tests/fixtures/，其他回归沿用原套件。
+- 实现锚点与留痕：通过，主设计 §3.9 七子节及接口/SQL一致，context.md 有签名核对记录。8 切片 × 7 子节、8 Task、主设计 38 个本地链接、附加文档 38 个链接和 SQL迁移/重复/FK/空库撤销/非空拒绝检查通过；git diff --check 通过。
+
+最终日志：/tmp/task8-final-build.log、/tmp/task8-final-ctest.log、/tmp/task8-contract-final.log；报告 /tmp/task8-implementation-report.md。Wave 8 五项通过，原计划 8 个 Task 均已完成。验收使用受控本地聊天后端，未连接真实 QQ。

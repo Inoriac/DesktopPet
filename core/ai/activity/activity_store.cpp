@@ -1797,27 +1797,171 @@ ActivityStore::applySelection(const SelectionAdoption &a) {
     resume.resumeActor = ResumeActor::Selection;
     return resumeActivityImpl(resume, &a);
 }
+namespace {
+QString waitingEventQuery(bool message) {
+  return message
+             ? QStringLiteral(
+                   "SELECT a.id AS activity_id,e.event_id,e.rowid AS event_row "
+                   "FROM agent_activities a JOIN event_log e ON "
+                   "e.profile_id=a.profile_id JOIN agent_messages m ON "
+                   "m.profile_id=a.profile_id AND "
+                   "m.id=json_extract(e.payload_json,'$.message_id') JOIN "
+                   "agent_messages sent ON sent.profile_id=a.profile_id AND "
+                   "sent.id=json_extract(a.waiting_json,'$.afterMessageId') "
+                   "WHERE a.profile_id=? AND e.type='MessageObserved' AND "
+                   "a.state='WaitingExternal' AND "
+                   "json_extract(a.intent_json,'$.origin') IN ('self','event') "
+                   "AND json_extract(a.waiting_json,'$.kind')='message' AND "
+                   "json_extract(a.waiting_json,'$.resumeRule') IN "
+                   "('event','event_or_scheduler') AND "
+                   "m.conversation_id=sent.conversation_id AND "
+                   "m.conversation_id=json_extract(a.waiting_json,'$."
+                   "conversationId') AND m.direction='incoming' AND "
+                   "sent.direction='outgoing' AND m.rowid>sent.rowid AND "
+                   "coalesce(json_extract(e.payload_json,'$.historical_import')"
+                   ",0)=0 AND "
+                   "coalesce(json_extract(e.payload_json,'$.sender_kind'),'')<>"
+                   "'self'")
+             : QStringLiteral(
+                   "SELECT a.id AS activity_id,e.event_id,e.rowid AS event_row "
+                   "FROM agent_activities a JOIN event_log e ON "
+                   "e.profile_id=a.profile_id JOIN agent_action_calls c ON "
+                   "c.profile_id=a.profile_id AND c.activity_id=a.id AND "
+                   "c.call_id=json_extract(a.waiting_json,'$.callId') WHERE "
+                   "a.profile_id=? AND e.type='ActionCompleted' AND "
+                   "a.state='WaitingExternal' AND "
+                   "json_extract(a.intent_json,'$.origin') IN ('self','event') "
+                   "AND json_extract(a.waiting_json,'$.kind')='event' AND "
+                   "json_extract(a.waiting_json,'$.resumeRule') IN "
+                   "('event','event_or_scheduler') AND c.status='succeeded' "
+                   "AND json_extract(e.payload_json,'$.activity_id')=a.id AND "
+                   "json_extract(e.payload_json,'$.call_id')=c.call_id AND "
+                   "json_extract(e.payload_json,'$.source_id')=json_extract(a."
+                   "waiting_json,'$.sourceId') AND "
+                   "json_extract(e.payload_json,'$.remote_job_id')=json_"
+                   "extract(a.waiting_json,'$.remoteJobId')");
+}
+Result<QString, DomainError>
+matchingWait(QSqlDatabase db, const QString &profile, const QString &eventId) {
+  for (bool message : {true, false}) {
+    QSqlQuery q(db);
+    q.prepare(waitingEventQuery(message) +
+              " AND e.event_id=? ORDER BY a.created_at,a.id LIMIT 1");
+    q.addBindValue(profile);
+    q.addBindValue(eventId);
+    if (!q.exec())
+      return fail<QString>("STORE_UNAVAILABLE", q.lastError().text());
+    if (q.next())
+      return Result<QString, DomainError>::success(q.value(0).toString());
+  }
+  return fail<QString>("UNKNOWN_REFERENCE",
+                       "Event does not match an authorized external wait");
+}
+} // namespace
+Result<QStringList, DomainError> ActivityStore::pendingReplyEvents() const {
+  Transaction tx(m_databasePath, false);
+  if (!tx.ok())
+    return Result<QStringList, DomainError>::failure(tx.failure);
+  QSqlQuery q(tx.db);
+  q.prepare("SELECT DISTINCT event_id,event_row FROM (" +
+            waitingEventQuery(true) + " UNION ALL " + waitingEventQuery(false) +
+            ") ORDER BY event_row DESC LIMIT 256");
+  q.addBindValue(m_profileId);
+  q.addBindValue(m_profileId);
+  if (!q.exec())
+    return fail<QStringList>("STORE_UNAVAILABLE", q.lastError().text());
+  QStringList result;
+  while (q.next())
+    result.append(q.value(0).toString());
+  return Result<QStringList, DomainError>::success(result);
+}
 Result<void, DomainError>
 ActivityStore::validateImportantReply(const QString &id) const {
-    Transaction tx(m_databasePath, false);
-    if (!tx.ok())
-        return Result<void, DomainError>::failure(tx.failure);
+  Transaction tx(m_databasePath, false);
+  if (!tx.ok())
+    return Result<void, DomainError>::failure(tx.failure);
+  auto match = matchingWait(tx.db, m_profileId, id);
+  return match ? Result<void, DomainError>::success()
+               : Result<void, DomainError>::failure(match.error());
+}
+Result<bool, DomainError> ActivityStore::routeObservedReply(const QString &id) {
+  Transaction tx(m_databasePath);
+  if (!tx.ok())
+    return Result<bool, DomainError>::failure(tx.failure);
+  auto match = matchingWait(tx.db, m_profileId, id);
+  if (!match) {
+    if (match.error().code == "UNKNOWN_REFERENCE")
+      return Result<bool, DomainError>::success(false);
+    return Result<bool, DomainError>::failure(match.error());
+  }
+  auto row = readActivity(tx.db, m_profileId, match.value());
+  if (!row)
+    return Result<bool, DomainError>::failure(row.error());
+  auto activity = row.value();
+  activity.state = ActivityState::Ready;
+  activity.waitingCondition["resumeEventId"] = id;
+  activity.execution["resumeEventId"] = id;
+  activity.executionPhase = "ready";
+  auto saved = writeActivity(tx.db, activity);
+  if (!saved)
+    return Result<bool, DomainError>::failure(saved.error());
+  auto committed = tx.commit();
+  return committed ? Result<bool, DomainError>::success(true)
+                   : Result<bool, DomainError>::failure(committed.error());
+}
+Result<QJsonObject, DomainError>
+ActivityStore::resolveWaitCondition(const QString &activityId,
+                                    const QString &callId,
+                                    const QString &kind) const {
+  using R = Result<QJsonObject, DomainError>;
+  Transaction tx(m_databasePath, false);
+  if (!tx.ok())
+    return R::failure(tx.failure);
+  auto activity = readActivity(tx.db, m_profileId, activityId);
+  if (!activity)
+    return R::failure(activity.error());
+  auto action = readAction(tx.db, m_profileId, callId);
+  if (!action)
+    return R::failure(action.error());
+  if (action.value().activityId != activityId)
+    return fail<QJsonObject>("INVALID_INPUT",
+                             "Wait action belongs to another activity");
+  const auto output = action.value().result["receipt"].toObject();
+  const auto receipt =
+      output["receipt"].isObject() ? output["receipt"].toObject() : output;
+  QJsonObject wait{{"kind", kind}, {"callId", callId}, {"resumeRule", "event"}};
+  if (kind == "message") {
+    if (action.value().status != "succeeded" ||
+        activity.value().context.originKind != OriginKind::External ||
+        receipt["remoteMessageId"].toString().isEmpty())
+      return fail<QJsonObject>("ACTION_OUTCOME_UNKNOWN",
+                               "Wait has no verified sent message");
     QSqlQuery q(tx.db);
-    q.prepare("SELECT payload_json FROM event_log WHERE profile_id=? AND "
-              "event_id=? AND type='MessageObserved'");
+    q.prepare("SELECT id FROM agent_messages WHERE profile_id=? AND "
+              "conversation_id=? AND remote_id=? AND direction='outgoing' AND "
+              "json_extract(payload_json,'$.senderKind')='self'");
     q.addBindValue(m_profileId);
-    q.addBindValue(id);
+    q.addBindValue(activity.value().context.conversationId);
+    q.addBindValue(receipt["remoteMessageId"].toString());
     if (!q.exec())
-        return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+      return fail<QJsonObject>("STORE_UNAVAILABLE", q.lastError().text());
     if (!q.next())
-        return fail<void>("UNKNOWN_REFERENCE",
-                          "Important reply has not committed");
-    auto payload = object(q.value(0));
-    if (payload["sender_kind"] == "self" ||
-        payload["historical_import"].toBool() ||
-        payload["conversation_id"].toString().isEmpty())
-        return fail<void>("INVALID_INPUT", "Reply is not a new incoming fact");
-    return Result<void, DomainError>::success();
+      return fail<QJsonObject>("UNKNOWN_REFERENCE",
+                               "Outgoing message has not committed");
+    wait["conversationId"] = activity.value().context.conversationId;
+    wait["afterMessageId"] = q.value(0).toString();
+  } else if (kind == "event") {
+    const auto tracking = output["tracking"].toObject();
+    if (action.value().status != "accepted" ||
+        tracking["sourceId"].toString().isEmpty() ||
+        tracking["remoteJobId"].toString().isEmpty())
+      return fail<QJsonObject>("ACTION_OUTCOME_UNKNOWN",
+                               "Wait has no tracked accepted action");
+    wait["sourceId"] = tracking["sourceId"];
+    wait["remoteJobId"] = tracking["remoteJobId"];
+  } else
+    return fail<QJsonObject>("INVALID_INPUT", "Unknown external wait kind");
+  return R::success(wait);
 }
 
 Result<QList<ActivitySnapshot>, DomainError>

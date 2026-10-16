@@ -1,0 +1,141 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:desktop-pet:source:format-1",
+  "type": "object",
+  "required": [
+    "formatVersion",
+    "id",
+    "protocol",
+    "requirements",
+    "configuration",
+    "invocation"
+  ],
+  "properties": {
+    "formatVersion": {
+      "const": "1"
+    },
+    "id": {
+      "$ref": "#/$defs/identifier"
+    },
+    "protocol": {
+      "const": "agent-observation-1"
+    },
+    "requirements": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/requirement"
+      }
+    },
+    "configuration": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {
+        "$ref": "#/$defs/configuration"
+      }
+    },
+    "invocation": {
+      "type": "object",
+      "required": [
+        "kind",
+        "program",
+        "arguments"
+      ],
+      "properties": {
+        "kind": {
+          "const": "command"
+        },
+        "program": {
+          "$ref": "#/$defs/setting"
+        },
+        "arguments": {
+          "type": "array",
+          "maxItems": 128,
+          "items": {
+            "oneOf": [
+              {
+                "type": "string"
+              },
+              {
+                "$ref": "#/$defs/setting"
+              }
+            ]
+          }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "nonBlank": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "\\S"
+    },
+    "identifier": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9._-]*(?![\\s\\S])"
+    },
+    "setting": {
+      "type": "object",
+      "properties": {
+        "setting": {
+          "$ref": "#/$defs/nonBlank"
+        }
+      },
+      "required": [
+        "setting"
+      ],
+      "additionalProperties": false
+    },
+    "requirement": {
+      "type": "object",
+      "required": [
+        "id",
+        "description",
+        "setup"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/nonBlank"
+        },
+        "description": {
+          "$ref": "#/$defs/nonBlank"
+        },
+        "setup": {
+          "$ref": "#/$defs/nonBlank"
+        }
+      }
+    },
+    "configuration": {
+      "type": "object",
+      "required": [
+        "key",
+        "description",
+        "kind",
+        "required"
+      ],
+      "properties": {
+        "key": {
+          "$ref": "#/$defs/nonBlank"
+        },
+        "description": {
+          "$ref": "#/$defs/nonBlank"
+        },
+        "kind": {
+          "enum": [
+            "executable",
+            "path",
+            "text",
+            "secret",
+            "mcp_connection"
+          ]
+        },
+        "required": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

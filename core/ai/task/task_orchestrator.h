@@ -51,6 +51,7 @@ private:
   void assess(bool checkpoint, int attempt = 0);
   void plan(bool replan = false, int attempt = 0);
   void verify(int attempt = 0);
+  void waitForExternal(const QJsonObject &proposal);
   void replan(const QString &reason);
   void dispatchTool(const QJsonObject &tool);
   void dispatchValidatedTool(const QJsonObject &tool, bool readOnly);

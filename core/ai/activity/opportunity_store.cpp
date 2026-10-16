@@ -1,5 +1,6 @@
 #include "opportunity_store.h"
 #include "ai/event/runtime_unit_of_work.h"
+#include "ai/observation/observation_store.h"
 #include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QSqlError>
@@ -374,86 +375,111 @@ Result<void, DomainError> OpportunityStore::publishReadiness(const OpportunitySi
     return commitState(tx, m_profileId, s, signal.clock);
 }
 Result<OpportunityTicket, DomainError>
-OpportunityStore::considerOpportunity(const OpportunitySignal &signal) {
-    if (!validClock(signal.clock))
-        return fail<OpportunityTicket>("INVALID_INPUT", "Invalid host clock");
-    Transaction tx(m_databasePath);
-    if (!tx.ok())
-        return Result<OpportunityTicket, DomainError>::failure(tx.error);
-    auto loaded = read(tx.db, m_profileId);
-    if (!loaded)
-        return Result<OpportunityTicket, DomainError>::failure(loaded.error());
-    auto s = loaded.value();
-    if ((signal.expectedRuntimeRevision >= 0 && signal.expectedRuntimeRevision != s.revision) ||
-        signal.readiness.hostEpoch != s.control.value("hostEpoch").toString() ||
-        qint64(signal.readiness.hostRevision) < s.control.value("hostRevision").toInteger())
-        return fail<OpportunityTicket>("STALE_REVISION", "Old opportunity snapshot");
-    auto readiness = signal.readiness;
-    auto defer = [&](const QString &message) {
-        if (expired(s.control.value("selectionReservation").toObject(), signal.clock)) {
-            s.control.remove("selectionReservation");
-            auto saved = commitState(tx, m_profileId, s, signal.clock);
-            if (!saved)
-                return Result<OpportunityTicket, DomainError>::failure(saved.error());
-        }
-        return fail<OpportunityTicket>("OPPORTUNITY_DEFERRED", message);
-    };
-    readiness.autonomyEnabled = s.control.value("autonomyEnabled").toBool();
-    readiness.paused = readiness.paused || s.control.value("paused").toBool();
-    auto reservation = s.control.value("selectionReservation").toObject();
-    if (expired(reservation, signal.clock))
-        reservation = {};
-    readiness.selectionReservation = reservation.value("ticketId").toString();
-    QSqlQuery q(tx.db);
-    q.prepare("SELECT id FROM agent_activities WHERE profile_id=? AND focus_owned=1");
-    q.addBindValue(m_profileId);
-    if (!q.exec())
-        return fail<OpportunityTicket>("STORE_UNAVAILABLE", q.lastError().text());
-    if (q.next())
-        readiness.foregroundActivity = q.value(0).toString();
-    auto decision = evaluateIdle(readiness);
-    if (!decision.canDeliberate)
-        return defer(decision.reason);
-    const auto config = AutonomyConfig::fromJson(s.control.value("autonomyConfig").toObject());
-    const qint64 now = logicalNow(s.control, signal.clock);
-    const bool changed =
-        !sameInput(s.control.value("observedWatermarks").toObject(), signal.inputWatermark);
-    if (s.control.contains("lastDecisionLogical") &&
-        now - s.control.value("lastDecisionLogical").toInteger() < config.minDecisionIntervalMs)
-        return defer("cooldown");
-    if (!changed && now < s.control.value("nextConsiderLogical").toInteger())
-        return defer("backoff");
-    const auto used = totals(s.control, now);
-    if (used.selection >= config.maxSelectionCallsPerHour ||
-        used.tokens >= config.maxTokensPerHour ||
-        used.cost >= config.maxEstimatedCostMicrosPerHour ||
-        used.active >= config.maxActiveMsPerHour)
-        return Result<OpportunityTicket, DomainError>::failure(
-            budgetError(now, signal.clock).error());
-    OpportunityTicket ticket;
-    ticket.ticketId = QUuid::createUuid().toString(QUuid::WithoutBraces);
-    ticket.profileId = m_profileId;
-    ticket.hostEpoch = signal.readiness.hostEpoch;
-    ticket.contextId = signal.contextId;
-    ticket.eventIds = signal.eventIds;
-    ticket.runtimeRevision = s.revision + 1;
-    ticket.hostRevision = signal.readiness.hostRevision;
-    ticket.inputWatermark =
-        mergeInput(s.control.value("inputWatermarks").toObject(), signal.inputWatermark);
-    ticket.expiresAt = signal.clock.utc.addMSecs(config.ticketTtlMs);
-    ticket.clockSessionId = signal.clock.sessionId;
-    ticket.monotonicDeadline = signal.clock.monotonicMs + config.ticketTtlMs;
-    s.control["selectionReservation"] = ticket.toJson();
-    s.control["hostRevision"] = qint64(ticket.hostRevision);
-    s.control["inputWatermarks"] =
-        mergeInput(s.control.value("inputWatermarks").toObject(), signal.inputWatermark);
-    s.control["lastDecisionLogical"] = now;
-    s.control["lastDecisionAt"] = signal.clock.utc.toString(Qt::ISODateWithMs);
-    if (changed)
-        s.control["backoff"] = 0;
-    auto committed = commitState(tx, m_profileId, s, signal.clock);
-    return committed ? Result<OpportunityTicket, DomainError>::success(ticket)
-                     : Result<OpportunityTicket, DomainError>::failure(committed.error());
+OpportunityStore::considerOpportunity(const OpportunitySignal &inputSignal) {
+  auto signal = inputSignal;
+  if (!validClock(signal.clock))
+    return fail<OpportunityTicket>("INVALID_INPUT", "Invalid host clock");
+  Transaction tx(m_databasePath);
+  if (!tx.ok())
+    return Result<OpportunityTicket, DomainError>::failure(tx.error);
+  auto loaded = read(tx.db, m_profileId);
+  if (!loaded)
+    return Result<OpportunityTicket, DomainError>::failure(loaded.error());
+  auto s = loaded.value();
+  if ((signal.expectedRuntimeRevision >= 0 &&
+       signal.expectedRuntimeRevision != s.revision) ||
+      signal.readiness.hostEpoch != s.control.value("hostEpoch").toString() ||
+      qint64(signal.readiness.hostRevision) <
+          s.control.value("hostRevision").toInteger())
+    return fail<OpportunityTicket>("STALE_REVISION",
+                                   "Old opportunity snapshot");
+  auto cue = ObservationStore::pendingCue(tx.db, m_profileId);
+  if (!cue)
+    return Result<OpportunityTicket, DomainError>::failure(cue.error());
+  if (cue.value()) {
+    signal.contextId = cue.value()->conversationId;
+    signal.eventIds = cue.value()->eventIds;
+    auto watermarks = mergeInput(s.control.value("inputWatermarks").toObject(),
+                                 signal.inputWatermark);
+    for (auto it = cue.value()->watermark.begin();
+         it != cue.value()->watermark.end(); ++it)
+      if (!watermarks.contains(it.key()))
+        watermarks[it.key()] = it.value();
+    signal.inputWatermark = watermarks;
+  }
+  auto readiness = signal.readiness;
+  auto defer = [&](const QString &message) {
+    if (expired(s.control.value("selectionReservation").toObject(),
+                signal.clock)) {
+      s.control.remove("selectionReservation");
+      auto saved = commitState(tx, m_profileId, s, signal.clock);
+      if (!saved)
+        return Result<OpportunityTicket, DomainError>::failure(saved.error());
+    }
+    return fail<OpportunityTicket>("OPPORTUNITY_DEFERRED", message);
+  };
+  readiness.autonomyEnabled = s.control.value("autonomyEnabled").toBool();
+  readiness.paused = readiness.paused || s.control.value("paused").toBool();
+  auto reservation = s.control.value("selectionReservation").toObject();
+  if (expired(reservation, signal.clock))
+    reservation = {};
+  readiness.selectionReservation = reservation.value("ticketId").toString();
+  QSqlQuery q(tx.db);
+  q.prepare(
+      "SELECT id FROM agent_activities WHERE profile_id=? AND focus_owned=1");
+  q.addBindValue(m_profileId);
+  if (!q.exec())
+    return fail<OpportunityTicket>("STORE_UNAVAILABLE", q.lastError().text());
+  if (q.next())
+    readiness.foregroundActivity = q.value(0).toString();
+  auto decision = evaluateIdle(readiness);
+  if (!decision.canDeliberate)
+    return defer(decision.reason);
+  const auto config =
+      AutonomyConfig::fromJson(s.control.value("autonomyConfig").toObject());
+  const qint64 now = logicalNow(s.control, signal.clock);
+  const bool changed =
+      cue.value().has_value() ||
+      !sameInput(s.control.value("observedWatermarks").toObject(),
+                 signal.inputWatermark);
+  if (s.control.contains("lastDecisionLogical") &&
+      now - s.control.value("lastDecisionLogical").toInteger() <
+          config.minDecisionIntervalMs)
+    return defer("cooldown");
+  if (!changed && now < s.control.value("nextConsiderLogical").toInteger())
+    return defer("backoff");
+  const auto used = totals(s.control, now);
+  if (used.selection >= config.maxSelectionCallsPerHour ||
+      used.tokens >= config.maxTokensPerHour ||
+      used.cost >= config.maxEstimatedCostMicrosPerHour ||
+      used.active >= config.maxActiveMsPerHour)
+    return Result<OpportunityTicket, DomainError>::failure(
+        budgetError(now, signal.clock).error());
+  OpportunityTicket ticket;
+  ticket.ticketId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+  ticket.profileId = m_profileId;
+  ticket.hostEpoch = signal.readiness.hostEpoch;
+  ticket.contextId = signal.contextId;
+  ticket.eventIds = signal.eventIds;
+  ticket.runtimeRevision = s.revision + 1;
+  ticket.hostRevision = signal.readiness.hostRevision;
+  ticket.inputWatermark = mergeInput(
+      s.control.value("inputWatermarks").toObject(), signal.inputWatermark);
+  ticket.expiresAt = signal.clock.utc.addMSecs(config.ticketTtlMs);
+  ticket.clockSessionId = signal.clock.sessionId;
+  ticket.monotonicDeadline = signal.clock.monotonicMs + config.ticketTtlMs;
+  s.control["selectionReservation"] = ticket.toJson();
+  s.control["hostRevision"] = qint64(ticket.hostRevision);
+  s.control["inputWatermarks"] = mergeInput(
+      s.control.value("inputWatermarks").toObject(), signal.inputWatermark);
+  s.control["lastDecisionLogical"] = now;
+  s.control["lastDecisionAt"] = signal.clock.utc.toString(Qt::ISODateWithMs);
+  if (changed)
+    s.control["backoff"] = 0;
+  auto committed = commitState(tx, m_profileId, s, signal.clock);
+  return committed ? Result<OpportunityTicket, DomainError>::success(ticket)
+                   : Result<OpportunityTicket, DomainError>::failure(
+                         committed.error());
 }
 Result<void, DomainError> OpportunityStore::finishOpportunity(const OpportunityFinish &f) {
     if (!validClock(f.clock) ||
@@ -474,18 +500,26 @@ Result<void, DomainError> OpportunityStore::finishOpportunity(const OpportunityF
         return fail<void>("STALE_CONTEXT", "Opportunity is no longer current");
     s.control.remove("selectionReservation");
     if (f.outcome == "wait") {
-        auto config = AutonomyConfig::fromJson(s.control.value("autonomyConfig").toObject());
-        qint64 delay = qMin<qint64>(
-            config.maxNoOpBackoffMs,
-            qMax<qint64>(config.noOpBackoffMs, s.control.value("backoff").toInteger() * 2));
-        if (f.nextConsiderAt.isValid())
-            delay = std::clamp<qint64>(f.clock.utc.msecsTo(f.nextConsiderAt),
-                                       config.minDecisionIntervalMs, config.maxNoOpBackoffMs);
-        s.control["backoff"] = delay;
-        s.control["nextConsiderLogical"] = logicalNow(s.control, f.clock) + delay;
-        s.control["nextConsiderAt"] = f.clock.utc.addMSecs(delay).toString(Qt::ISODateWithMs);
-        s.control["observedWatermarks"] =
-            mergeInput(s.control.value("observedWatermarks").toObject(), f.inputWatermark);
+      auto consumed =
+          ObservationStore::consumeCues(tx.db, m_profileId, ticket.eventIds);
+      if (!consumed)
+        return consumed;
+      auto config = AutonomyConfig::fromJson(
+          s.control.value("autonomyConfig").toObject());
+      qint64 delay = qMin<qint64>(
+          config.maxNoOpBackoffMs,
+          qMax<qint64>(config.noOpBackoffMs,
+                       s.control.value("backoff").toInteger() * 2));
+      if (f.nextConsiderAt.isValid())
+        delay = std::clamp<qint64>(f.clock.utc.msecsTo(f.nextConsiderAt),
+                                   config.minDecisionIntervalMs,
+                                   config.maxNoOpBackoffMs);
+      s.control["backoff"] = delay;
+      s.control["nextConsiderLogical"] = logicalNow(s.control, f.clock) + delay;
+      s.control["nextConsiderAt"] =
+          f.clock.utc.addMSecs(delay).toString(Qt::ISODateWithMs);
+      s.control["observedWatermarks"] = mergeInput(
+          s.control.value("observedWatermarks").toObject(), f.inputWatermark);
     }
     s.control["lastDecision"] = QJsonObject{
         {"ticketId", f.ticketId}, {"outcome", f.outcome}, {"reason", f.reason.left(512)}};
@@ -768,6 +802,9 @@ Result<void, DomainError> OpportunityStore::consumeSelection(
     s.control["observedWatermarks"] =
         mergeInput(s.control.value("observedWatermarks").toObject(),
                    ticket.inputWatermark);
+    auto consumed = ObservationStore::consumeCues(db, profile, ticket.eventIds);
+    if (!consumed)
+      return consumed;
     return write(db, profile, s);
 }
 
