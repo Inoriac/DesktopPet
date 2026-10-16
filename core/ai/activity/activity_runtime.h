@@ -1,5 +1,7 @@
 #pragma once
 #include "activity_store.h"
+#include "ai/model/model_router.h"
+#include "opportunity_coordinator.h"
 #include <QObject>
 #include <QPointer>
 #include <QThread>
@@ -16,6 +18,15 @@ class ActivityRuntime final : public QObject {
     using Completion =
         std::function<void(Result<ActivitySnapshot, DomainError>)>;
     void setDependencies(TaskDependencies dependencies);
+    using ControlCompletion = std::function<void(Result<void, DomainError>)>;
+    void configureOpportunitiesAsync(AutonomyConfig, ControlCompletion = {});
+    void publishReadinessAsync(OpportunitySignal);
+    void requestOpportunityAsync(OpportunitySignal);
+    void setAutonomyPausedAsync(bool, ControlCompletion = {});
+    void setOpportunityConsumer(std::function<void(OpportunityTicket)>);
+    void finishOpportunityAsync(OpportunityFinish, ControlCompletion = {});
+    std::shared_ptr<ModelAttemptHooks> modelBudgetHooks(QString activityId = {},
+                                                        QString ticketId = {});
     void setCapabilityValidator(ActivityStore::CapabilityValidator validator);
     void startTaskAsync(TaskStartRequest request);
     void resumeTaskAsync(QString activityId, QString feedback = {},
@@ -58,6 +69,8 @@ class ActivityRuntime final : public QObject {
     void activeChanged(bool active);
     void experienceReady(const QString &id);
     void ready();
+    void idleDecisionChanged(IdleDecision decision);
+    void opportunityCheckRequested();
 
   private:
     struct Worker;
@@ -66,4 +79,5 @@ class ActivityRuntime final : public QObject {
     QString m_profileId, m_databasePath;
     QJsonObject m_snapshot;
     bool m_active = false;
+    std::function<void(OpportunityTicket)> m_opportunityConsumer;
 };

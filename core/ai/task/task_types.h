@@ -38,6 +38,7 @@ struct TaskStartRequest {
 };
 
 struct TaskRecord {
+    bool autonomous = false; // Projection of the host-owned activity intent.
     ContextSpec context;
     qint64 activityRevision = 0;
     quint64 activityGeneration = 0;
@@ -81,6 +82,7 @@ struct TaskRecord {
 };
 
 struct TaskModelRequest {
+    bool autonomous = false;
     QString activityId;
     quint64 generation = 0;
     ContextSpec scope;
@@ -97,6 +99,7 @@ struct TaskModelReply {
     QString error;
 };
 struct TaskToolCall {
+    bool autonomous = false;
     QString activityId, goal;
     quint64 generation = 0;
     ContextSpec context;

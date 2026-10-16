@@ -281,6 +281,12 @@ QString PetWindow::captureDesktopScreenshot(bool debugKeepCopy, QString* debugCo
 
 void PetWindow::triggerScreenChat(bool debugSaveScreenshotOnly, const QString& reason) {
     const bool automatic = reason == QLatin1String("timer");
+    if (automatic && aiBrain && aiBrain->autonomyEnabled()) {
+        aiBrain->requestAutonomousOpportunity("screen_chat_tick");
+        if (screenChatConfig.enabled)
+            scheduleNextScreenChat();
+        return;
+    }
     if (!debugSaveScreenshotOnly
         && (!aiBrain || !aiBrain->isEnabled() || aiBrain->isBusy()
             || (automatic && (!screenChatConfig.enabled

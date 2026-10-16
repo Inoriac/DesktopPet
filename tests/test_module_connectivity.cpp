@@ -138,29 +138,30 @@ class Crypto : public PrivatePsycheCrypto {
 class TestModuleConnectivity : public QObject {
     Q_OBJECT
 private slots:
-    void animationPolicyUsesConfiguredStateIdsAndLegacyAlias();
-    void proactiveModeControlsBrainAndExpires();
-    void reminderStateFollowsSnoozeCancelAndDelivery();
-    void reminderFailureRetriesWithoutSuccessAndPartialDeliveryCompletes();
-    void reminderMemoryOutboxSurvivesRestart();
-    void profileSchedulersHaveExclusiveOwnership();
-    void corruptScheduleIsNotOverwritten();
-    void structurallyInvalidSchedulesArePreserved_data();
-    void structurallyInvalidSchedulesArePreserved();
-    void chatFeedsRelationshipAndGrowthSurvivesRestart();
-    void growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests();
-    void relationshipUpdatesRequireRelevantEvidenceAndRespectSubjectScope();
-    void manualDaydreamAndChatCompleteConcurrently();
-    void startupMaintenanceDoesNotWaitForChatIdle();
-    void hippocampusBacklogDoesNotDropNewImpressions();
-    void runtimeStopsFragmentsBeforeTheirRepository();
-    void fragmentSynchronousCompletionAndDeletionDuringRequest();
-    void ordinaryChatBypassesAgencyAndComplexTaskVerifies();
-    void taskStopRejectsLateAgencyAndReleasesChat();
-    void queuedTaskModelDoesNotCrossRuntimeReplacement();
-    void taskCannotDispatchAfterReentrantPause();
-    void shutdownAndToolRegistrationPreserveRecoveredTask();
-    void disabledAiCancelsAndDoesNotRestartTaskReflection();
+  void autonomyEnabledRoutesLegacyTriggersWithoutConsumerOrModel();
+  void animationPolicyUsesConfiguredStateIdsAndLegacyAlias();
+  void proactiveModeControlsBrainAndExpires();
+  void reminderStateFollowsSnoozeCancelAndDelivery();
+  void reminderFailureRetriesWithoutSuccessAndPartialDeliveryCompletes();
+  void reminderMemoryOutboxSurvivesRestart();
+  void profileSchedulersHaveExclusiveOwnership();
+  void corruptScheduleIsNotOverwritten();
+  void structurallyInvalidSchedulesArePreserved_data();
+  void structurallyInvalidSchedulesArePreserved();
+  void chatFeedsRelationshipAndGrowthSurvivesRestart();
+  void growthWaitsForRealEvidenceWindowAndIgnoresTemporaryRequests();
+  void relationshipUpdatesRequireRelevantEvidenceAndRespectSubjectScope();
+  void manualDaydreamAndChatCompleteConcurrently();
+  void startupMaintenanceDoesNotWaitForChatIdle();
+  void hippocampusBacklogDoesNotDropNewImpressions();
+  void runtimeStopsFragmentsBeforeTheirRepository();
+  void fragmentSynchronousCompletionAndDeletionDuringRequest();
+  void ordinaryChatBypassesAgencyAndComplexTaskVerifies();
+  void taskStopRejectsLateAgencyAndReleasesChat();
+  void queuedTaskModelDoesNotCrossRuntimeReplacement();
+  void taskCannotDispatchAfterReentrantPause();
+  void shutdownAndToolRegistrationPreserveRecoveredTask();
+  void disabledAiCancelsAndDoesNotRestartTaskReflection();
 };
 
 void TestModuleConnectivity::proactiveModeControlsBrainAndExpires() {
@@ -794,5 +795,26 @@ void TestModuleConnectivity::animationPolicyUsesConfiguredStateIdsAndLegacyAlias
     LlmToolCall arbitrary;arbitrary.name="play_animation";arbitrary.arguments={{"state","TouchOfCloud"}};
     QVERIFY2(brain.isToolCallAllowed("user_request",arbitrary,denial),qPrintable(denial));
 }
+void TestModuleConnectivity::autonomyEnabledRoutesLegacyTriggersWithoutConsumerOrModel() {
+    Runtime runtime;
+    QVERIFY(runtime.ready);
+    AutonomyConfig config;
+    config.enabled = true;
+    runtime.brain.setAutonomyConfig(config);
+    runtime.brain.start();
+    runtime.brain.triggerThink("legacy tick", "proactive_chat");
+    runtime.brain.triggerThink("idle tick", "idle_action");
+    QTest::qWait(100);
+    QVERIFY(runtime.client.systemPrompts.isEmpty());
+    QVERIFY(!runtime.brain.canStartProactiveChat());
+    QVERIFY(!runtime.brain.m_idleTriggerTimer.isActive());
+    QVERIFY(!runtime.brain.m_chatTriggerTimer.isActive());
+    runtime.brain.setAutonomyPaused(true);
+    runtime.brain.requestAutonomousOpportunity("message");
+    QTest::qWait(30);
+    QVERIFY(runtime.client.systemPrompts.isEmpty());
+    runtime.brain.stop();
+}
+
 QTEST_GUILESS_MAIN(TestModuleConnectivity)
 #include "test_module_connectivity.moc"

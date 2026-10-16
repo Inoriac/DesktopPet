@@ -9,6 +9,17 @@
 
 ## 决策记录
 
+- [code-impl Task 6 锚点复核] 已核对 OpportunityStore/Coordinator 的 epoch、机会/预算事务，ActivityRuntime 的单 worker facade 与原库 modelBudgetHooks、ModelRouter::sendAttempt 真实 provider 边界，以及 AIBrain/config/Launcher/屏幕自动入口。完整构建、54/54 CTest（72.34 秒）、70/70 契约通过；重复完成与三个 CAS 竞争问题均有实际 RED→GREEN，旧用例不放宽。
+
+- [code-impl Task 6 全量回归定位] 实际回归暴露 runtime/身份 CAS 的 deferred 读后写事务与新增后台机会写入竞争，单跑重复复现 database is locked；主设计 §1.3 明确此类写事务先 BEGIN IMMEDIATE，保留原 CAS 与回滚。ModelRouter 每次 provider attempt 单独使用一次业务完成门，重复回执仍幂等结算并允许未知用量补实，不能再次完成或触发 fallback。
+
+- [code-impl Task 6 宿主换代] 主设计 §3.7 明确每个 ActivityRuntime/Coordinator 的 hostEpoch 独立于进程 clockSession；初始化原子绑定新 epoch，重置 epoch 内 hostRevision、撤销旧票据并保留水位/预算。解决同进程对象重建及重启后 GUI 版本归零被永久判旧的问题，同时拒绝旧实例的排队写入。
+
+- [code-impl Task 6 热账本边界] heartbeat 的累计时长采样不能无限膨胀 control_json；主设计 §3.7 已明确滚动区段淘汰、累计基线保留，以及同 UoW 将窗口外已结算模型 attempt 移入 model-attempt:<id> 的 migrations marker。保留原费用/归属与迟到幂等，未结算预留不随租约过期删除；复用 §3.6 已有 marker 机制，不新增 schema 或第二预算权威。
+
+- [code-impl Task 6 sanity check] 已验证 AIBrain::canStartProactiveChat() const、setupTriggerTimers()/scheduleTrigger(const QString&)、AgentScheduler::hasTaskDueBefore(const QDateTime&) const/msToNextDue() const、ActivityRuntime::isActive()/taskSnapshot()、AgentRuntimeServices::sleepCycleCoordinator() 与 ModelRouter::completeAsync/completeStreamAsync。模型底层重试已由 ModelRoleRegistry 归零；正式睡眠原先没有 active accessor，不能用 capability availability 替代。
+- [code-impl Task 6 设计补全] 主设计 v1.6 同步 §1.5/§3.7/§4.1：宿主 readiness 及水位、同 worker 的机会 CAS 租约、默认关闭的 aiSettings.autonomy 和 Launcher 开关、无 consumer 时只做本地检查、每次 provider send 的异步预算预留/原库结算、自主属性与共享 token/预估费用和 active 小时上限。存储错误零发送，重启不清预算或用户暂停，sourceCursors 合并保留。属于已授权自主调度的工程细化，持续推进授权适用。
+
 - [持续开发授权 2026-10-16] 用户明确要求“你看着往下做吧，每做一个阶段就 commit 一下”。每阶段验证、审查后提交并继续下一阶段，不重复请求阶段确认；不推送远端。
 - [命令测试基线修复] QProcess 启动本地编译 fixture 时为 CrashExit，AMFI 日志报告 CMS 签名问题；系统签名 printf/pwd 正常。macOS 测试使用它们验证参数、输出和真实工作目录，其他平台使用独立 helper；增加正常非零退出/异常终止测试。工具新增 exit_status，不改白名单或系统安全设置。全量 CTest 48/48 通过；这不证明本机可执行未具备 CMS 签名的自编译程序。
 

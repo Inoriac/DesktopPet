@@ -1,3 +1,8 @@
+#include "activity/activity_runtime.h"
+#include "reflection/sleep_cycle_coordinator.h"
+#include "runtime/agent_runtime_services.h"
+#include "scheduler/agent_scheduler.h"
+#include "tools/companion_tools.h"
 //
 // AIBrain LLM loop and trigger scheduling
 //
@@ -317,6 +322,10 @@ void AIBrain::setupTriggerTimers() {
     m_chatTriggerTimer.setSingleShot(true);
 
     connect(&m_idleTriggerTimer, &QTimer::timeout, this, [this]() {
+        if (autonomyEnabled()) {
+            requestAutonomousOpportunity("idle_tick");
+            return;
+        }
         if (m_busy) {
             scheduleTrigger("idle_action");
             return;
@@ -324,8 +333,14 @@ void AIBrain::setupTriggerTimers() {
         triggerThink("idle_tick", "idle_action");
     });
     connect(&m_chatTriggerTimer, &QTimer::timeout, this, [this]() {
-        if (!m_running) return;
-        if (!triggerConfigForTag(QStringLiteral("proactive_chat")).enabled) return;
+        if (autonomyEnabled()) {
+            requestAutonomousOpportunity("tick");
+            return;
+        }
+        if (!m_running)
+            return;
+        if (!triggerConfigForTag(QStringLiteral("proactive_chat")).enabled)
+            return;
         if (m_proactiveOpportunityClock.isValid()
             && proactiveChatTiming(m_proactiveBaseIntervalMs)
                 .remainingMs(m_proactiveOpportunityClock.elapsed()) > 0) {
@@ -413,6 +428,12 @@ AiTriggerConfig AIBrain::triggerConfigForTag(const QString& triggerTag) const {
 }
 
 void AIBrain::scheduleTrigger(const QString& triggerTag) {
+    if (autonomyEnabled()) {
+        m_idleTriggerTimer.stop();
+        if (m_running)
+            requestAutonomousOpportunity(triggerTag);
+        return;
+    }
     if (!m_running) {
         return;
     }
@@ -526,6 +547,10 @@ void AIBrain::scheduleIdleRetryIfBusyFailure(const QString& toolName,
     const int delayMs = QRandomGenerator::global()->bounded(3000, 8001);
     QTimer::singleShot(delayMs, this, [this]() {
         m_idleRetryScheduled = false;
+        if (autonomyEnabled()) {
+            requestAutonomousOpportunity("idle_retry");
+            return;
+        }
 
         if (!m_running || !m_enabled) {
             return;
@@ -538,4 +563,74 @@ void AIBrain::scheduleIdleRetryIfBusyFailure(const QString& toolName,
 
         triggerThink("busy_retry", "idle_action");
     });
+}
+
+void AIBrain::setAutonomyConfig(const AutonomyConfig &config) {
+    const bool changed = m_autonomyConfig.enabled != config.enabled;
+    m_autonomyConfig = config;
+    if (m_activityRuntime)
+        m_activityRuntime->configureOpportunitiesAsync(config);
+    if (changed) {
+        m_idleTriggerTimer.stop();
+        m_chatTriggerTimer.stop();
+    }
+    if (m_running) {
+        scheduleTrigger("idle_action");
+        scheduleTrigger("proactive_chat");
+        requestAutonomousOpportunity("configuration");
+    }
+}
+void AIBrain::setAutonomyPaused(bool paused) {
+    m_autonomyPaused = paused;
+    if (m_activityRuntime)
+        m_activityRuntime->setAutonomyPausedAsync(paused);
+    requestAutonomousOpportunity("control");
+}
+RuntimeReadiness AIBrain::autonomousReadiness() const {
+    RuntimeReadiness r;
+    r.running = m_running;
+    r.enabled = m_enabled && m_storageInitialized;
+    r.autonomyEnabled = m_autonomyConfig.enabled;
+    r.paused = m_autonomyPaused;
+    r.mode = CompanionProactiveState::mode(m_proactiveStatePath);
+    if (isTaskActive())
+        r.foregroundActivity = taskSnapshot()["id"].toString("pending-task");
+    r.inputPending = m_acceptingMessageCount > 0 || !m_pendingUserMessages.isEmpty() ||
+                     !m_dispatchingUserMessages.isEmpty();
+    r.modelPending = m_busy;
+    if (m_scheduler && m_scheduler->hasTaskDueBefore(QDateTime::currentDateTimeUtc()))
+        r.readyObligations << "due-reminder";
+    if (m_runtimeServices && m_runtimeServices->sleepCycleCoordinator())
+        r.sleeping = m_runtimeServices->sleepCycleCoordinator()->isActive();
+    return r;
+}
+void AIBrain::requestAutonomousOpportunity(const QString &kind, const QString &contextId,
+                                           const QStringList &eventIds) {
+    if (!m_activityRuntime)
+        return;
+    OpportunitySignal s;
+    s.kind = kind;
+    s.contextId = contextId;
+    s.eventIds = eventIds;
+    s.readiness = autonomousReadiness();
+    s.clock = OpportunityStore::systemClock();
+    s.inputWatermark = m_opportunityInputWatermarks;
+    QJsonObject key{{"running", s.readiness.running},
+                    {"enabled", s.readiness.enabled},
+                    {"autonomy", s.readiness.autonomyEnabled},
+                    {"paused", s.readiness.paused},
+                    {"sleeping", s.readiness.sleeping},
+                    {"mode", s.readiness.mode},
+                    {"foreground", s.readiness.foregroundActivity},
+                    {"input", s.readiness.inputPending},
+                    {"model", s.readiness.modelPending},
+                    {"obligations", QJsonArray::fromStringList(s.readiness.readyObligations)},
+                    {"watermarks", s.inputWatermark}};
+    auto serialized = QJsonDocument(key).toJson(QJsonDocument::Compact);
+    if (serialized != m_opportunityReadinessKey) {
+        m_opportunityReadinessKey = serialized;
+        ++m_opportunityHostRevision;
+    }
+    s.readiness.hostRevision = m_opportunityHostRevision;
+    m_activityRuntime->requestOpportunityAsync(s);
 }

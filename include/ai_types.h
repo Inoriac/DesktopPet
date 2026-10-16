@@ -5,14 +5,15 @@
 #ifndef DESKTOP_PET_AI_TYPES_H
 #define DESKTOP_PET_AI_TYPES_H
 
-#include <QString>
-#include <QJsonObject>
-#include <QJsonArray>
-#include <QDateTime>
-#include <QTime>
-#include <QList>
-#include <QStringList>
 #include "ai/memory/memory_attribution_types.h"
+#include <QDateTime>
+#include <QJsonArray>
+#include <QJsonObject>
+#include <QList>
+#include <QString>
+#include <QStringList>
+#include <QTime>
+#include <memory>
 
 // tool的类别标记
 enum class ToolCategory {
@@ -291,6 +292,7 @@ struct LlmResponse {
     QJsonArray transportBlocks;
 };
 
+struct ModelAttemptHooks;
 struct ModelRequest {
     ModelRole role = ModelRole::Dialogue;
     QList<ChatMessage> messages;
@@ -300,6 +302,7 @@ struct ModelRequest {
     QString profileId;
     QString sessionId;
     QString petName;
+    std::shared_ptr<ModelAttemptHooks> attemptHooks; // Host only; never serialized.
 };
 
 struct ModelCompletion {

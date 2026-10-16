@@ -5,6 +5,7 @@
 #include "ai/event/event_schema_registry.h"
 #include "ai/event/runtime_unit_of_work.h"
 #include "ai/event/sqlite_event_repository.h"
+#include "opportunity_store.h"
 #include <QCryptographicHash>
 #include <QDir>
 #include <QFileInfo>
@@ -145,6 +146,12 @@ readActivity(QSqlDatabase db, const QString &profile, const QString &id) {
 }
 Result<void, DomainError> writeActivity(QSqlDatabase db, ActivitySnapshot &a,
                                         bool insert = false) {
+    if (a.intent["origin"] == "self" || a.intent["origin"] == "event") {
+        auto charged = OpportunityStore::accountActive(
+            db, a.profileId, a.activityId, a.budget.activeMs, OpportunityStore::systemClock());
+        if (!charged)
+            return Result<void, DomainError>::failure(charged.error());
+    }
     a.execution["executionPhase"] = a.executionPhase;
     a.execution["checkpoint"] = a.checkpoint;
     a.execution["pauseReason"] = a.pauseReason;
@@ -383,6 +390,7 @@ Result<TaskRecord, DomainError> projectTask(const ActivitySnapshot &a,
     t.profileId = a.profileId;
     t.context = a.context;
     t.originKind = a.context.originKind;
+    t.autonomous = a.intent["origin"] == "self" || a.intent["origin"] == "event";
     t.goal = a.intent["goal"].toString();
     t.activityRevision = a.revision;
     t.activityGeneration = a.generation;
@@ -680,6 +688,14 @@ ActivityStore::startActivity(const ActivityIntent &intent) {
     a.intent = intent.toJson();
     a.execution["created_at"] = now();
     a.budget.limits = intent.budget;
+    if (intent.origin == "self" || intent.origin == "event") {
+        auto remaining = OpportunityStore::accountActive(tx.db, m_profileId, a.activityId, 0,
+                                                         OpportunityStore::systemClock());
+        if (!remaining)
+            return Result<ActivitySnapshot, DomainError>::failure(remaining.error());
+        if (remaining.value() == 0)
+            return fail<ActivitySnapshot>("BUDGET_EXHAUSTED", "Autonomous active budget exhausted");
+    }
     a.state = busy.value() ? ActivityState::Ready : ActivityState::Running;
     a.executionPhase = "checkpoint";
     auto checked = validateScope(tx.db, a.context);
@@ -970,6 +986,14 @@ ActivityStore::resumeActivity(const ResumeActivityRequest &r) {
             return fail<ActivitySnapshot>(
                 "INVALID_INPUT", "Trigger does not match tracked action");
     }
+    if (a.intent["origin"] == "self" || a.intent["origin"] == "event") {
+        auto remaining = OpportunityStore::accountActive(
+            tx.db, m_profileId, a.activityId, a.budget.activeMs, OpportunityStore::systemClock());
+        if (!remaining)
+            return Result<ActivitySnapshot, DomainError>::failure(remaining.error());
+        if (remaining.value() == 0)
+            return fail<ActivitySnapshot>("BUDGET_EXHAUSTED", "Autonomous active budget exhausted");
+    }
     if (a.budget.activeMs >= a.budget.limits.maxActiveMs ||
         a.budget.toolCalls >= a.budget.limits.maxToolCalls)
         return fail<ActivitySnapshot>("BUDGET_EXHAUSTED",
@@ -1063,6 +1087,14 @@ ActivityStore::prepareAction(const ActionPreparation &p) {
     if (!loaded)
         return Result<ActionSnapshot, DomainError>::failure(loaded.error());
     auto a = loaded.value();
+    if (a.intent["origin"] == "self" || a.intent["origin"] == "event") {
+        auto remaining = OpportunityStore::accountActive(
+            tx.db, m_profileId, a.activityId, a.budget.activeMs, OpportunityStore::systemClock());
+        if (!remaining)
+            return Result<ActionSnapshot, DomainError>::failure(remaining.error());
+        if (remaining.value() == 0)
+            return fail<ActionSnapshot>("BUDGET_EXHAUSTED", "Autonomous active budget exhausted");
+    }
     if (a.revision != p.expectedRevision || a.generation != p.generation)
         return fail<ActionSnapshot>("STALE_REVISION", "Action context changed");
     if (a.state != ActivityState::Running)
@@ -1180,6 +1212,14 @@ ActivityStore::markActionDispatched(const ActionDispatch &d) {
     if (!loaded)
         return Result<ActionSnapshot, DomainError>::failure(loaded.error());
     auto a = loaded.value();
+    if (a.intent["origin"] == "self" || a.intent["origin"] == "event") {
+        auto remaining = OpportunityStore::accountActive(
+            tx.db, m_profileId, a.activityId, a.budget.activeMs, OpportunityStore::systemClock());
+        if (!remaining)
+            return Result<ActionSnapshot, DomainError>::failure(remaining.error());
+        if (remaining.value() == 0)
+            return fail<ActionSnapshot>("BUDGET_EXHAUSTED", "Autonomous active budget exhausted");
+    }
     if (a.revision != d.expectedRevision || a.generation != d.generation)
         return fail<ActionSnapshot>("STALE_REVISION",
                                     "Dispatch context changed");
@@ -1535,4 +1575,9 @@ ActivityStore::acknowledgeExperience(const QString &id) {
     if (!r)
         return r;
     return tx.commit();
+}
+
+Result<qint64, DomainError> ActivityStore::remainingAutonomousActiveMs() const {
+    return OpportunityStore(m_profileId, m_databasePath)
+        .remainingActiveMs(OpportunityStore::systemClock());
 }

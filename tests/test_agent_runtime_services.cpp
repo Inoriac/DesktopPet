@@ -297,7 +297,8 @@ void TestAgentRuntimeServices::processIdentityEvents_usesTrustedOriginAndResolve
     if (!origin.isNull()) draft.payload.insert(QStringLiteral("origin_kind"), origin);
     draft.payload.insert(QStringLiteral("subject_id"), target);
     const auto event = runtime.services.eventLedger()->append(draft); QVERIFY(event.isOk());
-    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    const auto processed = runtime.services.processIdentityEvents();
+    QVERIFY2(processed.isOk(), qPrintable(processed ? QString() : processed.error().message));
     const QString expectedPerson = target.isEmpty() ? QStringLiteral("owner") : target;
     const auto state = repository.currentRelationship(kProfileId, expectedPerson); QVERIFY(state.isOk());
     QCOMPARE(state.value().has_value(), relationship);
@@ -319,7 +320,8 @@ void TestAgentRuntimeServices::processIdentityEvents_legacyTaskExperience_keepsO
     draft.source = QStringLiteral("TaskExperienceAdapter");
     draft.payload = {{"task_id", "legacy-task"}, {"goal", "legacy"}, {"status", "Completed"}, {"feedback_status", "unknown"}};
     QVERIFY(runtime.services.eventLedger()->append(draft).isOk());
-    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    const auto processed = runtime.services.processIdentityEvents();
+    QVERIFY2(processed.isOk(), qPrintable(processed ? QString() : processed.error().message));
     QCOMPARE(runtime.services.captureSnapshot(QStringLiteral("after-task")).relationshipVersion, std::optional<qint64>(1));
 }
 

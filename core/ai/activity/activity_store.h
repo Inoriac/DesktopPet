@@ -9,6 +9,7 @@ class ActivityStore {
     const QString &databasePath() const { return m_databasePath; }
     Result<void, DomainError> initialize();
     Result<void, DomainError> recoverAfterRestart();
+    Result<qint64, DomainError> remainingAutonomousActiveMs() const;
     Result<ActivitySnapshot, DomainError> find(const QString &activityId) const;
     Result<QList<ActivitySnapshot>, DomainError>
     list(const QList<ActivityState> &states = {}) const;

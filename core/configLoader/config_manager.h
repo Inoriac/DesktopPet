@@ -11,12 +11,13 @@
 #include <QPoint>
 #include <QSize>
 
-#include "global_types.h"
-#include "ai_types.h"
 #include "ai/identity/identity_baseline.h"
 #include "ai/identity/identity_types.h"
+#include "ai/scheduler/opportunity_types.h"
 #include "ai/task/task_types.h"
+#include "ai_types.h"
 #include "emotion/emotion_types.h"
+#include "global_types.h"
 
 class ConfigManager {
 public:
@@ -71,6 +72,9 @@ public:
     const DaydreamConfig& getDaydreamConfig() const { return daydreamConfig; }
     const SleepPolicy& getSleepPolicy() const { return sleepPolicy; }
     const TaskBudget& getTaskBudget() const { return taskBudget; }
+    const AutonomyConfig &getAutonomyConfig() const {
+        return autonomyConfig;
+    }
     EmotionConfig getEmotionConfig() const { return emotionConfig; }
     const VoiceConfig& getVoiceConfig() const { return voiceConfig; }
     void setVoiceConfig(const VoiceConfig& config) { voiceConfig = config; }
@@ -140,6 +144,7 @@ private:
     DaydreamConfig daydreamConfig;
     SleepPolicy sleepPolicy;
     TaskBudget taskBudget;
+    AutonomyConfig autonomyConfig;
     EmotionConfig emotionConfig;
     VoiceConfig voiceConfig;
     AiBehaviorPolicy aiBehaviorPolicy;

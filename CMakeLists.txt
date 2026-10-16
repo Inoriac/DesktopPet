@@ -201,6 +201,9 @@ set(OWNER_DIARY_SOURCES
 )
 
 set(ACTIVITY_SOURCES
+    core/ai/scheduler/opportunity_types.h core/ai/scheduler/opportunity_types.cpp
+    core/ai/activity/opportunity_store.h core/ai/activity/opportunity_store.cpp
+    core/ai/activity/opportunity_coordinator.h core/ai/activity/opportunity_coordinator.cpp
     core/ai/activity/activity_types.h core/ai/activity/activity_types.cpp
     core/ai/activity/activity_store.h core/ai/activity/activity_store.cpp
     core/ai/activity/activity_runtime.h core/ai/activity/activity_runtime.cpp
@@ -247,6 +250,7 @@ set(CORE_SOURCES
     core/emotion/emotion_engine.h
 
     core/configLoader/config_manager.cpp
+    core/ai/scheduler/opportunity_types.cpp
     core/configLoader/config_manager.h
 
     core/controller/pet_controller.cpp
@@ -801,6 +805,7 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/skill/skill_store.cpp
     core/configLoader/config_manager.h
     core/configLoader/config_manager.cpp
+    core/ai/scheduler/opportunity_types.cpp
     core/emotion/emotion_types.h
     core/emotion/emotion_types.cpp
     core/emotion/emotion_config_json.h
@@ -1021,6 +1026,7 @@ add_desktop_pet_cpp_test(model_router_tests ModelRouterTests
         core/ai/llm/llm_chat_service.cpp
         core/configLoader/config_manager.h
         core/configLoader/config_manager.cpp
+    core/ai/scheduler/opportunity_types.cpp
         core/ai/identity/identity_baseline.h
         core/ai/identity/identity_baseline.cpp
         core/ai/identity/identity_types.h
@@ -1776,6 +1782,7 @@ add_desktop_pet_cpp_test(llm_tests LlmTests
         core/ai/prompt/prompt_renderer.cpp
         core/configLoader/config_manager.h
         core/configLoader/config_manager.cpp
+    core/ai/scheduler/opportunity_types.cpp
         core/emotion/emotion_types.cpp
         core/emotion/emotion_types.h
         core/emotion/emotion_config_json.cpp
@@ -1843,6 +1850,7 @@ add_desktop_pet_cpp_test(prompt_tests PromptRendererTests
         core/ai/context_builder.cpp
         core/configLoader/config_manager.h
         core/configLoader/config_manager.cpp
+    core/ai/scheduler/opportunity_types.cpp
         core/emotion/emotion_types.cpp
         core/emotion/emotion_types.h
         core/emotion/emotion_config_json.cpp
@@ -2033,6 +2041,14 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 endif ()
 
 # Personality evolution and bounded complex tasks.
+if(Python3_EXECUTABLE)
+    add_test(NAME AutonomyConfigTests COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_autonomy_config.py)
+endif()
+add_desktop_pet_cpp_test(activity_opportunities_tests ActivityOpportunitiesTests
+    SOURCES tests/test_activity_opportunities.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
+    APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
 add_desktop_pet_cpp_test(activity_runtime_tests ActivityRuntimeTests
     SOURCES tests/test_activity_runtime.cpp ${AGENT_RUNTIME_TEST_SUPPORT_SOURCES}
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic

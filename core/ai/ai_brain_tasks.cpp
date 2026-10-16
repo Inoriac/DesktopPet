@@ -64,11 +64,17 @@ void AIBrain::initializeTaskRuntime() {
     m_activityRuntime = std::make_unique<ActivityRuntime>(
         m_chatPreparationRuntimeMetadata.profileId,
         m_chatPreparationRuntimeMetadata.runtimeDatabasePath);
-    connect(m_activityRuntime.get(), &ActivityRuntime::activeChanged, this,
-            [this](bool) { m_taskCommandPending = false; });
+    connect(m_activityRuntime.get(), &ActivityRuntime::opportunityCheckRequested, this,
+            [this] { requestAutonomousOpportunity("tick"); });
+    setAutonomyConfig(ConfigManager::instance().getAutonomyConfig());
+    connect(m_activityRuntime.get(), &ActivityRuntime::activeChanged, this, [this](bool) {
+        m_taskCommandPending = false;
+        requestAutonomousOpportunity("activity_state");
+    });
     connect(m_activityRuntime.get(), &ActivityRuntime::taskChanged, this,
             [this](const QJsonObject &task) {
                 emit taskProgressChanged(task);
+                requestAutonomousOpportunity("activity_state");
                 if (m_taskResponse)
                     publishActiveStage(
                         task["status"] == "Executing"
@@ -175,6 +181,8 @@ void AIBrain::refreshTaskDependencies() {
             request.profileId = input.scope.profileId;
             request.petName = guard->m_petName;
             request.sessionId = input.activityId;
+            if (input.autonomous)
+                request.attemptHooks = runtime->modelBudgetHooks(input.activityId);
             auto context = input.context;
             if (input.scope.originKind != OriginKind::LocalOwner)
                 context["available_tools"] =

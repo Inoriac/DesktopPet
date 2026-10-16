@@ -528,10 +528,11 @@ Result<void, DomainError> SqliteEventRepository::commitCheckpoint(
             sqliteError(QStringLiteral("checkpoint commit request is invalid")));
     }
     QSqlDatabase database = QSqlDatabase::database(m_connectionName);
-    if (!database.transaction()) {
+    QSqlQuery begin(database);
+    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
         return Result<void, DomainError>::failure(
             sqliteError(QStringLiteral("failed to begin checkpoint transaction"),
-                        database.lastError()));
+                        begin.lastError()));
     }
     QSqlQuery current(database);
     current.prepare(QStringLiteral(

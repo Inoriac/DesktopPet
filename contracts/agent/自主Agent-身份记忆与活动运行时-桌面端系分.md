@@ -14,6 +14,7 @@
 | 1.3 | 2026-10-16 | §3.4 开发核对：会话库唯一权威、异步生产入口、宿主连接绑定与持久发送回执、原始消息消费去重与历史导入边界 |
 | 1.4 | 2026-10-16 | §3.5 开发核对：标准 Schema 验证、宿主配置与授权、结果映射、工具元数据和生产异步调用入口 |
 | 1.5 | 2026-10-16 | §3.6 开发核对：runtime schema 3、后台活动执行、旧任务投影、动作回执、恢复依据与经历消费接管 |
+| 1.6 | 2026-10-16 | §3.7 开发核对：宿主 readiness、机会租约、默认关闭设置、每次模型发送的共享预算与生产接线 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -57,7 +58,7 @@
 3. 主体采用单一串行协调入口拥有会话/活动状态；第一版可用 QObject 协调器和不可变消息实现，不要求同步重写成完整 Agent Actor。单一前台决策不等于 GUI 线程执行；工具和存储继续使用异步工作线程。
 4. 普通后台记忆整理维持已有并发与按批提交方式。人格巩固与前台任务的独占规则继续由调度器协调。
 5. runtime 数据库事务只写 runtime 表与既有 event_outbox；memory 数据库事务只写记忆及其关联。跨库使用已提交事件、幂等消费和 checkpoint，不建立跨库外键或假定跨库原子事务。
-6. 同一数据库的工作线程使用独立连接；迁移和写入开启外键，现有 WAL、busy timeout 与写队列约定继续适用。
+6. 同一数据库的工作线程使用独立连接；迁移和写入开启外键，现有 WAL、busy timeout 与写队列约定继续适用。runtime 中先读取版本再写入的事务须以 BEGIN IMMEDIATE 预留 writer（包括共享 RuntimeUnitOfWork、身份仓库自有 CAS 和事件检查点事务），避免 WAL deferred 读快照升级因并发机会写入立即 SQLITE_BUSY；版本校验、幂等及失败回滚不变，纯读取不因此取得写锁。
 7. 模型输出是提案；身份、引用、预算、参数和状态转换由程序校验。调用是否实际发生及完成边界来自工具结果，不能由模型自述替代。
 8. 原始消息、会话处理日志和派生反思分开保存；关系、人格及日记的独立来源始终回溯实际原始消息。历史导入与自身回显不成为新的互动证据，也不触发新的自主回复（影响 §3.3、§3.4、§3.8、§3.9）。
 9. 插件目录、宿主授权与配置属于对应 profile 的 PluginRuntime；目录只在短临界区交换不可变快照，不持锁等待进程或 MCP I/O。已准备与已派发的调用分开处理：禁用、版本变化或取消使尚未派发的调用失效，已派发的实际回执仍带原 profile、callId、activityId 和版本归档，不因前台切换丢失（影响 §3.5、§3.6、§3.9）。
@@ -100,6 +101,14 @@
 首版配置使用保守、可调整的工程默认值，不把它们当作人的心理定律：消息聚合窗口 1 秒且最长等待 3 秒；自主考虑最短间隔 60 秒；无事可做时 5 分钟后再评估，重复相同空闲状态退避至 30 分钟；兜底本地检查 15 秒且不调用模型。新输入可绕过“无事可做”的退避，但仍受消息聚合和调用预算约束。模型可以提议下一次考虑时间，宿主按配置夹取。
 
 每次考虑至多 4 个候选、1 次选择调用及 1 次修复；同一 profile 每小时自主考虑默认至多 12 次模型调用（修复也计数）。活动沿用现有 12 次工具、2 次重规划、5 分钟活跃执行默认预算，另加自主活动每小时累计 15 分钟活跃执行上限；选择调用与活动模型请求另受共用 token/费用上限控制。未知 token 用量采用发送前预算预留并保守结算。等待与停机不算活跃时间；恢复不清零累计计数。
+
+预算与时间的工程约定（§3.7—§3.8）：
+
+- 配置位于 `aiSettings.autonomy`，不随模型配置切换：`enabled=false`、`paused=false`、`coalesceWindowMs=1000`、`coalesceMaxWaitMs=3000`、`minDecisionIntervalMs=60000`、`noOpBackoffMs=300000`、`maxNoOpBackoffMs=1800000`、`localTickMs=15000`、`ticketTtlMs=120000`、`maxSelectionCallsPerHour=12`、`maxActiveMsPerHour=900000`、`maxTokensPerHour=120000`、`maxEstimatedCostMicrosPerHour=1000000`、`unknownAttemptCostMicros=50000`。非正上限、超界数值、错误类型使用保守默认或明确拒绝，不能解释为无限预算。Launcher 行为设置提供自主启用与暂停开关，其余工程参数保留在 JSON；保存不覆盖其他配置。
+- token 与费用上限针对自主选择及 `intent.origin=self/event` 的自主活动模型请求共享；明确用户请求的普通对话/任务保持原规则，不因自主预算耗尽被阻断。自主性是宿主保存的活动属性，不能从是否 External/LocalOwner 推断。选择次数限额只计选择/修复，活动请求另计共享 token/费用。
+- 每次实际 provider attempt（包括 fallback、格式修复）在发送前写入不可复用的宿主 attemptId 及预算预留；选择一张 ticket 最多允许两次实际发送，跨路由不重置。底层 retryCount 保持 0。输入预留按完整序列化 messages/tools/schema 的 UTF-8 字节数加固定封装余量 1024，再加正数 output maxTokens；这是保守估计，不宣称精确 tokenizer。费用预留为 `max(route.estimatedCostMicros, unknownAttemptCostMicros)`，均以宿主配置的同一微费用单位计，不宣称账单精度。
+- 有有效 usage 则按真实 totalTokens（或完整的输入/输出和）结算；缺失、非法、断连、取消、销毁或重启未结算请求保留预留，不能记成零。费用没有真实 provider 账单接口时始终保留预估收费。实际用量大于预留时如实入账并阻断下一请求，不截断已发生用量。迟到结果按原 profile/attemptId 幂等更新，不能被新前台或已销毁 GUI 丢弃。
+- 滚动一小时账本持久化；已完成收费在窗口外才清理，未结算预留在重启时转保守已用，不能通过重启或等待租约过期退款。运行内用单调时钟计算间隔和 activeMs；持久 UTC 只负责跨重启恢复。墙钟回拨冻结窗口淘汰，前跳不使运行内预算提前到期。活跃时长按实际自主运行区段累计并定期保存，等待不计；恢复使用剩余额度，抵达上限保存检查点并暂停。
 
 新自主功能默认关闭，完成验收后由设置启用。第一版 quiet/focus 模式均不发起新的自主探索，保持既有模式含义；明确请求的活动仍按其自身执行规则处理。用户暂停后仅用户恢复；重启的未完成活动先进入 Paused/restart，与现有恢复习惯一致。无结果风险且已明确允许的外部等待，在同次运行内可由匹配事件成为 Ready。重新激活须检查版本、最新消息、能力状态和剩余预算。
 
@@ -708,6 +717,9 @@ TaskExperienceAdapter 通过异步活动后端读取未消费 Ready（包含已�
 ```cpp
 IdleDecision evaluateIdle(const RuntimeReadiness& readiness);
 Result<OpportunityTicket, DomainError> considerOpportunity(const OpportunitySignal& signal);
+Result<void, DomainError> finishOpportunity(const OpportunityFinish& finish);
+Result<ModelBudgetReservation, DomainError> reserveModelAttempt(const ModelBudgetRequest& request);
+Result<void, DomainError> settleModelAttempt(const ModelBudgetSettlement& settlement);
 ```
 
 | 输入 | 值来源 | 说明 |
@@ -717,6 +729,18 @@ Result<OpportunityTicket, DomainError> considerOpportunity(const OpportunitySign
 | signal.kind、eventIds、contextId | 调用方传入 | 活动终结/挂起、消息、到期检查、依赖恢复等 |
 | now、lastDecision、nextConsiderAt | 系统推导（来源: 可注入时钟及 agent_runtime_state） | 间隔用单调时钟，持久化时刻使用 UTC |
 | coalesceWindow、cooldown、rateLimit | 配置默认值（来源: §1.5 首版配置） | 不让事件载荷改写 |
+
+工程接口与所有权：
+
+- `OpportunityStore(profileId, databasePath)` 使用现有 runtime schema 3，每次操作独立 UoW；`OpportunityCoordinator` 在 `ActivityRuntime` 的同一 serial worker 内拥有 Store、时钟和计时器。GUI 只投递命令/接收快照，不等待 SQLite。现有控制 JSON 必须读后合并，并以 runtime revision CAS 提交；仅更新自己拥有的 key，不覆写 §3.6 的前台或 §3.9 的 sourceCursors。
+- `RuntimeReadiness` 是宿主 DTO：前台活动/阶段、有效 selectionReservation、输入准备/模型/工具/验证是否待完成、readyObligations、pendingResults、running/enabled/paused/sleeping/mode、hostEpoch/hostRevision。AIBrain 根据自己的输入/准备队列、ActivityRuntime 快照和 AgentScheduler 已到期事项构造；worker 再读取活动库及预留核对。每次宿主状态变化递增 hostRevision，旧快照不覆盖新值。hostEpoch 由每个 ActivityRuntime 的协调器实例生成并在初始化时绑定；新实例原子换代、重置该 epoch 内版本并撤销旧 ticket，同时保留已观察水位和用量。时钟 session 与宿主实例 epoch 分开，同进程重建也必须换代；旧实例发布或调用的 epoch 不匹配时拒绝，不能覆盖新实例。后台普通记忆整理、电脑正在被人使用不是主体忙碌证据；正式睡眠通过 `SleepCycleCoordinator::isActive()` 的宿主只读状态取得，不能将 capability.available 当作正在睡眠。
+- `OpportunitySignal` 的 kind/contextId/eventIds 是提示，真正 inputWatermark、hostRevision、nowUtc/monotonicMs/clockSessionId 由宿主传入且可注入时钟测试。事件水位只使用已提交消息/回执；相同事件不反复结束退避。普通 tick 不产生新水位。新重要输入可结束 no-op 退避，但不能绕过最短考虑间隔、预算、暂停或未完成输入。
+- `OpportunityTicket` 保存 ticketId、profileId、发行时 runtimeRevision/hostRevision、输入水位、UTC expiresAt、运行内 monotonic deadline 与预算许可；selectionReservation 同事务写入。预留决策位置不等于发生模型调用：实际调用收费由 reserveModelAttempt 在发送前提交；无发送的取消/过期可释放许可，已发生用量不得退回。相同机会或并发 revision 仅一张 ticket。
+- `finishOpportunity` 只接受当前 ticketId 及有效宿主水位，可 wait/cancel/failure；wait 保存简短理由、水位与夹取后的 nextConsiderAt 并增加无变化退避，cancel/failure 不伪装正常休息。§3.8 的 adopted/start/resume 必须在活动转换的同一事务校验并消耗 ticket，禁止先释放再另开活动的竞态。预算自身更新会增加数据库 revision，但不使同一有效 ticket 因自身收费失效；采用时核对当前 reservation 身份、捕获的 host/input 版本、活动/目录版本和最新事务 revision。
+- 用户输入、已就绪承诺、暂停/关闭、休眠或 profile 退役使未采用 ticket 失效。已发送模型调用仍按原 ledger 结算。到期租约会释放前台预留，但不能通过续发 ticket 绕过最短间隔/实际调用预算。
+- `ActivityRuntime` 提供异步配置/宿主 readiness 发布、pause/resume、consider/finish 及预算 reserve/settle facade。配置的 paused 初值与宿主明确操作同步持久化，运行时用户暂停只接受显式宿主用户恢复；普通 tick、消息、配置 refresh 或对象重建不得清除暂停。自主关闭时保留旧主动聊天行为；开启时旧主动聊天、屏幕主动聊天和延迟 idle retry 都只投递通用机会，不能双跑。提醒到期照常处理并优先于新自主探索。
+- Task 6 提供可注册的异步 ticket consumer，Task 7 安装真实选择器；没有 consumer 时只做本地 readiness 检查，不占前台、不发模型、不预留次数，不伪造模型 wait。测试可安装受控 consumer。生产 15 秒兜底与事件回调均经同一入口。
+- 模型费用接线在 `ModelRouter` 每次 `ModelCompletionClient::completeOnce/completeOnceStream` 之前，以每个 ModelRequest 的可选宿主 attempt hooks 异步预留，完成/失败先结算原账本再向上回调或尝试下一线路；账本失败返回存储错误，零新发送。不带自主 budget hooks 的原请求保持原行为。hooks 不写入提示词，不由模型填写；异步回调回到 router 所属线程并核对生命周期，原 profile 值对象负责迟到结算。AIBrain 的 task model bridge 从宿主活动属性附加 hooks，Task 7 选择器沿用同一服务。
 
 #### 3. 模块业务流程
 
@@ -731,6 +755,10 @@ Result<OpportunityTicket, DomainError> considerOpportunity(const OpportunitySign
 
 agent_runtime_state.control_json 保存 nextConsiderAt、lastDecisionAt、observedWatermarks、相同机会退避、用户暂停标记和滚动预算。机会预留与 revision CAS 同事务；失败决策也消耗已发生的调用预算。不是每次本地 tick 都落盘，只在状态/账本改变时写。
 
+`hourlyBudget` 保存按 attemptId 的 token/预估费用预留与结算、选择调用时间、按活动的 active 区段与最后宿主采样；保留必要幂等标识，不能以相同 callId 重收或退款。时钟 session 只由宿主生成。配置更新保留既有用量和窗口，不因提高/降低开关或重载配置重置。`selectionReservation`、预算和源游标通过同一 UoW/CAS 合并写入。模型预算已用的变更先于新发送；活跃累计同时反馈活动预算并在边界暂停。
+
+热账本保持有界：逻辑一小时外的 active 区段淘汰，同活动相邻的秒级采样可合并，按活动的累计基线仍保存，不能重收旧时长。窗口外已结算的模型 attempt 在同一 UoW 转入 `agent_runtime_migrations` 的 `model-attempt:<attemptId>` 幂等 marker（state=completed），再从 control_json 移除；cursor 保留原 at/tokens/cost/purpose/ticketId/activityId/usageKnown。reserve 同时核对热账本与 marker，禁止复用 ID；迟到 usage 可补齐原 unknown 归档事实，但不能把已退出窗口的用量再次收进当前小时。未结算预留仍在热账本，重启按原约定保守结算。该 marker 与 experience/migration 前缀隔离，不新增第二份可写用量权威。
+
 #### 5. 实现锚点
 
 | 现有位置 | 调整 |
@@ -740,6 +768,10 @@ agent_runtime_state.control_json 保存 nextConsiderAt、lastDecisionAt、observ
 | proactive_chat_policy.h | 性格、情绪与未获回应的节奏调制可复用，未回应计数按对象/会话保存 |
 | AgentScheduler | 到期提醒形成 ready obligation；不修改“提醒已到期”的业务语义 |
 | get_user_idle_state | 作为环境观察与 GUI 资源判定信号，不作为主体空闲开关 |
+| ActivityRuntime / ActivityStore | 复用 serial worker 与 control_json；选择预留和实际前台互斥 |
+| ModelRouter::completeAsync / completeStreamAsync | 每次真实 provider attempt 的异步预算门禁与结算；registry 维持 retryCount=0 |
+| ConfigManager / launcher AppState、AI 设置、apply_settings | aiSettings.autonomy 统一默认值与保存；默认关闭及显式暂停/恢复 |
+| SleepCycleCoordinator / AgentRuntimeServices::sleepCycleCoordinator | 新增 isActive() 只读快照，正式睡眠与普通后台整理分开 |
 
 #### 6. 异常场景
 
@@ -753,6 +785,11 @@ agent_runtime_state.control_json 保存 nextConsiderAt、lastDecisionAt、observ
 - considerOpportunity：空闲且开关/冷却/预算允许，只发一个 ticket；空闲但用户暂停时零模型调用。
 - 连发消息聚合后只处理该会话；其他群消息不会拼成同一条用户请求。
 - 同一空状态连续检查不反复看 QQ；新的重要事件能结束无事退避，但不能绕过用户暂停。
+- finishOpportunity：正常 wait 持久退避；取消、超时、重启释放租约但不退已发送费用；过期结果不能采用。
+- reserveModelAttempt / settleModelAttempt：首发、fallback、修复分别计数，晚回调幂等；无 usage、重启保留预留，超额真实 usage 阻断下一发送；存储失败时 provider 调用数为零。
+- 共享预算：选择与自主活动共同消耗 token/费用，选择至多两次发送；用户显式任务不受自主账本限制；自主执行抵达小时 active 上限后暂停，等待不计时。
+- 配置与生产：默认关闭保留旧循环，开启后只进入通用调度；无 consumer 的阶段性接线不占 ticket、不调用模型。两个会话交错突发分别聚合，最长 3 秒固定批次结束，控制与回执立即处理。
+- 墙钟前跳/回拨与重启不会提早清空用量；共享 control_json 的预算、预留、sourceCursors 相互保留。
 
 ### 3.8 自主活动选择与持续意图
 
@@ -907,7 +944,10 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ActionObservation | profileId、activityId、callId、dispatchGeneration、outcome、receipt、observedAt；从实际执行器生成并绑定原派发身份 |
 | ActionPreparation / ActionDispatch | 前者包含活动版本、宿主 logicalStepId、CapabilityRef、参数与预算引用；后者包含已准备 callId、活动版本与generation。logicalKey/argumentRef由宿主生成 |
 | RuntimeReadiness / IdleDecision | 输入前台活动/选择预留、readyObligations、pendingResults；返回 isIdle、reason、blockingRefs |
-| OpportunitySignal / OpportunityTicket | signal 含 kind、contextId、eventIds；ticket 含 ticketId、runtimeRevision、inputWatermark、预算预留、expiresAt |
+| OpportunitySignal / OpportunityTicket | signal 含 kind、contextId、eventIds，宿主附 readiness/hostRevision/时钟及已提交水位；ticket 含 ticketId、profileId、runtimeRevision、hostRevision、inputWatermark、预算许可、expiresAt/单调 deadline |
+| OpportunityFinish | ticketId、宿主 hostRevision/inputWatermark、outcome=wait/cancel/failure、reason、nextConsiderAt 可空；adopted 必须与活动转换同事务 |
+| ModelBudgetRequest / ModelBudgetReservation | 宿主 attemptId、profileId、ticketId 或 activityId、purpose=selection/activity、完整输入估计、maxOutputTokens、routeEstimatedCostMicros 与时钟；返回持久预留及剩余额度 |
+| ModelBudgetSettlement | 原 profile/attemptId、实际 usage 或 unknown、已发送状态与宿主时间；按原账本幂等，不从当前前台取归属 |
 | SelectionRequest / SelectionProposal | request 含 ticket、快照和有界材料；proposal 含 ticketId、decision=start/resume/continue/wait、activityId 或 intent、evidenceRefs、reason、nextConsiderAt 可空 |
 | AppliedSelection | accepted、activityId 可空、nextConsiderAt 可空、stateRevision、reason；未采用提案不代表创建活动 |
 

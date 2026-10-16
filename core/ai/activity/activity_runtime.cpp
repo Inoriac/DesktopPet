@@ -1,10 +1,13 @@
 #include "activity_runtime.h"
 #include "ai/task/task_orchestrator.h"
 #include "ai/task/task_store.h"
+#include <QJsonDocument>
+#include <QThreadPool>
 #include <QTimer>
 struct ActivityRuntime::Worker : QObject {
     std::unique_ptr<TaskStore> tasks;
     std::unique_ptr<TaskOrchestrator> runner;
+    std::unique_ptr<OpportunityCoordinator> opportunities;
     QString profile, path;
     Worker(QString p, QString db)
         : profile(std::move(p)), path(std::move(db)) {}
@@ -34,6 +37,22 @@ ActivityRuntime::ActivityRuntime(QString profileId, QString path,
         }
         worker->runner =
             std::make_unique<TaskOrchestrator>(worker->tasks.get());
+        worker->opportunities =
+            std::make_unique<OpportunityCoordinator>(worker->profile, worker->path);
+        worker->opportunities->publishDecision = [self](IdleDecision decision) {
+            if (self)
+                QMetaObject::invokeMethod(self, [self, decision] {
+                    if (self)
+                        emit self->idleDecisionChanged(decision);
+                });
+        };
+        worker->opportunities->requestReadiness = [self] {
+            if (self)
+                QMetaObject::invokeMethod(self, [self] {
+                    if (self)
+                        emit self->opportunityCheckRequested();
+                });
+        };
         if (!self)
             return;
         QObject::connect(worker->runner.get(), &TaskOrchestrator::taskChanged,
@@ -76,6 +95,7 @@ ActivityRuntime::~ActivityRuntime() {
         if (worker->runner)
             worker->runner->shutdown();
         worker->runner.reset();
+        worker->opportunities.reset();
         worker->tasks.reset();
         QThread::currentThread()->quit();
     });
@@ -375,4 +395,143 @@ void ActivityRuntime::observeActionAsync(
                             completion(std::move(result));
                     });
         });
+}
+
+void ActivityRuntime::configureOpportunitiesAsync(AutonomyConfig config, ControlCompletion done) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(w, [w, self, config, done = std::move(done)]() mutable {
+        auto r = w->opportunities ? w->opportunities->configure(config)
+                                  : Result<void, DomainError>::failure(domainError(
+                                        "STORE_UNAVAILABLE", "Opportunity worker unavailable"));
+        if (self && done)
+            QMetaObject::invokeMethod(self, [self, r, done = std::move(done)]() mutable {
+                if (self)
+                    done(r);
+            });
+    });
+}
+void ActivityRuntime::publishReadinessAsync(OpportunitySignal signal) {
+    auto *w = m_worker;
+    QMetaObject::invokeMethod(w, [w, signal = std::move(signal)] {
+        if (w->opportunities)
+            w->opportunities->publish(signal);
+    });
+}
+void ActivityRuntime::requestOpportunityAsync(OpportunitySignal signal) {
+    auto *w = m_worker;
+    QMetaObject::invokeMethod(w, [w, signal = std::move(signal)] {
+        if (w->opportunities)
+            w->opportunities->consider(signal);
+    });
+}
+void ActivityRuntime::setAutonomyPausedAsync(bool paused, ControlCompletion done) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(w, [w, self, paused, done = std::move(done)]() mutable {
+        auto r = w->opportunities
+                     ? w->opportunities->store.setPaused(paused, OpportunityStore::systemClock())
+                     : Result<void, DomainError>::failure(
+                           domainError("STORE_UNAVAILABLE", "Opportunity worker unavailable"));
+        if (w->opportunities)
+            w->opportunities->current.readiness.paused = paused;
+        if (self && done)
+            QMetaObject::invokeMethod(self, [self, r, done = std::move(done)]() mutable {
+                if (self)
+                    done(r);
+            });
+    });
+}
+void ActivityRuntime::setOpportunityConsumer(std::function<void(OpportunityTicket)> consumer) {
+    m_opportunityConsumer = std::move(consumer);
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    bool enabled = bool(m_opportunityConsumer);
+    QMetaObject::invokeMethod(w, [w, self, enabled] {
+        if (!w->opportunities)
+            return;
+        if (!enabled) {
+            w->opportunities->consumer = {};
+            return;
+        }
+        w->opportunities->consumer = [self](OpportunityTicket ticket) {
+            if (self)
+                QMetaObject::invokeMethod(self, [self, ticket] {
+                    if (self && self->m_opportunityConsumer)
+                        self->m_opportunityConsumer(ticket);
+                });
+        };
+    });
+}
+void ActivityRuntime::finishOpportunityAsync(OpportunityFinish finish, ControlCompletion done) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(
+        w, [w, self, finish = std::move(finish), done = std::move(done)]() mutable {
+            auto r = w->opportunities ? w->opportunities->store.finishOpportunity(finish)
+                                      : Result<void, DomainError>::failure(domainError(
+                                            "STORE_UNAVAILABLE", "Opportunity worker unavailable"));
+            if (self && done)
+                QMetaObject::invokeMethod(self, [self, r, done = std::move(done)]() mutable {
+                    if (self)
+                        done(r);
+                });
+        });
+}
+std::shared_ptr<ModelAttemptHooks> ActivityRuntime::modelBudgetHooks(QString activityId,
+                                                                     QString ticketId) {
+    auto hooks = std::make_shared<ModelAttemptHooks>();
+    QPointer<ActivityRuntime> self(this);
+    auto *w = m_worker;
+    const QString profile = m_profileId, path = m_databasePath;
+    hooks->reserve = [self, w, profile, activityId, ticketId](const ModelAttemptContext &attempt,
+                                                              ModelAttemptHooks::Completion done) {
+        if (!self) {
+            done(Result<void, DomainError>::failure(
+                domainError("STORE_UNAVAILABLE", "Activity runtime retired")));
+            return;
+        }
+        QJsonArray messages;
+        for (const auto &m : attempt.messages)
+            messages.append(QJsonObject{{"role", m.role},
+                                        {"content", m.content},
+                                        {"name", m.name},
+                                        {"toolCallId", m.toolCallId},
+                                        {"toolCalls", m.toolCalls},
+                                        {"transportBlocks", m.transportBlocks},
+                                        {"contentBlocks", m.contentBlocks}});
+        QJsonObject payload{
+            {"messages", messages}, {"tools", attempt.tools}, {"schema", attempt.responseSchema}};
+        ModelBudgetRequest request;
+        request.profileId = profile;
+        request.activityId = activityId;
+        request.ticketId = ticketId;
+        request.attemptId = attempt.attemptId;
+        request.purpose = ticketId.isEmpty() ? "activity" : "selection";
+        request.inputBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact).size();
+        request.maxOutputTokens = attempt.route.llm.maxTokens;
+        request.routeEstimatedCostMicros = attempt.route.estimatedCostMicros;
+        request.clock = OpportunityStore::systemClock();
+        QMetaObject::invokeMethod(w, [w, self, request, done = std::move(done)]() mutable {
+            if (!self || !w->opportunities) {
+                done(Result<void, DomainError>::failure(
+                    domainError("STORE_UNAVAILABLE", "Opportunity worker unavailable")));
+                return;
+            }
+            auto r = w->opportunities->store.reserveModelAttempt(request);
+            done(r ? Result<void, DomainError>::success()
+                   : Result<void, DomainError>::failure(r.error()));
+        });
+    };
+    // This captures only the original path/profile. Actual usage survives a
+    // frontend or worker retirement, just like external action receipts.
+    hooks->settle = [profile, path](const QString &id, const LlmUsage &usage,
+                                    ModelAttemptHooks::Completion done) {
+        QThreadPool::globalInstance()->start([profile, path, id, usage,
+                                              done = std::move(done)]() mutable {
+            OpportunityStore store(profile, path);
+            done(store.settleModelAttempt({profile, id, usage, OpportunityStore::systemClock()}));
+        });
+    };
+    return hooks;
 }

@@ -591,6 +591,8 @@ bool ConfigManager::loadConfig(const QString& configPath) {
     daydreamConfig = DaydreamConfig{};
     sleepPolicy = SleepPolicy{};
     taskBudget = TaskBudget{};
+    autonomyConfig =
+        AutonomyConfig::fromJson(configJson["aiSettings"].toObject()["autonomy"].toObject());
     emotionConfig = EmotionConfig{};
     voiceConfig = VoiceConfig{};
     aiBehaviorPolicy = AiBehaviorPolicy{};

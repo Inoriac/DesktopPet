@@ -3,7 +3,10 @@
 #include <QDateTime>
 #include <QJsonDocument>
 #include <QJsonValue>
+#include <QPointer>
 #include <QRegularExpression>
+#include <QThread>
+#include <mutex>
 
 #include <memory>
 #include <optional>
@@ -156,12 +159,23 @@ private:
 
 } // namespace
 
-ModelRouter::ModelRouter(const ModelRoleRegistry* registry,
-                         ModelCompletionClient* client)
-    : m_registry(registry), m_client(client) {}
+struct ModelRouter::CallbackGate {
+    std::mutex mutex;
+    QObject *context = new QObject;
+};
+
+ModelRouter::ModelRouter(const ModelRoleRegistry *registry, ModelCompletionClient *client)
+    : m_registry(registry), m_client(client), m_callbackGate(std::make_shared<CallbackGate>()) {}
 
 ModelRouter::~ModelRouter() {
     *m_alive = false;
+    QObject *context = nullptr;
+    {
+        std::lock_guard<std::mutex> lock(m_callbackGate->mutex);
+        context = m_callbackGate->context;
+        m_callbackGate->context = nullptr;
+    }
+    delete context;
 }
 
 struct ModelRouter::CompletionState {
@@ -332,9 +346,9 @@ void ModelRouter::attemptStreamRoute(
     state->lastRoute = selectedRoute;
     state->bufferedEvents.clear();
     const std::shared_ptr<bool> alive = m_alive;
-    auto attemptHandle = m_client->completeOnceStream(
-        selectedRoute, state->request.messages, state->request.tools,
-        [alive, state](const LlmStreamEvent& event) {
+    sendAttempt(
+        state, selectedRoute, state->request.messages,
+        [alive, state](const LlmStreamEvent &event) {
             if (!*alive || state->terminal || state->requestHandle->isCancelled()) {
                 return;
             }
@@ -353,11 +367,13 @@ void ModelRouter::attemptStreamRoute(
                 }
                 state->bufferedEvents.clear();
             }
-            if (state->observer) state->observer(event);
+            if (state->observer)
+                state->observer(event);
         },
-        [this, alive, state, selectedRoute, selectedIndex]
-        (bool ok, LlmResponse response, QString error) mutable {
-            if (!*alive || state->terminal) return;
+        [this, alive, state, selectedRoute, selectedIndex](bool ok, LlmResponse response,
+                                                           QString error) mutable {
+            if (!*alive || state->terminal)
+                return;
             if (state->requestHandle->isCancelled()) {
                 state->terminal = true;
                 state->callback(Result<ModelCompletion, DomainError>::failure(
@@ -410,8 +426,7 @@ void ModelRouter::attemptStreamRoute(
             state->callback(Result<ModelCompletion, DomainError>::success(
                 std::move(completion)));
         },
-        state->request.petName);
-    state->requestHandle->setActive(std::move(attemptHandle), selectedIndex);
+        selectedIndex, true);
 }
 
 void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
@@ -453,12 +468,12 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
     const ModelRouteConfig selectedRoute = state->config.routes.at(selectedIndex);
     state->lastRoute = selectedRoute;
     const std::shared_ptr<bool> alive = m_alive;
-    m_client->completeOnce(
-        selectedRoute, messages, state->request.tools,
+    sendAttempt(
+        state, selectedRoute, messages, {},
         [this, alive, state, selectedRoute, selectedIndex, messages,
-         repairAttempt]
-        (bool success, LlmResponse response, QString error) mutable {
-            if (!*alive) return;
+         repairAttempt](bool success, LlmResponse response, QString error) mutable {
+            if (!*alive)
+                return;
             if (!success) {
                 state->lastProviderError = error.trimmed().isEmpty()
                     ? QStringLiteral("Model provider request failed")
@@ -497,5 +512,125 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
             state->callback(Result<ModelCompletion, DomainError>::success(
                 std::move(completion)));
         },
-        state->request.petName);
+        selectedIndex, false);
+}
+
+void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
+                              const ModelRouteConfig &route, QList<ChatMessage> messages,
+                              LlmStreamObserver observer, LlmCompletionHandler completion,
+                              int routeIndex, bool streaming) {
+    const auto hooks = state->request.attemptHooks;
+    const auto alive = m_alive;
+    const auto gate = m_callbackGate;
+    const QString attemptId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    struct UnsentReservation {
+        std::shared_ptr<ModelAttemptHooks> hooks;
+        QString id;
+        bool dispatched = false;
+        UnsentReservation(std::shared_ptr<ModelAttemptHooks> h, QString value)
+            : hooks(std::move(h)), id(std::move(value)) {}
+        ~UnsentReservation() {
+            if (!dispatched && hooks)
+                hooks->settle(id, {}, [](Result<void, DomainError>) {});
+        }
+    };
+    auto returnToOwner = [gate](std::function<void()> f) {
+        std::unique_lock<std::mutex> lock(gate->mutex);
+        auto *context = gate->context;
+        if (!context)
+            return;
+        if (QThread::currentThread() == context->thread()) {
+            lock.unlock();
+            f();
+        } else
+            QMetaObject::invokeMethod(context, [gate, f = std::move(f)] {
+                {
+                    std::lock_guard<std::mutex> guard(gate->mutex);
+                    if (!gate->context)
+                        return;
+                }
+                f();
+            });
+    };
+    auto error = [state, alive](const DomainError &e) {
+        if (!*alive || state->terminal)
+            return;
+        state->terminal = true;
+        state->callback(Result<ModelCompletion, DomainError>::failure(e));
+    };
+    auto send = [this, state, route, messages, observer = std::move(observer),
+                 completion = std::move(completion), routeIndex, streaming, hooks, attemptId, alive,
+                 returnToOwner, error](Result<void, DomainError> reserved) mutable {
+        // A dropped queued callback also closes its reservation. This owns no
+        // router object and therefore works during QObject queue destruction.
+        auto unsent = reserved && hooks ? std::make_shared<UnsentReservation>(hooks, attemptId)
+                                        : std::shared_ptr<UnsentReservation>{};
+        returnToOwner([this, state, route, messages, observer = std::move(observer),
+                       completion = std::move(completion), routeIndex, streaming, hooks, attemptId,
+                       alive, returnToOwner, error, unsent, reserved = std::move(reserved)]() mutable {
+            if (!*alive || state->terminal)
+                return;
+            if (!reserved) {
+                error(reserved.error());
+                return;
+            }
+            if (state->requestHandle && state->requestHandle->isCancelled()) {
+                error(domainError("LLM_REQUEST_CANCELLED", "Model request cancelled before send"));
+                return;
+            }
+            auto completionReceived = std::make_shared<std::atomic_bool>(false);
+            auto done = [hooks, attemptId, alive, returnToOwner, error, completionReceived,
+                         completion = std::move(completion)](bool ok, LlmResponse response,
+                                                             QString message) mutable {
+                if (completionReceived->exchange(true)) {
+                    // Duplicate receipts may improve unknown usage, but must
+                    // never finish the request or start a fallback twice.
+                    if (hooks)
+                        hooks->settle(attemptId, response.usage, [](Result<void, DomainError>) {});
+                    return;
+                }
+                // Settlement has no dependency on router/UI lifetime.
+                const auto usage = response.usage;
+                auto settled = [alive, returnToOwner, error, completion = std::move(completion), ok,
+                                response = std::move(response), message = std::move(message)](
+                                   Result<void, DomainError> result) mutable {
+                    returnToOwner([alive, error, completion = std::move(completion), ok,
+                                   response = std::move(response), message = std::move(message),
+                                   result = std::move(result)]() mutable {
+                        if (!*alive)
+                            return;
+                        if (!result) {
+                            error(result.error());
+                            return;
+                        }
+                        completion(ok, std::move(response), std::move(message));
+                    });
+                };
+                if (hooks)
+                    hooks->settle(attemptId, usage, std::move(settled));
+                else
+                    settled(Result<void, DomainError>::success());
+            };
+            if (unsent)
+                unsent->dispatched = true;
+            if (streaming) {
+                auto handle = m_client->completeOnceStream(route, messages, state->request.tools,
+                                                           std::move(observer), std::move(done),
+                                                           state->request.petName);
+                state->requestHandle->setActive(std::move(handle), routeIndex);
+            } else
+                m_client->completeOnce(route, messages, state->request.tools, std::move(done),
+                                       state->request.petName);
+        });
+    };
+    if (hooks) {
+        if (!hooks->reserve || !hooks->settle) {
+            error(domainError("INVALID_INPUT", "Incomplete model budget hooks"));
+            return;
+        }
+        hooks->reserve(
+            {attemptId, route, messages, state->request.tools, state->request.responseSchema},
+            std::move(send));
+    } else
+        send(Result<void, DomainError>::success());
 }

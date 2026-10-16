@@ -270,6 +270,11 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
         pet["clickThrough"] = bool(settings["clickThrough"])
 
     # —— AI 设置 ——
+    autonomy = cfg.setdefault("aiSettings", {}).setdefault("autonomy", {})
+    if "autonomyEnabled" in settings:
+        autonomy["enabled"] = bool(settings["autonomyEnabled"])
+    if "autonomyPaused" in settings:
+        autonomy["paused"] = bool(settings["autonomyPaused"])
     profile = _profile(cfg)
     if "aiEnabled" in settings:
         profile["enabled"] = bool(settings["aiEnabled"])

@@ -215,11 +215,11 @@ Wave 5 五项校验通过。下一设计项为 Task 6；本阶段验证使用测
 ## Task 6: 空闲判定与自主机会调度
 
 - 关联设计: §3.7 空闲判定与自主机会调度
-- 状态: [ ]
+- 状态: [x]
 - Wave: 6
 - 依赖: Task 5
 
-文件：新增通用机会调度模块、`core/ai/ai_brain_loop.cpp`、`core/ai/scheduler/`、`core/ai/runtime/`；`tests/test_agent_scheduler.cpp`、新增 `tests/test_activity_opportunities.cpp`；`CMakeLists.txt`。
+文件：新增通用机会类型、Store、Coordinator（复用 `core/ai/activity/` 和 ActivityRuntime worker）；调整 `activity_store/runtime.*`、`task_types/orchestrator.*` 的宿主自主属性与累计预算接入，`core/ai/ai_brain.h/.cpp`、`ai_brain_loop.cpp`、`ai_brain_tasks.cpp`、`core/ai/scheduler/`、`core/ai/runtime/` 与 `core/ai/reflection/sleep_cycle_coordinator.*`。模型预算 hooks 位于 `include/ai_types.h`、`core/ai/model/model_router.*`；全量回归修复涉及 `core/ai/event/runtime_unit_of_work.cpp`、`sqlite_event_repository.cpp`、`core/ai/identity/sqlite_identity_repository.cpp` 的 CAS 写事务；配置位于 `core/configLoader/config_manager.*`、`config/default_common_config.example.json`、`launcher/app_state.py`、`launcher/config_loader.py`、`launcher/pages/ai_page.py`，必要屏幕主动聊天入口 `ui/petwindow_screen_chat.cpp`。测试放既有 model_router、config_manager、module_connectivity、streaming_dialogue、agent_scheduler、sleep_cycle 等对应套件，新增 `tests/test_activity_opportunities.cpp` 和既有布局下 launcher 配置测试；根 `CMakeLists.txt` 注册。父级维护设计/过程文档，单实现 agent 独占源码和 build。
 
 测试用例：
 - evaluateIdle_onlyExternalWaitOrBackgroundMemory_returnsIdle（happy path）。
@@ -228,6 +228,24 @@ Wave 5 五项校验通过。下一设计项为 Task 6；本阶段验证使用测
 - considerOpportunity_paused_noModelCall。
 - considerOpportunity_messageBurst_coalescesOnlySameConversationWithinBound。
 - considerOpportunity_unchangedIdle_backsOffUntilImportantEvent。
+- finishOpportunity_waitCancelExpiryAndRestart_preservesChargedUsageAndRejectsStale。
+- modelBudget_eachSendFallbackAndRepairCharged_unknownUsageConservativeAndLateIdempotent（happy path 与异常）。
+- modelBudget_storageFailure_neverCallsProvider；sharedBudget_selectionAndAutonomousActivityCounts_userTaskUnaffected。
+- activeBudget_runningCountsWaitingDoesNot_pauseAtHourlyLimit。
+- autonomyConfig_defaultOffOptInAndPause_roundTripsWithoutOverwritingOtherFields（happy path）。
+- runtime_noConsumerLocalOnly_enabledDoesNotDoubleRunLegacyProactive。
+- clockJumpAndControlJsonMerge_preserveWindowReservationsAndSourceCursors。
+
+Task 6 工程约定以主设计 v1.6 的 §1.5、§3.7 与 §4.1 为准；无 consumer 时只本地检查，Task 7 才安装真实选择器。
+
+Wave 6 校验（2026-10-17）：
+- 文件冲突：通过，单 Task 串行实施；实现 agent 已交回源码/build，主 agent 仅维护设计与审查。
+- 构建/全量测试：完整应用及全部测试目标构建成功；最终 CTest **54/54 组通过**（72.34 秒）。新机会套件 26/26，运行时服务 57/57，流式对话 79/79。工具契约 **70/70**。
+- 行为覆盖：计划各项均有对应测试，见审查记录；附加真实 fallback/修复计费、迟到结算、重启水位、单调时钟、取消窗口与预算溢出回归。两条原 CAS 竞争各 50 次、检查点竞争 100 次均通过。
+- 测试布局：通过，新增 tests/test_activity_opportunities.cpp 与 tests/test_autonomy_config.py 由根 CMakeLists.txt 注册。
+- 实现锚点与留痕：通过，AIBrain、ActivityRuntime、OpportunityStore/Coordinator、ModelRouter 实际 attempt、睡眠状态及模型/活动预算接入已核对；context.md 有记录。主设计八切片/七子节、SQL 迁移/回滚和 38 条本地链接检查通过；git diff --check 干净。
+
+最终日志：/tmp/task6-final-verified-build.log、/tmp/task6-final-verified-ctest.log、/tmp/task6-final-contract.log。Wave 6 五项通过；Task 7 才安装真实自主选择器。
 
 ## Task 7: 自主活动选择与持续意图
 

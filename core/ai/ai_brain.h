@@ -17,30 +17,31 @@
 #include <memory>
 #include <optional>
 
-#include "ai_types.h"
 #include "agent/agent_session.h"
 #include "ai_call_logger.h"
+#include "ai_types.h"
 #include "chat/chat_side_effect_queue.h"
 #include "chat/chat_types.h"
 #include "domain/domain_result.h"
-#include "identity/identity_baseline.h"
-#include "prompt/prompt_template_types.h"
 #include "emotion/emotion_types.h"
-#include "llm/llm_chat_service.h"
+#include "event/event_types.h"
+#include "identity/identity_baseline.h"
 #include "llm/llm_chat_model_client.h"
+#include "llm/llm_chat_service.h"
 #include "memory/daydream_consolidator.h"
-#include "reflection/cancellation_token.h"
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
-#include "event/event_types.h"
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
-#include "scheduler/daydream_trigger_policy.h"
-#include "scheduler/proactive_chat_policy.h"
-#include "runtime/runtime_types.h"
 #include "model/model_role_registry.h"
 #include "model/model_router.h"
+#include "prompt/prompt_template_types.h"
+#include "reflection/cancellation_token.h"
+#include "runtime/runtime_types.h"
+#include "scheduler/daydream_trigger_policy.h"
+#include "scheduler/opportunity_types.h"
+#include "scheduler/proactive_chat_policy.h"
 #include "task/task_types.h"
 
 class AgentScheduler;
@@ -108,6 +109,13 @@ public:
 
     bool isBusy() const { return m_busy; }
     bool canStartProactiveChat() const;
+    bool autonomyEnabled() const {
+        return m_autonomyConfig.enabled;
+    }
+    void setAutonomyConfig(const AutonomyConfig &);
+    void setAutonomyPaused(bool paused);
+    void requestAutonomousOpportunity(const QString &kind = "tick", const QString &contextId = {},
+                                      const QStringList &eventIds = {});
     ProactiveChatTiming proactiveChatTiming(int baseIntervalMs) const;
     QString proactiveStatePath() const { return m_proactiveStatePath; }
     Result<bool, DomainError> requestManualDaydream();
@@ -200,6 +208,7 @@ private:
         bool rememberInput = true;
         std::optional<AcceptedMessage> accepted;
         std::optional<IncomingMessage> original;
+        qint64 queuedAtMonotonicMs = 0;
     };
     void schedulePendingUserMessages();
     void dispatchPendingUserMessages();
@@ -215,6 +224,12 @@ private:
     QString m_proactiveStatePath;
     static bool isAutomaticTrigger(const QString& triggerTag);
     bool automaticTextAllowed() const;
+    RuntimeReadiness autonomousReadiness() const;
+    AutonomyConfig m_autonomyConfig;
+    bool m_autonomyPaused = false;
+    quint64 m_opportunityHostRevision = 0;
+    QByteArray m_opportunityReadinessKey;
+    QJsonObject m_opportunityInputWatermarks;
     bool suppressMutedAutomaticResponse();
     void thinkInternal(const QString& reason,
                       const QString& triggerTag,

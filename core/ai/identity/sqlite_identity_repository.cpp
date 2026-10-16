@@ -737,10 +737,11 @@ Result<void, DomainError> SqliteIdentityRepository::appendRelationshipState(
             identityStoreError(QStringLiteral("identity repository is closed")));
     }
     QSqlDatabase database = QSqlDatabase::database(m_connectionName);
-    if (!database.transaction()) {
+    QSqlQuery begin(database);
+    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
         return Result<void, DomainError>::failure(identityStoreError(
             QStringLiteral("failed to begin relationship transaction"),
-            database.lastError()));
+            begin.lastError()));
     }
     QSqlQuery current(database);
     current.prepare(QStringLiteral(
@@ -844,9 +845,10 @@ Result<void, DomainError> SqliteIdentityRepository::appendSelfModelState(
             identityStoreError(QStringLiteral("identity repository is closed")));
     }
     QSqlDatabase database = QSqlDatabase::database(m_connectionName);
-    if (!database.transaction()) {
+    QSqlQuery begin(database);
+    if (!begin.exec(QStringLiteral("BEGIN IMMEDIATE"))) {
         return Result<void, DomainError>::failure(identityStoreError(
-            QStringLiteral("failed to begin self model transaction"), database.lastError()));
+            QStringLiteral("failed to begin self model transaction"), begin.lastError()));
     }
     QSqlQuery current(database);
     current.prepare(QStringLiteral(

@@ -7,6 +7,7 @@ bool TaskRecord::terminal() const {
 
 QJsonObject TaskRecord::toJson() const {
     return {{"context", contextSpecToJson(context)},
+            {"autonomous", autonomous},
             {"activity_revision", activityRevision},
             {"activity_generation", qint64(activityGeneration)},
             {"id", id},
@@ -20,8 +21,7 @@ QJsonObject TaskRecord::toJson() const {
             {"reason", reason},
             {"completion_criteria", completionCriteria},
             {"personality_version", personalityVersion},
-            {"required_source_tools",
-             QJsonArray::fromStringList(requiredSourceTools)},
+            {"required_source_tools", QJsonArray::fromStringList(requiredSourceTools)},
             {"personality_snapshot", personalitySnapshot},
             {"relationship_snapshot", relationshipSnapshot},
             {"initial_emotion", initialEmotion},
@@ -52,6 +52,7 @@ QJsonObject TaskRecord::toJson() const {
 
 TaskRecord TaskRecord::fromJson(const QJsonObject& j) {
     TaskRecord r;
+    r.autonomous = j["autonomous"].toBool(false);
     r.context = contextSpecFromJson(j["context"].toObject());
     r.activityRevision = j["activity_revision"].toInteger();
     r.activityGeneration = quint64(j["activity_generation"].toInteger());

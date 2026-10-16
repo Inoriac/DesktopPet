@@ -65,6 +65,15 @@
     ]
   },
   "aiSettings": {
+    "autonomy": {
+      "enabled": false, "paused": false,
+      "coalesceWindowMs": 1000, "coalesceMaxWaitMs": 3000,
+      "minDecisionIntervalMs": 60000, "noOpBackoffMs": 300000,
+      "maxNoOpBackoffMs": 1800000, "localTickMs": 15000, "ticketTtlMs": 120000,
+      "maxSelectionCallsPerHour": 12, "maxActiveMsPerHour": 900000,
+      "maxTokensPerHour": 120000, "maxEstimatedCostMicrosPerHour": 1000000,
+      "unknownAttemptCostMicros": 50000
+    },
     "personalityPolicy": {
       "minimumIndependentEvidence": 3,
       "minimumContextKeys": 2,

@@ -29,17 +29,21 @@ SqliteRuntimeUnitOfWork::begin(const QString& databasePath) {
         return Result<std::unique_ptr<RuntimeUnitOfWork>, DomainError>::failure(error);
     }
     bool transactionStarted = false;
+    QString transactionError;
     {
         QSqlQuery pragma(database);
+        // Reserve the writer before reading a CAS version so a worker commit
+        // cannot invalidate this transaction's WAL snapshot before its write.
         transactionStarted = pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"))
             && pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"))
-            && database.transaction();
+            && pragma.exec(QStringLiteral("BEGIN IMMEDIATE"));
+        if (!transactionStarted) transactionError = pragma.lastError().text();
     }
     if (!transactionStarted) {
         const DomainError error = domainError(
             QStringLiteral("EVENT_OUTBOX_UNAVAILABLE"),
             QStringLiteral("failed to begin runtime unit of work: %1")
-                .arg(database.lastError().text()));
+                .arg(transactionError));
         database.close();
         database = QSqlDatabase();
         QSqlDatabase::removeDatabase(name);

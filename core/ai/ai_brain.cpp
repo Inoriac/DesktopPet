@@ -1,4 +1,5 @@
 #include "ai/chat/conversation_service.h"
+#include "scheduler/agent_scheduler.h"
 //
 // AIBrain implementation
 //
@@ -290,7 +291,12 @@ void AIBrain::setToolRegistry(ToolRegistry* registry) {
 }
 
 void AIBrain::setAgentScheduler(AgentScheduler* scheduler) {
+    if (m_scheduler)
+        disconnect(m_scheduler, nullptr, this, nullptr);
     m_scheduler = scheduler;
+    if (scheduler)
+        connect(scheduler, &AgentScheduler::taskChanged, this,
+                [this] { requestAutonomousOpportunity("scheduler"); });
 }
 
 void AIBrain::setEmotionSnapshotProvider(EmotionSnapshotProvider provider) {
@@ -368,6 +374,7 @@ void AIBrain::stop() {
     cancelActiveResponse();
     ++m_requestGeneration;
     m_running = false;
+    requestAutonomousOpportunity("stopped");
     m_idleTriggerTimer.stop();
     m_chatTriggerTimer.stop();
     m_daydreamTimer.stop();
@@ -418,6 +425,7 @@ Result<void, DomainError> AIBrain::submitUserMessage(
     // An active provider request keeps its immutable context and continues streaming.
     m_pendingUserMessages.append({input, messageId, QDateTime::currentDateTimeUtc(),
                                   rememberInput});
+    m_pendingUserMessages.last().queuedAtMonotonicMs = monotonicMilliseconds();
     ++m_interactionRevision;
     m_unansweredProactiveChats = 0;
     m_cooldownAfterProactive = false;
@@ -442,6 +450,7 @@ void AIBrain::submitIncomingMessage(IncomingMessage message,
         return;
     }
     ++m_acceptingMessageCount;
+    requestAutonomousOpportunity("input_pending");
     const quint64 inputEpoch = m_inputEpoch;
     QPointer<AIBrain> guard(this);
     m_runtimeServices->conversationService()->acceptMessageAsync(message,
@@ -455,6 +464,8 @@ void AIBrain::submitIncomingMessage(IncomingMessage message,
                 m_scheduledMessageIds.insert(accepted.messageId);
                 PendingUserMessage pending{message.content, accepted.messageId, message.occurredAt, true};
                 pending.accepted = accepted; pending.original = message;
+                pending.queuedAtMonotonicMs = monotonicMilliseconds();
+                m_opportunityInputWatermarks[accepted.conversationId] = accepted.messageId;
                 m_pendingUserMessages.append(pending);
                 ++m_interactionRevision;
                 if (message.originKind == OriginKind::LocalOwner) {
@@ -467,6 +478,7 @@ void AIBrain::submitIncomingMessage(IncomingMessage message,
                 emit pendingUserMessagesChanged();
             }
             if (completion) completion(result);
+            requestAutonomousOpportunity("message");
             schedulePendingUserMessages();
         });
 }
@@ -479,15 +491,44 @@ void AIBrain::schedulePendingUserMessages() {
     if (m_busy || !m_enabled || m_pendingUserMessages.isEmpty()) return;
     // Dispatch on the next event-loop turn, without waiting for more input.
     // This also avoids recursive turns when a local reply completes synchronously.
-    if (!m_userMessageDispatchTimer.isActive()) m_userMessageDispatchTimer.start(0);
+    if (autonomyEnabled()) {
+        QList<CoalescedMessage> messages;
+        for (const auto &p : m_pendingUserMessages)
+            messages.append(
+                {p.accepted ? p.accepted->conversationId : QStringLiteral("local_owner"), p.id,
+                 p.queuedAtMonotonicMs});
+        const auto batch = nextMessageBatch(messages, m_autonomyConfig);
+        m_userMessageDispatchTimer.start(
+            int(qMax<qint64>(0, batch.dueAtMonotonicMs - monotonicMilliseconds())));
+    } else if (!m_userMessageDispatchTimer.isActive())
+        m_userMessageDispatchTimer.start(0);
 }
 
 void AIBrain::dispatchPendingUserMessages() {
     if (m_busy || !m_enabled || m_pendingUserMessages.isEmpty()) return;
     QStringList fragments;
     qsizetype characters = 0;
-    const bool rememberInput = m_pendingUserMessages.first().rememberInput;
-    const auto first = m_pendingUserMessages.first();
+    QStringList selectedIds;
+    if (autonomyEnabled()) {
+        QList<CoalescedMessage> messages;
+        for (const auto &p : m_pendingUserMessages)
+            messages.append(
+                {p.accepted ? p.accepted->conversationId : QStringLiteral("local_owner"), p.id,
+                 p.queuedAtMonotonicMs});
+        const auto batch = nextMessageBatch(messages, m_autonomyConfig);
+        if (batch.dueAtMonotonicMs > monotonicMilliseconds()) {
+            schedulePendingUserMessages();
+            return;
+        }
+        selectedIds = batch.messageIds;
+    }
+    int firstIndex = 0;
+    if (!selectedIds.isEmpty())
+        while (firstIndex < m_pendingUserMessages.size() &&
+               m_pendingUserMessages[firstIndex].id != selectedIds.first())
+            ++firstIndex;
+    const auto first = m_pendingUserMessages[firstIndex];
+    const bool rememberInput = first.rememberInput;
     const QString conversationId = first.accepted ? first.accepted->conversationId : QStringLiteral("local_owner");
     m_conversationWindows.insert(m_currentConversationId, m_memory);
     m_currentConversationId = conversationId;
@@ -497,20 +538,25 @@ void AIBrain::dispatchPendingUserMessages() {
         m_chatPreparationRuntimeMetadata.originKind = first.accepted->context.originKind;
         m_chatPreparationRuntimeMetadata.subjectId = first.accepted->personResolution.personId.value_or(QString());
     }
-    while (!m_pendingUserMessages.isEmpty()) {
-        const auto& next = m_pendingUserMessages.first();
+    for (qsizetype index = 0; index < m_pendingUserMessages.size();) {
+        const auto &next = m_pendingUserMessages[index];
+        if (autonomyEnabled() && !selectedIds.contains(next.id)) {
+            ++index;
+            continue;
+        }
         const QString nextConversation = next.accepted ? next.accepted->conversationId : QStringLiteral("local_owner");
         if (nextConversation != conversationId) break;
         if (!fragments.isEmpty() && (characters + 1 + next.text.size() > 8000
                                     || next.rememberInput != rememberInput)) break;
         characters += next.text.size() + (fragments.isEmpty() ? 0 : 1);
         fragments.append(next.text);
-        m_dispatchingUserMessages.append(m_pendingUserMessages.takeFirst());
+        m_dispatchingUserMessages.append(m_pendingUserMessages.takeAt(index));
     }
     const QString replyToId = m_dispatchingUserMessages.last().id;
     triggerThink(fragments.join('\n'), conversationId == QLatin1String("local_owner")
         ? QStringLiteral("user_request") : QStringLiteral("external_message"), replyToId);
     m_dispatchingUserMessages.clear();
+    requestAutonomousOpportunity("input_dispatched");
     emit pendingUserMessagesChanged();
     schedulePendingUserMessages();
 }
@@ -558,6 +604,8 @@ ProactiveChatTiming AIBrain::proactiveChatTiming(int baseIntervalMs) const {
 }
 
 bool AIBrain::canStartProactiveChat() const {
+    if (autonomyEnabled())
+        return false;
     if (!automaticTextAllowed()) return false;
     return m_enabled && m_storageInitialized && !m_busy && !isTaskActive() && m_pendingUserMessages.isEmpty()
         && (!m_conversationCooldown.isValid()
@@ -569,6 +617,10 @@ void AIBrain::triggerThink(const QString& reason,
                            const QString& triggerTag,
                            const QString& replyToId,
                            const QString& voiceSource) {
+    if (autonomyEnabled() && (triggerTag == "proactive_chat" || triggerTag == "idle_action")) {
+        requestAutonomousOpportunity(triggerTag);
+        return;
+    }
     const qint64 triggerStartedAt = monotonicMilliseconds();
     if (isAutomaticTrigger(triggerTag) && !m_pendingUserMessages.isEmpty()) {
         scheduleTrigger(triggerTag);
@@ -626,6 +678,7 @@ void AIBrain::triggerThink(const QString& reason,
     }
 
     m_busy = true;
+    requestAutonomousOpportunity("foreground");
     ++m_requestGeneration;
     qInfo() << "[AIBrain] accepted request, trigger:" << triggerTag;
     std::cerr << "[AIBrain] accepted request: trigger="
@@ -943,6 +996,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
         emit assistantResponseFinished(finished.messageId, status, errorMessage);
     }
     schedulePendingUserMessages();
+    requestAutonomousOpportunity("response_finished");
 }
 
 void AIBrain::stopCurrentResponse() {

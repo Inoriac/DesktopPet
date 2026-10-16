@@ -2,6 +2,7 @@
 #define DESKTOP_PET_MODEL_ROUTER_H
 
 #include <QHash>
+#include <QObject>
 
 #include <functional>
 #include <memory>
@@ -12,6 +13,19 @@
 
 using ModelCompletionHandler =
     std::function<void(Result<ModelCompletion, DomainError>)>;
+
+struct ModelAttemptContext {
+    QString attemptId;
+    ModelRouteConfig route;
+    QList<ChatMessage> messages;
+    QJsonArray tools;
+    QJsonObject responseSchema;
+};
+struct ModelAttemptHooks {
+    using Completion = std::function<void(Result<void, DomainError>)>;
+    std::function<void(const ModelAttemptContext &, Completion)> reserve;
+    std::function<void(const QString &, const LlmUsage &, Completion)> settle;
+};
 
 class ModelCompletionClient {
 public:
@@ -56,6 +70,9 @@ private:
                       bool repairAttempt);
     void attemptStreamRoute(const std::shared_ptr<CompletionState>& state,
                             int routeIndex);
+    void sendAttempt(const std::shared_ptr<CompletionState> &, const ModelRouteConfig &,
+                     QList<ChatMessage>, LlmStreamObserver, LlmCompletionHandler, int routeIndex,
+                     bool streaming);
     bool routeMeetsConstraints(const ModelRouteConfig& route,
                                const ModelLimits& limits,
                                const ModelConstraints& constraints) const;
@@ -66,6 +83,8 @@ private:
     ModelCompletionClient* m_client = nullptr;
     mutable QHash<QString, qint64> m_openCircuitUntilMs;
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
+    struct CallbackGate;
+    std::shared_ptr<CallbackGate> m_callbackGate;
 };
 
 #endif // DESKTOP_PET_MODEL_ROUTER_H

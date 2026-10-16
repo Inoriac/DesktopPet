@@ -1,6 +1,6 @@
-# 自主 Agent 阶段实现总结：§3.2—§3.6
+# 自主 Agent 阶段实现总结：§3.2—§3.7
 
-设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由与插件运行时的实现及验证。
+设计基线提交：`9694046 docs: 记录自主 Agent 设计与实施顺序`。按用户要求每阶段验证后本地提交，不推送。任务进度以同目录 impl-plan 为准；本总结记录人物识别、记忆归属、会话路由、插件与活动运行时，以及空闲机会调度的实现及验证。
 
 ## 已落地行为
 
@@ -104,3 +104,17 @@ ToolRegistry、PolicyEngine 与任务执行采用显式宿主元数据、工厂�
 验证：最终完整应用及所有测试目标构建成功；CTest **52/52 通过**（69.25 秒），Python 工具契约 **70/70 通过**。Wave 5 五项校验、设计结构/链接/SQL 演练与 git diff --check 通过。TDD 实际失败包括多活动、迟到回执、真实结果形状、恢复人物范围、未结算完成、无 subject 参与人及析构崩溃，详见审查记录。
 
 最终日志：/tmp/task5-handoff-build.log、/tmp/task5-handoff-ctest.log、/tmp/task5-final-contract.log。下一项是 §3.7 空闲判定与自主机会调度；真实 QQ 仍未连接。
+
+## §3.7 空闲判定与自主机会调度
+
+新增 RuntimeReadiness/IdleDecision、OpportunityStore 和 OpportunityCoordinator，复用活动运行时的单 worker。是否空闲与运行、启用、暂停、正式睡眠、模式、冷却及预算分别判断；前台活动和选择预留互斥。消息按真实会话聚合，1 秒静默窗口、3 秒最长等待。没有选择器时只做本地检查，不预留机会或调用模型。
+
+aiSettings.autonomy 默认关闭；Launcher 提供自主启用和暂停。启用后原主动聊天、idle 和屏幕自动触发转入通用机会。机会租约、输入水位、宿主 epoch、退避及预算保存在现有 runtime SQLite，重启和对象重建保持用量并拒绝旧控制命令。
+
+每次自主模型实际发送（包括 fallback 和格式修复）先持久预留，再发送、再按原 profile 结算；未知用量保守计费，迟到有效 usage 可补实，真实超额阻断下一次请求。选择与自主活动共用 token/预估费用上限；活跃执行按单调时钟累计，等待不计，耗尽后暂停。明确用户任务仍沿用原规则。
+
+主要文件：core/ai/scheduler/opportunity_types.*、core/ai/activity/opportunity_* 与 activity_runtime/store.*、ModelRouter、TaskOrchestrator、AIBrain、ConfigManager 与 Launcher。全量回归修复 ModelRouter 重复完成回调崩溃，以及 runtime/身份/事件检查点 deferred CAS 的写竞争；采用一次业务完成门及 BEGIN IMMEDIATE，保留重复回执补实和原版本校验。
+
+验证：完整构建成功，CTest **54/54 组通过**（72.34 秒）；机会套件 26/26、运行时服务 57/57、流式对话 79/79，工具契约 70/70。三个数据库竞争用例分别连续 50/50/100 次通过；TDD、覆盖映射、实现锚点和五项 Wave 校验见计划与审查记录。日志为 /tmp/task6-final-verified-build.log、/tmp/task6-final-verified-ctest.log、/tmp/task6-final-contract.log。
+
+第 7 阶段接入真实自主选择，第 8 阶段验证外部观察及消息流程；本阶段未接通真实 QQ。

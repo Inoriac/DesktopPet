@@ -901,7 +901,8 @@ void StreamingDialogueTests::proactiveTiming_shouldUseEvolvedPersonality() {
     auto transaction = services.unitOfWorkFactory()->begin();
     QVERIFY(transaction.isOk());
     auto work = transaction.takeValue();
-    QVERIFY(repository.appendPersonalityState(*work, state, {}).isOk());
+    const auto appended = repository.appendPersonalityState(*work, state, {});
+    QVERIFY2(appended.isOk(), qPrintable(appended ? QString() : appended.error().message));
     QVERIFY(work->commit().isOk());
     work.reset();
     QVERIFY(brain.proactiveChatTiming(240000).intervalMs < before);

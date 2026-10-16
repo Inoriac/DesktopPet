@@ -371,6 +371,15 @@ bool TaskOrchestrator::resume(const QString& feedback, const TaskBudgetExtension
 bool TaskOrchestrator::checkTimeBudget() {
     accountTime();
     if (!m_active) return false;
+    if (m_task.autonomous && m_store && m_store->activityStore()) {
+        if (!persist()) return false;
+        auto remaining = m_store->activityStore()->remainingAutonomousActiveMs();
+        if (!remaining || remaining.value() == 0) {
+            pause(remaining ? QStringLiteral("自主活动每小时活跃预算已用完，进度已保存。")
+                            : remaining.error().message);
+            return false;
+        }
+    }
     if (m_task.activeMs >= m_task.budget.maxActiveMs) {
         pause(QStringLiteral("本轮活跃执行时间预算已用完，进度已保存。可增加预算后继续。")); return false;
     }
@@ -378,7 +387,7 @@ bool TaskOrchestrator::checkTimeBudget() {
 }
 void TaskOrchestrator::heartbeat() {
     if (!checkTimeBudget()) return;
-    persist();
+    if (!m_task.autonomous) persist();
 }
 QJsonObject TaskOrchestrator::modelContext() const {
     auto context = m_task.toJson();
@@ -398,6 +407,7 @@ void TaskOrchestrator::callModel(TaskModelRequest request, std::function<void(Ta
     if (!checkTimeBudget()) return;
     if (!m_dependencies.requestModel) { pause(QStringLiteral("任务模型暂时不可用，进度已保存。")); return; }
     request.activityId = m_task.id;
+    request.autonomous = m_task.autonomous;
     request.generation = m_task.activityGeneration;
     request.scope = m_task.context;
     request.requestId = m_task.id + ":model:" + QString::number(++m_requestSequence);
@@ -557,6 +567,7 @@ void TaskOrchestrator::dispatchValidatedTool(const QJsonObject &tool,
         pause(QStringLiteral("工具调用预算已用完（失败和重试也计入），可增加预算后继续。")); return;
     }
     TaskToolCall call;
+    call.autonomous = m_task.autonomous;
     call.id = m_task.id + ":tool:" + QString::number(m_task.toolCalls + 1);
     call.name = name; call.arguments = args; call.readOnly = readOnly;
     call.timeoutMs = int(std::min<qint64>(m_task.budget.toolTimeoutMs, m_task.budget.maxActiveMs - m_task.activeMs));

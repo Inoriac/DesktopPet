@@ -73,6 +73,18 @@ class AiPage(ScrollPage):
             lambda checked: setattr(self.state, "ai_enabled", checked))
         section.addRow("AI 开关", "启用模型对话", ai_switch)
 
+        autonomy_switch = SwitchButton()
+        autonomy_switch.setChecked(self.state.autonomy_enabled)
+        autonomy_switch.checkedChanged.connect(
+            lambda checked: setattr(self.state, "autonomy_enabled", checked))
+        section.addRow("自主活动", "允许桌宠在空闲时考虑自主活动", autonomy_switch)
+
+        autonomy_pause = SwitchButton()
+        autonomy_pause.setChecked(self.state.autonomy_paused)
+        autonomy_pause.checkedChanged.connect(
+            lambda checked: setattr(self.state, "autonomy_paused", checked))
+        section.addRow("暂停自主活动", "暂停新的探索，关闭此项后恢复", autonomy_pause)
+
         emotion_switch = SwitchButton()
         emotion_switch.setChecked(self.state.emotion_enabled)
         emotion_switch.checkedChanged.connect(

@@ -250,3 +250,57 @@
 代码审查通过，已确认问题全部闭合，Wave 5 五项校验通过。最终完整应用与所有测试目标构建成功；CTest **52/52 通过**（69.25 秒），Python 契约 **70/70 通过**，git diff --check 干净。最终日志 /tmp/task5-handoff-build.log、/tmp/task5-handoff-ctest.log、/tmp/task5-final-contract.log；主设计结构、链接和 SQL 演练记录 /tmp/task5-doc-checks.log。
 
 Task 6—8 尚未实施，内部无会话自主 grant 按 context.md 的 §3.8 pending 项处理。当前均为临时数据库和测试后端验证，不声明真实 QQ 可用。
+
+## §3.7 空闲判定与自主机会调度
+
+### 审查范围
+
+- 空闲与运行/暂停/休眠/模式/预算门禁分别表达；权威活动、输入准备及已到期义务不能仅由 m_busy 替代。
+- 机会预留、宿主版本及消息水位保存在原 runtime 库，和前台互斥；没有 consumer 时不产生票据或模型请求。
+- 模型路由的每次 provider attempt 都先预留、再发送、先结算再重试，选择修复和活动模型共享额度；原 profile 的迟到 usage 不依赖 GUI 存活。
+- 自主性由已保存活动意图传递；原用户对话与明确用户任务不受自主小时额度限制。
+- 新设置默认关闭，Launcher 保存保留工程参数；开启后原主动聊天/idle/屏幕路径转入通用机会。消息按真实入队时间独立聚合，控制和回执不走聚合窗口。
+
+### 审查反馈与验证入口
+
+| 核对点 | 测试或修复入口 |
+| --- | --- |
+| 真正空闲与可考虑条件分开 | ActivityOpportunitiesTests::evaluateIdle_onlyExternalWaitOrBackgroundMemory_returnsIdle、evaluateIdle_toolWaitValidationOrReadyObligation_returnsBusy、evaluateIdle_controlsRemainSeparateFromIdleness |
+| 单票据及前台互斥 | considerOpportunity_idleEnabledBudgeted_reservesOneTicket |
+| 暂停、无事退避与新水位 | considerOpportunity_paused_noModelCall、considerOpportunity_unchangedIdle_backsOffUntilImportantEvent |
+| 过期时已有其他义务仍释放预留；配置暂停撤销在途票据 | expiredReservationClearsEvenWhenBusyAndConfigPauseRevokesTicket |
+| 不同会话交错、固定最长等待 | considerOpportunity_messageBurst_coalescesOnlySameConversationWithinBound；AIBrain 实际队列接入 nextMessageBatch |
+| 没有选择器时零票据/模型，开启后停止旧主动循环 | runtime_noConsumerLocalOnly_thenControlledConsumerReceivesOneTicket、ModuleConnectivityTests::autonomyEnabledRoutesLegacyTriggersWithoutConsumerOrModel |
+| 首发、fallback 及发送前存储失败 | modelBudget_eachProviderAttemptReservesAndSettlesBeforeFallback |
+| 未知 usage 保守计费与迟到幂等 | modelBudget_unknownUsageConservativeAndLateIdempotent |
+| 同一个 token/费用账本约束选择与自主活动 | corruptLedgerFailsClosedAndSharedBudgetBlocksAutonomousActivity |
+| 活跃时长累计及小时额度用完后暂停 | activeBudget_runningCountsWaitingDoesNot_preservesRestartBase、activeRuntimePausesAtHourlyLimit、activeBudgetExhaustedBlocksNewAutonomousStartResumeAndAction |
+| 时钟变化和共享 JSON 字段保留 | clockJumpAndControlJsonMerge_preserveWindowReservationsAndSourceCursors |
+| 重启及同进程重建的宿主换代 | restartHostEpochRejectsRetiredReadinessAndPreservesObservedWatermarks；hostEpoch 与 clockSession 分开 |
+| 设置默认关闭、启用、暂停和再次恢复 | tests/test_autonomy_config.py |
+
+父级审查要求修复的具体问题：过期票据遇 busy 返回时未清理、配置暂停未撤销票据、publish 失败后仍考虑机会、QPointer 检查与跨线程投递之间的关闭竞态、持久 hostRevision 与新实例版本归零冲突、旧实例控制命令越过 epoch、热账本随 heartbeat 无限增长、用量相加溢出及 bindHostEpoch 提前更新时钟导致 configure 漏结算旧预留。热账本归档和 hostEpoch 的工程契约已同步主设计与 context.md。
+
+定向 RED/GREEN 记录使用 /tmp/task6-* 日志；阶段最终完整验证及提交以实施计划的 Wave 6 记录为准，不以中间编译或本表代替最终通过结果。
+
+### §3.7 最终回归补充核对
+
+- hostEpoch 绑定前保守结算孤立请求，拒绝旧实例控制：bindHostEpochSettlesOrphanReservationBeforeConfigureAndRejectsOldControls。
+- 真实 runtime hooks 下结构修复收费，关闭后迟到回执仍归档：runtimeModelHooks_schemaRepairChargesRealLedgerAndLateReceiptSurvivesRetirement。
+- 实际用量溢出不能绕过额度，已归档 attempt 不得复用：realUsageOverflowBlocksNextAttemptAndArchivedAttemptCannotBeReused。
+- 发送前取消/Router 退役/排队回调丢弃由 UnsentReservation 保守结算；只在真实调用 client 前标记已发送：cancelledOrRetiredRouterClosesReservedAttemptWithoutProviderSend。
+- 活跃小时准入先保存当前单调累计值再检查额度，不使用上一轮 heartbeat 样本。
+- 重复 provider 回调只完成一次业务，迟到有效 usage 仍补实；各 fallback/repair 独立门控：modelBudget_duplicateProviderReceiptsSettleWithoutCompletingTwice。
+- runtime/身份 CAS 的读后写事务先预留 writer，确定性并发回归：sharedRuntimeTransaction_serializesWritesBeforeReadingCasVersion。
+
+全量回归首次 52/54，流式重复完成崩溃与身份 CAS 数据库锁冲突均保留失败证据；最终构建与全量回归已通过，见本节结论。
+
+- 完整回归进一步复现事件 commitCheckpoint 的同类读后写竞争（internal-empty 第 57 次报 database is locked）；仅把自有 CAS 事务起点改为 BEGIN IMMEDIATE，保留版本检查与错误回传。证据 /tmp/task6-checkpoint-diagnostic-red.log。
+
+### §3.7 最终结论
+
+代码审查通过。预留过期/暂停撤销、宿主换代、未知用量与迟到结算、热账本上限、预发送取消、活跃时长最新样本、重复模型完成、runtime/身份/检查点 CAS 并发问题均闭合。全量 CTest **54/54 通过**（72.34 秒），完整应用和全部测试目标构建通过，工具契约 **70/70**；Wave 6 五项校验和 git diff --check 通过。
+
+最终日志：/tmp/task6-final-verified-build.log、/tmp/task6-final-verified-ctest.log、/tmp/task6-final-contract.log。新机会套件 26/26，运行时服务 57/57，流式对话 79/79；两条旧 CAS 用例各连续 50 次、检查点用例连续 100 次通过。未删除或跳过失败断言。
+
+本阶段提供机会与预算基础设施；没有 consumer 时零模型选择。实际选择器及内部自主授权由 §3.8 接入，受控消息端到端由 §3.9 验证。

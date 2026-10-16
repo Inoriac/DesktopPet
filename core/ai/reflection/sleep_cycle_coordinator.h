@@ -61,6 +61,9 @@ public:
 
     quint64 generation() const { return m_cancellation.generation(); }
     bool isStarted() const { return m_started; }
+    bool isActive() const {
+        return !m_activeSessionId.isEmpty();
+    }
 
 private:
     bool isReady(const SleepTrigger& trigger) const;
