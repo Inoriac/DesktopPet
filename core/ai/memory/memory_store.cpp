@@ -84,6 +84,8 @@ bool shouldInjectIntoContext(const MemoryEntry& entry) {
 
 QJsonObject MemoryEntry::toJson() const {
     QJsonObject obj;
+    if (attribution.present())
+        obj["attribution"] = attribution.toJson();
     obj["id"] = id;
     obj["type"] = memoryTypeToString(type);
     obj["status"] = memoryStatusToString(status);
@@ -120,6 +122,7 @@ QJsonObject MemoryEntry::toJson() const {
 
 MemoryEntry MemoryEntry::fromJson(const QJsonObject& object) {
     MemoryEntry entry;
+    entry.attribution = MemoryAttribution::fromJson(object.value("attribution").toObject());
     entry.id = object.value("id").toString();
     entry.type = memoryTypeFromString(object.value("type").toString());
     entry.status = memoryStatusFromString(object.value("status").toString("active"));
@@ -477,6 +480,11 @@ bool MemoryStore::openDatabase(QString* errorMessage) {
 bool MemoryStore::loadDatabaseOnly(QString* errorMessage) {
     if (!openDatabase(errorMessage)) return false;
     m_entries = m_repository->loadAll();
+    if (!m_repository->lastReadSucceeded()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Failed to read memory attribution");
+        return false;
+    }
     return true;
 }
 
@@ -532,6 +540,11 @@ ActiveMemorySnapshot MemoryStore::loadActiveMemorySnapshot(int limit) {
 bool MemoryStore::refreshDatabaseOnly(QString* errorMessage) {
     if (!openDatabase(errorMessage)) return false;
     m_entries = m_repository->loadAll();
+    if (!m_repository->lastReadSucceeded()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Failed to read memory attribution");
+        return false;
+    }
     return true;
 }
 
@@ -593,6 +606,11 @@ bool MemoryStore::importLegacyJson(const QString& jsonPath, QString* errorMessag
         return false;
     }
     m_entries = m_repository->loadAll();
+    if (!m_repository->lastReadSucceeded()) {
+        if (errorMessage)
+            *errorMessage = QStringLiteral("Failed to read memory attribution");
+        return false;
+    }
     return true;
 }
 
@@ -654,6 +672,8 @@ MemoryEntry MemoryStore::addEntry(const MemoryEntry& entry) {
 
 MemoryEntry MemoryStore::normalizedEntry(const MemoryEntry& entry) const {
     MemoryEntry stored = entry;
+    if (!stored.attribution.present() && !m_profileId.isEmpty())
+        stored.attribution.profileId = m_profileId;
     if (stored.id.trimmed().isEmpty()) {
         stored.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     }
@@ -748,9 +768,13 @@ bool MemoryStore::persistMutationBatch(const MemoryMutationBatch& batch, QString
     QList<MemoryEntry> written;
     for (const MemoryEntryMutation& mutation : batch.entries) {
         MemoryEntry result = mutation.after;
+        if (!mutation.before)
+            result = normalizedEntry(result);
         if (mutation.before) {
             const auto current = m_repository->loadById(result.id);
             if (!current) { ok = false; break; }
+            if (!result.attribution.present())
+                result.attribution = current->attribution;
             const auto& before = *mutation.before;
             if (result.status == MemoryStatus::Deleted) {
                 // A user's forget intent remains valid if maintenance consumed the
@@ -936,7 +960,8 @@ void MemoryStore::rollbackReinforcement(
     }
 }
 
-bool MemoryStore::reinforceEntries(const QStringList& ids) {
+bool MemoryStore::reinforceEntries(const QStringList& ids,
+                                   const std::optional<ContextSpec>& context) {
     if (ids.isEmpty()) return true;
 
     const bool persistent = m_repository && m_repository->isOpen();
@@ -964,8 +989,12 @@ bool MemoryStore::reinforceEntries(const QStringList& ids) {
             : std::optional<MemoryEntry>{m_entries.at(index)};
         if (!current) continue;
         m_entries[index] = *current;
-        if (current->status != MemoryStatus::Active || current->privacyLevel == PrivacyLevel::Sensitive
-            || (current->expiresAt.isValid() && current->expiresAt <= accessedAt)) continue;
+        if (!memoryVisibleInContext(current->attribution,
+                                    context.value_or(ContextSpec::localOwner(m_profileId))) ||
+            current->status != MemoryStatus::Active ||
+            current->privacyLevel == PrivacyLevel::Sensitive ||
+            (current->expiresAt.isValid() && current->expiresAt <= accessedAt))
+            continue;
         MemoryEntry updated = *current;
         updated.strength = qMin(1.0, updated.strength + 0.1);
         updated.accessCount += 1;
@@ -1187,18 +1216,25 @@ QList<MemoryEntry> MemoryStore::findByTag(const QString& tag, int limit) const {
 }
 
 QStringList MemoryStore::summaryForContext(int limit) const {
+    return summaryForContext(ContextSpec::localOwner(m_profileId), limit);
+}
+
+QStringList MemoryStore::summaryForContext(const ContextSpec& context, int limit) const {
     QStringList result;
     for (auto it = m_entries.crbegin(); it != m_entries.crend() && result.size() < limit; ++it) {
-        if (!shouldInjectIntoContext(*it)) continue;
+        // Recheck the authoritative row: another writer may have restricted its audience.
+        const auto current = readForRecall(it->id);
+        if (!current || !shouldInjectIntoContext(*current)
+            || !memoryVisibleInContext(current->attribution, context)) continue;
 
-        const QString summaryText = fallbackSummary(*it);
+        const QString summaryText = fallbackSummary(*current);
         if (summaryText.trimmed().isEmpty()) continue;
 
         QStringList labels;
-        labels.append(memoryTypeToString(it->type));
-        const QString confidence = confidenceLabel(it->confidence);
+        labels.append(memoryTypeToString(current->type));
+        const QString confidence = confidenceLabel(current->confidence);
         if (!confidence.isEmpty()) labels.append(confidence);
-        if (!it->scope.trimmed().isEmpty()) labels.append(it->scope.trimmed());
+        if (!current->scope.trimmed().isEmpty()) labels.append(current->scope.trimmed());
 
         result.append(QString("[%1] %2").arg(labels.join("/"), summaryText));
     }
@@ -1290,4 +1326,18 @@ const MemoryEntry* MemoryStore::findById(const QString& id) const {
         if (entry.id == id) return &entry;
     }
     return nullptr;
+}
+
+bool MemoryStore::writeAttributionOnly(const QString& id, const MemoryAttribution& attribution) {
+    auto* repository = dynamic_cast<SQLiteMemoryRepository*>(m_repository.get());
+    if (!repository || !repository->isOpen())
+        return false;
+    MemoryEntry entry;
+    entry.id = id;
+    entry.attribution = attribution;
+    return repository->writeAttribution(entry);
+}
+
+bool MemoryStore::lastReadSucceeded() const {
+    return m_repository && m_repository->lastReadSucceeded();
 }

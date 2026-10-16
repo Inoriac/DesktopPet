@@ -76,8 +76,10 @@ QList<MemoryEntry> HippocampusWorkingSet::scan(const QString& queryText,
     return results;
 }
 
-QList<HippocampusCandidate> HippocampusWorkingSet::scanScored(
-    const QString& queryText, const QStringList& requiredTags, int limit) const {
+QList<HippocampusCandidate>
+HippocampusWorkingSet::scanScored(const QString& queryText, const QStringList& requiredTags,
+                                  int limit,
+                                  const std::function<bool(const MemoryEntry&)>& accept) const {
     if (limit <= 0) return {};
     const QString normalizedQuery = RecallText::normalize(queryText);
     const QStringList queryTokens = RecallText::tokens(normalizedQuery);
@@ -85,6 +87,8 @@ QList<HippocampusCandidate> HippocampusWorkingSet::scanScored(
     QList<HippocampusCandidate> candidates;
     
     for (const MemoryEntry& entry : m_items) {
+        if (accept && !accept(entry))
+            continue;
         if (entry.status != MemoryStatus::Active
             || (entry.expiresAt.isValid() && entry.expiresAt <= now)) continue;
         // Tag filter

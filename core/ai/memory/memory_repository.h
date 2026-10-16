@@ -18,6 +18,9 @@ public:
     virtual void close() = 0;
     virtual bool isOpen() const = 0;
     virtual QString connectionName() const = 0;
+    virtual bool lastReadSucceeded() const {
+        return true;
+    }
 
     virtual bool insert(const MemoryEntry& entry) = 0;
     virtual bool update(const MemoryEntry& entry) = 0;

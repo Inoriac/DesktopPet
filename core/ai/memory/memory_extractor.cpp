@@ -241,3 +241,19 @@ MemoryEntry MemoryExtractor::extractDaydreamImpression(const QString& input,
 bool MemoryExtractor::isLikelySensitiveContent(const QString& text) {
     return containsSensitiveHint(text);
 }
+
+QList<MemoryCandidate>
+MemoryExtractor::extractFromUserInput(const QString& input, const QString& triggerTag,
+                                      const AttributionContext& context) const {
+    auto candidates = extractFromUserInput(input, triggerTag);
+    for (auto& candidate : candidates) {
+        auto& a = candidate.entry.attribution;
+        a.profileId = context.profileId;
+        a.audience = context.audience;
+        a.claimKind = context.claimKind;
+        if (!context.originId.isEmpty())
+            a.origins.append(
+                {context.originId, context.conversationId, {}, {}, context.originId, false});
+    }
+    return candidates;
+}

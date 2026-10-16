@@ -3,6 +3,7 @@
 #include "recall_text.h"
 #include "memory_metadata.h"
 #include <QSqlDatabase>
+#include <QJsonDocument>
 #include <QSqlQuery>
 #include <QDebug>
 #include <cmath>
@@ -12,6 +13,31 @@ namespace {
 const QString eligible = QStringLiteral(
     "m.status='active' AND m.privacy_level!='sensitive' AND m.partition!='hippocampus' "
     "AND (m.expires_at IS NULL OR m.expires_at='' OR julianday(m.expires_at)>julianday('now'))");
+QString scopePredicate() {
+    return QStringLiteral(
+        "((a.memory_id IS NULL AND :scope_owner=1) OR (a.profile_id=:scope_profile AND ("
+        "json_extract(a.audience_json,'$.kind')='shareable' OR "
+        "(json_extract(a.audience_json,'$.kind')='owner_only' AND :scope_owner=1) OR "
+        "(json_extract(a.audience_json,'$.kind')='internal' AND :scope_internal=1) OR "
+        "(json_extract(a.audience_json,'$.kind')='conversation' AND EXISTS (SELECT 1 FROM "
+        "json_each(a.audience_json,'$.conversationIds') c "
+        "WHERE c.value IN (SELECT value FROM json_each(:scope_conversations)))))))");
+}
+void bindScope(QSqlQuery& q, const std::optional<ContextSpec>& context) {
+    if (!context)
+        return;
+    const auto& c = *context;
+    q.bindValue(":scope_profile", c.profileId);
+    q.bindValue(":scope_owner", c.originKind == OriginKind::LocalOwner ||
+                                    (c.originKind == OriginKind::Internal && c.allowOwnerMemory));
+    q.bindValue(":scope_internal", c.originKind == OriginKind::Internal && c.allowInternalMemory);
+    QStringList ids = c.originKind == OriginKind::Internal ? c.authorizedConversationIds
+                                                           : QStringList{c.conversationId};
+    ids.removeAll(QString());
+    q.bindValue(":scope_conversations",
+                QString::fromUtf8(
+                    QJsonDocument(QJsonArray::fromStringList(ids)).toJson(QJsonDocument::Compact)));
+}
 const QString semanticTag = QStringLiteral(
     "NOT EXISTS (SELECT 1 FROM json_each("
     "CASE WHEN json_valid(m.payload_json) THEN m.payload_json ELSE '{}' END, '$.source_tags') source_tag "
@@ -20,6 +46,7 @@ const QString semanticTag = QStringLiteral(
 
 void MemoryKeywordIndex::rebuild(const QList<MemoryEntry>& entries) {
     m_tokenPostings.clear(); m_tagPostings.clear();
+    m_attributions.clear();
     m_docTokens.clear(); m_docTags.clear(); m_indexedIds.clear();
     m_matcherDirty = true;
     for (const auto& entry : entries) upsert(entry);
@@ -27,6 +54,7 @@ void MemoryKeywordIndex::rebuild(const QList<MemoryEntry>& entries) {
 void MemoryKeywordIndex::upsert(const MemoryEntry& entry) {
     if (!indexable(entry)) { remove(entry.id); return; }
     removeFromPostings(entry.id);
+    m_attributions[entry.id] = entry.attribution;
     m_docTokens[entry.id] = extractTokens(entry);
     for (const auto& token : m_docTokens[entry.id]) m_tokenPostings[token].insert(entry.id);
     QStringList tags;
@@ -41,6 +69,7 @@ void MemoryKeywordIndex::upsert(const MemoryEntry& entry) {
 }
 void MemoryKeywordIndex::remove(const QString& id) {
     removeFromPostings(id);
+    m_attributions.remove(id);
     m_docTokens.remove(id); m_docTags.remove(id); m_indexedIds.remove(id);
     m_matcherDirty = true;
 }
@@ -56,9 +85,14 @@ bool MemoryKeywordIndex::refreshGlobalTags(const QString& connectionName) {
     if (revision == m_tagRevision) return true;
     m_globalTags.clear();
     m_matcherDirty = true;
-    if (!query.exec(QStringLiteral("SELECT DISTINCT t.normalized_tag FROM memory_tags t "
-                                  "JOIN memory_items m ON m.id=t.memory_id WHERE ") + eligible
-                    + QStringLiteral(" AND ") + semanticTag)) return false;
+    query.prepare(QStringLiteral("SELECT DISTINCT t.normalized_tag FROM memory_tags t "
+                                 "JOIN memory_items m ON m.id=t.memory_id LEFT JOIN "
+                                 "memory_attribution a ON a.memory_id=m.id WHERE ") +
+                  eligible + QStringLiteral(" AND ") + semanticTag +
+                  (m_context ? QStringLiteral(" AND ") + scopePredicate() : QString()));
+    bindScope(query, m_context);
+    if (!query.exec())
+        return false;
     while (query.next()) {
         const auto tag = query.value(0).toString();
         if (!tag.isEmpty() && !MemoryMetadata::isSourceTag(tag)) m_globalTags.insert(tag);
@@ -112,15 +146,19 @@ QList<KeywordMatch> MemoryKeywordIndex::lookup(const MemoryCue& cue, int limit) 
         QStringList placeholders;
         for (int i = 0; i < tags.size(); ++i) placeholders.append(QStringLiteral(":tag%1").arg(i));
         QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
-        query.prepare(QStringLiteral(
-            "SELECT m.id, COUNT(DISTINCT t.normalized_tag) AS hits FROM memory_tags t "
-            "JOIN memory_items m ON m.id=t.memory_id WHERE t.normalized_tag IN (")
-            + placeholders.join(QLatin1Char(',')) + QStringLiteral(") AND ") + eligible
-            + QStringLiteral(" AND ") + semanticTag
-            + QStringLiteral(" GROUP BY m.id ORDER BY hits DESC, m.importance DESC, "
-                             "COALESCE(m.updated_at,m.created_at) DESC, m.id LIMIT :limit"));
+        query.prepare(
+            QStringLiteral(
+                "SELECT m.id, COUNT(DISTINCT t.normalized_tag) AS hits FROM memory_tags t "
+                "JOIN memory_items m ON m.id=t.memory_id LEFT JOIN memory_attribution a ON "
+                "a.memory_id=m.id WHERE t.normalized_tag IN (") +
+            placeholders.join(QLatin1Char(',')) + QStringLiteral(") AND ") + eligible +
+            QStringLiteral(" AND ") + semanticTag +
+            (m_context ? QStringLiteral(" AND ") + scopePredicate() : QString()) +
+            QStringLiteral(" GROUP BY m.id ORDER BY hits DESC, m.importance DESC, "
+                           "COALESCE(m.updated_at,m.created_at) DESC, m.id LIMIT :limit"));
         for (int i = 0; i < tags.size(); ++i) query.bindValue(placeholders[i], tags[i]);
         query.bindValue(QStringLiteral(":limit"), limit);
+        bindScope(query, m_context);
         if (query.exec()) {
             while (query.next()) {
                 const auto id = query.value(0).toString();
@@ -168,4 +206,17 @@ void MemoryKeywordIndex::removeFromPostings(const QString& id) {
         m_tagPostings[tag].remove(id);
         if (m_tagPostings[tag].isEmpty()) m_tagPostings.remove(tag);
     }
+}
+
+void MemoryKeywordIndex::setContext(const ContextSpec& context) {
+    m_context = context;
+    const auto ids = m_indexedIds;
+    for (const auto& id : ids)
+        if (!memoryVisibleInContext(m_attributions.value(id), context))
+            remove(id);
+    m_tagRevision = -1;
+    m_globalTags.clear();
+    m_matcherDirty = true;
+    if (!m_connectionName.isEmpty())
+        refreshGlobalTags(m_connectionName);
 }

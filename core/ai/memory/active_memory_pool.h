@@ -38,6 +38,7 @@ public:
     static constexpr double TOPIC_SIMILARITY = 0.86;
     static constexpr double CANDIDATE_SIMILARITY = 0.84;
     static constexpr double TEXT_COVERAGE = 0.75;
+    void selectContext(const QString& key);
     static bool explicitFollowup(const QString& input);
     TopicRecallDecision assessTopic(const QString& input, const PreparedEmbeddingQuery& query,
                                     const QDateTime& now = QDateTime::currentDateTimeUtc()) const;
@@ -80,6 +81,16 @@ private:
     QHash<QString, ActiveMemoryItem> m_pool;
     QDateTime m_lastDecayAt;
     struct TopicTurn { QString input; PreparedEmbeddingQuery query; QDateTime at; };
+    struct ContextTopic {
+        QList<TopicTurn> turns;
+        QString id;
+        quint64 sequence = 0;
+        QList<ActiveMemoryItem> items;
+        QDateTime used;
+    };
+    QHash<QString, ContextTopic> m_contextTopics;
+    QString m_contextKey;
+    QList<ActiveMemoryItem> m_topicItems;
     QList<TopicTurn> m_topicTurns;
     QString m_topicId;
     quint64 m_topicSequence = 0;

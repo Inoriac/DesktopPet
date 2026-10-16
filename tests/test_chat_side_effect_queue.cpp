@@ -17,6 +17,7 @@
 
 #include "ai/chat/chat_side_effect_queue.h"
 #include "ai/memory/memory_store.h"
+#include "ai/event/sqlite_event_repository.h"
 #include "ai/memory/sqlite_memory_repository.h"
 
 namespace {
@@ -154,6 +155,10 @@ class ChatSideEffectQueueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void attributedInputVerifiesCommittedEventAndRepairsPending();
+    void candidatesKeepOriginalWritePolicy();
+    void reinforcementRechecksAudienceAtWrite_data();
+    void reinforcementRechecksAudienceAtWrite();
     void start_whenEnvironmentIsValid_shouldOpenThreadOwnedPersistenceResources();
     void start_whenOptionalLogPathIsUnavailable_shouldKeepDatabaseEffectsAvailable();
     void start_whenLegacyJsonExists_shouldNotImportItIntoWorkerDatabase();
@@ -629,6 +634,163 @@ destructor_whenWorkIsPending_shouldCloseWorkerBeforeReturning() {
     }
 
     QCOMPARE(closed.load(), 1);
+}
+
+void ChatSideEffectQueueTests::attributedInputVerifiesCommittedEventAndRepairsPending() {
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory);
+    ChatSideEffectQueue queue;
+    QVERIFY(queue.start(environment));
+    SqliteEventRepository runtime;
+    QVERIFY(runtime.open(environment.runtimeDatabasePath));
+    QSqlQuery person(QSqlDatabase::database(runtime.connectionName()));
+    person.prepare("INSERT INTO agent_persons(profile_id,person_id,kind,status) "
+                   "VALUES(?,'owner','owner','active')");
+    person.addBindValue(kProfileId);
+    QVERIFY(person.exec());
+
+    auto inputEvent = eventEffect("UserMessageReceived", "source-session", 1);
+    inputEvent.event.eventId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    inputEvent.event.occurredAt = QDateTime::currentDateTimeUtc();
+    inputEvent.event.source = "AIBrain";
+    inputEvent.event.payload = {{"text", "我喜欢猫"},
+                                {"triggerTag", "manual"},
+                                {"origin_kind", "local_owner"},
+                                {"subject_id", "owner"},
+                                {"conversation_id", "local_owner"}};
+    DeferredChatSideEffect memory;
+    memory.type = ChatSideEffectType::UserMemoryWrite;
+    memory.sessionId = "source-session";
+    memory.attributionContext.profileId = kProfileId;
+    memory.attributionContext.originId = inputEvent.event.eventId;
+    memory.attributionContext.speakerPersonId = "owner";
+    memory.attributionContext.conversationId = "local_owner";
+    memory.attributionContext.claimKind = MemoryClaimKind::Fact;
+    memory.memoryCandidates = MemoryExtractor().extractFromUserInput("我喜欢猫", "manual");
+    QVERIFY(!memory.memoryCandidates.isEmpty());
+    memory.memoryCandidates.first().entry.confidence = 0.95;
+    memory.attributionContext.claimKind = MemoryClaimKind::Reported;
+    memory.attributionContext.inferSelfStatementClaim = true;
+    QSignalSpy barriers(&queue, &ChatSideEffectQueue::barrierCommitted);
+    // A rejected source event must not grant attribution to the following candidate.
+    auto invalidEvent = inputEvent;
+    invalidEvent.event.payload.remove("text");
+    QVERIFY(queue.tryEnqueue(invalidEvent));
+    QVERIFY(queue.tryEnqueue(memory));
+    QVERIFY(queue.tryEnqueueBarrier("pending", 1));
+    QTRY_COMPARE(barriers.size(), 1);
+    MemoryStore reader;
+    reader.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(reader.loadDatabaseOnly());
+    QCOMPARE(reader.all().size(), 1);
+    QVERIFY(!reader.all().first().attribution.resolved);
+    QVERIFY(reader.all().first().attribution.people.isEmpty());
+    QVERIFY(!reader.all().first().attribution.origins.first().committed);
+    const auto id = reader.all().first().id;
+    const auto mentions = reader.all().first().mentionCount;
+
+    QVERIFY(queue.tryEnqueue(inputEvent));
+    QVERIFY(queue.tryEnqueue(memory));
+    QVERIFY(queue.tryEnqueue(inputEvent));
+    QVERIFY(queue.tryEnqueue(memory));
+    QVERIFY(queue.tryEnqueueBarrier("resolved", 2));
+    QTRY_COMPARE(barriers.size(), 2);
+    QVERIFY(reader.refreshDatabaseOnly());
+    QCOMPARE(reader.all().size(), 1);
+    const auto entry = reader.all().first();
+    QCOMPARE(entry.id, id);
+    QCOMPARE(entry.mentionCount, mentions);
+    QCOMPARE(entry.attribution.subjects(), QStringList{"owner"});
+    QCOMPARE(entry.attribution.claimKind, MemoryClaimKind::Fact);
+    QCOMPARE(entry.attribution.origins.size(), 1);
+    QCOMPARE(entry.attribution.origins.first().originId, inputEvent.event.eventId);
+    QVERIFY(entry.attribution.origins.first().committed);
+    QCOMPARE(storedEventTypes(environment.runtimeDatabasePath, "source-session")
+                 .count("UserMessageReceived"),
+             1);
+    queue.stop(true);
+}
+
+void ChatSideEffectQueueTests::candidatesKeepOriginalWritePolicy() {
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory);
+    ChatSideEffectQueue queue;
+    QVERIFY(queue.start(environment));
+    DeferredChatSideEffect effect;
+    effect.type = ChatSideEffectType::UserMemoryWrite;
+    effect.attributionContext.profileId = kProfileId;
+    MemoryCandidate candidate;
+    candidate.entry = memoryFor(1);
+    candidate.entry.confidence = 0.78;
+    effect.memoryCandidates = {candidate};
+    QVERIFY(queue.tryEnqueue(effect));
+    candidate.entry = memoryFor(2);
+    candidate.entry.confidence = 0.78;
+    candidate.explicitRequest = true;
+    effect.memoryCandidates = {candidate};
+    QVERIFY(queue.tryEnqueue(effect));
+    QSignalSpy barrier(&queue, &ChatSideEffectQueue::barrierCommitted);
+    QVERIFY(queue.tryEnqueueBarrier("policy", 1));
+    QTRY_COMPARE(barrier.size(), 1);
+    MemoryStore reader;
+    reader.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(reader.loadDatabaseOnly());
+    QCOMPARE(reader.all().size(), 1);
+    QCOMPARE(reader.all().first().id, QString("memory-2"));
+    queue.stop(true);
+}
+
+void ChatSideEffectQueueTests::reinforcementRechecksAudienceAtWrite_data() {
+    QTest::addColumn<QString>("restriction");
+    QTest::newRow("audience") << QString("audience");
+    QTest::newRow("sensitive") << QString("sensitive");
+    QTest::newRow("expired") << QString("expired");
+}
+
+void ChatSideEffectQueueTests::reinforcementRechecksAudienceAtWrite() {
+    QFETCH(QString, restriction);
+    QTemporaryDir directory;
+    const auto environment = environmentFor(directory);
+    MemoryStore writer;
+    writer.setProfileId(kProfileId);
+    writer.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(writer.loadDatabaseOnly());
+    auto entry = memoryFor(99);
+    entry.attribution.profileId = kProfileId;
+    entry.attribution.audience = {MemoryAudienceKind::Conversation, {"A"}};
+    entry = writer.addEntry(entry);
+    QVERIFY(!entry.id.isEmpty());
+    ChatSideEffectQueue queue;
+    QVERIFY(queue.start(environment));
+    DeferredChatSideEffect change;
+    change.type = ChatSideEffectType::MemoryTask;
+    change.memoryTask = [entry, restriction](MemoryStore& store) {
+        auto current = store.readForRecall(entry.id);
+        if (!current)
+            return QJsonObject{{"failed", true}};
+        if (restriction == "audience") current->attribution.audience.conversationIds = {"B"};
+        if (restriction == "sensitive") current->privacyLevel = PrivacyLevel::Sensitive;
+        if (restriction == "expired") current->expiresAt = QDateTime::currentDateTimeUtc().addSecs(-1);
+        return QJsonObject{{"saved", store.updateEntryById(*current)}};
+    };
+    DeferredChatSideEffect reinforcement;
+    reinforcement.type = ChatSideEffectType::MemoryReinforcement;
+    reinforcement.reinforcedEntries = {entry};
+    ContextSpec context;
+    context.profileId = kProfileId;
+    context.originKind = OriginKind::External;
+    context.conversationId = "A";
+    reinforcement.memoryContext = context;
+    QSignalSpy barrier(&queue, &ChatSideEffectQueue::barrierCommitted);
+    QVERIFY(queue.tryEnqueue(change));
+    QVERIFY(queue.tryEnqueue(reinforcement));
+    QVERIFY(queue.tryEnqueueBarrier("audience", 1));
+    QTRY_COMPARE(barrier.size(), 1);
+    QVERIFY(writer.refreshDatabaseOnly());
+    QCOMPARE(writer.readForRecall(entry.id)->accessCount, 0);
+    QCOMPARE(writer.readForRecall(entry.id)->attribution.audience.conversationIds,
+             QStringList{restriction == "audience" ? "B" : "A"});
+    queue.stop(true);
 }
 
 QTEST_MAIN(ChatSideEffectQueueTests)

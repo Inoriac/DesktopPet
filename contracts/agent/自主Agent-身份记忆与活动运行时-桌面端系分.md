@@ -10,6 +10,7 @@
 | --- | --- | --- |
 | 1.0 | 2026-10-16 | 固定主体与插件边界，定义人物、记忆归属、会话、活动选择、空闲、执行恢复及顺序验收 |
 | 1.1 | 2026-10-16 | §3.2 开发核对：明确绑定版本与已接受事件、来源兼容边界、身份表增量迁移 |
+| 1.2 | 2026-10-16 | §3.3 开发核对：来源提交验证、过渡期本地上下文、写入归属与分批迁移边界 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -289,7 +290,7 @@ Result<MigrationProgress, DomainError> migrateAttribution(const AttributionMigra
 
 | 输入 | 值来源 | 说明 |
 | --- | --- | --- |
-| entry、describedPeople、claimKind | 调用方传入 | 抽取候选；描述对象须有原文/事件依据，可为空且标 unresolved |
+| entry、describedPeople、claimKind、explicitRequest | 调用方传入 | 抽取候选及原有显式记忆请求标记；描述对象须有原文/事件依据，可为空且标 unresolved |
 | originId、speakerId、conversationId | 系统推导（来源: 已提交原始输入事件与身份解析） | 抽取模型不能伪造来源 |
 | audience、attributionStatus | 系统推导（来源: 来源会话、现有隐私规则与已确认分享范围） | 按 §4.1，不把人物关联视为公开授权 |
 | query.text、subjectPersonIds | 调用方传入 | 当前活动目的及已解析参与人 |
@@ -306,9 +307,31 @@ Result<MigrationProgress, DomainError> migrateAttribution(const AttributionMigra
 6. 巩固继承全部原始来源；描述对象有歧义或 audience 无合法交集时保留分开的记忆。派生的更通用知识仍须经明确分类与范围判定，不能由摘要措辞自动放宽。
 7. 存量迁移按批补关联，不重写原文、记忆 ID、分区、强度或原始时间。可追溯到本地主人输入时只确认来源人物为 owner；只有明确的第一人称自述才能同时将描述对象归 owner。主人转述他人的内容单独解析对象。仅含“用户”等字样不构成证明，保持 unresolved 与 owner_only 兼容范围。
 
+来源提交与现有写队列接入：
+
+- `MemoryAttributionService` 组合 MemoryStore、既有抽取/策略/召回器与宿主注入的来源查询、人物存在性查询。来源查询按 profile + originId 读取已提交 runtime 事件，返回实际 speaker、conversation、occurredAt、原文、originKind 及 resolvedPeople；数据库故障与未找到明确区分。来源查询不能以“调用方说已提交”的布尔值替代。
+- `MemoryOriginSource.resolvedPeople[{personId, role}]` 是原事件内由宿主解析并保存的人物引用；来源事件的 `resolved_people` 不接受模型任意填写。非第一人称的 describedPeople 必须属于这个已验证集合，且人物存在于本 profile；不在集合内返回 UNKNOWN_REFERENCE，不因目录存在就认定原文指向这个人。没有可靠引用时，抽取入口保持 describedPeople 为空并保存 unresolved 候选。严格第一人称仍可从已验证 speaker 推导 subject。现有本地规则抽取不凭昵称生成人物引用；来源适配器只信任宿主 AIBrain/UserMessageReceived 与未来 ConversationStore/MessageObserved 写入的结构化引用，其他来源不投影 resolvedPeople。
+- AIBrain 为每次原始本地输入预分配稳定 canonical UUID，写入 UserMessageReceived.eventId 与记忆 originId；重试复用该 UUID。事件 payload 保存 request_id、conversation_id、origin_kind 和 subject_id，事件时间在首次生成时固定。写队列使用 appendIdempotent，记忆写在同一串行 writer 上读取已提交事件后确定归属。相同 request/session 字符串本身不是来源证明。
+- 尚未找到事件时仍可持久化候选，但 origin.sourceStatus=pending，resolution=unresolved，不保存已确认 speaker/subject，不产生人物冲突边，只在原来的受限范围内留存。待原始事件可查后，重复 ingest 同一 origin 可补全；不新增独立证据。事件查询失败返回 STORE_UNAVAILABLE，不能当作“未找到”。已存在事件但输入的 profile/会话/人物与事实不匹配时返回 UNKNOWN_REFERENCE，不接受伪造归属。
+- 新增字段归 MemoryEntry 的类型化 attribution 投影，关联表为 SQLite 权威存储；JSON 序列化包含同一字段。正文、归属、人物及 origins 在原 MemoryStore 事务中一起提交或回滚。mergeContext 与提交 rebase 对 originId 做集合合并，不能让旧提案删除新来源。pending 不因普通 rebase 自动成为 committed。
+- GUI 可以继续保存待提交的候选快照；最终去重、冲突和落库必须基于 writer 的已提交来源及最新记忆状态，禁止先按未确认人物合并正文再单独补归属。工具结果和任务经历使用实际工具/任务事件为来源，未具备会话信息的旧任务经历先按 owner_only/unresolved 保存；不能把执行结果归成用户自述。
+- writer 保留既有 MemoryPolicy 的敏感信息、显式请求和置信度写入门槛，不能因接入 ingestMemory 将所有候选视为 explicitRequest。本地用户候选默认 reported；可信本地入口设置 `inferSelfStatementClaim=true`，只有核验原始来源后的直接自述才可归 fact，此标记不接受模型赋值；工具已发生结果仍可为 fact。强化在提交前同时复核当前 audience、PrivacyLevel、状态和到期时间。
+
+过渡期上下文与迁移：
+
+- `core/ai/context/context_spec.h` 提供无 runtime/memory 循环依赖的共享 DTO。可信桌面入口使用 channel=desktop、conversationId=local_owner（在 profile 内稳定）；§3.4 创建正式会话行时沿用此 ID。显式 external/internal 元数据绝不回退本地主人。
+- 内部读取需宿主投影 `allowOwnerMemory`、`authorizedConversationIds`、`allowInternalMemory`，默认全部拒绝；这些是 audienceProjectionRef 对应授权快照，不能由模型赋值。外部读取只允许当前明确会话和 shareable；没有 conversationId 的 external 只能读取 shareable。所有场景还须满足既有 PrivacyLevel 过滤。
+- 旧无 ContextSpec 的低层调用只作为本地 owner 兼容包装；所有生产聊天查询显式传 ContextSpec，profile 不匹配的记录始终不可见。续问缓存键包含 profile、conversation 或 activity、originKind 及授权投影；按上下文保留独立候选和话题，最多 32 个上下文，闲置淘汰。全局激活分值不能绕过可见性检查。
+- WorkingMemoryItem 同样携带归属投影，进入查询线索、activeGoals、临时候选及长期记忆前均按当前 ContextSpec 过滤；缺归属的旧工作记忆仅可在本地主人兼容场景使用。不能先把不可见 summary 拼进 query.text 再仅过滤最终结果。清理时沉淀长期记忆继承原归属与 origins。
+- 先部署所有新写入的归属兜底：带 profile 的 MemoryStore 将无来源的新记录写为 unresolved/owner_only，不伪造 origin；新写不会生成“缺关联”旧记录。之后在既有串行 writer 上按 memoryId 每批 100 条补旧关联，cursor 与本批关联在同一事务提交。由此允许批次间继续带归属写入，避免长期暂停；迁移只改关联表，已存在归属不覆盖，完成标记可重复读取。无 profile 的旧独立测试/导入路径保持本地兼容，但外部召回不得读取它们。
+- `migrateAttribution` 以数据库持久化 cursor 为准；请求 cursor 非空但不一致时返回 STALE_REVISION，不回退已提交进度。旧记录只在存在可核对的原始事件引用时查询来源，不能用记忆文字、文件时间或 request_id 猜事件。明确第一人称自述与转述分别判断。
+- 启动迁移前先恢复已持久化的 `maintenance/daydream_maintenance` 批次，复用 DaydreamConsolidator 的维护恢复函数，不调用模型；原 changeId、payload hash、语义 CAS 和 finalized 标记保持不变。正常 AgentBootstrap 在启动 writer 前已同步运行 SleepCycleCoordinator::recoverIncomplete；如果独立 writer 或恢复能力不足留下正式睡眠 staging，则整批归属迁移延后、cursor 不动。维护恢复后，在迁移写事务内再次检测所有 `status=Prepared` 行，只排除 `maintenance-retry/daydream_retry` 的已知租约；正式 `daydream_change_set`、未来类型和恢复检查后新出现的维护批次均阻塞该批迁移。返回 `deferredForRecovery=true`，下一次先恢复维护再重查。由单个 1 秒 QTimer 复查，正式 staging 仍只能由睡眠协调器的 Commit/Abort 决策处理；查询失败停止迁移并报告，shutdown 取消计时。不得为升级兼容放宽 sameSemanticRevision 或重新生成模型决定。
+
 #### 4. 数据变更
 
 memory 库新增 memory_attribution、memory_people、memory_origins、agent_attribution_migrations，详见附录 A。people 为多对多；origins 保存每个原始事件的发言人和会话。人物在 runtime 库，跨库只存稳定 ID，不设跨库 FK。
+
+memory 库 user_version 从 1 增至 2；0/1 库增量升级，未知高版本拒绝打开写入。现有 v1 程序已经拒绝大于 1 的版本，以此阻止旧写入口丢失新归属。四张新增表、索引与版本号在 schema 升级事务中一起提交。
 
 实体正文与其关联使用 MemoryStore 的同一写事务；新增投影加载与序列化需同时覆盖 SQLite 和现有 JSON 备份兼容路径。删除记忆级联删除这些关联；人物删除/更正不抹除真实历史，改为失效或 revision 驱动的归属重审。
 
@@ -322,12 +345,20 @@ memory 库新增 memory_attribution、memory_people、memory_origins、agent_att
 | MemoryQuery / MemoryRetriever | 增加 ContextSpec 和可用 ID 投影，所有召回与图扩展路径应用 |
 | ActiveMemoryPool::assessTopic / recordRecall | 按 conversation/activity context 管理 topic 状态；全局激活值可共享，可见候选和续问缓存不能共享 |
 | DaydreamConsolidator、MemoryConsolidationService | 合并计划和提交校验覆盖关联表与来源；旧模型提案不能移除未看到的新来源 |
+| MemoryStore::setDatabasePath / loadDatabaseOnly / persistMutationBatch | 新增 setProfileId、关联表原子写入与保守新写归属；源查询通过注入适配器解耦 runtime 库 |
+| ChatSideEffectQueue::Worker::process / appendEvent | 稳定原始事件幂等提交；writer 验证来源再进行记忆策略；启动后在同一 worker 分批迁移 |
+| AIBrain::appendRuntimeEvent / enqueueUserMemoryWrite；TaskExperienceAdapter | 传原始事件身份；任务沿用已提交经历事件，不凭 session 推导 speaker |
+| ChatPreparationExecutor::prepare；MemoryRetriever::retrieveWithGraphPropagation | 请求 ContextSpec 贯穿候选、图节点、最终结果、强化及缓存；原有 graph mayParticipate 回调复用 |
+| WorkingMemoryCache::add / cleanup；ChatPreparationExecutor 的 memoryQueryFor | 临时观察继承人物/来源/范围；构建查询线索前过滤，不通过工作记忆旁路泄露 |
+| MemoryOrganizeTool 的 merge_duplicates / canonical 合并（core/ai/tools/memory_tools.cpp） | 既有维护工具也必须检查人物、命题与 audience 兼容，并保留 origins；不能成为后台巩固之外的无范围合并入口 |
+| MemoryStore::summaryForContext；ai_brain_tasks.cpp 的 memory_material | 旧任务材料入口也接收 ContextSpec 并过滤 audience；未提供范围时仅兼容本地主人，外部无会话时只能选 shareable |
 
 #### 6. 异常场景
 
 - 业务异常：模型声称一个未解析人物已确定，返回 UNKNOWN_REFERENCE，候选保留 unresolved，不扩大访问范围。
 - 系统异常：写关联失败则回滚正文同批变更；跨库人物暂不可读时降级为已有稳定快照，不按名称重建人物。
 - 迁移失败保留上一已提交 cursor；重跑按 memoryId 幂等。遵循 §1.5；库不可用不返回伪造“无记忆”。
+- 已存在的归属关联读取失败或 audience JSON/枚举无效时，传播 STORE_UNAVAILABLE，不能伪装成无归属的旧记忆或默认 owner_only；只有确实不存在关联的旧记录进入迁移兼容路径。
 
 #### 7. 关键行为场景
 
@@ -335,6 +366,9 @@ memory 库新增 memory_attribution、memory_people、memory_origins、agent_att
 - recallForContext：在群 B 询问类似话题，不读取私聊 A 的 conversation 范围记忆；分享范围内关于甲的知识可跨允许会话召回。
 - migrateAttribution：两次跑同一批结果一致，已确认来源保留；未知旧记录仍可在 owner 上下文按既有隐私规则使用，不流入外部聊天。
 - “甲说乙喜欢猫”巩固后仍能指出来源甲与对象乙，关系更新不会误记为主体与甲共同喜欢猫。
+- 同一原始输入反复 ingest 不增加 origin 数；独立事件相同事实可合并 origins。来源未提交先 unresolved，之后同一 origin 补全；错配事件和查询故障不伪造已确认人物。
+- 关联写入失败正文同步回滚；JSON 往返保留人物、范围与来源；迁移仅改关联，失败后从上次已提交 cursor 恢复。
+- 续问在私聊 A、群 B 切换后分别恢复；不可见节点既不能作为最终结果，也不能作为图传播桥梁或被强化。巩固不扩大 audience，不合并未知对象的不同 origin；过期提案保留新到达来源。
 
 ### 3.4 会话输入、上下文准备与回复定位
 
@@ -720,11 +754,12 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ResolvePersonRequest / PersonResolution | 输入 profileId、externalIdentity 或可信 ownerLocal（两者不可同时提供）；返回 personId 可空、status=resolved/provisional/unresolved、人物 identityRevision（未解析为 0）、externalIdentity |
 | BindIdentityRequest | profileId、externalIdentity、personId、expectedRevision（目标人物版本）、bindingEvidenceRef（已提交 IdentityBindingAccepted 事件 ID）；校验与幂等规则见 §3.2 |
 | OriginKind | local_owner/external/internal，C++ 显式枚举；由宿主确定，未知值不按本地主人解释 |
-| AttributionContext | profileId、originId、speakerPersonId 可空、conversationId 可空、occurredAt、claimKind=fact/reported/inferred、audience、resolution=resolved/unresolved |
+| AttributionContext | profileId、originId、speakerPersonId 可空、conversationId 可空、occurredAt、claimKind=fact/reported/inferred、audience、resolution=resolved/unresolved；origin.sourceStatus=pending/committed 由宿主来源查询决定 |
+| MemoryOriginSource（宿主内部来源查询 DTO） | profileId、originId、speakerPersonId、conversationId、text、occurredAt、originKind、resolvedPeople[{personId,role}]；全部由已提交原事件与宿主解析取得，不能由抽取模型填写 |
 | AttributedMemoryInput / MemoryWriteResult | entry、attribution、describedPeople[{personId, role=subject/participant}]；返回 memoryIds、written、merged、unresolved |
 | ScopedMemoryQuery | text、subjectPersonIds、ContextSpec、limit；返回现有 RetrievedMemory 数组，不改变 ACT-R 等评分含义 |
 | AttributionMigrationRequest / MigrationProgress | profileId、cursor、batchSize；返回 nextCursor、processed、unresolved、complete；cursor 以稳定 memoryId 扫描，不依赖会被更新的时间 |
-| ContextSpec | profileId、channel、conversationId 可空、activityId 可空、participantPersonIds、originKind=local_owner/external/internal、conversationRevision、identityRevision、audienceProjectionRef；内部活动可以没有会话 |
+| ContextSpec | profileId、channel、conversationId 可空、activityId 可空、participantPersonIds、originKind=local_owner/external/internal、conversationRevision、identityRevision、audienceProjectionRef；内部活动可以没有会话；宿主授权投影 allowOwnerMemory=false、authorizedConversationIds=[]、allowInternalMemory=false |
 | ReplyTarget | channel、connectionKey、conversationId、remoteConversationId、replyToMessageId 可空；host 绑定，外部目标必须是当前连接可访问的会话 |
 | IncomingMessage / AcceptedMessage | 输入远端定位、speakerIdentity、remoteMessageId 可空、sourceEventId、content、occurredAt、引用消息；返回 messageId、conversationId、personResolution、duplicate、revision；外部重复投递须有稳定 messageId 或来源事件 ID |
 | ContextRequestV2 / PreparedContext | 输入 ContextSpec、requestId、generation、reason、replyTarget；返回 messages、允许的能力引用、快照版本与来源引用 |
@@ -898,7 +933,7 @@ JSON 在 C++ 边界用明确 schema 校验，附录不依赖 SQLite JSON 扩展�
 1. 以已有 ProfileResolver 找到角色库，离线一致性备份由 SQLite backup API 完成，连同旧 history 和配置保留恢复说明。不得只复制运行中的单个 .db 而遗漏 WAL。
 2. 各切片只迁移其负责的附录 A 结构，runtime schema 与 memory schema 分别以单库事务执行。涉及多人记忆写入切换时，两库均成功、迁移标记一致前不启用该新写路径；任一失败可从对应 migration 标记继续。§3.2 的身份目录可在自己的两张表与回填成功后使用，不依赖尚未开发的活动表。
 3. 创建 owner 人物；既有 relationship_state 中其他非空 subject_id 创建同 ID 的 provisional 人物记录，不按名字合并，不改关系版本。
-4. 归属迁移期间暂停相关记忆写入口，异步按稳定 memoryId 每批 100 条处理；旧读路径限已有主人场景。没有来源的记录明确 unresolved/owner_only；迁移完成后原子切换到所有写入口都带 AttributionContext 的模式，避免新增 UUID 落到游标之前被遗漏。
+4. 先切换所有新写入口到带归属模式，缺来源的新记录保守写 unresolved/owner_only；随后在串行 writer 上异步按稳定 memoryId 每批 100 条迁移旧关联，批次间允许正常带归属写入。旧读路径限已有主人场景；新 UUID 即使排在 cursor 前也已经有归属，避免漏迁移。没有可靠来源的旧记录明确 unresolved/owner_only，正文、强度及时间均不改。
 5. 旧主人 history 幂等导入 local_owner 会话；保留原 message ID，有冲突时采用记录在 migration 中的确定性命名空间 ID，不改变原 reply 链含义。
 6. 旧 complex_tasks 逐条按原 id 导入活动，非终结状态变 Paused/restart。若正在派发写工具，记录 unknown；旧 task experience outbox 先完成或关联接管，沿用原 taskId 防重复经历。
 7. 开启 activity v2 时停用旧任务写入口和专用主动聊天派发；存量表保留只读。选择新活动默认仍关闭，直到 §7 对应阶段完成并启用。
@@ -1134,6 +1169,7 @@ CREATE TABLE IF NOT EXISTS memory_origins (
     speaker_id TEXT,
     original_at TEXT,
     evidence_ref TEXT NOT NULL,
+    source_status TEXT NOT NULL DEFAULT 'pending' CHECK(source_status IN ('pending','committed')),
     created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY(memory_id, origin_id),
     FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
@@ -1149,6 +1185,7 @@ CREATE TABLE IF NOT EXISTS agent_attribution_migrations (
     policy_version INTEGER NOT NULL DEFAULT 1,
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
 );
+PRAGMA user_version = 2;
 COMMIT;
 ```
 
@@ -1201,6 +1238,7 @@ DROP TABLE memory_origins;
 DROP TABLE memory_attribution;
 DROP TABLE agent_attribution_migrations;
 DROP TABLE agent_memory_rollback_guard;
+PRAGMA user_version = 1;
 COMMIT;
 ```
 

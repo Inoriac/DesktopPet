@@ -154,8 +154,28 @@ QString normalizedText(const QString& text) {
 QString duplicateKeyFor(const MemoryEntry& entry) {
     const QString summary = normalizedText(bestSummary(entry));
     if (summary.isEmpty()) return {};
-    return QStringLiteral("%1\n%2\n%3")
-        .arg(memoryTypeToString(entry.type), entry.scope.trimmed().toLower(), summary);
+    QString attributionKey;
+    if (entry.attribution.present()) {
+        const auto& attribution = entry.attribution;
+        QJsonObject key{{"profile", attribution.profileId},
+                        {"audience", attribution.audience.toJson()},
+                        {"claimKind", int(attribution.claimKind)},
+                        {"subjects", QJsonArray::fromStringList(attribution.subjects())}};
+        if (!attribution.resolved) {
+            QStringList origins;
+            for (const auto& origin : attribution.origins)
+                origins.append(origin.originId);
+            origins.removeDuplicates();
+            origins.sort();
+            if (origins.isEmpty())
+                return {};
+            key["origins"] = QJsonArray::fromStringList(origins);
+        }
+        attributionKey = QString::fromUtf8(QJsonDocument(key).toJson(QJsonDocument::Compact));
+    }
+    return QStringLiteral("%1\n%2\n%3\n%4")
+        .arg(memoryTypeToString(entry.type), entry.scope.trimmed().toLower(), summary,
+             attributionKey);
 }
 
 bool isProtectedFromExpiry(const MemoryEntry& entry) {
@@ -251,9 +271,12 @@ bool canonicalLessPreferred(const MemoryEntry& a, const MemoryEntry& b) {
 }
 
 bool mergeDuplicateIntoCanonical(MemoryEntry* canonical, const MemoryEntry& duplicate) {
-    if (!canonical) return false;
+    if (!canonical || !attributionCanMerge(canonical->attribution, duplicate.attribution) ||
+        !MemoryMetadata::sameProposition(*canonical, duplicate))
+        return false;
 
     MemoryEntry updated = *canonical;
+    MemoryMetadata::mergeContext(updated, duplicate);
     updated.tags = mergedStringList(updated.tags, duplicate.tags);
     updated.evidence = mergedStringList(updated.evidence, duplicate.evidence);
     updated.sourceMemoryIds.append(duplicate.sourceMemoryIds);
@@ -266,24 +289,27 @@ bool mergeDuplicateIntoCanonical(MemoryEntry* canonical, const MemoryEntry& dupl
     updated.confidence = qMax(updated.confidence, duplicate.confidence);
     updated.lastMentionedAt = std::max(MemoryMetadata::lastMentionTime(updated),
                                        MemoryMetadata::lastMentionTime(duplicate));
-    updated.mentionCount += duplicate.mentionCount;
+    updated.mentionCount +=
+        updated.attribution.present()
+            ? qMax(0, updated.attribution.origins.size() - canonical->attribution.origins.size())
+            : duplicate.mentionCount;
     updated.accessCount += duplicate.accessCount;
     updated.payload[QStringLiteral("merged_duplicate_count")] =
         updated.payload.value(QStringLiteral("merged_duplicate_count")).toInt(0) + 1;
 
     compactMetadata(&updated);
 
-    const bool changed = updated.tags != canonical->tags
-        || updated.evidence != canonical->evidence
-        || updated.sourceMemoryIds != canonical->sourceMemoryIds
-        || updated.supersedes != canonical->supersedes
-        || !qFuzzyCompare(updated.importance + 1.0, canonical->importance + 1.0)
-        || !qFuzzyCompare(updated.strength + 1.0, canonical->strength + 1.0)
-        || !qFuzzyCompare(updated.confidence + 1.0, canonical->confidence + 1.0)
-        || updated.lastMentionedAt != canonical->lastMentionedAt
-        || updated.mentionCount != canonical->mentionCount
-        || updated.accessCount != canonical->accessCount
-        || updated.payload != canonical->payload;
+    const bool changed =
+        updated.attribution.toJson() != canonical->attribution.toJson() ||
+        updated.tags != canonical->tags || updated.evidence != canonical->evidence ||
+        updated.sourceMemoryIds != canonical->sourceMemoryIds ||
+        updated.supersedes != canonical->supersedes ||
+        !qFuzzyCompare(updated.importance + 1.0, canonical->importance + 1.0) ||
+        !qFuzzyCompare(updated.strength + 1.0, canonical->strength + 1.0) ||
+        !qFuzzyCompare(updated.confidence + 1.0, canonical->confidence + 1.0) ||
+        updated.lastMentionedAt != canonical->lastMentionedAt ||
+        updated.mentionCount != canonical->mentionCount ||
+        updated.accessCount != canonical->accessCount || updated.payload != canonical->payload;
 
     if (changed) {
         *canonical = updated;
@@ -419,76 +445,76 @@ void applyOperationalArchive(MemoryStore* store,
     }
 }
 
-void applyDuplicateMerge(MemoryStore* store,
-                         const QString& mode,
-                         bool dryRun,
-                         int maxChanges,
-                         const QDateTime& now,
-                         QSet<QString>* skippedSensitiveIds,
+bool applyDuplicateMerge(MemoryStore* store, const QString& mode, bool dryRun, int maxChanges,
+                         const QDateTime& now, QSet<QString>* skippedSensitiveIds,
                          MemoryOrganizeStats* stats) {
-    if (!modeIncludes(mode, QStringLiteral("merge_duplicates"))) return;
-
+    if (!modeIncludes(mode, QStringLiteral("merge_duplicates")))
+        return true;
     QHash<QString, QList<MemoryEntry>> groups;
     for (const MemoryEntry& entry : store->all()) {
-        if (entry.status != MemoryStatus::Active) continue;
-        if (isSensitive(entry, skippedSensitiveIds)) continue;
+        if (entry.status != MemoryStatus::Active || isSensitive(entry, skippedSensitiveIds))
+            continue;
         const QString key = duplicateKeyFor(entry);
-        if (key.isEmpty()) continue;
-        groups[key].append(entry);
+        if (!key.isEmpty())
+            groups[key].append(entry);
     }
-
-    for (auto it = groups.cbegin(); it != groups.cend(); ++it) {
-        if (!hasChangeBudget(*stats, maxChanges)) return;
-        QList<MemoryEntry> group = it.value();
+    for (auto group : groups) {
+        if (stats->changed + 2 > maxChanges)
+            break;
         if (group.size() < 2) continue;
-
         std::sort(group.begin(), group.end(), [](const MemoryEntry& a, const MemoryEntry& b) {
             return canonicalLessPreferred(b, a);
         });
-
         MemoryEntry canonical = group.first();
-        bool canonicalChanged = false;
-        for (int i = 1; i < group.size(); ++i) {
-            canonicalChanged = mergeDuplicateIntoCanonical(&canonical, group.at(i)) || canonicalChanged;
+        QList<MemoryEntry> merged;
+        for (int index = 1; index < group.size(); ++index) {
+            if (stats->changed + merged.size() + 2 > maxChanges)
+                break;
+            const auto& duplicate = group.at(index);
+            if (!attributionCanMerge(canonical.attribution, duplicate.attribution) ||
+                !MemoryMetadata::sameProposition(canonical, duplicate))
+                continue;
+            if (mergeDuplicateIntoCanonical(&canonical, duplicate))
+                merged.append(duplicate);
         }
-
-        if (canonicalChanged && hasChangeBudget(*stats, maxChanges)) {
-            ++stats->canonicalUpdated;
-            countChange(stats);
-            if (!dryRun) {
-                store->updateEntryById(canonical);
-            }
-        }
-
-        for (int i = 1; i < group.size(); ++i) {
-            if (!hasChangeBudget(*stats, maxChanges)) return;
-            const MemoryEntry& duplicate = group.at(i);
-
-            ++stats->superseded;
-            countChange(stats);
-            if (!dryRun) {
+        if (merged.isEmpty())
+            continue;
+        if (!dryRun) {
+            MemoryMutationBatch batch;
+            if (!store->stageEntryUpdate(canonical, &batch))
+                return false;
+            bool staged = true;
+            for (auto duplicate : merged) {
+                duplicate.status = MemoryStatus::Superseded;
+                duplicate.payload["superseded_by"] = canonical.id;
+                duplicate.payload["organized_at"] = dateTimeText(now);
+                duplicate.payload["organize_reason"] = "exact_duplicate";
+                staged = store->stageEntryUpdate(duplicate, &batch) && staged;
                 if (!store->relationGraph().hasRelation(canonical.id, duplicate.id, MemoryRelationType::Supersedes)) {
-                    MemoryRelation rel;
-                    rel.fromMemoryId = canonical.id;
-                    rel.toMemoryId = duplicate.id;
-                    rel.type = MemoryRelationType::Supersedes;
-                    rel.weight = 1.0;
-                    rel.confidence = 1.0;
-                    if (store->relationGraph().addRelation(rel)) {
-                        ++stats->relationsCreated;
-                    }
+                    MemoryRelation relation;
+                    relation.fromMemoryId = canonical.id;
+                    relation.toMemoryId = duplicate.id;
+                    relation.type = MemoryRelationType::Supersedes;
+                    relation.weight = relation.confidence = 1.0;
+                    batch.relations.append(relation);
                 }
-
-                QJsonObject patch;
-                patch[QStringLiteral("superseded_by")] = canonical.id;
-                patch[QStringLiteral("organized_at")] = dateTimeText(now);
-                patch[QStringLiteral("organize_reason")] = QStringLiteral("exact_duplicate");
-                store->updateStatusById(duplicate.id, MemoryStatus::Superseded, patch);
-            } else if (!store->relationGraph().hasRelation(canonical.id, duplicate.id, MemoryRelationType::Supersedes)) {
-                ++stats->relationsCreated;
             }
+            if (!staged || !store->persistMutationBatch(batch)) {
+                store->rollbackMutationBatch(batch);
+                return false;
+            }
+            stats->relationsCreated += batch.relations.size();
+        } else {
+            for (const auto& duplicate : merged)
+                if (!store->relationGraph().hasRelation(canonical.id, duplicate.id,
+                                                        MemoryRelationType::Supersedes))
+                    ++stats->relationsCreated;
         }
+        ++stats->canonicalUpdated;
+        stats->superseded += merged.size();
+        stats->changed += merged.size() + 1;
     }
+    return true;
 }
 
 } // namespace
@@ -606,13 +632,9 @@ ToolResult MemoryOrganizeTool::execute(const QJsonObject& params) {
                             eventArchiveDays,
                             &skippedSensitiveIds,
                             &stats);
-    applyDuplicateMerge(m_memoryStore,
-                        mode,
-                        dryRun,
-                        maxChanges,
-                        now,
-                        &skippedSensitiveIds,
-                        &stats);
+    if (!applyDuplicateMerge(m_memoryStore, mode, dryRun, maxChanges, now, &skippedSensitiveIds,
+                             &stats))
+        return ToolResult::fail(QStringLiteral("Memory duplicate merge could not be committed"));
 
     stats.skippedSensitive = skippedSensitiveIds.size();
 

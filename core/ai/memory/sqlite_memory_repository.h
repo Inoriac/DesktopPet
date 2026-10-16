@@ -15,8 +15,12 @@ public:
     bool open(const QString& path, QString* errorMessage = nullptr) override;
     void close() override;
     bool isOpen() const override;
+    bool lastReadSucceeded() const override {
+        return m_lastReadSucceeded;
+    }
     QString connectionName() const override { return m_connectionName; }
 
+    bool writeAttribution(const MemoryEntry& entry);
     bool insert(const MemoryEntry& entry) override;
     bool update(const MemoryEntry& entry) override;
     bool updateStatus(const QString& id,
@@ -40,6 +44,7 @@ public:
 private:
     bool initSchema(QString* errorMessage = nullptr);
     QList<MemoryEntry> loadQuery(QSqlQuery& query);
+    MemoryAttribution loadAttribution(const QString& memoryId);
     bool insertTags(const QString& memoryId, const QStringList& tags);
     bool insertEvidence(const QString& memoryId, const QStringList& evidence);
     bool deleteTags(const QString& memoryId);
@@ -47,6 +52,7 @@ private:
     QStringList loadTags(const QString& memoryId);
     QStringList loadEvidence(const QString& memoryId);
 
+    bool m_lastReadSucceeded = true;
     QString m_connectionName;
     QStringList m_transactionSavepoints;
 };

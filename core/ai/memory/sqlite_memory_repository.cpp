@@ -151,7 +151,7 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         return false;
     }
     const int schemaVersion = query.value(0).toInt();
-    if (schemaVersion < 0 || schemaVersion > 1) {
+    if (schemaVersion < 0 || schemaVersion > 2) {
         if (errorMessage) {
             *errorMessage = QStringLiteral("memory schema version is newer than supported");
         }
@@ -163,201 +163,227 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         ~MigrationGuard() {
             if (active && database) database->rollback();
         }
-    } guard{&db, schemaVersion == 0};
+    } guard{&db, schemaVersion < 2};
     if (guard.active && !db.transaction()) {
         if (errorMessage) *errorMessage = db.lastError().text();
         return false;
     }
 
     const QStringList statements = {
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_items ("
-            "  id TEXT PRIMARY KEY,"
-            "  type TEXT NOT NULL,"
-            "  status TEXT NOT NULL,"
-            "  privacy_level TEXT NOT NULL,"
-            "  partition TEXT,"
-            "  key TEXT,"
-            "  summary TEXT,"
-            "  content TEXT,"
-            "  scope TEXT,"
-            "  source TEXT,"
-            "  importance REAL DEFAULT 0,"
-            "  strength REAL DEFAULT 0,"
-            "  confidence REAL DEFAULT 0,"
-            "  emotion TEXT,"
-            "  emotion_intensity REAL DEFAULT 0,"
-            "  emotion_confidence REAL DEFAULT 0,"
-            "  mention_count INTEGER DEFAULT 0,"
-            "  access_count INTEGER DEFAULT 0,"
-            "  created_at TEXT,"
-            "  updated_at TEXT,"
-            "  last_mentioned_at TEXT,"
-            "  last_accessed_at TEXT,"
-            "  expires_at TEXT,"
-            "  payload_json TEXT"
-            ")"
-        ),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_type ON memory_items(type)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_status ON memory_items(status)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items(key)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)"),
+        QString::fromUtf8(R"sql(CREATE TABLE IF NOT EXISTS memory_attribution (
+    memory_id TEXT PRIMARY KEY,
+    profile_id TEXT NOT NULL,
+    resolution TEXT NOT NULL DEFAULT 'unresolved' CHECK(resolution IN ('resolved','unresolved')),
+    claim_kind TEXT NOT NULL DEFAULT 'reported' CHECK(claim_kind IN ('fact','reported','inferred')),
+    audience_json TEXT NOT NULL DEFAULT '{"kind":"owner_only","conversationIds":[]}',
+    revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+))sql"),
+        QString::fromUtf8(R"sql(CREATE INDEX IF NOT EXISTS idx_memory_attribution_profile
+    ON memory_attribution(profile_id, resolution, memory_id))sql"),
+        QString::fromUtf8(R"sql(CREATE TABLE IF NOT EXISTS memory_people (
+    memory_id TEXT NOT NULL,
+    person_id TEXT NOT NULL,
+    role TEXT NOT NULL CHECK(role IN ('subject','participant')),
+    PRIMARY KEY(memory_id, person_id, role),
+    FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+))sql"),
+        QString::fromUtf8(R"sql(CREATE INDEX IF NOT EXISTS idx_memory_people_person
+    ON memory_people(person_id, role, memory_id))sql"),
+        QString::fromUtf8(R"sql(CREATE TABLE IF NOT EXISTS memory_origins (
+    memory_id TEXT NOT NULL,
+    origin_id TEXT NOT NULL,
+    conversation_id TEXT,
+    speaker_id TEXT,
+    original_at TEXT,
+    evidence_ref TEXT NOT NULL,
+    source_status TEXT NOT NULL DEFAULT 'pending' CHECK(source_status IN ('pending','committed')),
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(memory_id, origin_id),
+    FOREIGN KEY(memory_id) REFERENCES memory_items(id) ON DELETE CASCADE
+))sql"),
+        QString::fromUtf8(R"sql(CREATE INDEX IF NOT EXISTS idx_memory_origin_source
+    ON memory_origins(origin_id, memory_id))sql"),
+        QString::fromUtf8(R"sql(CREATE INDEX IF NOT EXISTS idx_memory_origin_conversation
+    ON memory_origins(conversation_id, memory_id))sql"),
+        QString::fromUtf8(R"sql(CREATE TABLE IF NOT EXISTS agent_attribution_migrations (
+    profile_id TEXT PRIMARY KEY,
+    cursor TEXT,
+    completed INTEGER NOT NULL DEFAULT 0 CHECK(completed IN (0,1)),
+    policy_version INTEGER NOT NULL DEFAULT 1,
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now'))
+))sql"),
 
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_items ("
+                       "  id TEXT PRIMARY KEY,"
+                       "  type TEXT NOT NULL,"
+                       "  status TEXT NOT NULL,"
+                       "  privacy_level TEXT NOT NULL,"
+                       "  partition TEXT,"
+                       "  key TEXT,"
+                       "  summary TEXT,"
+                       "  content TEXT,"
+                       "  scope TEXT,"
+                       "  source TEXT,"
+                       "  importance REAL DEFAULT 0,"
+                       "  strength REAL DEFAULT 0,"
+                       "  confidence REAL DEFAULT 0,"
+                       "  emotion TEXT,"
+                       "  emotion_intensity REAL DEFAULT 0,"
+                       "  emotion_confidence REAL DEFAULT 0,"
+                       "  mention_count INTEGER DEFAULT 0,"
+                       "  access_count INTEGER DEFAULT 0,"
+                       "  created_at TEXT,"
+                       "  updated_at TEXT,"
+                       "  last_mentioned_at TEXT,"
+                       "  last_accessed_at TEXT,"
+                       "  expires_at TEXT,"
+                       "  payload_json TEXT"
+                       ")"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_type ON memory_items(type)"),
         QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_tags ("
-            "  memory_id TEXT NOT NULL,"
-            "  tag TEXT NOT NULL,"
-            "  PRIMARY KEY(memory_id, tag)"
-            ")"
-        ),
+            "CREATE INDEX IF NOT EXISTS idx_memory_items_status ON memory_items(status)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_items_key ON memory_items(key)"),
+        QStringLiteral(
+            "CREATE INDEX IF NOT EXISTS idx_memory_items_updated_at ON memory_items(updated_at)"),
+
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_tags ("
+                       "  memory_id TEXT NOT NULL,"
+                       "  tag TEXT NOT NULL,"
+                       "  PRIMARY KEY(memory_id, tag)"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_tags_tag ON memory_tags(tag)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_evidence ("
-            "  id TEXT PRIMARY KEY,"
-            "  memory_id TEXT NOT NULL,"
-            "  source TEXT,"
-            "  raw_text TEXT,"
-            "  created_at TEXT,"
-            "  payload_json TEXT"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_evidence ("
+                       "  id TEXT PRIMARY KEY,"
+                       "  memory_id TEXT NOT NULL,"
+                       "  source TEXT,"
+                       "  raw_text TEXT,"
+                       "  created_at TEXT,"
+                       "  payload_json TEXT"
+                       ")"),
 
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_relations ("
+                       "  id TEXT PRIMARY KEY,"
+                       "  from_memory_id TEXT NOT NULL,"
+                       "  to_memory_id TEXT NOT NULL,"
+                       "  relation_type TEXT NOT NULL,"
+                       "  weight REAL DEFAULT 1.0,"
+                       "  confidence REAL DEFAULT 1.0,"
+                       "  created_at TEXT,"
+                       "  payload_json TEXT,"
+                       "  provenance TEXT DEFAULT 'rule',"
+                       "  support_count INTEGER DEFAULT 1,"
+                       "  updated_at TEXT,"
+                       "  last_reinforced_at TEXT"
+                       ")"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_from ON "
+                       "memory_relations(from_memory_id)"),
         QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_relations ("
-            "  id TEXT PRIMARY KEY,"
-            "  from_memory_id TEXT NOT NULL,"
-            "  to_memory_id TEXT NOT NULL,"
-            "  relation_type TEXT NOT NULL,"
-            "  weight REAL DEFAULT 1.0,"
-            "  confidence REAL DEFAULT 1.0,"
-            "  created_at TEXT,"
-            "  payload_json TEXT,"
-            "  provenance TEXT DEFAULT 'rule',"
-            "  support_count INTEGER DEFAULT 1,"
-            "  updated_at TEXT,"
-            "  last_reinforced_at TEXT"
-            ")"
-        ),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_from ON memory_relations(from_memory_id)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_to ON memory_relations(to_memory_id)"),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_type ON memory_relations(relation_type)"),
+            "CREATE INDEX IF NOT EXISTS idx_memory_relations_to ON memory_relations(to_memory_id)"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_relations_type ON "
+                       "memory_relations(relation_type)"),
 
+        QStringLiteral("CREATE TABLE IF NOT EXISTS tag_cooccurrences ("
+                       "  tag_a TEXT NOT NULL,"
+                       "  tag_b TEXT NOT NULL,"
+                       "  weight INTEGER NOT NULL DEFAULT 1,"
+                       "  updated_at TEXT,"
+                       "  PRIMARY KEY(tag_a, tag_b)"
+                       ")"),
         QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS tag_cooccurrences ("
-            "  tag_a TEXT NOT NULL,"
-            "  tag_b TEXT NOT NULL,"
-            "  weight INTEGER NOT NULL DEFAULT 1,"
-            "  updated_at TEXT,"
-            "  PRIMARY KEY(tag_a, tag_b)"
-            ")"
-        ),
-        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_tag_cooccurrences_tag_b ON tag_cooccurrences(tag_b)"),
+            "CREATE INDEX IF NOT EXISTS idx_tag_cooccurrences_tag_b ON tag_cooccurrences(tag_b)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_access_log ("
-            "  id TEXT PRIMARY KEY,"
-            "  memory_id TEXT NOT NULL,"
-            "  reason TEXT,"
-            "  score REAL DEFAULT 0,"
-            "  created_at TEXT"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_access_log ("
+                       "  id TEXT PRIMARY KEY,"
+                       "  memory_id TEXT NOT NULL,"
+                       "  reason TEXT,"
+                       "  score REAL DEFAULT 0,"
+                       "  created_at TEXT"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_access_log_memory_created "
                        "ON memory_access_log(memory_id, created_at)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_embeddings ("
-            "  memory_id TEXT NOT NULL,"
-            "  model TEXT NOT NULL,"
-            "  dimension INTEGER DEFAULT 0,"
-            "  vector_blob BLOB,"
-            "  content_hash TEXT,"
-            "  updated_at TEXT,"
-            "  PRIMARY KEY(memory_id, model)"
-            ")"
-        ),
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_hnsw_labels ("
-            "  memory_id TEXT NOT NULL," 
-            "  model TEXT NOT NULL," 
-            "  label INTEGER NOT NULL," 
-            "  content_hash TEXT," 
-            "  status TEXT NOT NULL DEFAULT 'Active'," 
-            "  created_at TEXT NOT NULL," 
-            "  updated_at TEXT," 
-            "  PRIMARY KEY(memory_id, model)," 
-            "  UNIQUE(model, label)"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_embeddings ("
+                       "  memory_id TEXT NOT NULL,"
+                       "  model TEXT NOT NULL,"
+                       "  dimension INTEGER DEFAULT 0,"
+                       "  vector_blob BLOB,"
+                       "  content_hash TEXT,"
+                       "  updated_at TEXT,"
+                       "  PRIMARY KEY(memory_id, model)"
+                       ")"),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_hnsw_labels ("
+                       "  memory_id TEXT NOT NULL,"
+                       "  model TEXT NOT NULL,"
+                       "  label INTEGER NOT NULL,"
+                       "  content_hash TEXT,"
+                       "  status TEXT NOT NULL DEFAULT 'Active',"
+                       "  created_at TEXT NOT NULL,"
+                       "  updated_at TEXT,"
+                       "  PRIMARY KEY(memory_id, model),"
+                       "  UNIQUE(model, label)"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_hnsw_labels_model_status "
                        "ON memory_hnsw_labels(model, status)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS sleep_staged_change ("
-            "  session_id TEXT NOT NULL,"
-            "  change_id TEXT NOT NULL,"
-            "  target_type TEXT NOT NULL,"
-            "  operation TEXT NOT NULL,"
-            "  target_id TEXT,"
-            "  payload_json TEXT NOT NULL,"
-            "  payload_hash TEXT NOT NULL,"
-            "  status TEXT NOT NULL DEFAULT 'Prepared',"
-            "  created_at TEXT NOT NULL,"
-            "  finalized_at TEXT,"
-            "  PRIMARY KEY(session_id, change_id)"
-            ")"
-        ),
-        QStringLiteral(
-            "CREATE INDEX IF NOT EXISTS idx_memory_sleep_staged_status "
-            "ON sleep_staged_change(session_id, status)"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS sleep_staged_change ("
+                       "  session_id TEXT NOT NULL,"
+                       "  change_id TEXT NOT NULL,"
+                       "  target_type TEXT NOT NULL,"
+                       "  operation TEXT NOT NULL,"
+                       "  target_id TEXT,"
+                       "  payload_json TEXT NOT NULL,"
+                       "  payload_hash TEXT NOT NULL,"
+                       "  status TEXT NOT NULL DEFAULT 'Prepared',"
+                       "  created_at TEXT NOT NULL,"
+                       "  finalized_at TEXT,"
+                       "  PRIMARY KEY(session_id, change_id)"
+                       ")"),
+        QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_sleep_staged_status "
+                       "ON sleep_staged_change(session_id, status)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_index_jobs ("
-            "  id TEXT PRIMARY KEY,"
-            "  memory_id TEXT NOT NULL,"
-            "  operation TEXT NOT NULL,"
-            "  model TEXT,"
-            "  content_hash TEXT,"
-            "  status TEXT NOT NULL DEFAULT 'Pending',"
-            "  attempt_count INTEGER DEFAULT 0,"
-            "  created_at TEXT NOT NULL,"
-            "  updated_at TEXT"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_index_jobs ("
+                       "  id TEXT PRIMARY KEY,"
+                       "  memory_id TEXT NOT NULL,"
+                       "  operation TEXT NOT NULL,"
+                       "  model TEXT,"
+                       "  content_hash TEXT,"
+                       "  status TEXT NOT NULL DEFAULT 'Pending',"
+                       "  attempt_count INTEGER DEFAULT 0,"
+                       "  created_at TEXT NOT NULL,"
+                       "  updated_at TEXT"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_status "
                        "ON memory_index_jobs(status, created_at)"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_jobs_memory "
                        "ON memory_index_jobs(memory_id)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_index_health_daily ("
-            "  model TEXT NOT NULL,"
-            "  day TEXT NOT NULL,"
-            "  eligible_count INTEGER NOT NULL DEFAULT 0,"
-            "  indexed_count INTEGER NOT NULL DEFAULT 0,"
-            "  pending_count INTEGER NOT NULL DEFAULT 0,"
-            "  healthy INTEGER NOT NULL DEFAULT 0,"
-            "  failure_count INTEGER NOT NULL DEFAULT 0,"
-            "  last_error TEXT,"
-            "  updated_at TEXT NOT NULL,"
-            "  PRIMARY KEY(model, day)"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_index_health_daily ("
+                       "  model TEXT NOT NULL,"
+                       "  day TEXT NOT NULL,"
+                       "  eligible_count INTEGER NOT NULL DEFAULT 0,"
+                       "  indexed_count INTEGER NOT NULL DEFAULT 0,"
+                       "  pending_count INTEGER NOT NULL DEFAULT 0,"
+                       "  healthy INTEGER NOT NULL DEFAULT 0,"
+                       "  failure_count INTEGER NOT NULL DEFAULT 0,"
+                       "  last_error TEXT,"
+                       "  updated_at TEXT NOT NULL,"
+                       "  PRIMARY KEY(model, day)"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_index_health_daily_model_day "
                        "ON memory_index_health_daily(model, day)"),
 
-        QStringLiteral(
-            "CREATE TABLE IF NOT EXISTS memory_activation_snapshots ("
-            "  memory_id TEXT PRIMARY KEY,"
-            "  activation REAL NOT NULL,"
-            "  source TEXT,"
-            "  last_activated_at TEXT NOT NULL,"
-            "  context_id TEXT,"
-            "  saved_at TEXT NOT NULL"
-            ")"
-        ),
+        QStringLiteral("CREATE TABLE IF NOT EXISTS memory_activation_snapshots ("
+                       "  memory_id TEXT PRIMARY KEY,"
+                       "  activation REAL NOT NULL,"
+                       "  source TEXT,"
+                       "  last_activated_at TEXT NOT NULL,"
+                       "  context_id TEXT,"
+                       "  saved_at TEXT NOT NULL"
+                       ")"),
         QStringLiteral("CREATE INDEX IF NOT EXISTS idx_memory_activation_snapshots_activation "
                        "ON memory_activation_snapshots(activation DESC)"),
     };
@@ -555,6 +581,17 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
             "BEGIN UPDATE memory_tag_catalog_state SET recall_revision=recall_revision+1 WHERE singleton=1; END")
             .arg(operation, owners));
     }
+    for (const auto& table : {QStringLiteral("memory_attribution"), QStringLiteral("memory_people"),
+                              QStringLiteral("memory_origins")}) {
+        for (const auto& operation :
+             {QStringLiteral("INSERT"), QStringLiteral("UPDATE"), QStringLiteral("DELETE")})
+            recallTriggers.append(
+                QStringLiteral(
+                    "CREATE TRIGGER IF NOT EXISTS recall_%1_%2 AFTER %2 ON %1 BEGIN UPDATE "
+                    "memory_tag_catalog_state SET "
+                    "recall_revision=recall_revision+1,revision=revision+1 WHERE singleton=1; END")
+                    .arg(table, operation));
+    }
     for (const auto& sql : recallTriggers) {
         if (!query.exec(sql)) {
             if (errorMessage) *errorMessage = query.lastError().text();
@@ -659,12 +696,11 @@ bool SQLiteMemoryRepository::initSchema(QString* errorMessage) {
         }
         return false;
     }
-    if (schemaVersion == 0
-        && !query.exec(QStringLiteral("PRAGMA user_version=1"))) {
+    if (schemaVersion < 2 && !query.exec(QStringLiteral("PRAGMA user_version=2"))) {
         if (errorMessage) *errorMessage = query.lastError().text();
         return false;
     }
-    if (schemaVersion == 0) {
+    if (schemaVersion < 2) {
         if (!db.commit()) {
             if (errorMessage) *errorMessage = db.lastError().text();
             return false;
@@ -692,7 +728,7 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     QSqlQuery query(db);
 
     query.prepare(QStringLiteral(
-        "INSERT OR REPLACE INTO memory_items ("
+        "INSERT INTO memory_items ("
         "  id, type, status, privacy_level, partition, key, summary, content,"
         "  scope, source, importance, strength, confidence,"
         "  emotion, emotion_intensity, emotion_confidence,"
@@ -706,8 +742,16 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
         "  :mention_count, :access_count,"
         "  :created_at, :updated_at, :last_mentioned_at, :last_accessed_at, :expires_at,"
         "  :payload_json"
-        ")"
-    ));
+        ") ON CONFLICT(id) DO UPDATE SET "
+        "type=excluded.type,status=excluded.status,privacy_level=excluded.privacy_level,partition="
+        "excluded.partition,key=excluded.key,summary=excluded.summary,content=excluded.content,"
+        "scope=excluded.scope,source=excluded.source,importance=excluded.importance,strength="
+        "excluded.strength,confidence=excluded.confidence,emotion=excluded.emotion,emotion_"
+        "intensity=excluded.emotion_intensity,emotion_confidence=excluded.emotion_confidence,"
+        "mention_count=excluded.mention_count,access_count=excluded.access_count,created_at="
+        "excluded.created_at,updated_at=excluded.updated_at,last_mentioned_at=excluded.last_"
+        "mentioned_at,last_accessed_at=excluded.last_accessed_at,expires_at=excluded.expires_at,"
+        "payload_json=excluded.payload_json"));
 
     QJsonObject payload = entry.payload;
     if (!entry.value.isNull() && !entry.value.isUndefined()) {
@@ -757,9 +801,10 @@ bool SQLiteMemoryRepository::insert(const MemoryEntry& entry) {
     while (currentTags.next()) previousTags.insert(currentTags.value(0).toString());
     currentTags.finish();
     for (const auto& tag : entry.tags) if (!tag.trimmed().isEmpty()) nextTags.insert(tag);
-    if ((previousTags != nextTags && (!deleteTags(entry.id) || !insertTags(entry.id, entry.tags)))
-        || !deleteEvidence(entry.id)
-        || !insertEvidence(entry.id, entry.evidence)) {
+    if ((previousTags != nextTags &&
+         (!deleteTags(entry.id) || !insertTags(entry.id, entry.tags))) ||
+        !deleteEvidence(entry.id) || !insertEvidence(entry.id, entry.evidence) ||
+        !writeAttribution(entry)) {
         rollback();
         return false;
     }
@@ -856,6 +901,9 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadQuery(QSqlQuery& query) {
             payload.take(QStringLiteral("conflicts_with")).toArray());
         entry.payload = payload;
 
+        entry.attribution = loadAttribution(entry.id);
+        if (!m_lastReadSucceeded)
+            return {};
         entry.tags = loadTags(entry.id);
         entry.evidence = loadEvidence(entry.id);
 
@@ -874,19 +922,23 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadQuery(QSqlQuery& query) {
 
 
 QList<MemoryEntry> SQLiteMemoryRepository::loadAll() {
+    m_lastReadSucceeded = false;
     if (!isOpen()) return {};
     QSqlDatabase db = QSqlDatabase::database(m_connectionName);
     QSqlQuery query(db);
     if (!query.exec(QStringLiteral("SELECT * FROM memory_items ORDER BY created_at ASC"))) return {};
+    m_lastReadSucceeded = true;
     return loadQuery(query);
 }
 
 std::optional<MemoryEntry> SQLiteMemoryRepository::loadById(const QString& id) {
+    m_lastReadSucceeded = false;
     if (!isOpen() || id.isEmpty()) return std::nullopt;
     QSqlQuery query(QSqlDatabase::database(m_connectionName, false));
     query.prepare(QStringLiteral("SELECT * FROM memory_items WHERE id=:id"));
     query.bindValue(QStringLiteral(":id"), id);
     if (!query.exec()) return std::nullopt;
+    m_lastReadSucceeded = true;
     const auto entries = loadQuery(query);
     return entries.isEmpty() ? std::nullopt : std::optional<MemoryEntry>(entries.first());
 }
@@ -910,8 +962,10 @@ QList<MemoryEntry> SQLiteMemoryRepository::loadRecent(int limit,
     if (!partition.trimmed().isEmpty()) query.bindValue(QStringLiteral(":partition"), partition);
     query.bindValue(QStringLiteral(":limit"), limit);
     if (!query.exec()) return {};
+    m_lastReadSucceeded = true;
     auto entries = loadQuery(query);
-    if (ok) *ok = !query.lastError().isValid();
+    if (ok)
+        *ok = m_lastReadSucceeded && !query.lastError().isValid();
     return entries;
 }
 
@@ -1136,4 +1190,111 @@ QStringList SQLiteMemoryRepository::loadEvidence(const QString& memoryId) {
         }
     }
     return evidence;
+}
+
+// This runs inside insert's SAVEPOINT; an association failure rolls back the body.
+bool SQLiteMemoryRepository::writeAttribution(const MemoryEntry& entry) {
+    if (!entry.attribution.present())
+        return true;
+    const auto& a = entry.attribution;
+    if (!a.audience.isValid()) return false;
+    m_lastReadSucceeded = true;
+    const auto existing = loadAttribution(entry.id);
+    if (!m_lastReadSucceeded)
+        return false;
+    if (existing.toJson() == a.toJson())
+        return true;
+    QSqlQuery q(QSqlDatabase::database(m_connectionName));
+    q.prepare("INSERT INTO "
+              "memory_attribution(memory_id,profile_id,resolution,claim_kind,audience_json,"
+              "revision) VALUES(?,?,?,?,?,?) ON CONFLICT(memory_id) DO UPDATE SET "
+              "profile_id=excluded.profile_id,resolution=excluded.resolution,claim_kind=excluded."
+              "claim_kind,audience_json=excluded.audience_json,revision=excluded.revision");
+    const auto json = a.toJson();
+    q.addBindValue(entry.id);
+    q.addBindValue(a.profileId);
+    q.addBindValue(json["resolution"].toString());
+    q.addBindValue(json["claimKind"].toString());
+    q.addBindValue(
+        QString::fromUtf8(QJsonDocument(a.audience.toJson()).toJson(QJsonDocument::Compact)));
+    q.addBindValue(a.revision);
+    if (!q.exec())
+        return false;
+    q.prepare("DELETE FROM memory_people WHERE memory_id=?");
+    q.addBindValue(entry.id);
+    if (!q.exec())
+        return false;
+    q.prepare("DELETE FROM memory_origins WHERE memory_id=?");
+    q.addBindValue(entry.id);
+    if (!q.exec())
+        return false;
+    for (const auto& p : a.people) {
+        q.prepare("INSERT OR IGNORE INTO memory_people(memory_id,person_id,role) VALUES(?,?,?)");
+        q.addBindValue(entry.id);
+        q.addBindValue(p.personId);
+        q.addBindValue(p.role == MemoryPersonRole::Subject ? "subject" : "participant");
+        if (!q.exec())
+            return false;
+    }
+    for (const auto& o : a.origins) {
+        q.prepare("INSERT INTO "
+                  "memory_origins(memory_id,origin_id,conversation_id,speaker_id,original_at,"
+                  "evidence_ref,source_status) VALUES(?,?,?,?,?,?,?)");
+        q.addBindValue(entry.id);
+        q.addBindValue(o.originId);
+        q.addBindValue(o.conversationId);
+        q.addBindValue(o.speakerPersonId);
+        q.addBindValue(dateTimeToString(o.originalAt));
+        q.addBindValue(o.evidenceRef.isNull() ? QStringLiteral("") : o.evidenceRef);
+        q.addBindValue(o.committed ? "committed" : "pending");
+        if (!q.exec())
+            return false;
+    }
+    return true;
+}
+MemoryAttribution SQLiteMemoryRepository::loadAttribution(const QString& id) {
+    QSqlQuery q(QSqlDatabase::database(m_connectionName));
+    q.prepare("SELECT profile_id,resolution,claim_kind,audience_json,revision FROM "
+              "memory_attribution WHERE memory_id=?");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastReadSucceeded = false;
+        return {};
+    }
+    if (!q.next())
+        return {};
+    QJsonObject j{{"profileId", q.value(0).toString()},
+                  {"resolution", q.value(1).toString()},
+                  {"claimKind", q.value(2).toString()},
+                  {"audience", jsonObjectFromString(q.value(3).toString())},
+                  {"revision", q.value(4).toLongLong()}};
+    auto a = MemoryAttribution::fromJson(j);
+    if (!a.audience.isValid()) {
+        m_lastReadSucceeded = false;
+        return {};
+    }
+    q.finish();
+    q.prepare("SELECT person_id,role FROM memory_people WHERE memory_id=? ORDER BY person_id,role");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastReadSucceeded = false;
+        return {};
+    }
+    while (q.next())
+        a.people.append({q.value(0).toString(), q.value(1).toString() == "subject"
+                                                    ? MemoryPersonRole::Subject
+                                                    : MemoryPersonRole::Participant});
+    q.finish();
+    q.prepare("SELECT origin_id,conversation_id,speaker_id,original_at,evidence_ref,source_status "
+              "FROM memory_origins WHERE memory_id=? ORDER BY origin_id");
+    q.addBindValue(id);
+    if (!q.exec()) {
+        m_lastReadSucceeded = false;
+        return {};
+    }
+    while (q.next())
+        a.origins.append({q.value(0).toString(), q.value(1).toString(), q.value(2).toString(),
+                          dateTimeFromString(q.value(3).toString()), q.value(4).toString(),
+                          q.value(5).toString() == "committed"});
+    return a;
 }

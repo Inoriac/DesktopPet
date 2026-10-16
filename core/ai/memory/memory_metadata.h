@@ -11,6 +11,18 @@
 // Routing labels remain readable for legacy filters, but are never topic evidence.
 // New extractors record their exact routing labels in payload.source_tags as well.
 namespace MemoryMetadata {
+inline bool sameProposition(const MemoryEntry& a, const MemoryEntry& b) {
+    const auto normalized = [](const QString& text) { return text.simplified().toCaseFolded(); };
+    const auto value = [](const QJsonValue& v) {
+        return v.isUndefined() ? QJsonValue(QJsonValue::Null) : v;
+    };
+    const bool useKey = a.content.trimmed().isEmpty() && b.content.trimmed().isEmpty() &&
+                        a.summary.trimmed().isEmpty() && b.summary.trimmed().isEmpty();
+    return a.type == b.type && (!useKey || normalized(a.key) == normalized(b.key)) &&
+           normalized(a.summary) == normalized(b.summary) &&
+           normalized(a.content) == normalized(b.content) && value(a.value) == value(b.value);
+}
+
 inline bool isSourceTag(const QString& value) {
     static const QSet<QString> labels = {
         "daydream_inbox", "user_interaction", "manual", "user_request",
@@ -63,6 +75,7 @@ inline QDateTime lastMentionTime(const MemoryEntry& entry) {
 }
 
 inline void mergeContext(MemoryEntry& target, const MemoryEntry& source) {
+    mergeAttributionOrigins(target.attribution, source.attribution);
     const auto latest = std::max(lastMentionTime(target), lastMentionTime(source));
     if (latest.isValid()) target.lastMentionedAt = latest;
     for (const auto& id : sessionIds(source)) recordSession(target, id);

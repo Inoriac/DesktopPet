@@ -266,6 +266,7 @@ set(CORE_SOURCES
     core/ai/chat/chat_preparation_executor.cpp
     core/ai/chat/chat_side_effect_queue.h
     core/ai/chat/chat_side_effect_queue.cpp
+    core/ai/memory/memory_attribution_service.cpp
 
     core/ai/context_builder.h
     core/ai/context_builder.cpp
@@ -689,6 +690,7 @@ set(AGENT_RUNTIME_TEST_SUPPORT_SOURCES
     core/ai/chat/chat_preparation_executor.cpp
     core/ai/chat/chat_side_effect_queue.h
     core/ai/chat/chat_side_effect_queue.cpp
+    core/ai/memory/memory_attribution_service.cpp
     core/ai/ai_call_logger.h
     core/ai/ai_call_logger.cpp
     core/ai/agent/agent_session.h
@@ -1090,6 +1092,9 @@ add_desktop_pet_cpp_test(chat_side_effect_queue_tests ChatSideEffectQueueTests
         ${EVENT_LEDGER_SOURCES}
         core/ai/chat/chat_side_effect_queue.h
         core/ai/chat/chat_side_effect_queue.cpp
+        core/ai/memory/memory_attribution_service.cpp
+        core/ai/memory/daydream_consolidator.cpp core/ai/memory/batch_selector.cpp
+        core/ai/memory/daydream_relation_reviewer.cpp core/ai/memory/hybrid_graph_builder.cpp
         core/ai/ai_call_logger.h
         core/ai/ai_call_logger.cpp
         core/ai/memory/memory_types.h
@@ -1105,6 +1110,11 @@ add_desktop_pet_cpp_test(chat_side_effect_queue_tests ChatSideEffectQueueTests
         core/ai/memory/memory_relation_graph.cpp
         core/ai/memory/tag_cooccurrence_graph.h
         core/ai/memory/tag_cooccurrence_graph.cpp
+        core/ai/memory/memory_retriever.cpp core/ai/memory/memory_extractor.cpp
+        core/ai/memory/memory_keyword_index.cpp core/ai/memory/hippocampus_working_set.cpp
+        core/ai/memory/active_memory_pool.cpp core/ai/memory/associative_activation_engine.cpp
+        core/ai/memory/memory_cue_extractor.cpp core/ai/memory/actr_ranker.cpp
+        core/ai/memory/working_memory_cache.cpp core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -1320,6 +1330,21 @@ add_desktop_pet_cpp_test(emotion_runtime_tests EmotionRuntimeTests
         Qt::Test
 )
 
+add_desktop_pet_cpp_test(memory_attribution_tests MemoryAttributionTests
+    SOURCES tests/test_memory_attribution.cpp core/ai/memory/memory_attribution_service.cpp
+        core/ai/memory/memory_store.cpp core/ai/memory/sqlite_memory_repository.cpp
+        core/ai/memory/memory_policy.cpp core/ai/memory/memory_extractor.cpp
+        core/ai/memory/memory_retriever.cpp core/ai/memory/memory_relation_graph.cpp
+        core/ai/memory/tag_cooccurrence_graph.cpp core/ai/memory/active_memory_pool.cpp
+        core/ai/memory/hippocampus_working_set.cpp core/ai/memory/memory_keyword_index.cpp
+        core/ai/memory/associative_activation_engine.cpp core/ai/memory/actr_ranker.cpp
+        core/ai/memory/memory_cue_extractor.cpp core/ai/memory/working_memory_cache.cpp
+        core/ai/memory/daydream_consolidator.cpp core/ai/memory/batch_selector.cpp
+        core/ai/memory/daydream_relation_reviewer.cpp core/ai/memory/hybrid_graph_builder.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES Qt::Core Qt::Sql Qt::Test
+)
+
 # ---- Memory 写入策略测试 ----
 add_desktop_pet_cpp_test(memory_strategy_tests MemoryStrategyTests
     SOURCES
@@ -1464,6 +1489,7 @@ add_desktop_pet_cpp_test(memory_recall_tests MemoryRecallTests
 # ---- Phase 4.2 混合建图引擎测试 ----
 add_desktop_pet_cpp_test(hybrid_graph_builder_tests HybridGraphBuilderTests
     SOURCES
+        core/ai/memory/memory_policy.cpp
         tests/test_hybrid_graph_builder.cpp
         core/ai/memory/batch_selector.h
         core/ai/memory/batch_selector.cpp

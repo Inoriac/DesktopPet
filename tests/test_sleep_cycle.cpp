@@ -492,6 +492,8 @@ class SleepCycleTests : public QObject {
 private slots:
     void maintenanceCommitsSmallBatchesAndRetainsProgressAfterCancellation();
     void maintenanceReplaysDurableBatchExactlyOnce();
+    void migrationWaitsForSleepRecovery_data();
+    void migrationWaitsForSleepRecovery();
     void createAsync_whenHighValueEventCompletes_shouldStageShortPrivateSummaryWithoutBlockingReply();
     void createAsync_whenCallbackArrivesAfterCancellation_shouldDiscardResult();
     void createAsync_whenModelReturnsReasoningTrace_shouldPersistOnlyRequestedSummaryFields();
@@ -680,6 +682,8 @@ void SleepCycleTests::maintenanceReplaysDurableBatchExactlyOnce() {
     staged.operation = "apply";
     staged.payload = built.value().toJson();
     QVERIFY(fixture.memory.stageSleepChange(staged)); // Simulate crash after model result was saved.
+    const auto original = fixture.memory.preparedSleepChanges("maintenance", "daydream_maintenance");
+    QVERIFY(original.isOk());
     ChatSideEffectQueue writer;
     QVERIFY(writer.start({kProfileId, fixture.directory.filePath("agent_runtime.sqlite"),
         fixture.memory.databasePath(), fixture.directory.filePath("calls.jsonl")}).isOk());
@@ -697,6 +701,54 @@ void SleepCycleTests::maintenanceReplaysDurableBatchExactlyOnce() {
     QTRY_COMPARE(finished, 2);
     QVERIFY(fixture.memory.refreshDatabaseOnly());
     QCOMPARE(fixture.memory.all().size(), 2);
+    const auto recovered = fixture.memory.preparedSleepChanges("maintenance", "daydream_maintenance");
+    QVERIFY(recovered.isOk());
+    QCOMPARE(recovered.value().size(), 1);
+    QCOMPARE(recovered.value().first().payloadHash, original.value().first().payloadHash);
+    QCOMPARE(recovered.value().first().payload, original.value().first().payload);
+    QVERIFY(fixture.memory.isSleepChangeFinalized(staged.changeId, original.value().first().payloadHash));
+    QVERIFY(fixture.modelClient.requests.isEmpty());
+    writer.stop(true);
+}
+
+void SleepCycleTests::migrationWaitsForSleepRecovery_data() {
+    QTest::addColumn<QString>("targetType");
+    QTest::newRow("daydream") << QString("daydream_change_set");
+    QTest::newRow("future-memory-stage") << QString("future_memory_change");
+}
+
+void SleepCycleTests::migrationWaitsForSleepRecovery() {
+    QFETCH(QString, targetType);
+    ReflectionFixture fixture;
+    QVERIFY(fixture.open());
+    const auto source = addInbox(fixture.memory);
+    StagedMemoryChange staged;
+    staged.sessionId = "formal-sleep";
+    staged.changeId = "unresolved-decision";
+    staged.targetType = targetType;
+    staged.operation = "apply";
+    staged.payload = QJsonObject{{"sourceId", source.id}};
+    QVERIFY(fixture.memory.stageSleepChange(staged));
+    ChatSideEffectQueue writer;
+    QVERIFY(writer.start({kProfileId, fixture.directory.filePath("agent_runtime.sqlite"),
+        fixture.memory.databasePath(), fixture.directory.filePath("calls.jsonl")}).isOk());
+    bool drained = false;
+    QVERIFY(writer.submitMemoryTask([](MemoryStore&) { return QJsonObject{}; },
+        [&](QJsonObject) { drained = true; }));
+    QTRY_VERIFY(drained);
+    // Give the queued migration attempt its event-loop turn before inspecting state.
+    QTest::qWait(50);
+    QVERIFY(!fixture.memory.readForRecall(source.id)->attribution.present());
+    QSqlQuery query(QSqlDatabase::database(fixture.memory.databaseConnectionName()));
+    QVERIFY(query.exec("SELECT COUNT(*) FROM agent_attribution_migrations"));
+    QVERIFY(query.next());
+    QCOMPARE(query.value(0).toInt(), 0);
+    query.finish();
+    // The coordinator owns this decision. Simulate its abort, then the deferred
+    // worker must resume without a restart or a new model call.
+    QVERIFY(fixture.memory.abortSleepChanges(staged.sessionId));
+    QTRY_VERIFY_WITH_TIMEOUT(fixture.memory.readForRecall(source.id)->attribution.present(), 3000);
+    QCOMPARE(fixture.memory.readForRecall(source.id)->status, MemoryStatus::Active);
     QVERIFY(fixture.modelClient.requests.isEmpty());
     writer.stop(true);
 }

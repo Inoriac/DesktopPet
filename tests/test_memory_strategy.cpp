@@ -71,6 +71,7 @@ class TestMemoryStrategy : public QObject {
     Q_OBJECT
 
 private slots:
+    void testMemoryOrganizeRespectsPeopleAndAtomicOrigins();
     void testExtractorCreatesPreferenceFromLikeStatement();
     void testExtractorCreatesSemanticFromRememberStatement();
     void testExtractorCreatesForgetCandidate();
@@ -1298,6 +1299,51 @@ void TestMemoryStrategy::testMemoryOrganizeArchivesOperationalEvents() {
     const MemoryEntry* after = store.findById(stored.id);
     QVERIFY(after);
     QCOMPARE(after->status, MemoryStatus::Archived);
+}
+
+void TestMemoryStrategy::testMemoryOrganizeRespectsPeopleAndAtomicOrigins() {
+    QTemporaryDir directory;
+    MemoryStore store;
+    setupStoreWithDb(store, directory);
+    store.setProfileId("p");
+    auto add = [&](const QString& id, const QString& person, const QString& origin,
+                   double importance) {
+        MemoryEntry entry;
+        entry.id = id;
+        entry.type = MemoryType::Preference;
+        entry.summary = entry.content = "喜欢猫";
+        entry.key = id;
+        entry.importance = importance;
+        entry.attribution.profileId = "p";
+        entry.attribution.resolved = true;
+        entry.attribution.people = {{person, MemoryPersonRole::Subject}};
+        entry.attribution.origins = {
+            {origin, "A", person, QDateTime::currentDateTimeUtc(), origin, true}};
+        return store.addEntry(entry);
+    };
+    const auto alice = add("alice", "alice", "a", 0.9);
+    const auto bob = add("bob", "bob", "b", 0.8);
+    const auto bobAgain = add("bob-again", "bob", "b2", 0.7);
+    MemoryOrganizeTool tool(&store);
+    const auto result = tool.execute({{"mode", "merge_duplicates"}});
+    QVERIFY(result.success);
+    QCOMPARE(result.data["superseded"].toInt(), 1);
+    QCOMPARE(store.readForRecall(alice.id)->status, MemoryStatus::Active);
+    const auto canonical = store.readForRecall(bob.id);
+    QCOMPARE(canonical->status, MemoryStatus::Active);
+    QCOMPARE(canonical->attribution.origins.size(), 2);
+    QCOMPARE(store.readForRecall(bobAgain.id)->status, MemoryStatus::Superseded);
+    const auto bobThird = add("bob-third", "bob", "b3", 0.6);
+    QSqlQuery q(QSqlDatabase::database(store.databaseConnectionName()));
+    QVERIFY(q.exec(
+        "CREATE TRIGGER deny_new_origin BEFORE INSERT ON memory_origins WHEN NEW.memory_id='bob' "
+        "AND NEW.origin_id='b3' BEGIN SELECT RAISE(ABORT,'blocked'); END"));
+    const auto failed = tool.execute({{"mode", "merge_duplicates"}});
+    QVERIFY(!failed.success);
+    QCOMPARE(store.readForRecall(bobThird.id)->status, MemoryStatus::Active);
+    QCOMPARE(store.readForRecall(bob.id)->attribution.origins.size(), 2);
+    QVERIFY(
+        !store.relationGraph().hasRelation(bob.id, bobThird.id, MemoryRelationType::Supersedes));
 }
 
 void TestMemoryStrategy::testMemoryOrganizeMergesDuplicates() {

@@ -24,7 +24,17 @@
 - [code-impl 验证维护] 默认人格已包含七项 trait，PromptRendererTests 仍断言仅有三项的旧完整句子。按现有产品默认值修正断言，检查七项描述均存在，不依赖排序；不改人格生产逻辑。
 - [code-impl Task 1 Wave 回归] 全量编译暴露 ModuleConnectivityTests 的旧 fixture 依赖隐式 owner 和未登记 guest；测试已显式提供 local_owner，并通过 PersonDirectory 取得外部人物 ID，保留原数值和隔离断言。无需放宽生产实现。
 
+- [code-impl Task 2 sanity check] 已验证 §3.3 现有锚点：MemoryExtractor::extractFromUserInput(input, triggerTag)、MemoryPolicy::stageCandidates(candidates, store)、MemoryStore::persistMutationBatch(batch, writtenIds)、loadDatabaseOnly(errorMessage)、MemoryMetadata::mergeContext/semanticRevision、图传播 mayParticipate 回调及 ChatSideEffectQueue writer。新增归属 DTO、共享 ContextSpec 和来源查询接口按主设计 1.2 实施。
+
+- [code-impl Task 2 TDD 与验收] 原始来源校验、错配、关联读写失败、图/临时记忆范围、维护分组、转述对象证明、模型跨人冲突、恢复顺序均取得实际 RED→GREEN。新增损坏 audience 四场景、writer 原置信度门槛和强化时范围/敏感/过期复核；最终完整构建成功，CTest 49/49 通过。聊天缓存断言等待实际异步提交，保留原行为验证。
+- [code-impl Task 2 锚点复核] MemoryAttributionService::ingestMemory/recallForContext/migrateAttribution、ChatSideEffectQueue::persistCandidates/migrateNextBatch、MemoryStore::summaryForContext(ContextSpec)、DaydreamConsolidator::recoverMaintenance 已按主设计接入；正式 staging 在迁移写事务内复查，只有精确维护重试租约不阻塞。
+
 ## 设计偏差
+
+
+- [code-impl Task 2 设计补全] 主设计 1.2 明确事件预分配 UUID、writer 查询已提交来源、pending 来源、共享 ContextSpec、按上下文缓存与迁移顺序。现有 GUI 先 stage 后异步落库不能直接证明事件已提交；最终人物去重和冲突须移到/复核于 writer。新写先统一带保守归属后再批量迁移，不长时间暂停写入；这是 §3.3/§5.3 的明确修订，不改变产品范围。
+- [code-impl Task 2 转述引用补全] 目录存在性无法证明原文对象。主设计新增宿主来源 DTO 的 resolvedPeople，转述对象须来自已提交事件的宿主解析引用，未验证 ID 返回 UNKNOWN_REFERENCE。现有规则不会凭昵称认人，缺引用的候选保持 unresolved；严格第一人称沿用已验证 speaker。属于来源校验的工程细化，沿用用户自主推进授权。
+- [code-impl Task 2 恢复顺序补全] 归属迁移会改变语义 revision，必须先恢复原 maintenance/daydream_maintenance 批次，并在正式 Prepared staging 清空前延后迁移；使用原 changeId/hash/CAS，不重新调用模型。正常 bootstrap 沿用既有睡眠恢复顺序，独立 writer 用单个低频计时器等待。已同步主设计 §3.3，正式睡眠仍归协调器决策。
 
 无未同步的设计偏差。initialize 显式启动接口、人物 revision CAS、接受事件校验与 TaskStore 来源持久化均已回填主设计。
 

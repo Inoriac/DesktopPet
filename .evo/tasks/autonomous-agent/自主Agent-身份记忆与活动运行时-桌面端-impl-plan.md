@@ -52,11 +52,16 @@ Wave 1 五项校验通过；下一设计项为 Task 2。本次结果不代表后
 ## Task 2: 人物记忆归属、召回与迁移
 
 - 关联设计: §3.3 人物记忆归属、召回与迁移
-- 状态: [ ]
+- 状态: [x]
 - Wave: 2
 - 依赖: Task 1
 
-文件：`core/ai/memory/` 中抽取、策略、存储、召回、活跃池及巩固；`core/ai/reflection/memory_consolidation_service.*`；`tests/test_memory_strategy.cpp`、`tests/test_memory_recall.cpp`、新增 `tests/test_memory_attribution.cpp`；`CMakeLists.txt`。
+文件：
+- `core/ai/memory/` 新增 memory_attribution_types 与 memory_attribution_service；修改抽取、策略、存储、SQLite repository、metadata、召回、活跃池及巩固。
+- `core/ai/tools/memory_tools.cpp` 现有维护工具的重复合并同样遵守人物/范围；回归在 `tests/test_memory_strategy.cpp`。
+- 全量回归兼容：`tests/test_streaming_dialogue.cpp`、`tests/test_sleep_cycle.cpp`，验证异步提交、本地入口与旧巩固检查点恢复。
+- `core/ai/context/context_spec.h`、`core/ai/reflection/memory_consolidation_service.*`；`core/ai/ai_brain.h` 与 ai_brain*.cpp 的必要记忆入口；`core/ai/chat/chat_preparation_types.h`、`chat_preparation_executor.cpp`、`chat_side_effect_queue.h/.cpp`；`core/ai/task/task_experience_adapter.cpp`；事件仓库/校验器如需补来源查询。
+- 测试：新增 `tests/test_memory_attribution.cpp`；现有 `tests/test_memory_strategy.cpp`、`tests/test_memory_recall.cpp`、`tests/test_memory_recall_phase2.cpp`、`tests/test_chat_preparation_executor.cpp`、`tests/test_chat_side_effect_queue.cpp`、`tests/test_memory_recall_phase3.cpp`（巩固回归位于 memory_strategy） 、`tests/test_task_experience.cpp`、`tests/test_module_connectivity.cpp`，按实际入口选取；构建：根 `CMakeLists.txt`。
 
 测试用例：
 - ingestMemory_twoSpeakersSamePreference_separateAttribution（happy path）。
@@ -66,6 +71,28 @@ Wave 1 五项校验通过；下一设计项为 Task 2。本次结果不代表后
 - recallForContext_privateConversation_excludesOtherConversationsAndGraphPaths。
 - migrateAttribution_repeatedBatch_preservesIdsSourcesAndProgress（happy path）。
 - migrateAttribution_ambiguousLegacyText_remainsUnresolvedAndOwnerOnly。
+- ingestMemory_sameOriginIdempotent_distinctOriginsAccumulate。
+- ingestMemory_pendingSourceLaterCommitted_resolvesWithoutDuplicateEvidence。
+- ingestMemory_mismatchedSourceOrStoreFailure_doesNotInventPerson。
+- memoryAttribution_sqliteAndJsonRoundTrip_preservesPeopleAudienceOrigins。
+- memoryAttribution_associationFailure_rollsBackBody。
+- recallForContext_contextSwitch_restoresOwnTopicCandidates。
+- recallForContext_hiddenNodes_notTraversedReinforcedOrCached。
+- consolidate_incompatibleSubjectsOrAudience_retainsSeparateMemories。
+- consolidate_lateOrigin_retainedOrRejectsStalePlan。
+- migrateAttribution_batchFailure_keepsCursorAndOriginalMemoryFields。
+- chatMemory_committedInputEvent_isActualOrigin；failedEvent_remainsUnresolved。
+
+具体接入与迁移边界以主设计 1.2 修订为准。
+
+Wave 2 校验（2026-10-16）：
+- 文件冲突：通过，单 Task 串行实施，主 agent 维护设计与记录；实现 agent 已交回构建，无并发写入。
+- 构建/全量测试：完整应用及所有测试目标构建成功；最终 CTest **49/49 组通过**，13.50 秒。聊天与睡眠旧回归均已修复，无跳过。
+- 行为覆盖：上述场景与测试映射见同目录审查记录；追加真实来源引用证明、损坏 audience 拒绝读取、原写入策略、旧巩固检查点先恢复等回归均通过。
+- 测试布局：通过，新增 tests/test_memory_attribution.cpp 由根 CMakeLists.txt 注册。
+- 实现锚点与留痕：通过，已核对归属服务、writer、范围召回、临时记忆、任务摘要和恢复路径，context.md 有 sanity check 与修订记录。
+
+Wave 2 五项校验通过。下一设计项为 Task 3；真实 QQ 尚未接入。
 
 ## Task 3: 会话输入、上下文准备与回复定位
 

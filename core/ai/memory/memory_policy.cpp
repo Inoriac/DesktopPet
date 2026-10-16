@@ -16,9 +16,9 @@ std::optional<MemoryEntry> duplicateActiveMemory(const MemoryStore* store, const
     const MemoryEntry& target = candidate.entry;
     for (const MemoryEntry& entry : store->all()) {
         if (entry.status != MemoryStatus::Active) continue;
-        if (entry.type == target.type
-            && !target.summary.trimmed().isEmpty()
-            && entry.summary.compare(target.summary, Qt::CaseInsensitive) == 0) {
+        if (attributionCanMerge(entry.attribution, target.attribution) &&
+            MemoryMetadata::sameProposition(entry, target) && !target.summary.trimmed().isEmpty() &&
+            entry.summary.compare(target.summary, Qt::CaseInsensitive) == 0) {
             return entry;
         }
     }
@@ -96,18 +96,19 @@ std::optional<PreferenceAssertion> preferenceAssertion(const MemoryEntry& entry)
 bool hasOppositeAssertion(const MemoryEntry& a, const MemoryEntry& b) {
     const auto assertionA = preferenceAssertion(a);
     const auto assertionB = preferenceAssertion(b);
-    return assertionA && assertionB
-        && assertionA->subject == assertionB->subject
-        && assertionA->attribute == assertionB->attribute
-        && assertionA->object == assertionB->object
-        && assertionA->positive != assertionB->positive;
+    return attributionSameSubjects(a.attribution, b.attribution) && assertionA && assertionB &&
+           assertionA->subject == assertionB->subject &&
+           assertionA->attribute == assertionB->attribute &&
+           assertionA->object == assertionB->object && assertionA->positive != assertionB->positive;
 }
 
 bool isFirstOfScopeAndType(const MemoryStore* store, const MemoryEntry& entry) {
     for (const MemoryEntry& existing : store->all()) {
         if (existing.id == entry.id) continue;
         if (existing.status != MemoryStatus::Active) continue;
-        if (existing.type == entry.type && existing.scope == entry.scope) return false;
+        if (attributionCanMerge(existing.attribution, entry.attribution) &&
+            existing.type == entry.type && existing.scope == entry.scope)
+            return false;
     }
     return true;
 }
@@ -130,6 +131,10 @@ MemoryRelation stagedRelation(const MemoryEntry& from,
     return relation;
 }
 
+}
+
+bool MemoryPolicy::hasConflictingAssertion(const MemoryEntry& left, const MemoryEntry& right) {
+    return hasOppositeAssertion(left, right);
 }
 
 bool MemoryPolicy::matchesForgetQuery(const MemoryEntry& entry,
@@ -180,6 +185,15 @@ StagedMemoryPolicyResult MemoryPolicy::stageCandidates(
             bool matched = false;
             for (const MemoryEntry& entry : store->all()) {
                 if (!matchesForgetQuery(entry, candidate.query)) continue;
+                const auto context = ContextSpec::localOwner(store->profileId());
+                if (!candidate.entry.attribution.present()) {
+                    if (!memoryVisibleInContext(entry.attribution, context))
+                        continue;
+                } else if (!attributionSameSubjects(entry.attribution,
+                                                    candidate.entry.attribution) ||
+                           entry.attribution.audience.toJson() !=
+                               candidate.entry.attribution.audience.toJson())
+                    continue;
                 MemoryEntry updated = entry;
                 updated.status = MemoryStatus::Deleted;
                 updated.updatedAt = QDateTime::currentDateTimeUtc();
@@ -209,7 +223,10 @@ StagedMemoryPolicyResult MemoryPolicy::stageCandidates(
             if (candidate.entry.lastMentionedAt.isValid()) {
                 MemoryEntry updated = *duplicate;
                 MemoryMetadata::mergeContext(updated, candidate.entry);
-                updated.mentionCount = qMax(1, updated.mentionCount) + 1;
+                const int newOrigins =
+                    updated.attribution.origins.size() - duplicate->attribution.origins.size();
+                updated.mentionCount = qMax(1, updated.mentionCount) +
+                                       (updated.attribution.present() ? qMax(0, newOrigins) : 1);
                 updated.updatedAt = QDateTime::currentDateTimeUtc();
                 store->stageEntryUpdate(updated, &staged.mutations);
             }
@@ -267,6 +284,9 @@ void MemoryPolicy::discoverRelations(const MemoryEntry& newEntry,
     for (const MemoryEntry& existing : store->all()) {
         if (existing.id == newEntry.id) continue;
         if (existing.status != MemoryStatus::Active) continue;
+
+        if (!attributionCanMerge(existing.attribution, newEntry.attribution))
+            continue;
 
         // Supersedes: same type + same key
         if (existing.type == newEntry.type && existing.key == newEntry.key) {

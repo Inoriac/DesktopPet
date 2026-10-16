@@ -56,6 +56,7 @@ ChatPreparationRequest requestFor(const QString& reason = QStringLiteral("我喜
     request.petName = QStringLiteral("Milltina");
     request.runtimeMetadata.profileId = QStringLiteral("profile-test");
     request.runtimeMetadata.subjectId = QStringLiteral("owner");
+    request.runtimeMetadata.originKind = OriginKind::LocalOwner;
     request.identityBaseline = IdentityBaseline::defaults();
     request.personalityPolicy = PersonalityPolicy{};
     return request;
@@ -187,6 +188,7 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void prepare_externalContextFiltersWorkingMemoryBeforeQuery();
     void chatPreparation_emptySubject_respectsOrigin_data();
     void chatPreparation_emptySubject_respectsOrigin();
 
@@ -1491,5 +1493,50 @@ void ChatPreparationExecutorTests::avatarDescriptionAndStateRemainSeparateFromId
     QVERIFY(!text.contains("pet_state=Idle"));QCOMPARE(request.runtimeMetadata.profileId,originalProfile);
     executor.stop();
 }
+
+void ChatPreparationExecutorTests::prepare_externalContextFiltersWorkingMemoryBeforeQuery() {
+    QTemporaryDir directory;
+    auto environment = environmentFor(directory);
+    MemoryStore store;
+    store.setProfileId(environment.profileId);
+    store.setDatabasePath(environment.memoryDatabasePath);
+    QVERIFY(store.loadDatabaseOnly());
+    MemoryEntry publicMemory;
+    publicMemory.id = "public-cue";
+    publicMemory.type = MemoryType::Semantic;
+    publicMemory.summary = publicMemory.content = "金丝雀线索只应在明确询问时召回";
+    publicMemory.attribution.profileId = environment.profileId;
+    publicMemory.attribution.audience.kind = MemoryAudienceKind::Shareable;
+    QVERIFY(!store.addEntry(publicMemory).id.isEmpty());
+    ChatPreparationExecutor executor;
+    QVERIFY(executor.start(environment));
+    auto request = requestFor("继续");
+    ContextSpec context;
+    context.profileId = environment.profileId;
+    context.originKind = OriginKind::External;
+    context.conversationId = "B";
+    request.context = context;
+    request.runtimeMetadata.originKind = OriginKind::External;
+    WorkingMemoryItem hidden;
+    hidden.id = "private-tool";
+    hidden.source = "user_task";
+    hidden.summary = hidden.content = "金丝雀线索";
+    hidden.attribution.profileId = environment.profileId;
+    hidden.attribution.audience = {MemoryAudienceKind::Conversation, {"A"}};
+    request.workingMemory = {hidden};
+    ChatPreparationResult result;
+    QVERIFY(prepareOnce(executor, request, &result));
+    for (const auto& message : result.messages)
+        QVERIFY(!message.content.contains("金丝雀线索"));
+    request.requestId = "explicit-public";
+    request.reason = "金丝雀线索";
+    QVERIFY(prepareOnce(executor, request, &result));
+    bool found = false;
+    for (const auto& message : result.messages)
+        found = found || message.content.contains(publicMemory.content);
+    QVERIFY(found);
+    executor.stop();
+}
+
 QTEST_MAIN(ChatPreparationExecutorTests)
 #include "test_chat_preparation_executor.moc"

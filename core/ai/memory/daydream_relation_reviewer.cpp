@@ -6,6 +6,7 @@
 #include <algorithm>
 
 #include "memory_metadata.h"
+#include "memory_policy.h"
 #include "memory_relation_graph.h"
 
 namespace {
@@ -95,9 +96,11 @@ int DaydreamRelationReviewer::applyProposals(const QList<RelationProposal>& prop
                                              const QList<MemoryEntry>& entries,
                                              MemoryRelationGraph& graph) {
     QSet<QString> validMemoryIds;
+    QHash<QString, MemoryEntry> byId;
     validMemoryIds.reserve(entries.size());
     for (const MemoryEntry& entry : entries) {
         validMemoryIds.insert(entry.id);
+        byId.insert(entry.id, entry);
     }
 
     const QDateTime now = QDateTime::currentDateTimeUtc();
@@ -107,6 +110,13 @@ int DaydreamRelationReviewer::applyProposals(const QList<RelationProposal>& prop
         const QString error = validateRelationProposal(
             proposal, validMemoryIds, m_policy.minAcceptedConfidence);
         if (!error.isEmpty()) continue;  // 不合法提案丢弃（不中断批次）
+
+        const auto from = byId.value(proposal.fromMemoryId), to = byId.value(proposal.toMemoryId);
+        if (proposal.type == MemoryRelationType::ConflictsWith &&
+            (from.attribution.present() || to.attribution.present()) &&
+            (!attributionCanMerge(from.attribution, to.attribution) ||
+             !MemoryPolicy::hasConflictingAssertion(from, to)))
+            continue;
 
         // 同批次内同 (from,to,type) 只落库一次（防模型重复提交）
         const QString pairKey = proposal.fromMemoryId + QLatin1Char('|')

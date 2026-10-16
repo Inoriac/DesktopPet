@@ -273,6 +273,12 @@ ChatPreparationRequest AIBrain::makeChatPreparationRequest(
     request.skills = m_skillStore.all();
     request.emotion = currentEmotionSnapshot();
     request.runtimeMetadata = m_chatPreparationRuntimeMetadata;
+    ContextSpec context;
+    context.profileId = m_chatPreparationRuntimeMetadata.profileId;
+    context.originKind = m_chatPreparationRuntimeMetadata.originKind;
+    if (context.originKind == OriginKind::LocalOwner)
+        context = ContextSpec::localOwner(context.profileId);
+    request.context = context;
     request.identityBaseline = m_identityBaseline;
     request.personalityPolicy = m_personalityPolicy;
     request.promptTemplate = m_promptTemplate;
@@ -315,6 +321,8 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
                                 ? QStringLiteral("TOOL_EXECUTION_FAILED")
                                 : QStringLiteral("TOOL_NOT_EXECUTED"));
     }
+    const QString originId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    runtimeEvent["origin_event_id"] = originId;
     appendRuntimeEvent(QStringLiteral("ToolExecutionCompleted"), sessionId,
                        runtimeEvent);
 
@@ -354,7 +362,13 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
         effect.generation = m_activeDialogueResponse
             ? m_activeDialogueResponse->generation : m_requestGeneration;
         effect.sessionId = sessionId;
-        effect.memoryMutations = mutations;
+        MemoryCandidate candidate;
+        candidate.entry = mutations.entries.first().after;
+        candidate.explicitRequest = true;
+        effect.memoryCandidates = {candidate};
+        effect.attributionContext.profileId = m_chatPreparationRuntimeMetadata.profileId;
+        effect.attributionContext.originId = originId;
+        effect.attributionContext.claimKind = MemoryClaimKind::Fact;
         if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
             m_memoryStore.rollbackMutationBatch(mutations);
             qWarning() << "[AIBrain] unable to queue tool outcome memory";
@@ -367,6 +381,8 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
     const QString summary = QStringLiteral("工具 %1 执行%2")
         .arg(toolName, outcome.result.success ? QStringLiteral("成功") : QStringLiteral("失败"));
     WorkingMemoryItem wm;
+    wm.attribution.profileId = m_chatPreparationRuntimeMetadata.profileId;
+    wm.attribution.origins.append({originId, {}, {}, {}, originId, false});
     wm.summary = summary;
     wm.content = summary + QStringLiteral("：")
         + m_toolRuntime.sanitizer()->toPayload(outcome.result).left(1200);
@@ -406,6 +422,7 @@ void AIBrain::rememberScreenObservation(const QString& observation) {
     if (observation.trimmed().isEmpty()) return;
     m_workingMemoryCache.cleanup();
     WorkingMemoryItem item;
+    item.attribution.profileId = m_chatPreparationRuntimeMetadata.profileId;
     item.summary = QStringLiteral("屏幕观察（可能不准确）：") + observation.left(600);
     item.content = item.summary;
     item.source = QStringLiteral("screen_observation");

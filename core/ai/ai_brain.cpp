@@ -69,6 +69,10 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     , m_modelRoleRegistry(std::move(modelRoles))
     , m_modelRouter(&m_modelRoleRegistry,
                     modelClient ? modelClient : &m_modelClient) {
+    // AIBrain is the trusted desktop entry point even before runtime services attach.
+    // Generic preparation DTOs remain Internal unless the host projects a context.
+    m_chatPreparationRuntimeMetadata.originKind = OriginKind::LocalOwner;
+    m_chatPreparationRuntimeMetadata.subjectId = QStringLiteral("owner");
     m_identityBaseline = ConfigManager::instance().getIdentityBaseline();
     m_personalityPolicy = ConfigManager::instance().getPersonalityPolicy();
     m_chatPreparationExecutor = std::make_unique<ChatPreparationExecutor>();
@@ -123,6 +127,7 @@ Result<void, DomainError> AIBrain::initializeStorage(
             domainError(QStringLiteral("RUNTIME_START_INVALID"),
                         QStringLiteral("AI brain storage paths are empty")));
     }
+    m_memoryStore.setProfileId(m_chatPreparationRuntimeMetadata.profileId);
     m_memoryStore.setDatabasePath(config.databasePath);
     m_memoryStore.setStoragePath(config.jsonPath);
     m_proactiveStatePath = QDir(QFileInfo(config.databasePath).absolutePath())
@@ -209,6 +214,7 @@ void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     m_chatPreparationRuntimeMetadata = services
         ? services->chatPreparationRuntimeMetadata()
         : ChatPreparationRuntimeMetadata{};
+    m_memoryStore.setProfileId(m_chatPreparationRuntimeMetadata.profileId);
     if (services) initializeTaskRuntime();
     if (services && m_storageInitialized) {
         const auto started = startChatSideEffectQueue();
@@ -559,6 +565,7 @@ void AIBrain::triggerThink(const QString& reason,
                 ? QStringLiteral("proactive") : QStringLiteral("assistant"))
             : voiceSource;
         m_activeDialogueResponse->preparationRequestId = preparationRequestId;
+        m_activeDialogueResponse->inputEventId = QUuid::createUuid().toString(QUuid::WithoutBraces);
         m_activeDialogueResponse->uiAcknowledgeMs = qMax<qint64>(
             0, monotonicMilliseconds() - triggerStartedAt);
     }
@@ -673,6 +680,7 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
         effect.generation = result.generation;
         effect.sessionId = sessionId;
         effect.reinforcedEntries = reinforcement.entries;
+        effect.memoryContext = result.context;
         if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
             m_memoryStore.rollbackReinforcement(reinforcement);
             qWarning() << "[AIBrain] unable to queue memory reinforcement";
@@ -896,6 +904,8 @@ bool AIBrain::appendRuntimeEvent(const QString& type,
     }
     if (profileId.trimmed().isEmpty()) return false;
     EventDraft draft;
+    draft.eventId = payload.value("origin_event_id").toString();
+    draft.occurredAt = QDateTime::currentDateTimeUtc();
     draft.profileId = profileId;
     draft.type = type;
     draft.source = QStringLiteral("AIBrain");
@@ -904,6 +914,27 @@ bool AIBrain::appendRuntimeEvent(const QString& type,
     if (type == QLatin1String("UserMessageReceived")) {
         draft.payload.insert(QStringLiteral("origin_kind"), originKindToString(m_chatPreparationRuntimeMetadata.originKind));
         draft.payload.insert(QStringLiteral("subject_id"), m_chatPreparationRuntimeMetadata.subjectId);
+        draft.payload.insert(QStringLiteral("conversation_id"),
+                             m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner
+                                 ? QStringLiteral("local_owner")
+                                 : QString());
+        draft.payload.insert(QStringLiteral("request_id"),
+                             !requestId.isEmpty() ? requestId
+                             : m_activeDialogueResponse
+                                 ? m_activeDialogueResponse->preparationRequestId
+                                 : sessionId);
+        if (m_activeDialogueResponse) {
+            if (m_activeDialogueResponse->inputEventId.isEmpty())
+                m_activeDialogueResponse->inputEventId =
+                    QUuid::createUuid().toString(QUuid::WithoutBraces);
+            draft.eventId = m_activeDialogueResponse->inputEventId;
+            if (m_activeDialogueResponse->inputMentionedAt.isValid())
+                draft.occurredAt = m_activeDialogueResponse->inputMentionedAt;
+            if (m_activeDialogueResponse->inputEventDraft)
+                draft = *m_activeDialogueResponse->inputEventDraft;
+            else
+                m_activeDialogueResponse->inputEventDraft = draft;
+        }
     }
     DeferredChatSideEffect effect;
     effect.type = ChatSideEffectType::RuntimeEvent;
@@ -976,48 +1007,34 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
     }
     if (candidates.isEmpty() && impression.content.isEmpty()) return;
 
-    MemoryMutationBatch mutations;
-    if (!candidates.isEmpty()) {
-        mutations = m_memoryPolicy.stageCandidates(candidates, &m_memoryStore).mutations;
-    } else {
-        bool staged = false;
-        for (const MemoryEntry& existing : m_memoryStore.all()) {
-            if (existing.status != MemoryStatus::Active
-                || existing.partition != QLatin1String("hippocampus")
-                || existing.key != impression.key) {
-                continue;
-            }
-            MemoryEntry updated = existing;
-            MemoryMetadata::mergeContext(updated, impression);
-            updated.mentionCount = qMax(1, existing.mentionCount) + 1;
-            updated.updatedAt = QDateTime::currentDateTimeUtc();
-            if (!updated.evidence.contains(impression.content)) {
-                updated.evidence.append(impression.content);
-            }
-            staged = m_memoryStore.stageEntryUpdate(updated, &mutations);
-            break;
-        }
-        if (!staged) {
-            m_memoryStore.stageEntry(impression, &mutations);
-        }
+    if (candidates.isEmpty()) {
+        MemoryCandidate candidate;
+        candidate.entry = impression;
+        candidate.explicitRequest = true;
+        candidates.append(candidate);
     }
-    if (mutations.isEmpty()) return;
     if (!m_chatSideEffectQueue || !m_chatSideEffectQueue->isAccepting()) {
-        m_memoryStore.rollbackMutationBatch(mutations);
         qWarning() << "[AIBrain] user memory persistence queue is unavailable";
         return;
     }
-
     DeferredChatSideEffect effect;
     effect.type = ChatSideEffectType::UserMemoryWrite;
     effect.requestId = requestId;
     effect.generation = generation;
     effect.sessionId = sessionId;
-    effect.memoryMutations = mutations;
-    if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect))) {
-        m_memoryStore.rollbackMutationBatch(mutations);
+    effect.memoryCandidates = candidates;
+    effect.attributionContext.profileId = m_chatPreparationRuntimeMetadata.profileId;
+    effect.attributionContext.originId =
+        m_activeDialogueResponse ? m_activeDialogueResponse->inputEventId : QString();
+    effect.attributionContext.speakerPersonId = m_chatPreparationRuntimeMetadata.subjectId;
+    effect.attributionContext.conversationId =
+        m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner
+            ? QStringLiteral("local_owner")
+            : QString();
+    effect.attributionContext.claimKind = MemoryClaimKind::Reported;
+    effect.attributionContext.inferSelfStatementClaim = true;
+    if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect)))
         qWarning() << "[AIBrain] unable to queue user memory persistence";
-    }
 }
 
 std::optional<EmotionSnapshot> AIBrain::currentEmotionSnapshot() const {

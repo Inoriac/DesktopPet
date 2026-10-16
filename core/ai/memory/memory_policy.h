@@ -23,8 +23,10 @@ struct StagedMemoryPolicyResult {
 
 class MemoryPolicy {
 public:
+    static bool hasConflictingAssertion(const MemoryEntry& left, const MemoryEntry& right);
     static bool matchesForgetQuery(const MemoryEntry& entry,
                                    const QString& query);
+    bool shouldAutoWrite(const MemoryCandidate& candidate, QString* reason = nullptr) const;
 
     MemoryPolicyReport applyCandidates(const QList<MemoryCandidate>& candidates,
                                        MemoryStore* store) const;
@@ -33,7 +35,6 @@ public:
         MemoryStore* store) const;
 
 private:
-    bool shouldAutoWrite(const MemoryCandidate& candidate, QString* reason) const;
     void discoverRelations(const MemoryEntry& newEntry,
                            MemoryStore* store,
                            MemoryPolicyReport* report,

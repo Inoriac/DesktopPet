@@ -17,6 +17,8 @@ namespace {
 QJsonObject memoryJson(const MemoryEntry& entry, bool includeMetadata) {
     QJsonObject object;
     object.insert(QStringLiteral("id"), entry.id);
+    if (entry.attribution.present())
+        object.insert(QStringLiteral("attribution"), entry.attribution.toJson());
     object.insert(QStringLiteral("created_at"), entry.createdAt.toLocalTime().toString(Qt::ISODateWithMs));
     object.insert(QStringLiteral("last_mentioned_at"), MemoryMetadata::lastMentionTime(entry).toLocalTime().toString(Qt::ISODateWithMs));
     object.insert(QStringLiteral("summary"), entry.summary.left(200));
@@ -145,22 +147,9 @@ void MemoryConsolidationService::maintainAsync(ChatSideEffectQueue* writer, int 
         if (token.isCancelled() || !store.refreshDatabaseOnly()) return QJsonObject{{"error", true}};
         // Only this namespace is auto-replayed. Historical sleep staging still
         // requires its coordinator's durable Commit decision.
-        const auto pending = store.preparedSleepChanges(QStringLiteral("maintenance"),
-            QStringLiteral("daydream_maintenance"), true);
-        if (!pending.isOk()) return QJsonObject{{"error", true}};
-        QList<MemoryEntry> recoveredSources;
-        for (const auto& staged : pending.value()) {
-            if (token.isCancelled()) return QJsonObject{{"error", true}};
-            const auto change = DaydreamChangeSet::fromJson(staged.payload);
-            if (!change.isOk()) return QJsonObject{{"error", true}};
-            recoveredSources.append(change.value().snapshot.items);
-            const auto stats = DaydreamConsolidator(store).applyChangeSet(change.value());
-            if (!stats.committed) {
-                if (!stats.staleSnapshot) return QJsonObject{{"error", true}};
-                if (!store.removePreparedSleepChange(staged.sessionId, staged.changeId))
-                    return QJsonObject{{"error", true}};
-            }
-        }
+        const auto recovered = DaydreamConsolidator(store).recoverMaintenance(
+            [token] { return token.isCancelled(); });
+        if (!recovered) return QJsonObject{{"error", true}};
         const auto snapshot = DaydreamConsolidator(store).createSnapshot(qBound(1, maxItems, 32));
         // Reserve only the frozen IDs; new foreground writes remain eligible for
         // a later run. Ownership expires after a crash, never changes recall status.
@@ -168,7 +157,7 @@ void MemoryConsolidationService::maintainAsync(ChatSideEffectQueue* writer, int 
             return QJsonObject{{"error", true}};
         QJsonArray entries;
         for (const auto& entry : snapshot.items) entries.append(entry.toJson());
-        return QJsonObject{{"items", entries}, {"changedMemoryIds", changedIds(store, recoveredSources)}};
+        return QJsonObject{{"items", entries}, {"changedMemoryIds", changedIds(store, recovered.value())}};
     }, [this, alive, state](QJsonObject result) {
         if (!alive->load() || state->token.isCancelled()) return;
         if (result.value("error").toBool()) {

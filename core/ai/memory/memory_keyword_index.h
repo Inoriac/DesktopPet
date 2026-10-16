@@ -2,6 +2,7 @@
 #define DESKTOP_PET_MEMORY_KEYWORD_INDEX_H
 
 #include <QHash>
+#include <optional>
 #include <QList>
 #include <QSet>
 #include <QString>
@@ -21,6 +22,7 @@ struct KeywordMatch {
 // Text postings cover the working window; SQLite tag postings cover all history.
 class MemoryKeywordIndex {
 public:
+    void setContext(const ContextSpec& context);
     void rebuild(const QList<MemoryEntry>& entries);
     void upsert(const MemoryEntry& entry);
     void remove(const QString& memoryId);
@@ -46,6 +48,8 @@ private:
 
     QHash<QString, QSet<QString>> m_tokenPostings;  // token -> memoryIds
     QHash<QString, QSet<QString>> m_tagPostings;    // tag -> memoryIds
+    std::optional<ContextSpec> m_context;
+    QHash<QString, MemoryAttribution> m_attributions;
     QHash<QString, QStringList> m_docTokens;        // memoryId -> tokens（便于删除）
     QHash<QString, QStringList> m_docTags;          // memoryId -> tags
     QSet<QString> m_indexedIds;

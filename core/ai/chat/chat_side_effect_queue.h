@@ -15,6 +15,7 @@
 #include "ai/domain/domain_result.h"
 #include "ai/event/event_types.h"
 #include "ai/memory/memory_store.h"
+#include "ai/memory/memory_extractor.h"
 
 class QThread;
 
@@ -43,7 +44,10 @@ struct DeferredChatSideEffect {
     QString sessionId;
     EventDraft event;
     QList<MemoryEntry> reinforcedEntries;
+    std::optional<ContextSpec> memoryContext;
     MemoryMutationBatch memoryMutations;
+    QList<MemoryCandidate> memoryCandidates;
+    AttributionContext attributionContext;
     QJsonObject logRecord;
     // Executed on the existing SQLite writer. No model/network wait belongs here.
     std::function<QJsonObject(MemoryStore&)> memoryTask;

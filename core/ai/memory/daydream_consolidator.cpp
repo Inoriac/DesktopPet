@@ -738,6 +738,10 @@ bool DaydreamConsolidator::applyOne(const MemoryEntry& source,
             || target->status != MemoryStatus::Active) {
             return false;
         }
+        if (!attributionCanMerge(target->attribution, source.attribution)) {
+            ++stats->preserved;
+            return true;
+        }
         MemoryEntry updated = *target;
         const MemoryEntry staged = makeLongTermEntry(source, decision);
         updated.type = staged.type;
@@ -786,6 +790,30 @@ DaydreamConsolidator::Stats DaydreamConsolidator::applyDecisions(
         return stats;
     }
     return applyChangeSet(changeSet.value());
+}
+
+Result<QList<MemoryEntry>, DomainError> DaydreamConsolidator::recoverMaintenance(
+    const std::function<bool()>& cancelled) {
+    using R = Result<QList<MemoryEntry>, DomainError>;
+    const auto failure = [] {
+        return R::failure(domainError("MEMORY_STORE_UNAVAILABLE", "Maintenance recovery failed"));
+    };
+    if (!m_store.refreshDatabaseOnly()) return failure();
+    const auto pending = m_store.preparedSleepChanges("maintenance", "daydream_maintenance", true);
+    if (!pending) return R::failure(pending.error());
+    QList<MemoryEntry> sources;
+    for (const auto& staged : pending.value()) {
+        if (cancelled && cancelled()) return failure();
+        const auto change = DaydreamChangeSet::fromJson(staged.payload);
+        if (!change) return R::failure(change.error());
+        sources.append(change.value().snapshot.items);
+        const auto stats = applyChangeSet(change.value());
+        if (!stats.committed) {
+            if (!stats.staleSnapshot || !m_store.removePreparedSleepChange(staged.sessionId, staged.changeId))
+                return failure();
+        }
+    }
+    return R::success(sources);
 }
 
 DaydreamConsolidator::Stats DaydreamConsolidator::applyChangeSet(

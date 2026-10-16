@@ -8,6 +8,7 @@
 #include <QStringList>
 
 #include "emotion/emotion_types.h"
+#include "memory_attribution_types.h"
 
 enum class MemoryType {
     Working,
@@ -126,6 +127,7 @@ inline PrivacyLevel privacyLevelFromString(const QString& value) {
 }
 
 struct MemoryEntry {
+    MemoryAttribution attribution;
     QString id;
     MemoryType type = MemoryType::Event;
     MemoryStatus status = MemoryStatus::Active;

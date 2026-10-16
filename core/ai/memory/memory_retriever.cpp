@@ -24,6 +24,19 @@ namespace {
 
 bool passesFilters(const MemoryEntry& entry, const MemoryQuery& query,
                    const QDateTime& now) {
+    if (query.context
+            ? !memoryVisibleInContext(entry.attribution, *query.context)
+            : !memoryVisibleInContext(entry.attribution,
+                                      ContextSpec::localOwner(entry.attribution.profileId)))
+        return false;
+    if (!query.subjectPersonIds.isEmpty()) {
+        bool matches = false;
+        for (const auto& person : query.subjectPersonIds)
+            if (entry.attribution.subjects().contains(person))
+                matches = true;
+        if (!matches)
+            return false;
+    }
     if (entry.status == MemoryStatus::Deleted || entry.status == MemoryStatus::Expired
         || (entry.expiresAt.isValid() && entry.expiresAt <= now)) return false;
     if (!query.includeInactive && entry.status != MemoryStatus::Active) return false;
@@ -89,18 +102,28 @@ constexpr int kSeedBudget = 16;
 }
 
 QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
-    MemoryStore& store,
-    const MemoryQuery& query,
-    const ActivationChannels& channels,
-    MemoryCueExtractor* cueExtractor,
-    bool skipReinforcement) const {
+    MemoryStore& store, const MemoryQuery& requestedQuery, const ActivationChannels& channels,
+    MemoryCueExtractor* cueExtractor, bool skipReinforcement) const {
 
+    MemoryQuery query = requestedQuery;
+    if (!query.context)
+        query.context = ContextSpec::localOwner(store.profileId());
     const int limit = query.limit <= 0 ? 8 : query.limit;
     const QDateTime now = QDateTime::currentDateTimeUtc();
 
     // ---- 阶段 0：时间维护 ----
     if (channels.activePool) {
+        channels.activePool->selectContext(query.context ? query.context->cacheKey() : QString());
         channels.activePool->decayToNow();
+    }
+
+    MemoryKeywordIndex scopedKeywords;
+    const MemoryKeywordIndex* keywordIndex = nullptr;
+    if (channels.keywordIndex) {
+        scopedKeywords = *channels.keywordIndex;
+        scopedKeywords.setContext(
+            query.context.value_or(ContextSpec::localOwner(store.profileId())));
+        keywordIndex = &scopedKeywords;
     }
 
     // ---- 阶段 1：本地线索提取 ----
@@ -111,8 +134,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         MemoryCueExtractor fallbackExtractor;
         cue = fallbackExtractor.extractFromQuery(query.text);
     }
-    if (channels.keywordIndex) {
-        const auto indexedCue = channels.keywordIndex->extractCue(query.text);
+    if (keywordIndex) {
+        const auto indexedCue = keywordIndex->extractCue(query.text);
         cue.knownTags = indexedCue.knownTags;
         cue.tokenWeights = indexedCue.tokenWeights;
     }
@@ -147,7 +170,12 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         QStringList coveredTags;
         bool strongSemantic = false;
         for (const auto& item : activeItems) {
-            if (!topic) { previous.append({item, item.activation, 0.0}); continue; }
+            if (!topic) {
+                const auto entry = store.readForRecall(item.memoryId);
+                if (entry && passesFilters(*entry, query, now))
+                    previous.append({item, item.activation, 0.0});
+                continue;
+            }
             const auto entry = store.readForRecall(item.memoryId);
             if (!entry || !passesFilters(*entry, query, now)) continue;
             const auto tokens = RecallText::tokens(entry->key + QLatin1Char(' ') + entry->summary + QLatin1Char(' ') + entry->content + QLatin1Char(' ') + entry->scope);
@@ -199,7 +227,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     // 通道 2: Hippocampus 工作集
     if (channels.workingSet && !channels.workingSet->isEmpty()) {
         const auto scanned = channels.workingSet->scanScored(
-            query.text, query.requiredTags, kWorkingSetBudget);
+            query.text, query.requiredTags, kWorkingSetBudget,
+            [&](const MemoryEntry& entry) { return passesFilters(entry, query, now); });
         for (const auto& candidate : scanned) {
             const auto& entry = candidate.entry;
             seedHippocampusScore[entry.id] = candidate.score;
@@ -217,6 +246,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
             ? channels.embeddingIndex->searchPrepared(topic->embedding, kEmbeddingBudget)
             : channels.embeddingIndex->search(query.text, kEmbeddingBudget);
         for (const EmbeddingSearchResult& hit : semanticHits) {
+            const auto visibleEntry = store.readForRecall(hit.memoryId);
+            if (!visibleEntry || !passesFilters(*visibleEntry, query, now))
+                continue;
             double similarity = hit.similarity;
             if (topic && topic->embedding.attempted) {
                 const auto entry = store.readForRecall(hit.memoryId);
@@ -235,8 +267,8 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     }
 
     // 通道 4: 独立记录词法/概念证据，合并分数不重复累计。
-    if (channels.keywordIndex && !channels.keywordIndex->isEmpty()) {
-        const auto hits = channels.keywordIndex->lookup(cue, reuse ? 4 : kKeywordBudget);
+    if (keywordIndex && !keywordIndex->isEmpty()) {
+        const auto hits = keywordIndex->lookup(cue, reuse ? 4 : kKeywordBudget);
         for (const auto& hit : hits) {
             if (hit.lexicalScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("keyword"));
             if (hit.tagScore > 0.0) seedChannels[hit.memoryId].append(QStringLiteral("tag"));
@@ -306,14 +338,9 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         }
 
         // Propagate (two hops, max 64 candidates)
-        const QList<PropagatedMemory> propagated =
-            channels.graphPropagation->propagate(
-                propagationSeeds,
-                store.relationGraph(),
-                &store.tagCooccurrenceGraph(),
-                cue.knownTags,
-                mayParticipate
-            );
+        const QList<PropagatedMemory> propagated = channels.graphPropagation->propagate(
+            propagationSeeds, store.relationGraph(),
+            query.context ? nullptr : &store.tagCooccurrenceGraph(), cue.knownTags, mayParticipate);
 
         // Record graph activation and paths
         for (const PropagatedMemory& prop : propagated) {
@@ -386,6 +413,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
             auto& entry = candidate.entry;
             entry.id = QStringLiteral("wm:") + (item.id.isEmpty()
                 ? QString::number(taken) : item.id);
+            entry.attribution = item.attribution;
             entry.type = MemoryType::Working;
             entry.status = MemoryStatus::Active;
             entry.privacyLevel = item.privacyLevel;
@@ -448,7 +476,7 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
     }
 
     if (!skipReinforcement && !reinforcementIds.isEmpty()) {
-        store.reinforceEntries(reinforcementIds);
+        store.reinforceEntries(reinforcementIds, query.context);
     }
 
     return result;

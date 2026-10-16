@@ -50,12 +50,14 @@ struct ChatPreparationRequest {
     QList<SkillEntry> skills;
     std::optional<EmotionSnapshot> emotion;
     ChatPreparationRuntimeMetadata runtimeMetadata;
+    std::optional<ContextSpec> context;
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy personalityPolicy;
     PromptTemplate promptTemplate;
 };
 
 struct ChatPreparationResult {
+    std::optional<ContextSpec> context;
     QString requestId;
     quint64 generation = 0;
     QString sessionId;

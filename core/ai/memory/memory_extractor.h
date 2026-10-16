@@ -25,6 +25,9 @@ public:
     QList<MemoryCandidate> extractFromUserInput(const QString& input,
                                                 const QString& triggerTag) const;
 
+    QList<MemoryCandidate> extractFromUserInput(const QString& input, const QString& triggerTag,
+                                                const AttributionContext& context) const;
+
     // Builds a bounded, personal Hippocampus impression for later Daydream
     // classification. Empty content means the input must not enter the inbox.
     MemoryEntry extractDaydreamImpression(const QString& input,

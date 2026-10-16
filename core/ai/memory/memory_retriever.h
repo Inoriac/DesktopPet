@@ -2,6 +2,7 @@
 #define DESKTOP_PET_MEMORY_RETRIEVER_H
 
 #include <QList>
+#include <optional>
 #include <QString>
 #include <QStringList>
 #include <QMap>
@@ -19,6 +20,8 @@ class AssociativeActivationEngine;
 struct WorkingMemoryItem;
 
 struct MemoryQuery {
+    std::optional<ContextSpec> context;
+    QStringList subjectPersonIds;
     QString text;
     QStringList requiredTags;
     QStringList forgetQueries;

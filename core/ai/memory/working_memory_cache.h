@@ -19,6 +19,7 @@ struct WorkingMemoryItem {
     double emotionIntensity = 0.0;
     int mentionCount = 1;
     PrivacyLevel privacyLevel = PrivacyLevel::Personal;
+    MemoryAttribution attribution;
 };
 
 class MemoryStore;

@@ -41,6 +41,13 @@ public:
     void setStoragePath(const QString& memoryFilePath);
     const QString& storagePath() const { return m_memoryFilePath; }
 
+    void setProfileId(const QString& profileId) {
+        m_profileId = profileId;
+    }
+    const QString& profileId() const {
+        return m_profileId;
+    }
+
     void setDatabasePath(const QString& dbPath);
     const QString& databasePath() const { return m_databasePath; }
 
@@ -64,6 +71,7 @@ public:
                     const QJsonValue& value,
                     const QStringList& tags = {});
     MemoryEntry addEntry(const MemoryEntry& entry);
+    bool writeAttributionOnly(const QString& id, const MemoryAttribution& attribution);
     bool updateEntryById(const MemoryEntry& entry);
     MemoryEntry stageEntry(const MemoryEntry& entry,
                            MemoryMutationBatch* batch);
@@ -76,7 +84,8 @@ public:
         const QStringList& ids,
         const QDateTime& accessedAt = QDateTime::currentDateTimeUtc());
     void rollbackReinforcement(const MemoryReinforcementBatch& batch);
-    bool reinforceEntries(const QStringList& ids);
+    bool reinforceEntries(const QStringList& ids,
+                          const std::optional<ContextSpec>& context = std::nullopt);
     bool updateStatusById(const QString& id,
                           MemoryStatus status,
                           const QJsonObject& payloadPatch = {});
@@ -101,6 +110,7 @@ public:
     QList<MemoryEntry> recent(MemoryType type, int limit) const;
     QList<MemoryEntry> findByTag(const QString& tag, int limit = 20) const;
     QStringList summaryForContext(int limit = 8) const;
+    QStringList summaryForContext(const ContextSpec& context, int limit = 8) const;
     void clear();
 
     MemoryRelationGraph& relationGraph() { return m_relationGraph; }
@@ -146,6 +156,7 @@ public:
     // {-1,-1} means cache validity is unknown and reuse must be disabled.
     QPair<qint64, qint64> recallRevisions() const;
     bool databaseIsOpen() const;
+    bool lastReadSucceeded() const;
     MemoryEntry* findById(const QString& id);
     const MemoryEntry* findById(const QString& id) const;
 
@@ -156,6 +167,7 @@ private:
     bool persistStatusUpdate(const QString& id, MemoryStatus status, const QJsonObject& payloadPatch);
     bool enqueueIndexJob(const QString& memoryId, const QString& operation);
 
+    QString m_profileId;
     QString m_memoryFilePath = QStringLiteral("log/ai_memory.json");
     QString m_databasePath = QStringLiteral("runtime/memory/memory.db");
     QList<MemoryEntry> m_entries;

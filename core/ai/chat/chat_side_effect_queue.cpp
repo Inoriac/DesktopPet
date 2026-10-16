@@ -1,6 +1,11 @@
 #include "chat_side_effect_queue.h"
 
 #include <QJsonArray>
+#include <QJsonDocument>
+#include <QSqlQuery>
+#include <QSqlError>
+#include <QTimer>
+#include <QUuid>
 #include <QMutex>
 #include <QMutexLocker>
 #include <QSet>
@@ -14,6 +19,9 @@
 #include "ai/event/event_schema_registry.h"
 #include "ai/event/sqlite_event_repository.h"
 #include "ai/memory/memory_store.h"
+#include "ai/memory/memory_attribution_service.h"
+#include "ai/memory/memory_policy.h"
+#include "ai/memory/daydream_consolidator.h"
 
 struct ChatSideEffectQueue::ProbeState {
     QMutex mutex;
@@ -59,6 +67,7 @@ public:
             m_eventRepository.get(), m_schemas.get(), m_environment.profileId);
 
         m_memoryStore = std::make_unique<MemoryStore>();
+        m_memoryStore->setProfileId(m_environment.profileId);
         m_memoryStore->setDatabasePath(m_environment.memoryDatabasePath);
         m_memoryStore->setStoragePath(QString());
         QString memoryError;
@@ -66,6 +75,7 @@ public:
             return Result<void, DomainError>::failure(domainError(
                 QStringLiteral("MEMORY_STORE_UNAVAILABLE"), memoryError));
         }
+        QTimer::singleShot(0, this, [this] { migrateNextBatch(); });
         report(QStringLiteral("memory.open"), QString());
         m_logger = std::make_unique<AiCallLogger>(m_environment.aiCallLogPath);
         return Result<void, DomainError>::success();
@@ -136,12 +146,15 @@ private:
             break;
         case ChatSideEffectType::MemoryReinforcement:
             for (const auto& entry : effect.reinforcedEntries) m_changedMemoryIds.insert(entry.id);
-            ok = persistReinforcement(effect.reinforcedEntries, effect.sessionId);
+            ok = persistReinforcement(
+                effect.reinforcedEntries, effect.sessionId,
+                effect.memoryContext.value_or(ContextSpec::localOwner(m_environment.profileId)));
             completionPhase = QStringLiteral("memory.reinforcement.completed");
             break;
         case ChatSideEffectType::UserMemoryWrite:
             for (const auto& change : effect.memoryMutations.entries) m_changedMemoryIds.insert(change.after.id);
-            ok = persistMemoryMutations(effect.memoryMutations);
+            ok = effect.memoryCandidates.isEmpty() ? persistMemoryMutations(effect.memoryMutations)
+                                                   : persistCandidates(effect);
             completionPhase = QStringLiteral("user.memory.write.completed");
             break;
         case ChatSideEffectType::MemoryTask: {
@@ -201,9 +214,14 @@ private:
         m_state->totalDepth->fetch_sub(1, std::memory_order_acq_rel);
     }
 
-    bool appendEvent(const EventDraft& event) {
+    bool appendEvent(const EventDraft& original) {
         if (!m_eventLedger) return false;
-        auto result = m_eventLedger->append(event);
+        EventDraft event = original;
+        if (event.eventId.isEmpty())
+            event.eventId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+        if (!event.occurredAt.isValid())
+            event.occurredAt = QDateTime::currentDateTimeUtc();
+        auto result = m_eventLedger->appendIdempotent(event);
         if (result.isOk()) return true;
         const QString message = result.error().message.toLower();
         if (!message.contains(QStringLiteral("busy"))
@@ -211,19 +229,20 @@ private:
             return false;
         }
         QThread::msleep(5);
-        return m_eventLedger->append(event).isOk();
+        return m_eventLedger->appendIdempotent(event).isOk();
     }
 
-    bool persistReinforcement(const QList<MemoryEntry>& stagedEntries,
-                              const QString& sessionId) {
-        if (persistReinforcementOnce(stagedEntries, sessionId)) return true;
+    bool persistReinforcement(const QList<MemoryEntry>& stagedEntries, const QString& sessionId,
+                              const ContextSpec& context) {
+        if (persistReinforcementOnce(stagedEntries, sessionId, context))
+            return true;
         QThread::msleep(5);
-        return m_memoryStore && m_memoryStore->refreshDatabaseOnly()
-            && persistReinforcementOnce(stagedEntries, sessionId);
+        return m_memoryStore && m_memoryStore->refreshDatabaseOnly() &&
+               persistReinforcementOnce(stagedEntries, sessionId, context);
     }
 
-    bool persistReinforcementOnce(const QList<MemoryEntry>& stagedEntries,
-                                  const QString& sessionId) {
+    bool persistReinforcementOnce(const QList<MemoryEntry>& stagedEntries, const QString& sessionId,
+                                  const ContextSpec& context) {
         if (!m_memoryStore || stagedEntries.isEmpty()) return true;
         // Keep the authoritative status read and its reinforcement write in
         // one SQLite snapshot. A scheduler completion committed meanwhile must
@@ -240,7 +259,11 @@ private:
             if (staged.id.trimmed().isEmpty() || seen.contains(staged.id)) continue;
             seen.insert(staged.id);
             const MemoryEntry* persisted = m_memoryStore->findById(staged.id);
-            if (!persisted || persisted->status != MemoryStatus::Active) continue;
+            if (!persisted || persisted->status != MemoryStatus::Active ||
+                persisted->privacyLevel == PrivacyLevel::Sensitive ||
+                (persisted->expiresAt.isValid() && persisted->expiresAt <= QDateTime::currentDateTimeUtc()) ||
+                !memoryVisibleInContext(persisted->attribution, context))
+                continue;
             MemoryEntry updated = *persisted;
             updated.strength = qMin(1.0, updated.strength + 0.1);
             updated.accessCount += 1;
@@ -277,6 +300,151 @@ private:
         }
         for (const auto& id : written) m_changedMemoryIds.insert(id);
         return ok;
+    }
+
+    MemoryAttributionService attributionService() {
+        return MemoryAttributionService(
+            m_environment.profileId, m_memoryStore.get(),
+            [this](const QString& profile,
+                   const QString& id) -> Result<std::optional<MemoryOriginSource>, DomainError> {
+                using R = Result<std::optional<MemoryOriginSource>, DomainError>;
+                if (!m_eventRepository || !m_eventRepository->isOpen())
+                    return R::failure(
+                        domainError("STORE_UNAVAILABLE", "Runtime source store unavailable"));
+                QSqlQuery q(QSqlDatabase::database(m_eventRepository->connectionName()));
+                q.prepare("SELECT profile_id,type,source,payload_json,occurred_at FROM event_log "
+                          "WHERE event_id=?");
+                q.addBindValue(id);
+                if (!q.exec())
+                    return R::failure(domainError("STORE_UNAVAILABLE", q.lastError().text()));
+                if (!q.next())
+                    return R::success(std::nullopt);
+                MemoryOriginSource origin;
+                origin.originId = id;
+                origin.profileId = q.value(0).toString();
+                const auto type = q.value(1).toString(), source = q.value(2).toString();
+                const auto payload = QJsonDocument::fromJson(q.value(3).toByteArray()).object();
+                origin.occurredAt = QDateTime::fromString(q.value(4).toString(), Qt::ISODateWithMs);
+                origin.originKind = originKindFromString(payload.value("origin_kind").toString())
+                                        .value_or(OriginKind::Internal);
+                if (!payload.contains("origin_kind") && type == "UserMessageReceived" &&
+                    source == "AIBrain")
+                    origin.originKind = OriginKind::LocalOwner;
+                origin.conversationId = payload.value("conversation_id").toString();
+                if (type == "UserMessageReceived") {
+                    origin.speakerPersonId = payload.value("subject_id").toString();
+                    origin.text = payload.value("text").toString();
+                    if (origin.originKind == OriginKind::LocalOwner) {
+                        if (origin.speakerPersonId.isEmpty())
+                            origin.speakerPersonId = "owner";
+                        if (origin.conversationId.isEmpty())
+                            origin.conversationId = "local_owner";
+                    }
+                }
+                const bool trustedReferences =
+                    (type == "UserMessageReceived" && source == "AIBrain") ||
+                    (type == "MessageObserved" && source == "ConversationStore");
+                if (trustedReferences) {
+                    for (const auto& value : payload.value("resolved_people").toArray()) {
+                        const auto reference = value.toObject();
+                        const auto role = reference.value("role").toString();
+                        const auto person = reference.value("personId").toString();
+                        if (!person.isEmpty() && (role == "subject" || role == "participant"))
+                            origin.resolvedPeople.append(
+                                {person, role == "subject" ? MemoryPersonRole::Subject
+                                                           : MemoryPersonRole::Participant});
+                    }
+                }
+                return R::success(origin);
+            },
+            [this](const QString& profile, const QString& person) -> Result<bool, DomainError> {
+                QSqlQuery q(QSqlDatabase::database(m_eventRepository->connectionName()));
+                q.prepare("SELECT 1 FROM agent_persons WHERE profile_id=? AND person_id=?");
+                q.addBindValue(profile);
+                q.addBindValue(person);
+                if (!q.exec())
+                    return Result<bool, DomainError>::failure(
+                        domainError("STORE_UNAVAILABLE", q.lastError().text()));
+                return Result<bool, DomainError>::success(q.next());
+            });
+    }
+
+    bool persistCandidates(const DeferredChatSideEffect& effect) {
+        auto service = attributionService();
+        for (const auto& candidate : effect.memoryCandidates) {
+            AttributedMemoryInput input;
+            input.entry = candidate.entry;
+            input.attribution = effect.attributionContext;
+            input.explicitRequest = candidate.explicitRequest;
+            if (candidate.operation == MemoryCandidateOperation::Write) {
+                auto result = service.ingestMemory(input);
+                if (!result)
+                    return false;
+                for (const auto& id : result.value().memoryIds)
+                    m_changedMemoryIds.insert(id);
+            } else {
+                auto attribution = service.attribute(input);
+                if (!attribution)
+                    return false;
+                const auto& origins = attribution.value().attribution.origins;
+                if (origins.isEmpty() || !origins.first().committed ||
+                    origins.first().speakerPersonId.isEmpty())
+                    continue;
+                if (!m_memoryStore->refreshDatabaseOnly())
+                    return false;
+                MemoryMutationBatch mutations;
+                for (auto entry : m_memoryStore->all()) {
+                    if (!MemoryPolicy::matchesForgetQuery(entry, candidate.query))
+                        continue;
+                    const bool localOwner =
+                        effect.attributionContext.speakerPersonId == "owner" &&
+                        effect.attributionContext.conversationId == "local_owner" &&
+                        effect.attributionContext.audience.kind == MemoryAudienceKind::OwnerOnly;
+                    if (!localOwner &&
+                        !entry.attribution.subjects().contains(origins.first().speakerPersonId))
+                        continue;
+                    if (entry.attribution.audience.toJson() !=
+                        effect.attributionContext.audience.toJson())
+                        continue;
+                    entry.status = MemoryStatus::Deleted;
+                    if (!m_memoryStore->stageEntryUpdate(entry, &mutations))
+                        return false;
+                }
+                if (!persistMemoryMutations(mutations))
+                    return false;
+            }
+        }
+        return true;
+    }
+
+    void migrateNextBatch() {
+        if (m_closed || !m_memoryStore)
+            return;
+        const auto recovered = DaydreamConsolidator(*m_memoryStore).recoverMaintenance();
+        if (!recovered) {
+            if (warningReady) warningReady("Memory maintenance recovery failed; attribution migration deferred");
+            return;
+        }
+        QStringList changed;
+        for (const auto& source : recovered.value()) {
+            changed.append(source.id);
+            const auto current = m_memoryStore->readForRecall(source.id);
+            if (current) {
+                const auto target = current->payload.value("consolidated_into").toString();
+                if (!target.isEmpty()) changed.append(target);
+            }
+        }
+        if (!changed.isEmpty() && drainedReady) drainedReady(changed);
+        const auto result =
+            attributionService().migrateAttribution({m_environment.profileId, {}, 100});
+        if (!result) {
+            if (warningReady)
+                warningReady("Memory attribution migration failed");
+            return;
+        }
+        if (!result.value().complete)
+            QTimer::singleShot(result.value().deferredForRecovery ? 1000 : 0,
+                this, [this] { migrateNextBatch(); });
     }
 
     void discardPendingLocked() {

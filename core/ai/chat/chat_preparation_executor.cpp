@@ -40,6 +40,16 @@ namespace {
 MemoryQuery memoryQueryFor(const ChatPreparationRequest& request,
                           const std::optional<PersonaProjection>& projection) {
     MemoryQuery query;
+    ContextSpec context;
+    if (request.context)
+        context = *request.context;
+    else {
+        context.profileId = request.runtimeMetadata.profileId;
+        context.originKind = request.runtimeMetadata.originKind;
+        if (context.originKind == OriginKind::LocalOwner)
+            context = ContextSpec::localOwner(context.profileId);
+    }
+    query.context = context;
     query.text = request.reason;
     const bool timerOpportunity = request.triggerTag == QLatin1String("proactive_chat")
         && request.reason == QLatin1String("proactive_chat_tick");
@@ -59,6 +69,8 @@ MemoryQuery memoryQueryFor(const ChatPreparationRequest& request,
     const auto now = QDateTime::currentDateTimeUtc();
     QStringList observations;
     for (auto it = request.workingMemory.crbegin(); it != request.workingMemory.crend(); ++it) {
+        if (!memoryVisibleInContext(it->attribution, context))
+            continue;
         if ((it->expiresAt.isValid() && it->expiresAt <= now)
             || it->privacyLevel == PrivacyLevel::Sensitive) continue;
         if (it->source == QLatin1String("user_task") && query.activeGoals.size() < 3) {
@@ -372,6 +384,7 @@ public:
             // cache.  The cache owns a dedicated SQLite connection and is only
             // refreshed when SQLite reports an external commit.
             auto query = memoryQueryFor(request, projection);
+            result.context = query.context;
             query.forgetQueries = forgetQueries;
             const bool userDialogue = request.triggerTag == QLatin1String("user_request")
                 || request.triggerTag == QLatin1String("manual");
@@ -392,6 +405,7 @@ public:
             }
             if (isCancelled(expectedEpoch)) return result;
             ActiveMemoryPool workingPool = m_recallActivePool;
+            workingPool.selectContext(query.context->cacheKey());
             const WorkerRecallResult recallResult = recallWithCache(
                 query, request.workingMemory, workingPool, topic, cacheOk);
             if (!userDialogue && cacheOk) topic.diagnostics.reason = QStringLiteral("automatic_context");
@@ -435,9 +449,13 @@ public:
                 workingPool.recordRecall(topic.originalInput, topic.embedding, topic.topicRelated, feedbackItems);
             if (cacheOk) {
                 result.recallFeedbackToken = ++m_nextFeedbackToken;
-                m_pendingFeedback = PendingFeedback{result.recallFeedbackToken, request.requestId,
-                    request.generation, std::move(workingPool), memories,
-                    m_recallRevisions};
+                m_pendingFeedback = PendingFeedback{result.recallFeedbackToken,
+                                                    request.requestId,
+                                                    request.generation,
+                                                    std::move(workingPool),
+                                                    memories,
+                                                    m_recallRevisions,
+                                                    *query.context};
             }
 
             // Collect reinforcement IDs (already filtered by helper)
@@ -482,11 +500,15 @@ public:
         for (const auto& selected : pending.memories) {
             if (selected.entry.id.startsWith(QLatin1String("wm:"))) continue;
             const auto current = m_recallStore->readForRecall(selected.entry.id);
-            if (!current || current->status != MemoryStatus::Active
-                || current->privacyLevel == PrivacyLevel::Sensitive
-                || (current->expiresAt.isValid() && current->expiresAt <= now)
-                || current->summary != selected.entry.summary || current->content != selected.entry.content
-                || current->tags != selected.entry.tags) return false;
+            if (!current || current->status != MemoryStatus::Active ||
+                current->privacyLevel == PrivacyLevel::Sensitive ||
+                (current->expiresAt.isValid() && current->expiresAt <= now) ||
+                current->summary != selected.entry.summary ||
+                current->content != selected.entry.content ||
+                current->tags != selected.entry.tags ||
+                !memoryVisibleInContext(current->attribution, pending.context) ||
+                current->attribution.toJson() != selected.entry.attribution.toJson())
+                return false;
         }
         // Acceptance is an explicit owner decision made while the generation
         // was current. A subsequently queued stop must still drain this commit.
@@ -522,6 +544,7 @@ private:
         const bool opening = !m_recallStore;
         if (opening) {
             m_recallStore = std::make_unique<MemoryStore>();
+            m_recallStore->setProfileId(m_environment.profileId);
             m_recallStore->setDatabasePath(m_environment.memoryDatabasePath);
             QString error;
             if (!m_recallStore->loadRecallWindow(/*limit=*/256, &error)) {
@@ -633,6 +656,7 @@ private:
         ActiveMemoryPool pool;
         QList<RetrievedMemory> memories;
         QPair<qint64, qint64> revisions;
+        ContextSpec context;
     };
     std::optional<PendingFeedback> m_pendingFeedback;
 #ifdef DESKTOP_PET_ENABLE_TEST_SEAMS

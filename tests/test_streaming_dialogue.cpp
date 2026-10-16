@@ -498,9 +498,11 @@ void StreamingDialogueTests::bufferedInput_retryDoesNotRefreshMemoryMention() {
     QVERIFY(brain.submitUserMessage(input, "first").isOk());
     QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 1, 3000);
     QString memoryId;
-    for (const auto& entry : brain.memoryStore()->all())
-        if (entry.content == input) memoryId = entry.id;
-    QVERIFY(!memoryId.isEmpty());
+    QTRY_VERIFY_WITH_TIMEOUT(([&] {
+        for (const auto& entry : brain.memoryStore()->all())
+            if (entry.content == input) memoryId = entry.id;
+        return !memoryId.isEmpty();
+    }()), 3000);
     const auto before = *brain.memoryStore()->findById(memoryId);
     QVERIFY(brain.submitUserMessage(input, "retry", false).isOk());
     QTRY_COMPARE_WITH_TIMEOUT(finished.size(), 2, 3000);
@@ -1851,9 +1853,6 @@ triggerThink_whenExplicitForgetNeedsLlm_shouldExcludeForgottenMemoryFromPrompt()
         QVERIFY2(!message.content.contains(QStringLiteral("OLD_MEMORY_SENTINEL")),
                  qPrintable(message.content));
     }
-    const MemoryEntry* cachedForgotten = brain.memoryStore()->findById(stored.id);
-    QVERIFY(cachedForgotten);
-    QCOMPARE(cachedForgotten->status, MemoryStatus::Deleted);
     const std::optional<MemoryEntry> beforeCommit = persistedMemory(
         brain.memoryStore()->databasePath(), stored.id);
     QVERIFY(beforeCommit.has_value());
@@ -1864,6 +1863,8 @@ triggerThink_whenExplicitForgetNeedsLlm_shouldExcludeForgottenMemoryFromPrompt()
         return forgotten.has_value()
             && forgotten->status == MemoryStatus::Deleted;
     }()), 2000);
+    QTRY_VERIFY_WITH_TIMEOUT(brain.memoryStore()->findById(stored.id)
+        && brain.memoryStore()->findById(stored.id)->status == MemoryStatus::Deleted, 2000);
     QVERIFY(!brain.isBusy());
 }
 

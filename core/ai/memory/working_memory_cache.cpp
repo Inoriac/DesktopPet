@@ -22,6 +22,8 @@ void WorkingMemoryCache::add(const WorkingMemoryItem& item) {
     }
 
     for (WorkingMemoryItem& existing : m_items) {
+        if (!attributionCanMerge(existing.attribution, stored.attribution))
+            continue;
         if (stored.source == QLatin1String("screen_observation")
             && existing.source == stored.source) {
             existing = stored;
@@ -29,6 +31,7 @@ void WorkingMemoryCache::add(const WorkingMemoryItem& item) {
         }
         if (!existing.summary.isEmpty()
             && existing.summary.compare(stored.summary, Qt::CaseInsensitive) == 0) {
+            mergeAttributionOrigins(existing.attribution, stored.attribution);
             existing.mentionCount += 1;
             existing.content = stored.content;
             existing.tags = stored.tags;
@@ -99,6 +102,7 @@ void WorkingMemoryCache::consolidateToStore(const WorkingMemoryItem& item, Memor
     if (!store) return;
 
     MemoryEntry entry;
+    entry.attribution = item.attribution;
     entry.type = MemoryType::Episodic;
     entry.status = MemoryStatus::Active;
     entry.privacyLevel = item.privacyLevel;

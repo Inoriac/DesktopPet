@@ -132,6 +132,8 @@ double ActiveMemoryPool::getActivation(const QString& memoryId) const {
 
 void ActiveMemoryPool::clear() {
     m_pool.clear();
+    m_contextTopics.clear();
+    m_contextKey.clear();
     m_lastDecayAt = {};
     invalidateTopic();
 }
@@ -291,7 +293,7 @@ TopicRecallDecision ActiveMemoryPool::assessTopic(
 
 QList<ActiveMemoryItem> ActiveMemoryPool::topicItems() const {
     QList<ActiveMemoryItem> result;
-    for (const auto& item : activeItems()) {
+    for (const auto& item : m_topicItems) {
         if (!m_topicId.isEmpty() && item.contextId == m_topicId
             && item.topicTurn > 0 && item.topicTurn + TOPIC_TURN_WINDOW > m_topicSequence)
             result.append(item);
@@ -300,6 +302,7 @@ QList<ActiveMemoryItem> ActiveMemoryPool::topicItems() const {
 }
 
 void ActiveMemoryPool::invalidateTopic() {
+    m_topicItems.clear();
     m_topicTurns.clear();
     m_topicId.clear();
     m_topicSequence = 0;
@@ -324,7 +327,34 @@ void ActiveMemoryPool::recordRecall(const QString& input, const PreparedEmbeddin
         // A retrieval is evidence for this turn, not a second activation event.
         m_pool.remove(item.memoryId);
         activate(item.memoryId, std::clamp(item.activation, ACTIVATION_THRESHOLD, 1.0), item.source, item.contextId);
+        m_topicItems.erase(
+            std::remove_if(m_topicItems.begin(), m_topicItems.end(),
+                           [&](const auto& old) { return old.memoryId == item.memoryId; }),
+            m_topicItems.end());
+        m_topicItems.append(item);
+        while (m_topicItems.size() > MAX_POOL_SIZE)
+            m_topicItems.removeFirst();
         auto retained = m_pool.find(item.memoryId);
         if (retained != m_pool.end()) retained->topicTurn = item.topicTurn;
+    }
+}
+
+void ActiveMemoryPool::selectContext(const QString& key) {
+    if (key == m_contextKey)
+        return;
+    const auto now = QDateTime::currentDateTimeUtc();
+    m_contextTopics[m_contextKey] = {m_topicTurns, m_topicId, m_topicSequence, m_topicItems, now};
+    m_contextKey = key;
+    const auto saved = m_contextTopics.take(key);
+    m_topicTurns = saved.turns;
+    m_topicId = saved.id;
+    m_topicSequence = saved.sequence;
+    m_topicItems = saved.items;
+    while (m_contextTopics.size() >= 32) {
+        auto oldest = m_contextTopics.begin();
+        for (auto it = m_contextTopics.begin(); it != m_contextTopics.end(); ++it)
+            if (it->used < oldest->used)
+                oldest = it;
+        m_contextTopics.erase(oldest);
     }
 }

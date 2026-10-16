@@ -6,6 +6,7 @@
 #include <QString>
 #include <QStringList>
 #include <memory>
+#include <functional>
 
 #include "ai/domain/domain_result.h"
 #include "daydream_relation_reviewer.h"
@@ -105,6 +106,9 @@ public:
         const QList<Decision>& decisions,
         const QList<RelationProposal>& relationProposals = {}) const;
     Stats applyChangeSet(const DaydreamChangeSet& changeSet);
+    // Only maintenance-owned durable batches may be replayed without a sleep decision.
+    Result<QList<MemoryEntry>, DomainError> recoverMaintenance(
+        const std::function<bool()>& cancelled = {});
 
     // Applies one staged batch in a short transaction (or a historical session
     // during recovery). Semantic/evidence conflicts reject only this unit.

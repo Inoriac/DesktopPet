@@ -104,6 +104,10 @@ void TaskExperienceAdapter::processNext() {
     if (!m_memoryStore->readForRecall(taskId).has_value()) {
         MemoryEntry entry;
         entry.id = taskId;
+        entry.attribution.profileId = m_profileId;
+        entry.attribution.claimKind = MemoryClaimKind::Fact;
+        entry.attribution.origins.append(
+            {taskId, {}, {}, committed.value().occurredAt, taskId, true});
         entry.type = MemoryType::Episodic;
         entry.partition = QStringLiteral("episodic");
         entry.privacyLevel = PrivacyLevel::Personal;

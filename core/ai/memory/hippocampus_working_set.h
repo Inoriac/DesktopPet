@@ -3,6 +3,7 @@
 
 #include <QDateTime>
 #include <QList>
+#include <functional>
 #include <QString>
 
 #include "memory_types.h"
@@ -41,10 +42,10 @@ public:
     QList<MemoryEntry> scan(const QString& queryText,
                             const QStringList& requiredTags = {},
                             int limit = 8) const;
-    
-    QList<HippocampusCandidate> scanScored(const QString& queryText,
-                                          const QStringList& requiredTags = {},
-                                          int limit = 8) const;
+
+    QList<HippocampusCandidate>
+    scanScored(const QString& queryText, const QStringList& requiredTags = {}, int limit = 8,
+               const std::function<bool(const MemoryEntry&)>& accept = {}) const;
 
     int totalPendingCount() const { return m_totalPendingCount; }
     

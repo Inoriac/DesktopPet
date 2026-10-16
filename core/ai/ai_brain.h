@@ -32,6 +32,7 @@
 #include "reflection/cancellation_token.h"
 #include "memory/memory_extractor.h"
 #include "memory/memory_policy.h"
+#include "event/event_types.h"
 #include "memory/memory_retriever.h"
 #include "memory/memory_store.h"
 #include "memory/working_memory_cache.h"
@@ -333,6 +334,8 @@ private:
         QString reason;
         QString voiceSource;
         QString preparationRequestId;
+        QString inputEventId;
+        std::optional<EventDraft> inputEventDraft;
         QStringList reinforcementIds;
         QStringList sourceMessageIds;
         QDateTime inputMentionedAt;
