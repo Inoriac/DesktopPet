@@ -548,10 +548,15 @@ ToolResult ExecuteWhitelistedCommandTool::execute(const QJsonObject& params) {
     result["working_directory"] = workingDirectory;
     result["command"] = command;
     result["exit_code"] = exitCode;
+    result["exit_status"] = process.exitStatus() == QProcess::CrashExit ? "crashed" : "normal";
     result["stdout"] = stdoutText;
     result["stderr"] = stderrText;
     result["timed_out"] = false;
 
+    if (process.exitStatus() == QProcess::CrashExit) {
+        return ToolResult{false, result, QString("命令进程异常终止: %1（状态码: %2）")
+            .arg(process.errorString()).arg(exitCode)};
+    }
     if (exitCode != 0) {
         return ToolResult{false, result, QString("命令退出码非 0: %1").arg(exitCode)};
     }

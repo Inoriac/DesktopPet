@@ -295,6 +295,7 @@ public:
             snapshot.sessionId = request.sessionId;
             snapshot.profileId = request.runtimeMetadata.profileId;
             snapshot.subjectId = request.runtimeMetadata.subjectId.trimmed().isEmpty()
+                && request.runtimeMetadata.originKind == OriginKind::LocalOwner
                 ? QStringLiteral("owner") : request.runtimeMetadata.subjectId;
             snapshot.identityBaselineSchemaVersion =
                 request.runtimeMetadata.identityBaselineSchemaVersion;

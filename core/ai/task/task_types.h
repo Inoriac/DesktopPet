@@ -5,6 +5,7 @@
 #include <QString>
 #include <QStringList>
 #include <functional>
+#include "ai/identity/identity_types.h"
 
 struct TaskBudget {
     int maxToolCalls = 12;
@@ -23,6 +24,7 @@ struct TaskBudgetExtension {
 struct TaskStartRequest {
     QString profileId;
     QString subjectId;
+    OriginKind originKind = OriginKind::Internal;
     QString goal;
     qint64 personalityVersion = 0;
     QJsonObject personalitySnapshot;
@@ -35,6 +37,7 @@ struct TaskRecord {
     QString id;
     QString profileId;
     QString subjectId;
+    OriginKind originKind = OriginKind::Internal;
     QString goal;
     QString status = "Received";
     QString plan;

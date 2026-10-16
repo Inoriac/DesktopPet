@@ -14,6 +14,10 @@
 #include "ai/ai_brain.h"
 #include "ai/event/event_ledger.h"
 #include "ai/memory/memory_store.h"
+#include "ai/identity/person_directory.h"
+#include "ai/task/task_store.h"
+#include "ai/task/task_experience_adapter.h"
+#include "ai/identity/sqlite_identity_repository.h"
 #include "ai/runtime/agent_bootstrap.h"
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
@@ -184,6 +188,12 @@ class TestAgentRuntimeServices : public QObject {
     Q_OBJECT
 
 private slots:
+    void taskExperience_preservesExternalOriginAcrossRestart();
+    void captureSnapshot_emptySubject_doesNotUseOwner();
+    void processIdentityEvents_usesTrustedOriginAndResolvedPerson_data();
+    void processIdentityEvents_usesTrustedOriginAndResolvedPerson();
+    void processIdentityEvents_legacyTaskExperience_keepsOwnerCompatibility();
+
     void readAfter_whenEventsMatchFilter_shouldReturnOrderedBoundedBatch();
     void readAfter_whenConsumerCanReadPrivateReference_shouldReturnReferenceWithoutBody();
     void readAfter_whenConsumerCannotReadPrivate_shouldFilterPrivateEvent();
@@ -217,6 +227,99 @@ private slots:
     void start_whenBridgeIsValid_shouldUseUiCapabilitiesWithoutTakingOwnership();
     void stop_whenRuntimeEnds_shouldReleaseBridgeBeforePetWindowDestroysUiObjects();
 };
+
+void TestAgentRuntimeServices::taskExperience_preservesExternalOriginAcrossRestart() {
+    StartedRuntime runtime; QVERIFY(runtime.ready());
+    const QString path = runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath;
+    TaskStore store; QVERIFY(store.open(path));
+    TaskRecord task; task.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    task.profileId = kProfileId; task.subjectId = QStringLiteral("owner");
+    task.originKind = OriginKind::External; task.goal = QStringLiteral("read message");
+    task.status = QStringLiteral("Completed"); task.updatedAt = QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs);
+    QVERIFY(store.save(task, true)); store.close(); QVERIFY(store.open(path));
+    QCOMPARE(store.find(task.id)->originKind, OriginKind::External);
+    QCOMPARE(store.pendingExperiences().first().toObject().value(QStringLiteral("origin_kind")).toString(), QStringLiteral("external"));
+    TaskExperienceAdapter adapter(kProfileId, &store, runtime.services.eventLedger(), nullptr, nullptr);
+    QSignalSpy drained(&adapter, &TaskExperienceAdapter::drained); adapter.drain();
+    QTRY_COMPARE(drained.count(), 1);
+    const auto authorization = runtime.services.authorizationFor(QStringLiteral("identity")); QVERIFY(authorization.isOk());
+    const auto events = runtime.services.eventLedger()->readAfter(0,
+        {{QStringLiteral("TaskExperienceRecorded")}, {}, authorization.value()}, 10);
+    QVERIFY(events.isOk()); QCOMPARE(events.value().size(), 1);
+    QCOMPARE(events.value().first().payload.value(QStringLiteral("origin_kind")).toString(), QStringLiteral("external"));
+    QJsonObject legacy = task.toJson(); legacy.remove(QStringLiteral("origin_kind"));
+    QCOMPARE(TaskRecord::fromJson(legacy).originKind, OriginKind::LocalOwner);
+    legacy.insert(QStringLiteral("origin_kind"), QStringLiteral("invalid"));
+    QCOMPARE(TaskRecord::fromJson(legacy).originKind, OriginKind::Internal);
+}
+
+void TestAgentRuntimeServices::captureSnapshot_emptySubject_doesNotUseOwner() {
+    StartedRuntime runtime; QVERIFY(runtime.ready());
+    const auto unresolved = runtime.services.captureSnapshot(QStringLiteral("unknown"), QString());
+    QVERIFY(unresolved.subjectId.isEmpty()); QVERIFY(!unresolved.relationshipVersion.has_value());
+    QCOMPARE(runtime.services.captureSnapshot(QStringLiteral("local")).subjectId, QStringLiteral("owner"));
+    QCOMPARE(runtime.services.chatPreparationRuntimeMetadata().originKind, OriginKind::LocalOwner);
+    QVERIFY(ChatPreparationRuntimeMetadata{}.subjectId.isEmpty());
+    QCOMPARE(ChatPreparationRuntimeMetadata{}.originKind, OriginKind::Internal);
+}
+
+void TestAgentRuntimeServices::processIdentityEvents_usesTrustedOriginAndResolvedPerson_data() {
+    QTest::addColumn<QString>("origin"); QTest::addColumn<QString>("source");
+    QTest::addColumn<QString>("subjectMode"); QTest::addColumn<bool>("relationship");
+    QTest::addColumn<bool>("personality");
+    QTest::newRow("external-friend") << QString("external") << QString("ChatAdapter") << QString("friend") << true << false;
+    QTest::newRow("external-empty") << QString("external") << QString("AIBrain") << QString("") << false << false;
+    QTest::newRow("external-owner-account") << QString("external") << QString("ChatAdapter") << QString("owner") << true << false;
+    QTest::newRow("external-unknown-person") << QString("external") << QString("ChatAdapter") << QString("unknown") << false << false;
+    QTest::newRow("internal-empty") << QString("internal") << QString("AIBrain") << QString("") << false << false;
+    QTest::newRow("local-owner") << QString("local_owner") << QString("AIBrain") << QString("") << true << true;
+    QTest::newRow("legacy-local") << QString() << QString("AIBrain") << QString("") << true << true;
+    QTest::newRow("legacy-untrusted") << QString() << QString("ChatAdapter") << QString("") << false << false;
+    QTest::newRow("invalid-origin") << QString("anything") << QString("AIBrain") << QString("") << false << false;
+}
+void TestAgentRuntimeServices::processIdentityEvents_usesTrustedOriginAndResolvedPerson() {
+    QFETCH(QString, origin); QFETCH(QString, source); QFETCH(QString, subjectMode);
+    QFETCH(bool, relationship); QFETCH(bool, personality);
+    StartedRuntime runtime; QVERIFY(runtime.ready());
+    const QString path = runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath;
+    SqliteIdentityRepository repository; QVERIFY(repository.open(path).isOk());
+    SqliteRuntimeUnitOfWorkFactory factory(path);
+    PersonDirectory directory(kProfileId, &repository, &factory, runtime.services.eventOutbox());
+    QVERIFY(directory.initialize().isOk());
+    auto person = directory.resolvePerson({kProfileId, ExternalIdentity{"chat", "global", "friend", "朋友"}, false});
+    QVERIFY(person.isOk());
+    const QString target = subjectMode == QLatin1String("friend") ? *person.value().personId
+        : subjectMode == QLatin1String("unknown") ? QStringLiteral("missing-person") : subjectMode;
+    auto draft = normalDraft(); draft.source = source;
+    draft.payload.insert(QStringLiteral("text"), QStringLiteral("谢谢你"));
+    if (!origin.isNull()) draft.payload.insert(QStringLiteral("origin_kind"), origin);
+    draft.payload.insert(QStringLiteral("subject_id"), target);
+    const auto event = runtime.services.eventLedger()->append(draft); QVERIFY(event.isOk());
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    const QString expectedPerson = target.isEmpty() ? QStringLiteral("owner") : target;
+    const auto state = repository.currentRelationship(kProfileId, expectedPerson); QVERIFY(state.isOk());
+    QCOMPARE(state.value().has_value(), relationship);
+    if (relationship) {
+        QVERIFY(state.value()->tendencies.value(QStringLiteral("affinity")) > 0.50);
+        QCOMPARE(state.value()->version, 2);
+    }
+    if (expectedPerson != QLatin1String("owner"))
+        QVERIFY(!repository.currentRelationship(kProfileId, QStringLiteral("owner")).value().has_value());
+    const auto evidence = repository.evidenceBySource(kProfileId, event.value().eventId); QVERIFY(evidence.isOk());
+    QCOMPARE(!evidence.value().isEmpty(), personality);
+    QCOMPARE(runtime.services.checkpointStore()->current(QStringLiteral("identity_growth_v1")).value(), event.value().sequence);
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    if (relationship) QCOMPARE(repository.currentRelationship(kProfileId, expectedPerson).value()->version, 2);
+}
+void TestAgentRuntimeServices::processIdentityEvents_legacyTaskExperience_keepsOwnerCompatibility() {
+    StartedRuntime runtime; QVERIFY(runtime.ready());
+    EventDraft draft; draft.profileId = kProfileId; draft.type = QStringLiteral("TaskExperienceRecorded");
+    draft.source = QStringLiteral("TaskExperienceAdapter");
+    draft.payload = {{"task_id", "legacy-task"}, {"goal", "legacy"}, {"status", "Completed"}, {"feedback_status", "unknown"}};
+    QVERIFY(runtime.services.eventLedger()->append(draft).isOk());
+    QVERIFY(runtime.services.processIdentityEvents().isOk());
+    QCOMPARE(runtime.services.captureSnapshot(QStringLiteral("after-task")).relationshipVersion, std::optional<qint64>(1));
+}
 
 void TestAgentRuntimeServices::readAfter_whenEventsMatchFilter_shouldReturnOrderedBoundedBatch() {
     StartedRuntime runtime;

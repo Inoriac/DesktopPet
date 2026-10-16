@@ -24,6 +24,9 @@ public:
     bool isOpen() const;
     const QString& databasePath() const { return m_databasePath; }
 
+    Result<std::optional<qint64>, DomainError> personRevision(
+        const QString& profileId, const QString& personId) const;
+
     Result<void, DomainError> insertEvidence(const TraitEvidence& evidence);
     Result<QList<TraitEvidence>, DomainError> evidenceBySource(
         const QString& profileId, const QString& sourceEventId) const;

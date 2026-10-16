@@ -13,6 +13,38 @@
 
 #include "identity_baseline.h"
 
+// Populated by trusted host input adapters, never by message text.
+enum class OriginKind { LocalOwner, External, Internal };
+QString originKindToString(OriginKind kind);
+std::optional<OriginKind> originKindFromString(const QString& value);
+
+struct ExternalIdentity {
+    QString provider;
+    QString nameSpace;
+    QString remoteActorId;
+    QString displayName;
+};
+
+enum class PersonResolutionStatus { Resolved, Provisional, Unresolved };
+struct ResolvePersonRequest {
+    QString profileId;
+    std::optional<ExternalIdentity> externalIdentity;
+    bool ownerLocal = false;
+};
+struct PersonResolution {
+    std::optional<QString> personId;
+    PersonResolutionStatus status = PersonResolutionStatus::Unresolved;
+    qint64 identityRevision = 0;
+    std::optional<ExternalIdentity> externalIdentity;
+};
+struct BindIdentityRequest {
+    QString profileId;
+    ExternalIdentity externalIdentity;
+    QString personId;
+    qint64 expectedRevision = 0;
+    QString bindingEvidenceRef;
+};
+
 struct PersonalityPolicy {
     int minimumIndependentEvidence = 3;
     int minimumContextKeys = 2;

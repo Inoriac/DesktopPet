@@ -12,6 +12,7 @@
 #include "ai/event/sqlite_event_repository.h"
 #include "ai/identity/persona_projector.h"
 #include "ai/identity/personality_service.h"
+#include "ai/identity/person_directory.h"
 #include "ai/identity/relationship_service.h"
 #include "ai/identity/self_model_service.h"
 #include "ai/identity/sqlite_identity_repository.h"
@@ -109,8 +110,13 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
         m_emotionStateProvider = request.emotionStateProvider
             ? request.emotionStateProvider : m_nullEmotionStateProvider.get();
         m_identityRepository = std::make_unique<SqliteIdentityRepository>();
-        const Result<void, DomainError> identityOpened =
+        Result<void, DomainError> identityOpened =
             m_identityRepository->open(runtimeDatabasePath);
+        if (identityOpened.isOk()) {
+            m_personDirectory = std::make_unique<PersonDirectory>(m_profileId,
+                m_identityRepository.get(), m_unitOfWorkFactory.get(), m_eventOutbox.get());
+            identityOpened = m_personDirectory->initialize();
+        }
         if (identityOpened.isOk()) {
             m_personalityService = std::make_unique<PersonalityService>(
                 m_profileId,
@@ -133,6 +139,7 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
             QTimer::singleShot(0, &m_identityTimer, [this]() { processIdentityEvents(); });
         } else {
             report.diagnostics.append(identityOpened.error().message);
+            m_personDirectory.reset();
             m_identityRepository.reset();
             m_nullEmotionStateProvider.reset();
             m_emotionStateProvider = nullptr;
@@ -295,8 +302,7 @@ RuntimeSnapshot AgentRuntimeServices::captureSnapshot(
     RuntimeSnapshot snapshot;
     snapshot.sessionId = sessionId;
     snapshot.profileId = m_profileId;
-    snapshot.subjectId = subjectId.trimmed().isEmpty()
-        ? QStringLiteral("owner") : subjectId.trimmed().left(128);
+    snapshot.subjectId = subjectId;
     snapshot.identityBaselineSchemaVersion = m_identityBaselineSchemaVersion;
     snapshot.identityBaselineHash = m_identityBaselineHash;
     snapshot.configHash = m_configHash;
@@ -329,6 +335,7 @@ AgentRuntimeServices::chatPreparationRuntimeMetadata() const {
     metadata.identityBaselineHash = m_identityBaselineHash;
     metadata.configHash = m_configHash;
     metadata.subjectId = QStringLiteral("owner");
+    metadata.originKind = OriginKind::LocalOwner;
     return metadata;
 }
 
@@ -472,6 +479,7 @@ void AgentRuntimeServices::stop() {
     m_personaProjector.reset();
     m_selfModelService.reset();
     m_relationshipService.reset();
+    m_personDirectory.reset();
     m_personalityService.reset();
     m_identityRepository.reset();
     m_nullEmotionStateProvider.reset();

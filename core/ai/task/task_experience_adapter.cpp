@@ -19,6 +19,8 @@ QJsonObject factualSummary(const QJsonObject& payload) {
              QStringLiteral("result"), QStringLiteral("reason"), QStringLiteral("created_at")}) {
         facts.insert(key, payload.value(key).toString().left(key == QLatin1String("result") ? 4096 : 2048));
     }
+    if (payload.contains(QStringLiteral("origin_kind")))
+        facts.insert(QStringLiteral("origin_kind"), payload.value(QStringLiteral("origin_kind")));
     facts.insert(QStringLiteral("personality_version"), payload.value(QStringLiteral("personality_version")));
     facts.insert(QStringLiteral("initial_emotion"), payload.value(QStringLiteral("initial_emotion")).toObject());
     facts.insert(QStringLiteral("current_emotion"), payload.value(QStringLiteral("current_emotion")).toObject());

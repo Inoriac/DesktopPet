@@ -112,8 +112,26 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
         {QStringLiteral("text"), EventFieldType::String},
         {QStringLiteral("triggerTag"), EventFieldType::String}
     };
-    user.optionalFields = {{QStringLiteral("inputMethod"), EventFieldType::String}};
+    user.optionalFields = {{QStringLiteral("inputMethod"), EventFieldType::String},
+        {QStringLiteral("origin_kind"), EventFieldType::String},
+        {QStringLiteral("subject_id"), EventFieldType::String}};
     definitions.append(user);
+
+    for (const auto& type : {QStringLiteral("IdentityBindingAccepted"), QStringLiteral("IdentityBound")}) {
+        EventSchemaDefinition identity;
+        identity.type = type;
+        identity.requiredFields = {{QStringLiteral("person_id"), EventFieldType::String},
+            {QStringLiteral("provider"), EventFieldType::String},
+            {QStringLiteral("namespace"), EventFieldType::String},
+            {QStringLiteral("remote_actor_id"), EventFieldType::String}};
+        if (type == QLatin1String("IdentityBindingAccepted")) {
+            identity.requiredFields.insert(QStringLiteral("expected_revision"), EventFieldType::Number);
+        } else {
+            identity.requiredFields.insert(QStringLiteral("identity_revision"), EventFieldType::Number);
+            identity.requiredFields.insert(QStringLiteral("binding_evidence_ref"), EventFieldType::String);
+        }
+        definitions.append(identity);
+    }
 
     EventSchemaDefinition assistant;
     assistant.type = QStringLiteral("AssistantResponseProduced");
@@ -193,6 +211,8 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     taskExperience.requiredFields = {{QStringLiteral("task_id"), EventFieldType::String},
         {QStringLiteral("goal"), EventFieldType::String}, {QStringLiteral("status"), EventFieldType::String},
         {QStringLiteral("feedback_status"), EventFieldType::String}};
+    taskExperience.optionalFields = {{QStringLiteral("origin_kind"), EventFieldType::String},
+        {QStringLiteral("subject_id"), EventFieldType::String}};
     definitions.append(taskExperience);
 
     for (const EventSchemaDefinition& definition : definitions) {

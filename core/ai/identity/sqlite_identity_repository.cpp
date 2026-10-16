@@ -247,7 +247,9 @@ Result<void, DomainError> SqliteIdentityRepository::open(
              QStringLiteral("personality_state"),
              QStringLiteral("relationship_state"),
              QStringLiteral("self_model_version"),
-             QStringLiteral("trait_evidence")}) {
+             QStringLiteral("trait_evidence"),
+             QStringLiteral("agent_persons"),
+             QStringLiteral("agent_external_identities")}) {
         QSqlQuery schema(database);
         if (!schema.exec(QStringLiteral("SELECT 1 FROM %1 LIMIT 1").arg(table))) {
             const DomainError error = identityStoreError(
@@ -886,4 +888,18 @@ Result<void, DomainError> SqliteIdentityRepository::appendSelfModelState(
         return Result<void, DomainError>::failure(error);
     }
     return Result<void, DomainError>::success();
+}
+
+Result<std::optional<qint64>, DomainError> SqliteIdentityRepository::personRevision(
+    const QString& profileId, const QString& personId) const {
+    if (!isOpen()) return Result<std::optional<qint64>, DomainError>::failure(
+        domainError(QStringLiteral("STORE_UNAVAILABLE"), QStringLiteral("identity store is closed")));
+    QSqlQuery query(QSqlDatabase::database(m_connectionName));
+    query.prepare(QStringLiteral("SELECT revision FROM agent_persons WHERE profile_id=? AND person_id=?"));
+    query.addBindValue(profileId);
+    query.addBindValue(personId);
+    if (!query.exec()) return Result<std::optional<qint64>, DomainError>::failure(
+        domainError(QStringLiteral("STORE_UNAVAILABLE"), query.lastError().text()));
+    return Result<std::optional<qint64>, DomainError>::success(
+        query.next() ? std::optional<qint64>(query.value(0).toLongLong()) : std::nullopt);
 }

@@ -4,11 +4,12 @@
 
 本文件是后续顺序实施的主设计文档。2026-10-16 的会话已确认产品方向、人物识别与记忆归属优先、通用自主活动循环，以及主体空闲与电脑无人操作的区分。文中的接口、表结构和配置默认值是落实这些方向的首版工程设计；实现前以对应切片核对源码，调整时同步修订本文件。
 
-**设计已落盘，功能尚未实现。** 当前实施位置为 §3.2「人物识别与外部身份对应」。每个切片完成后须满足 §7 的验收，再推进下一项；不得把本文描述的目标行为当作现有能力。
+**设计已落盘，已进入顺序开发。** 实施状态以本地 `.evo/tasks/autonomous-agent/自主Agent-身份记忆与活动运行时-桌面端-impl-plan.md` 为唯一来源；本文定义目标契约与验收门槛。每个切片须满足 §7 的验收，再推进下一项；不得把本文描述的目标行为当作现有能力。
 
 | 版本 | 日期 | 内容 |
 | --- | --- | --- |
 | 1.0 | 2026-10-16 | 固定主体与插件边界，定义人物、记忆归属、会话、活动选择、空闲、执行恢复及顺序验收 |
+| 1.1 | 2026-10-16 | §3.2 开发核对：明确绑定版本与已接受事件、来源兼容边界、身份表增量迁移 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -189,11 +190,14 @@ sequenceDiagram
 #### 2. 核心服务接口
 
 ```cpp
+Result<void, DomainError> initialize(); // 宿主启动：幂等回填当前 profile 的人物
 Result<PersonResolution, DomainError> resolvePerson(const ResolvePersonRequest& request);
 Result<void, DomainError> bindIdentity(const BindIdentityRequest& request);
 ```
 
 请求/返回字段按 §4.1，接口由新增 PersonDirectory 提供。
+
+PersonDirectory 绑定宿主当前 profile 和 runtime 数据库，不接受请求切换角色。profileId、ownerLocal、provider/namespace 的可信性由宿主调用边界保证；本切片校验字段完整性，不用软件名称白名单代替后续插件注册契约。C++ 的 `namespace` 为保留字，对应成员命名 `nameSpace`，JSON 与 SQL 仍为 `namespace`。缺少稳定远端 ID 返回 unresolved；已有 ID 却缺 provider/namespace 属于 INVALID_INPUT。
 
 | 输入 | 值来源 | 说明 |
 | --- | --- | --- |
@@ -201,7 +205,7 @@ Result<void, DomainError> bindIdentity(const BindIdentityRequest& request);
 | externalIdentity | 调用方传入 | 适配器提供的 provider、namespace、稳定 remoteActorId |
 | displayName | 调用方传入 | 展示信息，可变化，不参加身份去重 |
 | ownerLocal | 系统推导（来源: 已认证的本地主人入口） | 外部同名或自称主人不设置此位 |
-| personId、expectedRevision（bind） | 调用方传入 | 来自主体人物目录和身份管理操作 |
+| personId、expectedRevision（bind） | 调用方传入 | 目标人物及其 agent_persons.revision，由人物目录和身份管理操作取得 |
 | bindingEvidenceRef（bind） | 系统推导（来源: 已接受的身份对应操作事件） | 记录跨账号对应的依据；与发言中的声称区分 |
 
 #### 3. 模块业务流程
@@ -213,9 +217,28 @@ Result<void, DomainError> bindIdentity(const BindIdentityRequest& request);
 5. bindIdentity 可将未绑定的另一个账号关联至现有人物，需来源可追溯。若账号已经属于另一人物，返回 IDENTITY_CONFLICT；不自动合并人物或迁移历史。
 6. 对误关联的更正走有记录的主体身份管理操作，增加 identityRevision 并重新投影受影响上下文；完整人物合并/拆分不是自主推断的副作用，实施时采用同一 revision 与来源原则。
 
+版本与证据的落地规则：
+
+- PersonResolution.identityRevision 是该人物的 agent_persons.revision；未解析为 0。新人物从 1 开始；换昵称不改变身份版本。新增账号绑定以目标人物 revision 做 CAS，成功后加 1；映射行的 revision 是独立的映射版本，不拿不存在的新账号映射版本做 CAS。
+- bindingEvidenceRef 必须引用 runtime 账本中已提交的 IdentityBindingAccepted 事件；source 为宿主身份管理入口 `IdentityManagement`，同一 profile，payload 的 person_id、provider、namespace、remote_actor_id、expected_revision 必须逐项匹配本次请求。昵称与普通聊天声明不构成此类证据。外部插件没有直接创建宿主事件的权限。
+- 同一账号、人物、证据的成功绑定请求可幂等重试，不再增加 revision 或追加 IdentityBound；账号已属于另一人物时优先返回 IDENTITY_CONFLICT。其他版本过期返回 STALE_REVISION，引用不存在/类型或内容不匹配返回 UNKNOWN_REFERENCE，均不改变映射或关系。
+- 绑定写映射、提升人物版本及 IdentityBound outbox 使用同一 RuntimeUnitOfWork，任一步失败全部回滚。新身份绑定不自动将 provisional 人物升级为已核实的现实人物，也不修改关系统计。
+
+输入来源与历史兼容：
+
+- 使用 OriginKind 的 local_owner/external/internal，宿主填入 metadata 和新事件 payload.origin_kind。ChatPreparationRuntimeMetadata 默认 internal、空 subject；现有本地 `chatPreparationRuntimeMetadata()` 显式返回 local_owner/owner。只有 local_owner 可以把空 subject 解析为 owner，external/internal 保持无对象。
+- `captureSnapshot(sessionId)` 的既有默认参数 owner 保留以兼容现有本地调用；显式传空 subject 表示未解析，不再回退 owner。
+- 历史缺 origin_kind 的 UserMessageReceived 仅在 source=AIBrain 时按本地入口兼容；TaskExperienceRecorded 仅在 source=TaskExperienceAdapter 时兼容。显式 external/internal 永远不走历史 fallback；未知或无效来源不创建主人关系。
+- TaskStartRequest 与 TaskRecord 带同一 OriginKind，TaskStore 在 task JSON 及 complex_task_experience_outbox 保存 origin_kind，TaskExperienceAdapter 原样投影到事件。旧 complex_tasks 来自既有本地任务入口，缺此字段可按 local_owner 读取；显式但无效的字段按 internal 保守处理。不能在重启或 outbox 转换时丢掉 external 标记后走历史兼容。
+- 关系证据写已解析且存在的人物；未解析来源跳过身份相关效果并正常推进消费 checkpoint。外部对象即使经过绑定解析为 owner，也不因此获得本地主人配置/显式人格指导权限。普通外部关系反馈只更新相应人物关系。
+
 #### 4. 数据变更
 
 runtime 库新增 agent_persons、agent_external_identities。创建人物与映射同事务提交；唯一键保证并发首次识别返回同一人物。既有 relationship_state 不重复建表，subject_id 引用 personId；owner 值保持。人物更正与其事件 outbox 同事务，原始外部 ID 和已记录来源不覆盖。
+
+本切片仅增量创建这两张身份表及索引，不提前创建其他切片的会话、活动或记忆表。schema 入口继续为 SqliteEventRepository::open；PersonDirectory 在角色初始化时以 INSERT-if-absent 回填 owner 与既有非空关系 subject，原始关系行、JSON、时间、版本不改写，重复启动不重置人物数据。本切片尚未切换多人记忆写入，因此无需等待后续 memory attribution 迁移后才启用人物目录。
+
+回填由显式 initialize() 返回 Result，profile 和数据库依赖由宿主构造时注入，失败使身份能力降级；构造函数不吞存储错误。resolvePerson 对缺远端 ID 的输入直接返回 unresolved，不为此触发 owner 或其他人物创建。
 
 #### 5. 实现锚点
 
@@ -225,6 +248,10 @@ runtime 库新增 agent_persons、agent_external_identities。创建人物与映
 | SqliteIdentityRepository::currentRelationship(profileId, subjectId) | 读取当前人物的既有关系统计 |
 | ChatPreparationRuntimeMetadata::subjectId | 从请求上下文投影，清除“空值自动 owner”对外部入口的隐式含义 |
 | agent_runtime_growth.cpp | 关系证据按发言/互动对象关联；人物身份与“谁有权修改主体配置”分别判断 |
+| AgentRuntimeServices::captureSnapshot(sessionId, subjectId) / chatPreparationRuntimeMetadata() | 前者显式空 subject 保持空；后者明确本地来源；运行时持有 PersonDirectory |
+| SqliteEventRepository::open / SqliteRuntimeUnitOfWork::begin | 前者建身份表；后者为目录变更提供独立线程连接与单库事务 |
+| EventOutbox::enqueue(RuntimeUnitOfWork&, const EventDraft&) | IdentityBound 与映射同事务；错误映射为 STORE_UNAVAILABLE |
+| TaskStore::save(const TaskRecord&, bool enqueueExperience) / TaskRecord::toJson、fromJson / TaskExperienceAdapter | 既有任务记录与经历 outbox 连续保留 origin_kind，防止重启后身份归属倒退；不改任务生命周期 |
 
 #### 6. 异常场景
 
@@ -238,6 +265,11 @@ runtime 库新增 agent_persons、agent_external_identities。创建人物与映
 - bindIdentity：主体已接受“两个账号是同一人”的对应操作后，新账号查询得到已有 personId，关系历史仍只有一份。
 - 不同 profile 看到相同外部账号时保持角色隔离；无法取得账号 ID 的转述不会创建一个共享“未知人”。
 - 旧 owner 关系版本在升级前后读取一致，已有 subject_id 不因迁移被统一重命名。
+- initialize：当前角色首次启动建立 owner 和既有 subject 的人物记录；重复运行不改变任何已有身份、关系版本或状态；存储失败明确返回错误并停止依赖目录的入口。
+- 新账号绑定使用目标人物版本；缺证据、伪装的普通消息事件、证据指向不同账号、旧 revision 均不产生绑定；同一次成功请求重复执行不重复事件或版本。
+- 并发首次解析同一精确账号只产生一人；人物/映射/事件写入失败回滚，没有半个人物或成功绑定假象。
+- 外部空对象不读取 owner 关系；外部甲的反馈只影响甲，本地主人的既有关系与成长继续可用；外部绑定 owner 的反馈不成为主人配置指导。
+- 任务来自外部时，经保存、重启读取、经历 outbox 和 adapter 后仍标 external；其关系效果不改记主人，人格指导权限也不升级。
 
 ### 3.3 人物记忆归属、召回与迁移
 
@@ -685,8 +717,9 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | 类型 | 必需字段与语义 |
 | --- | --- |
 | ExternalIdentity | provider、namespace、remoteActorId 非空；displayName 可选；只有宿主已注册的适配器可确定命名空间 |
-| ResolvePersonRequest / PersonResolution | 输入 profileId、externalIdentity 或可信 ownerLocal；返回 personId 可空、status=resolved/provisional/unresolved、identityRevision、externalIdentity |
-| BindIdentityRequest | profileId、externalIdentity、personId、expectedRevision、bindingEvidenceRef |
+| ResolvePersonRequest / PersonResolution | 输入 profileId、externalIdentity 或可信 ownerLocal（两者不可同时提供）；返回 personId 可空、status=resolved/provisional/unresolved、人物 identityRevision（未解析为 0）、externalIdentity |
+| BindIdentityRequest | profileId、externalIdentity、personId、expectedRevision（目标人物版本）、bindingEvidenceRef（已提交 IdentityBindingAccepted 事件 ID）；校验与幂等规则见 §3.2 |
+| OriginKind | local_owner/external/internal，C++ 显式枚举；由宿主确定，未知值不按本地主人解释 |
 | AttributionContext | profileId、originId、speakerPersonId 可空、conversationId 可空、occurredAt、claimKind=fact/reported/inferred、audience、resolution=resolved/unresolved |
 | AttributedMemoryInput / MemoryWriteResult | entry、attribution、describedPeople[{personId, role=subject/participant}]；返回 memoryIds、written、merged、unresolved |
 | ScopedMemoryQuery | text、subjectPersonIds、ContextSpec、limit；返回现有 RetrievedMemory 数组，不改变 ACT-R 等评分含义 |
@@ -863,7 +896,7 @@ JSON 在 C++ 边界用明确 schema 校验，附录不依赖 SQLite JSON 扩展�
 ### 5.3 迁移流程
 
 1. 以已有 ProfileResolver 找到角色库，离线一致性备份由 SQLite backup API 完成，连同旧 history 和配置保留恢复说明。不得只复制运行中的单个 .db 而遗漏 WAL。
-2. 运行时 schema 与 memory schema 分别以单库事务执行附录 A。两库均成功、迁移标记一致前不启用新写路径；任一失败可从对应 migration 标记继续。
+2. 各切片只迁移其负责的附录 A 结构，runtime schema 与 memory schema 分别以单库事务执行。涉及多人记忆写入切换时，两库均成功、迁移标记一致前不启用该新写路径；任一失败可从对应 migration 标记继续。§3.2 的身份目录可在自己的两张表与回填成功后使用，不依赖尚未开发的活动表。
 3. 创建 owner 人物；既有 relationship_state 中其他非空 subject_id 创建同 ID 的 provisional 人物记录，不按名字合并，不改关系版本。
 4. 归属迁移期间暂停相关记忆写入口，异步按稳定 memoryId 每批 100 条处理；旧读路径限已有主人场景。没有来源的记录明确 unresolved/owner_only；迁移完成后原子切换到所有写入口都带 AttributionContext 的模式，避免新增 UUID 落到游标之前被遗漏。
 5. 旧主人 history 幂等导入 local_owner 会话；保留原 message ID，有冲突时采用记录在 migration 中的确定性命名空间 ID，不改变原 reply 链含义。
@@ -887,18 +920,20 @@ JSON 在 C++ 边界用明确 schema 校验，附录不依赖 SQLite JSON 扩展�
 
 ### 7.1 当前状态与执行规则
 
-| 顺序 | 内容 | 状态 | 推进门槛 |
-| --- | --- | --- | --- |
-| 1 | §3.2 人物识别与身份对应 | 尚未开始 | 稳定身份、同名隔离、owner 兼容与迁移可复现 |
-| 2 | §3.3 人物记忆归属 | 尚未开始 | 多人偏好不互相去重/冲突，跨上下文召回不过界，巩固保留来源 |
-| 3 | §3.4 会话与上下文 | 尚未开始 | 两个会话来回切换不串记录、记忆与回复，迟到回调被隔离 |
-| 4 | §3.5 插件加载与执行 | 尚未开始 | 纯 Skill、纯 Tool、混合包及 script/CLI/MCP 全链路通过 |
-| 5 | §3.6 活动运行时 | 尚未开始 | 一个前台、多挂起、预算持久化、未知副作用不重放 |
-| 6 | §3.7 空闲与机会 | 尚未开始 | 空闲矩阵、消息聚合、退避和预算都可用虚拟时钟验证 |
-| 7 | §3.8 活动选择 | 尚未开始 | 能开始、继续、恢复、等待；新能力进入候选且不改主体软件分支 |
-| 8 | §3.9 外部实践 | 尚未开始 | 可控 QQ 式适配器通过端到端；真实接入单列依赖与验证事实 |
+实施状态只在 `.evo/tasks/autonomous-agent/自主Agent-身份记忆与活动运行时-桌面端-impl-plan.md` 维护。
 
-每项先核对本节依赖和接口，再实现、验证、更新本表与必要设计修订。保留问题及证据，不把“代码写完”“Schema 合格”“mock 通过”写成真实软件已可用。后续默认从第一项开始；本轮仅形成设计和开发入口。
+| 顺序 | 内容 | 推进门槛 |
+| --- | --- | --- |
+| 1 | §3.2 人物识别与身份对应 | 稳定身份、同名隔离、owner 兼容与迁移可复现 |
+| 2 | §3.3 人物记忆归属 | 多人偏好不互相去重/冲突，跨上下文召回不过界，巩固保留来源 |
+| 3 | §3.4 会话与上下文 | 两个会话来回切换不串记录、记忆与回复，迟到回调被隔离 |
+| 4 | §3.5 插件加载与执行 | 纯 Skill、纯 Tool、混合包及 script/CLI/MCP 全链路通过 |
+| 5 | §3.6 活动运行时 | 一个前台、多挂起、预算持久化、未知副作用不重放 |
+| 6 | §3.7 空闲与机会 | 空闲矩阵、消息聚合、退避和预算都可用虚拟时钟验证 |
+| 7 | §3.8 活动选择 | 能开始、继续、恢复、等待；新能力进入候选且不改主体软件分支 |
+| 8 | §3.9 外部实践 | 可控 QQ 式适配器通过端到端；真实接入单列依赖与验证事实 |
+
+每项先核对本节依赖和接口，再实现、验证、更新实施计划与必要设计修订。保留问题及证据，不把“代码写完”“Schema 合格”“mock 通过”写成真实软件已可用。
 
 ### 7.2 必测行为
 

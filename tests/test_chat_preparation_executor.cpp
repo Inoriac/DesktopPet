@@ -187,6 +187,9 @@ class ChatPreparationExecutorTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void chatPreparation_emptySubject_respectsOrigin_data();
+    void chatPreparation_emptySubject_respectsOrigin();
+
     void avatarDescriptionAndStateRemainSeparateFromIdentity();
     void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems_data();
     void workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems();
@@ -230,6 +233,33 @@ private slots:
     void resources_whenExecutorIsDestroyed_shouldOpenLoadAndCloseOnWorkerThread();
     void retrieve_whenMemoriesMatch_shouldReturnRankedResultsWithoutPersistenceMutation();
 };
+
+void ChatPreparationExecutorTests::chatPreparation_emptySubject_respectsOrigin_data() {
+    QTest::addColumn<int>("origin"); QTest::addColumn<bool>("owner");
+    QTest::newRow("external") << int(OriginKind::External) << false;
+    QTest::newRow("internal") << int(OriginKind::Internal) << false;
+    QTest::newRow("local") << int(OriginKind::LocalOwner) << true;
+}
+void ChatPreparationExecutorTests::chatPreparation_emptySubject_respectsOrigin() {
+    QFETCH(int, origin); QFETCH(bool, owner);
+    QTemporaryDir directory; const auto environment = environmentFor(directory);
+    SqliteEventRepository schema; QVERIFY(schema.open(environment.runtimeDatabasePath).isOk());
+    SqliteIdentityRepository identities; QVERIFY(identities.open(environment.runtimeDatabasePath).isOk());
+    RelationshipSnapshot relationship;
+    relationship.stateId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+    relationship.profileId = QStringLiteral("profile-test"); relationship.subjectId = QStringLiteral("owner");
+    relationship.version = 1; relationship.createdAt = QDateTime::currentDateTimeUtc();
+    relationship.effectiveAt = relationship.createdAt;
+    QVERIFY(identities.appendRelationshipState(relationship).isOk());
+    ChatPreparationExecutor executor; QVERIFY(executor.start(environment).isOk());
+    auto request = requestFor(); request.runtimeMetadata.subjectId.clear();
+    request.runtimeMetadata.originKind = static_cast<OriginKind>(origin);
+    request.runtimeMetadata.runtimeDatabasePath = environment.runtimeDatabasePath;
+    ChatPreparationResult result; QVERIFY(prepareOnce(executor, std::move(request), &result));
+    QVERIFY(result.runtimeSnapshot.has_value());
+    QCOMPARE(result.runtimeSnapshot->subjectId, owner ? QStringLiteral("owner") : QString());
+    QCOMPARE(result.runtimeSnapshot->relationshipVersion, owner ? std::optional<qint64>(1) : std::nullopt);
+}
 
 void ChatPreparationExecutorTests::workingMemory_shouldReachPromptWithoutPersistenceAndFilterExpiredOrSensitiveItems_data() {
     QTest::addColumn<bool>("persistentStore");

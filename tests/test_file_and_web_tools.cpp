@@ -38,6 +38,10 @@ private slots:
     void test_write_text_file_rejects_oversized_content();
     void test_write_text_file_blocks_sensitive_target();
     void test_execute_whitelisted_command_success();
+    void test_execute_whitelisted_command_reports_nonzero_exit();
+#ifdef Q_OS_UNIX
+    void test_execute_whitelisted_command_reports_abnormal_termination();
+#endif
     void test_execute_whitelisted_command_rejects_unlisted();
     void test_execute_whitelisted_command_rejects_shell();
     void test_execute_whitelisted_command_rejects_shell_tokens();
@@ -338,19 +342,86 @@ void TestFileAndWebTools::test_execute_whitelisted_command_success() {
 
     CommandExecutionPolicy policy;
     policy.allowedRoots = {tempDir.path()};
-    policy.commandWhitelist = {QCoreApplication::applicationFilePath()};
+#ifdef Q_OS_MACOS
+    // macOS AMFI can reject locally linked child executables. System-signed
+    // commands exercise the same production QProcess path without that dependency.
+    const QString command = QStringLiteral("/usr/bin/printf");
+#else
+    const QString command = QString::fromUtf8(DESKTOP_PET_COMMAND_TEST_FIXTURE);
+#endif
+    policy.commandWhitelist = {command};
     policy.timeoutMs = 5000;
 
     ExecuteWhitelistedCommandTool tool(policy);
     QJsonObject params;
     params["working_directory"] = tempDir.path();
-    params["command"] = QCoreApplication::applicationFilePath();
-    params["args"] = QJsonArray{"test_execute_whitelisted_command_rejects_shell"};
+    params["command"] = command;
+#ifdef Q_OS_MACOS
+    params["args"] = QJsonArray{"%s", "argument with spaces"};
+#else
+    params["args"] = QJsonArray{"argument with spaces"};
+#endif
 
     const ToolResult result = tool.execute(params);
     QVERIFY2(result.success, qPrintable(result.errorMessage));
     QCOMPARE(result.data.value("exit_code").toInt(-1), 0);
+    QCOMPARE(result.data.value("exit_status").toString(), QStringLiteral("normal"));
+    QCOMPARE(result.data.value("stdout").toString().trimmed(), QStringLiteral("argument with spaces"));
+#ifdef Q_OS_MACOS
+    policy.commandWhitelist = {QStringLiteral("/bin/pwd")};
+    ExecuteWhitelistedCommandTool directoryTool(policy);
+    params["command"] = QStringLiteral("/bin/pwd");
+    params["args"] = QJsonArray{};
+    const ToolResult directoryResult = directoryTool.execute(params);
+    QVERIFY2(directoryResult.success, qPrintable(directoryResult.errorMessage));
+    QCOMPARE(QFileInfo(directoryResult.data.value("stdout").toString().trimmed()).canonicalFilePath(),
+             QFileInfo(tempDir.path()).canonicalFilePath());
+#else
+    QFile marker(tempDir.filePath(QStringLiteral("command-probe.txt")));
+    QVERIFY(marker.open(QIODevice::ReadOnly));
+    QCOMPARE(marker.readAll(), QByteArray("argument with spaces"));
+#endif
 }
+
+void TestFileAndWebTools::test_execute_whitelisted_command_reports_nonzero_exit() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+#ifdef Q_OS_MACOS
+    const QString command = QStringLiteral("/usr/bin/false");
+    const QJsonArray args;
+#else
+    const QString command = QString::fromUtf8(DESKTOP_PET_COMMAND_TEST_FIXTURE);
+    const QJsonArray args{QStringLiteral("--fail")};
+#endif
+    policy.commandWhitelist = {command};
+    ExecuteWhitelistedCommandTool tool(policy);
+    const auto result = tool.execute({{"working_directory", tempDir.path()},
+        {"command", command}, {"args", args}});
+    QVERIFY(!result.success);
+    QCOMPARE(result.data.value("exit_status").toString(), QStringLiteral("normal"));
+    QVERIFY(result.data.value("exit_code").toInt() > 0);
+    QVERIFY(result.errorMessage.contains(QStringLiteral("退出码非 0")));
+}
+
+#ifdef Q_OS_UNIX
+void TestFileAndWebTools::test_execute_whitelisted_command_reports_abnormal_termination() {
+    QTemporaryDir tempDir;
+    QVERIFY(tempDir.isValid());
+    CommandExecutionPolicy policy;
+    policy.allowedRoots = {tempDir.path()};
+    const QString command = QString::fromUtf8(DESKTOP_PET_COMMAND_TEST_FIXTURE);
+    policy.commandWhitelist = {command};
+    ExecuteWhitelistedCommandTool tool(policy);
+    const auto result = tool.execute({{"working_directory", tempDir.path()},
+        {"command", command}, {"args", QJsonArray{QStringLiteral("--crash")}}});
+    QVERIFY(!result.success);
+    QCOMPARE(result.data.value("exit_status").toString(), QStringLiteral("crashed"));
+    QVERIFY(result.errorMessage.contains(QStringLiteral("异常终止")));
+    QVERIFY(!result.data.value("timed_out").toBool());
+}
+#endif
 
 void TestFileAndWebTools::test_execute_whitelisted_command_rejects_unlisted() {
     QTemporaryDir tempDir;

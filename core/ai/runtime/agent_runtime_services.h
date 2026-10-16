@@ -28,6 +28,7 @@ class OwnerDiaryServer;
 class PersonaProjector;
 struct PersonaProjection;
 class PersonalityService;
+class PersonDirectory;
 class RelationshipService;
 class RuntimeUnitOfWorkFactory;
 class SelfModelService;
@@ -65,6 +66,7 @@ public:
     EventConsumerCheckpointStore* checkpointStore() const {
         return m_checkpointStore.get();
     }
+    PersonDirectory* personDirectory() const { return m_personDirectory.get(); }
     PersonalityService* personalityService() const { return m_personalityService.get(); }
     RelationshipService* relationshipService() const { return m_relationshipService.get(); }
     SelfModelService* selfModelService() const { return m_selfModelService.get(); }
@@ -131,6 +133,7 @@ private:
     std::unique_ptr<EventOutbox> m_eventOutbox;
     std::unique_ptr<NullEmotionStateProvider> m_nullEmotionStateProvider;
     std::unique_ptr<SqliteIdentityRepository> m_identityRepository;
+    std::unique_ptr<PersonDirectory> m_personDirectory;
     std::unique_ptr<PersonalityService> m_personalityService;
     std::unique_ptr<RelationshipService> m_relationshipService;
     std::unique_ptr<SelfModelService> m_selfModelService;

@@ -5,7 +5,7 @@ bool TaskRecord::terminal() const {
 }
 
 QJsonObject TaskRecord::toJson() const {
-    return {{"id", id}, {"profile_id", profileId}, {"subject_id", subjectId}, {"goal", goal},
+    return {{"id", id}, {"profile_id", profileId}, {"subject_id", subjectId}, {"origin_kind", originKindToString(originKind)}, {"goal", goal},
         {"status", status}, {"plan", plan}, {"result", result}, {"reason", reason},
         {"completion_criteria", completionCriteria}, {"personality_version", personalityVersion},
         {"required_source_tools", QJsonArray::fromStringList(requiredSourceTools)},
@@ -27,6 +27,9 @@ TaskRecord TaskRecord::fromJson(const QJsonObject& j) {
     TaskRecord r;
     r.id = j.value("id").toString(); r.profileId = j.value("profile_id").toString();
     r.subjectId = j.value("subject_id").toString(); r.goal = j.value("goal").toString();
+    r.originKind = j.contains("origin_kind")
+        ? originKindFromString(j.value("origin_kind").toString()).value_or(OriginKind::Internal)
+        : OriginKind::LocalOwner;
     r.status = j.value("status").toString("Received"); r.plan = j.value("plan").toString();
     r.result = j.value("result").toString(); r.reason = j.value("reason").toString();
     r.completionCriteria = j.value("completion_criteria").toString();

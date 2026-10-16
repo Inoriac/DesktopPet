@@ -8,6 +8,7 @@
 
 #include "ai/ai_brain.h"
 #include "ai/identity/persona_projector.h"
+#include "ai/identity/person_directory.h"
 #include "ai/tools/companion_tools.h"
 #include "ai/tools/schedule_tools.h"
 #include "ai/event/event_ledger.h"
@@ -412,7 +413,7 @@ void TestModuleConnectivity::growthWaitsForRealEvidenceWindowAndIgnoresTemporary
         event.type = "UserMessageReceived";
         event.source = "test";
         event.occurredAt = now;
-        event.payload = {{"text", text}, {"triggerTag", "user_request"}};
+        event.payload = {{"text", text}, {"triggerTag", "user_request"}, {"origin_kind", "local_owner"}};
         QVERIFY(runtime.services.eventLedger()->append(event).isOk());
     }
     QVERIFY(runtime.services.processIdentityEvents(now.addSecs(1)).isOk());
@@ -452,7 +453,8 @@ void TestModuleConnectivity::relationshipUpdatesRequireRelevantEvidenceAndRespec
         event.profileId = profileId;
         event.type = QStringLiteral("UserMessageReceived");
         event.source = QStringLiteral("test");
-        event.payload = {{QStringLiteral("text"), text}, {QStringLiteral("triggerTag"), QStringLiteral("user_request")}};
+        event.payload = {{QStringLiteral("text"), text}, {QStringLiteral("triggerTag"), QStringLiteral("user_request")},
+            {QStringLiteral("origin_kind"), QStringLiteral("local_owner")}};
         return runtime.services.eventLedger()->append(event).isOk();
     };
     QVERIFY(appendUser(QStringLiteral("我今天在练习水彩")));
@@ -470,6 +472,13 @@ void TestModuleConnectivity::relationshipUpdatesRequireRelevantEvidenceAndRespec
     QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("trust")), 0.462);
     QCOMPARE(relationship.value()->tendencies.value(QStringLiteral("boundaryRespect")), 0.612);
     const auto ownerVersion = relationship.value()->version;
+    QVERIFY(runtime.services.personDirectory());
+    const auto guestResolution = runtime.services.personDirectory()->resolvePerson({
+        profileId, ExternalIdentity{QStringLiteral("test-chat"), QStringLiteral("global"),
+            QStringLiteral("guest-account"), QStringLiteral("guest")}, false});
+    QVERIFY(guestResolution.isOk() && guestResolution.value().personId.has_value());
+    const QString guestId = *guestResolution.value().personId;
+    QVERIFY(guestId != QLatin1String("owner"));
     const auto appendTask = [&](const QString& status) {
         EventDraft event;
         event.profileId = profileId;
@@ -477,19 +486,20 @@ void TestModuleConnectivity::relationshipUpdatesRequireRelevantEvidenceAndRespec
         event.source = QStringLiteral("test");
         event.payload = {{QStringLiteral("task_id"), QStringLiteral("task-") + status},
             {QStringLiteral("goal"), QStringLiteral("整理旅行方案")}, {QStringLiteral("status"), status},
-            {QStringLiteral("feedback_status"), QStringLiteral("unknown")}, {QStringLiteral("subject_id"), QStringLiteral("guest")}};
+            {QStringLiteral("feedback_status"), QStringLiteral("unknown")}, {QStringLiteral("subject_id"), guestId},
+            {QStringLiteral("origin_kind"), QStringLiteral("external")}};
         return runtime.services.eventLedger()->append(event).isOk();
     };
     QVERIFY(appendTask(QStringLiteral("Failed")));
     QVERIFY(runtime.services.processIdentityEvents().isOk());
-    auto guest = repository.currentRelationship(profileId, QStringLiteral("guest"));
+    auto guest = repository.currentRelationship(profileId, guestId);
     QVERIFY(guest.isOk() && guest.value().has_value());
     QCOMPARE(guest.value()->tendencies.value(QStringLiteral("familiarity")), 0.105);
     QCOMPARE(guest.value()->tendencies.value(QStringLiteral("trust")), 0.45);
     const auto guestVersion = guest.value()->version;
     QVERIFY(appendTask(QStringLiteral("Declined")));
     QVERIFY(runtime.services.processIdentityEvents(QDateTime::currentDateTimeUtc().addDays(30)).isOk());
-    guest = repository.currentRelationship(profileId, QStringLiteral("guest"));
+    guest = repository.currentRelationship(profileId, guestId);
     QVERIFY(guest.isOk() && guest.value().has_value());
     QCOMPARE(guest.value()->version, guestVersion);
     relationship = repository.currentRelationship(profileId, QStringLiteral("owner"));

@@ -222,3 +222,19 @@ EvidenceSet evidenceSetFromJson(const QJsonArray& array) {
     }
     return evidence;
 }
+
+QString originKindToString(OriginKind kind) {
+    switch (kind) {
+    case OriginKind::LocalOwner: return QStringLiteral("local_owner");
+    case OriginKind::External: return QStringLiteral("external");
+    case OriginKind::Internal: return QStringLiteral("internal");
+    }
+    return QStringLiteral("internal");
+}
+
+std::optional<OriginKind> originKindFromString(const QString& value) {
+    if (value == QLatin1String("local_owner")) return OriginKind::LocalOwner;
+    if (value == QLatin1String("external")) return OriginKind::External;
+    if (value == QLatin1String("internal")) return OriginKind::Internal;
+    return std::nullopt;
+}

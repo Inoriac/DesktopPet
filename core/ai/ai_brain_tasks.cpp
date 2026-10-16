@@ -233,7 +233,8 @@ bool AIBrain::tryHandleComplexTask(const QString& text, const QString& triggerTa
     const auto context = m_runtimeServices->taskIdentityContext(m_petName);
     TaskStartRequest request;
     request.profileId = m_chatPreparationRuntimeMetadata.profileId;
-    request.subjectId = "owner";
+    request.subjectId = m_chatPreparationRuntimeMetadata.subjectId;
+    request.originKind = m_chatPreparationRuntimeMetadata.originKind;
     request.goal = input.startsWith("/task ", Qt::CaseInsensitive) ? input.mid(6) : input;
     request.personalitySnapshot = context.value("personality").toObject();
     request.personalityVersion = request.personalitySnapshot.value("version").toInteger();

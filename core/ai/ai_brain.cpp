@@ -901,6 +901,10 @@ bool AIBrain::appendRuntimeEvent(const QString& type,
     draft.source = QStringLiteral("AIBrain");
     draft.sessionId = sessionId;
     draft.payload = payload;
+    if (type == QLatin1String("UserMessageReceived")) {
+        draft.payload.insert(QStringLiteral("origin_kind"), originKindToString(m_chatPreparationRuntimeMetadata.originKind));
+        draft.payload.insert(QStringLiteral("subject_id"), m_chatPreparationRuntimeMetadata.subjectId);
+    }
     DeferredChatSideEffect effect;
     effect.type = ChatSideEffectType::RuntimeEvent;
     effect.requestId = !requestId.isEmpty()

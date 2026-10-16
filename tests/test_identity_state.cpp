@@ -318,7 +318,8 @@ void TestIdentityState::runtime_taskCommandsDoNotCreateFeedbackEvidenceOrDuplica
     experience.occurredAt = kWindowEnd;
     experience.payload = {{QStringLiteral("task_id"), QStringLiteral("task-source")},
         {QStringLiteral("goal"), QStringLiteral("整理旅行方案")}, {QStringLiteral("status"), QStringLiteral("Completed")},
-        {QStringLiteral("feedback_status"), QStringLiteral("unknown")}, {QStringLiteral("subject_id"), QStringLiteral("owner")}};
+        {QStringLiteral("feedback_status"), QStringLiteral("unknown")}, {QStringLiteral("subject_id"), QStringLiteral("owner")},
+        {QStringLiteral("origin_kind"), QStringLiteral("local_owner")}};
     QVERIFY(fixture.services.eventLedger()->append(experience).isOk());
     QVERIFY(fixture.services.processIdentityEvents(kWindowEnd.addSecs(2)).isOk());
     const auto relationship = repository.currentRelationship(kProfileId, QStringLiteral("owner"));

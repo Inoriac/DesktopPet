@@ -198,7 +198,15 @@ void TestPromptRenderer::testContextBuilderFallbackUsesIdentity() {
     ContextBuilder builder;
     const QString prompt = builder.buildSystemPrompt(QStringLiteral("Milltina"));
     QVERIFY(prompt.contains(QStringLiteral("你是桌面宠物 Milltina 的AI大脑。")));
-    QVERIFY(prompt.contains(QStringLiteral("性格倾向：适时主动、稳健开放、交流适度。")));
+    // Defaults now include persistence, caution, autonomy and helpfulness too.
+    // The fallback must keep the familiar traits without assuming only three.
+    QVERIFY(prompt.contains(QStringLiteral("性格倾向：")));
+    for (const QString& trait : {QStringLiteral("适时主动"), QStringLiteral("稳健开放"),
+             QStringLiteral("交流适度"), QStringLiteral("愿意坚持尝试"),
+             QStringLiteral("重视证据与不确定性"), QStringLiteral("坦诚表达边界"),
+             QStringLiteral("愿意理解并帮助用户")}) {
+        QVERIFY2(prompt.contains(trait), qPrintable(trait));
+    }
     QVERIFY(prompt.contains(QStringLiteral("说话风格：自然、简短、重视真实经历。")));
     QVERIFY(prompt.contains(QStringLiteral("调用 skill_record_outcome 反馈结果。")));
     QVERIFY(prompt.contains(QStringLiteral("不得降低命令成功率")));

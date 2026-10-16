@@ -151,6 +151,27 @@ const QStringList kSchemaStatements = {
                    "version INTEGER NOT NULL, state_json TEXT NOT NULL,"
                    "evidence_cutoff_sequence INTEGER NOT NULL, effective_at TEXT NOT NULL,"
                    "created_at TEXT NOT NULL, UNIQUE(profile_id, subject_id, version))"),
+    QStringLiteral("CREATE TABLE IF NOT EXISTS agent_persons ("
+                   "profile_id TEXT NOT NULL, person_id TEXT NOT NULL,"
+                   "kind TEXT NOT NULL CHECK(kind IN ('owner','person')),"
+                   "display_name TEXT NOT NULL DEFAULT '',"
+                   "status TEXT NOT NULL DEFAULT 'provisional' CHECK(status IN ('active','provisional','inactive')),"
+                   "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),"
+                   "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),"
+                   "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),"
+                   "PRIMARY KEY(profile_id,person_id),"
+                   "CHECK((kind='owner' AND person_id='owner') OR (kind='person' AND person_id<>'owner')))"),
+    QStringLiteral("CREATE TABLE IF NOT EXISTS agent_external_identities ("
+                   "profile_id TEXT NOT NULL, provider TEXT NOT NULL, namespace TEXT NOT NULL,"
+                   "remote_actor_id TEXT NOT NULL, person_id TEXT NOT NULL,"
+                   "display_name TEXT NOT NULL DEFAULT '', binding_evidence_ref TEXT,"
+                   "revision INTEGER NOT NULL DEFAULT 1 CHECK(revision > 0),"
+                   "created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),"
+                   "updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),"
+                   "PRIMARY KEY(profile_id,provider,namespace,remote_actor_id),"
+                   "FOREIGN KEY(profile_id,person_id) REFERENCES agent_persons(profile_id,person_id))"),
+    QStringLiteral("CREATE INDEX IF NOT EXISTS idx_agent_identity_person "
+                   "ON agent_external_identities(profile_id,person_id)"),
     QStringLiteral("CREATE TABLE IF NOT EXISTS self_model_version ("
                    "version_id TEXT PRIMARY KEY, profile_id TEXT NOT NULL, parent_version_id TEXT,"
                    "narrative_json TEXT NOT NULL, evidence_json TEXT NOT NULL,"

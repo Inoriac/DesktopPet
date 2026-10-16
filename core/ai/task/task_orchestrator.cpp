@@ -176,6 +176,7 @@ bool TaskOrchestrator::start(const TaskStartRequest& request) {
     m_task = TaskRecord{};
     m_task.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     m_task.profileId = request.profileId; m_task.subjectId = request.subjectId;
+    m_task.originKind = request.originKind;
     m_task.goal = request.goal; m_task.personalityVersion = request.personalityVersion;
     m_task.requiredSourceTools = sourceToolsForGoal(request.goal);
     m_task.personalitySnapshot = request.personalitySnapshot; m_task.relationshipSnapshot = request.relationshipSnapshot;

@@ -49,6 +49,7 @@ bool TaskStore::save(const TaskRecord& task, bool enqueue) {
     if (enqueue) {
         // Durable factual summary excludes raw tool output and model working context.
         const QJsonObject payload{{"task_id", task.id}, {"profile_id", task.profileId}, {"subject_id", task.subjectId},
+            {"origin_kind", originKindToString(task.originKind)},
             {"goal", task.goal}, {"status", task.status}, {"result", task.result}, {"reason", task.reason},
             {"personality_version", task.personalityVersion}, {"evidence", task.evidence},
             {"initial_emotion", task.initialEmotion}, {"current_emotion", task.currentEmotion},

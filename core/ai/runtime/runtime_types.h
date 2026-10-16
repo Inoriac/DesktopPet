@@ -42,7 +42,8 @@ struct ChatPreparationRuntimeMetadata {
     int identityBaselineSchemaVersion = 1;
     QString identityBaselineHash;
     QString configHash;
-    QString subjectId = QStringLiteral("owner");
+    QString subjectId;
+    OriginKind originKind = OriginKind::Internal;
 };
 
 struct RuntimeStartRequest {

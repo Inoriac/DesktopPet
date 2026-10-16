@@ -148,6 +148,8 @@ set(IDENTITY_STATE_SOURCES
     ${EMOTION_PROVIDER_SOURCES}
     core/ai/identity/personality_service.h
     core/ai/identity/personality_service.cpp
+    core/ai/identity/person_directory.h
+    core/ai/identity/person_directory.cpp
     core/ai/identity/relationship_service.h
     core/ai/identity/relationship_service.cpp
     core/ai/identity/self_model_service.h
@@ -835,6 +837,19 @@ add_desktop_pet_cpp_test(emotion_provider_contract_tests EmotionProviderContract
     LIBRARIES
         Qt::Core
         Qt::Test
+)
+
+# ---- Stable person identity and external account mapping ----
+add_desktop_pet_cpp_test(person_directory_tests PersonDirectoryTests
+    SOURCES
+        tests/test_person_directory.cpp
+        core/ai/identity/identity_baseline.cpp
+        core/ai/identity/person_directory.cpp
+        ${EVENT_LEDGER_SOURCES}
+        ${IDENTITY_STORAGE_SOURCES}
+        core/ai/identity/relationship_service.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai
+    LIBRARIES Qt::Core Qt::Sql Qt::Test
 )
 
 # ---- Identity state, projection, and runtime composition tests ----
@@ -1790,6 +1805,8 @@ add_desktop_pet_cpp_test(prompt_tests PromptRendererTests
 )
 
 # ---- 文件和网络工具测试 ----
+add_executable(command_test_fixture tests/fixtures/command_probe.cpp)
+set_target_properties(command_test_fixture PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
     SOURCES
         tests/test_file_and_web_tools.cpp
@@ -1817,6 +1834,9 @@ add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
         Qt::Test
     APPLE_CORE_GRAPHICS
 )
+add_dependencies(file_web_tool_tests command_test_fixture)
+target_compile_definitions(file_web_tool_tests PRIVATE
+    DESKTOP_PET_COMMAND_TEST_FIXTURE="$<TARGET_FILE:command_test_fixture>")
 
 if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
     # ---- 判断 Debug 后缀 ----
@@ -1954,6 +1974,7 @@ endif ()
 # Personality evolution and bounded complex tasks.
 add_desktop_pet_cpp_test(task_orchestrator_tests TaskOrchestratorTests
     SOURCES tests/test_task_orchestrator.cpp ${TASK_ORCHESTRATION_SOURCES}
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
     LIBRARIES Qt::Core Qt::Sql Qt::Test)
 add_desktop_pet_cpp_test(personality_consolidation_tests PersonalityConsolidationTests

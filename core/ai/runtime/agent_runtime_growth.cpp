@@ -80,8 +80,22 @@ Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDat
         const bool taskExperience = event.type == QLatin1String("TaskExperienceRecorded")
             && event.privacy == EventPrivacy::Normal;
         const QString text = interaction ? event.payload.value(QStringLiteral("text")).toString() : QString();
-        const auto feedback = interaction ? explicitFeedback(text) : std::nullopt;
-        const QString subject = event.payload.value(QStringLiteral("subject_id")).toString(QStringLiteral("owner"));
+        auto origin = originKindFromString(event.payload.value(QStringLiteral("origin_kind")).toString());
+        if (!event.payload.contains(QStringLiteral("origin_kind"))
+            && ((event.type == QLatin1String("UserMessageReceived") && event.source == QLatin1String("AIBrain"))
+                || (event.type == QLatin1String("TaskExperienceRecorded") && event.source == QLatin1String("TaskExperienceAdapter"))))
+            origin = OriginKind::LocalOwner;
+        QString subject = event.payload.value(QStringLiteral("subject_id")).toString();
+        if (subject.trimmed().isEmpty() && origin == OriginKind::LocalOwner)
+            subject = QStringLiteral("owner");
+        bool resolved = false;
+        if (origin.has_value() && origin != OriginKind::Internal && !subject.trimmed().isEmpty()) {
+            const auto person = m_identityRepository->personRevision(m_profileId, subject);
+            if (!person.isOk()) return Result<void, DomainError>::failure(person.error());
+            resolved = person.value().has_value();
+        }
+        const auto feedback = resolved && origin == OriginKind::LocalOwner
+            && subject == QLatin1String("owner") && interaction ? explicitFeedback(text) : std::nullopt;
         const auto updateRelationship = [&](const QString& dimension, double direction, double weight) {
             return m_relationshipService->applyEvidence(subject,
                 {dimension, direction, weight, 1.0, event.eventId, event.occurredAt});
@@ -99,13 +113,13 @@ Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDat
         // Shared interactions build familiarity, without interpreting silence or
         // a task's technical outcome as approval, dislike, or a trust judgment.
         const QString taskStatus = event.payload.value(QStringLiteral("status")).toString();
-        if ((interaction && text.simplified().size() >= 2)
+        if (resolved && ((interaction && text.simplified().size() >= 2)
             || (taskExperience && (taskStatus == QLatin1String("Completed")
-                || taskStatus == QLatin1String("Failed") || taskStatus == QLatin1String("Cancelled")))) {
+                || taskStatus == QLatin1String("Failed") || taskStatus == QLatin1String("Cancelled"))))) {
             const auto relationship = updateRelationship(QStringLiteral("familiarity"), 1.0, taskExperience ? 0.25 : 0.10);
             if (!relationship.isOk()) return Result<void, DomainError>::failure(relationship.error());
         }
-        const QString explicitText = interaction ? text
+        const QString explicitText = !resolved ? QString() : interaction ? text
             : taskExperience && event.payload.value(QStringLiteral("feedback_status")).toString() == QLatin1String("provided")
                 ? event.payload.value(QStringLiteral("user_feedback")).toString() : QString();
         for (const auto& [dimension, direction] : explicitRelationshipFeedback(explicitText)) {
