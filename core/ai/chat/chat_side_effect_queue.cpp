@@ -324,6 +324,8 @@ private:
                 origin.profileId = q.value(0).toString();
                 const auto type = q.value(1).toString(), source = q.value(2).toString();
                 const auto payload = QJsonDocument::fromJson(q.value(3).toByteArray()).object();
+                if (type == "UserMessageReceived" && payload.contains("original_origin_ids"))
+                    return R::failure(domainError("UNKNOWN_REFERENCE", "A session processing log is not an original memory source"));
                 origin.occurredAt = QDateTime::fromString(q.value(4).toString(), Qt::ISODateWithMs);
                 origin.originKind = originKindFromString(payload.value("origin_kind").toString())
                                         .value_or(OriginKind::Internal);
@@ -331,7 +333,7 @@ private:
                     source == "AIBrain")
                     origin.originKind = OriginKind::LocalOwner;
                 origin.conversationId = payload.value("conversation_id").toString();
-                if (type == "UserMessageReceived") {
+                if (type == "UserMessageReceived" || (type == "MessageObserved" && source == "ConversationStore")) {
                     origin.speakerPersonId = payload.value("subject_id").toString();
                     origin.text = payload.value("text").toString();
                     if (origin.originKind == OriginKind::LocalOwner) {

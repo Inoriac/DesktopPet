@@ -11,6 +11,7 @@
 | 1.0 | 2026-10-16 | 固定主体与插件边界，定义人物、记忆归属、会话、活动选择、空闲、执行恢复及顺序验收 |
 | 1.1 | 2026-10-16 | §3.2 开发核对：明确绑定版本与已接受事件、来源兼容边界、身份表增量迁移 |
 | 1.2 | 2026-10-16 | §3.3 开发核对：来源提交验证、过渡期本地上下文、写入归属与分批迁移边界 |
+| 1.3 | 2026-10-16 | §3.4 开发核对：会话库唯一权威、异步生产入口、宿主连接绑定与持久发送回执、原始消息消费去重与历史导入边界 |
 
 | 仓库 | 技术栈 | 涉及范围 |
 | --- | --- | --- |
@@ -56,6 +57,7 @@
 5. runtime 数据库事务只写 runtime 表与既有 event_outbox；memory 数据库事务只写记忆及其关联。跨库使用已提交事件、幂等消费和 checkpoint，不建立跨库外键或假定跨库原子事务。
 6. 同一数据库的工作线程使用独立连接；迁移和写入开启外键，现有 WAL、busy timeout 与写队列约定继续适用。
 7. 模型输出是提案；身份、引用、预算、参数和状态转换由程序校验。调用是否实际发生及完成边界来自工具结果，不能由模型自述替代。
+8. 原始消息、会话处理日志和派生反思分开保存；关系、人格及日记的独立来源始终回溯实际原始消息。历史导入与自身回显不成为新的互动证据，也不触发新的自主回复（影响 §3.3、§3.4、§3.8、§3.9）。
 
 ### 1.4 活动状态与空闲定义（影响 §3.4、§3.6—§3.9）
 
@@ -161,6 +163,7 @@ sequenceDiagram
 | 🔧 | [task_orchestrator](../../core/ai/task/task_orchestrator.cpp)、[task_store](../../core/ai/task/task_store.cpp)、[agency_decision_service](../../core/ai/task/agency_decision_service.cpp) | 复用执行检查点，支持挂起集合，移除按工具名字固定的准入分支 |
 | 🔧 | [ai_brain](../../core/ai/ai_brain.h)、[ai_brain_loop](../../core/ai/ai_brain_loop.cpp) | 单一协调入口、从专用主动聊天触发过渡到通用选择 |
 | 🔧 | [event schema](../../core/ai/event/event_schema_registry.h)、[runtime growth](../../core/ai/runtime/agent_runtime_growth.cpp)、[反思类型](../../core/ai/reflection/reflection_types.h) | 带人物与上下文的来源、运行记录与长期经历分流 |
+| 🔧 | [runtime personality](../../core/ai/runtime/agent_runtime_personality.cpp)、[personality consolidation](../../core/ai/reflection/personality_consolidation_stage.cpp)、[runtime services](../../core/ai/runtime/agent_runtime_services.cpp) | MessageObserved 原始证据、聚合处理日志的多来源回溯、历史导入排除及本地主人人格范围 |
 | 🔧 | launcher、配置与测试 | 当前活动、暂停/恢复、等待原因、身份对应和插件状态；按切片补回归 |
 
 现有关系表按 profile_id + subject_id + version 保存版本，可复用。现有记忆去重主要按 type + summary，偏好冲突解析默认 subject=user，须在多人输入前修正。现有聊天 history 缺稳定 conversationId；ActiveMemoryPool 只有一组 topic 状态。TaskStore 的 `complex_tasks_single_unfinished` 唯一索引与单任务接口不能直接承载挂起集合。MCP 适配器目前返回 `mcp_tool_execution_not_implemented`，现有契约检查通过不证明其能执行。
@@ -311,7 +314,7 @@ Result<MigrationProgress, DomainError> migrateAttribution(const AttributionMigra
 
 - `MemoryAttributionService` 组合 MemoryStore、既有抽取/策略/召回器与宿主注入的来源查询、人物存在性查询。来源查询按 profile + originId 读取已提交 runtime 事件，返回实际 speaker、conversation、occurredAt、原文、originKind 及 resolvedPeople；数据库故障与未找到明确区分。来源查询不能以“调用方说已提交”的布尔值替代。
 - `MemoryOriginSource.resolvedPeople[{personId, role}]` 是原事件内由宿主解析并保存的人物引用；来源事件的 `resolved_people` 不接受模型任意填写。非第一人称的 describedPeople 必须属于这个已验证集合，且人物存在于本 profile；不在集合内返回 UNKNOWN_REFERENCE，不因目录存在就认定原文指向这个人。没有可靠引用时，抽取入口保持 describedPeople 为空并保存 unresolved 候选。严格第一人称仍可从已验证 speaker 推导 subject。现有本地规则抽取不凭昵称生成人物引用；来源适配器只信任宿主 AIBrain/UserMessageReceived 与未来 ConversationStore/MessageObserved 写入的结构化引用，其他来源不投影 resolvedPeople。
-- AIBrain 为每次原始本地输入预分配稳定 canonical UUID，写入 UserMessageReceived.eventId 与记忆 originId；重试复用该 UUID。事件 payload 保存 request_id、conversation_id、origin_kind 和 subject_id，事件时间在首次生成时固定。写队列使用 appendIdempotent，记忆写在同一串行 writer 上读取已提交事件后确定归属。相同 request/session 字符串本身不是来源证明。
+- 会话库启用前，AIBrain 为每次原始本地输入预分配稳定 canonical UUID，写入 UserMessageReceived.eventId 与记忆 originId；重试复用该 UUID。事件 payload 保存 request_id、conversation_id、origin_kind 和 subject_id，事件时间在首次生成时固定。§3.4 启用会话库后，MessageObserved 承担唯一原始消息来源，UserMessageReceived 只保留处理日志并引用原 origin 集合。写队列使用 appendIdempotent，记忆写在同一串行 writer 上读取已提交原始事件后确定归属。相同 request/session 字符串本身不是来源证明。
 - 尚未找到事件时仍可持久化候选，但 origin.sourceStatus=pending，resolution=unresolved，不保存已确认 speaker/subject，不产生人物冲突边，只在原来的受限范围内留存。待原始事件可查后，重复 ingest 同一 origin 可补全；不新增独立证据。事件查询失败返回 STORE_UNAVAILABLE，不能当作“未找到”。已存在事件但输入的 profile/会话/人物与事实不匹配时返回 UNKNOWN_REFERENCE，不接受伪造归属。
 - 新增字段归 MemoryEntry 的类型化 attribution 投影，关联表为 SQLite 权威存储；JSON 序列化包含同一字段。正文、归属、人物及 origins 在原 MemoryStore 事务中一起提交或回滚。mergeContext 与提交 rebase 对 originId 做集合合并，不能让旧提案删除新来源。pending 不因普通 rebase 自动成为 committed。
 - GUI 可以继续保存待提交的候选快照；最终去重、冲突和落库必须基于 writer 的已提交来源及最新记忆状态，禁止先按未确认人物合并正文再单独补归属。工具结果和任务经历使用实际工具/任务事件为来源，未具备会话信息的旧任务经历先按 owner_only/unresolved 保存；不能把执行结果归成用户自述。
@@ -384,6 +387,7 @@ memory 库 user_version 从 1 增至 2；0/1 库增量升级，未知高版本�
 Result<AcceptedMessage, DomainError> acceptMessage(const IncomingMessage& message);
 Result<PreparedContext, DomainError> prepareContext(const ContextRequestV2& request);
 Result<void, DomainError> publishResponse(const RoutedResponse& response);
+Result<void, DomainError> recordDeliveryReceipt(const DeliveryReceipt& receipt);
 ```
 
 | 输入 | 值来源 | 说明 |
@@ -393,19 +397,56 @@ Result<void, DomainError> publishResponse(const RoutedResponse& response);
 | profileId、personId、conversationId | 系统推导（来源: 活跃角色、§3.2 与会话目录） | 群和人分开定位 |
 | activityId、requestId、generation、contextRevision | 系统推导（来源: 协调器分配及上下文快照） | 绑定本次处理，不跨会话复用 |
 | result、replyTarget | 调用方传入 | 模型/执行结果；replyTarget 必须等于此次宿主绑定的目标或明确验证过的新目标 |
+| kind、title、localMessageId | 调用方传入 | 适配器会话类型/展示名；本地 UI 提供稳定消息 ID，外部不能伪装 local_owner |
+| HostConversationBinding | 系统推导（来源: 宿主连接设置） | 精确 channel/connectionKey/remoteConversationId、kind、已核验 selfIdentity、发送工具与策略绑定；不由消息正文注册 |
+| DeliveryReceipt | 系统推导（来源: 宿主异步执行回调） | 原 requestId/generation、绑定目标、实际结果及远端消息 ID；不接受模型宣称已发送 |
 
 #### 3. 模块业务流程
 
 1. 归一化输入、解析人物，以 profile + channel + connectionKey + remoteConversationId 定位会话。
-2. 将消息和 MessageObserved 事件放入同一 runtime 事务，以 conversation + remoteMessageId 去重；提交后确认接收。没有远端 messageId 但有稳定 sourceEventId 时，以其来源命名空间生成确定性本地消息 UUID，并用主键去重。外部 eventId 同样规范化为现有账本要求的 canonical UUID，原始 ID 保留在 payload。
+2. 将消息和 MessageObserved outbox 放入同一 runtime 事务，以 conversation + remoteMessageId 去重；提交后即确认接收。没有远端 messageId 但有稳定 sourceEventId 时，以其来源命名空间生成确定性本地消息 UUID，并用主键去重。外部 eventId 同样规范化为现有账本要求的 canonical UUID，原始 ID 保留在 payload。
 3. 增加会话 revision，在该会话队列内聚合连续片段。其他会话输入单独排队；重复事件不增加来源证据。
 4. prepareContext 取得该会话历史、当前活动检查点、参与人关系投影和当前范围允许的记忆。群中对谁回复就使用对应关系；无明确对象时传参与人摘要，不回退成 owner 关系。
 5. 发起模型请求时保存不可变上下文；新消息使生成内容可能过期时，在发布或工具派发前检查 revision，必要时重新准备。
 6. publishResponse 只向绑定 ReplyTarget 输出。桌面状态展示与 QQ 发消息分开；外部回复经过 ToolRuntime 并有发送回执，模型自然语言输出不直接视为已发送。发送回执与自身消息回显用同一远端 messageId 合并，senderKind=self 且 speaker_id 为空，不为自身创建新人物或再触发回复自身。
 
+现有生产入口与异步接入：
+
+- ConversationStore 按 profileId/runtimeDatabasePath 工作，仅持有可跨线程复制的路径和配置；每次存储操作使用当前线程独立连接与原有单库事务。ConversationService 作为 QObject 单 worker 异步 facade，提供 acceptMessageAsync/prepareContextAsync/publishResponseAsync，完成值使用既有 Result；组合存储、人物目录和宿主派发器，runtime 暴露访问器。同步 Store 方法只做数据读写和派发预留，不执行网络。不存在可用服务时明确失败，不静默改写其他角色库。
+- ProfileChatHistoryStore::open 保留原 JSONL 导入规则，再将已有历史幂等导入 local_owner；完成后 load/appendFinal 均使用 agent_messages，旧文件保留为迁移来源。SQLite 迁移已完成时重新打开直接使用权威库，不再要求旧 JSONL 可读；未完成时真实读取 I/O 失败与可跳过的坏行警告分别处理，前者不得标记导入完成。options.runtimeDatabasePath 由生产 UI 明确传入并启用 v2；空路径仅保留旧 JSONL 解析/兼容入口，不用于生产会话。v2 失败不能回退为 JSONL 写入。UI 继续使用现有串行异步持久化，不把 SQLite 连接跟着被复制的 store 跨线程传递。
+- 本地 UI 与 AIBrain 准备可能先后提交同一输入；以 UI 的稳定消息 ID 去重。ChatPreparationExecutor 的 worker 在准备前确认原输入已入会话库，必要时幂等补入，再读权威历史和版本；不能依赖另一个 worker 已恰好完成写入。原始消息与来源事件保持一一对应，聚合输入不创造独立来源，重试记忆仍使用原 originId。
+- AIBrain 提供通用会话输入入口，接收/落库异步完成后进入既有单前台队列；本地 submitUserMessage 为兼容包装。队列只聚合同一 conversation 的片段，按 conversation 保存窗口；外部历史不进入桌面窗口。§3.9 将观察源接入此入口，不另造聊天状态机。此阶段不增加自主活动选择。
+- 外部输入标记 external_message，不进入本地主人的命令/复杂任务快捷入口，也不继承主人全部工具 schema。外部模型只能拿当前 scope 已授权的能力；§3.4 过渡期尚无 §3.5 的授权目录，因此先不向外部暴露原全量工具，消息发送仅走宿主绑定 ReplyDispatcher。现有 SkillStore 学习文本没有 audience，外部 request.skills 同样清空；§3.5 再接范围授权的通用能力。外部记忆仍从 MessageObserved 原来源抽取，originKind 始终 external。
+- ChatPreparationRequest 携带 ContextSpec、ReplyTarget 和 sourceMessageIds；worker 从会话库读取历史并确定相关人物/范围。PreparedContext 返回最终版本、主体关系对象、来源与不可变目标，AIBrain 保存到 ActiveDialogueResponse。参与人集合变化使 conversationRevision 变化；identityRevision 为该集合人物当前 revision 的和，校验时对同一集合重算。无明确回复对象的群聊使用参与人投影，不回退 owner。
+- 有 sourceMessageIds 的准备按本轮原始消息顺序水位读取此前历史，不能把已入库但仍等待下一轮处理的后到消息提前拼入；无 source 的内部/主动请求取当前快照。historyLimit 在入口校验为 1—1000，拒绝负数及超限值。
+- 外部历史及本轮多条消息逐条携带宿主核验的 message_id、speaker_id，和原始正文分别编码；只给参与人集合不足以说明每句话是谁说的。消息体始终是 user 数据，不能提升为 system 指令。记忆抽取仍逐条使用原纯文本和 origin，格式标签不参与事实抽取。
+- ContextAssembler 的 ContextRequest 增加可选 ContextSpec，ContextProjection 增加宿主提供的 audience/profile 范围。除模型角色可见分区外，还须满足该上下文的范围；明确 external/internal 上下文不能读取缺范围投影。旧无 ContextSpec 调用保留已存在的本地/内部调用约定，不用于新外部路径。
+
+原始来源与现有成长/反思接入：
+
+- 对已接收的会话消息，AIBrain 可继续记录 UserMessageReceived 供会话反思取得本轮文本和 session，但由宿主写入 `original_origin_ids`、`source_message_ids` 及会话定位。它是处理日志，不是新原始事实；数组可含聚合输入的多个来源。字段由已提交 ConversationStore 消息推导，外部载荷和模型不能赋值。
+- growth 消费 MessageObserved，以原 originId 作为幂等证据；跳过带 `original_origin_ids` 的 UserMessageReceived。缺该字段的旧 UserMessageReceived 沿用 §3.2 的来源兼容门禁。已解析外部消息只进入对应人物关系，不成为本地主人配置或显式人格指导。
+- PersonalityConsolidationStage 的原始材料判定排除处理日志，接纳合格的 MessageObserved；通过已提交且匹配 profile/会话的原始引用，将处理日志、助手回复和内心反思的 alias 展开为原 origin 集合。聚合输入不得只保留一个来源，不把处理日志 ID 再算成一份证据。无法验证的引用不转为原始证据。
+- outbox 恢复可能让原消息晚于处理日志进入 event_log；来源必须已包含在本轮 cutoff 且匹配原 message/person/conversation，事实时间与投递 sequence 分开核验。不能仅因原始事件的 sequence 较大就永久丢弃合法来源，也不能越过 cutoff 引用未提交材料。
+- runtime personality 读取窗口包含 MessageObserved，但人格/日记原始材料继续限定本地主人范围。schedulePostResponseReflection 仍可从处理日志取得本轮内容，派生来源沿助手回复、处理日志回溯真实消息；不把外部反馈提升为主人指导。
+- 旧 JSONL 导入所生成的 MessageObserved 标记 `historical_import=true`。历史导入和 `sender_kind=self` 均排除新的 growth、人格、日记来源计数及自主回复触发；迁移只恢复消息与来源链，避免旧 UserMessageReceived 已消费的互动再次计入。旧无新字段的事件保留原兼容语义。
+- 消息接收、回执保存和迁移的成功边界是各自事务提交；随后将持久 outbox 投递 event_log 失败，不将已经提交的事实报告为未接收/未发送，也不因重试的 duplicate 标记漏掉首次输入处理。ConversationService 使用一个低频计时器在串行 worker 重投原 outbox，保留 eventId 和重试退避，不重新收消息或派发发送。原始事件尚不可查询时记忆沿用 §3.3 pending 归属，不能将 outbox 存在冒充已验证 event_log 来源。
+
+发送绑定、幂等与回执：
+
+- HostConversationBinding 按精确连接/会话注册，包含核验过的登录 selfIdentity；只有 speakerIdentity 与其稳定账号键匹配才识别自身回显，不信任消息自报 selfEchoVerified 或“我是你”。local_owner 仅允许可信 desktop/local_owner 入口，外部消息不能借 originKind 获得主人权限。
+- prepareContext 持久化 requestId/generation、目标、ContextSpec 和 sourceMessageIds。publishResponse 校验这些字段与当前会话/人物版本，然后 CAS prepared→dispatching；重复 dispatching/unknown/completed 不重发。目标不同返回 INVALID_INPUT，旧快照返回 STALE_CONTEXT。
+- 外部发送使用宿主注入的异步 ReplyDispatcher，接收不可变派发描述并返回实际工具结果/回执。受控实现经过现有 ToolRuntime；不得在 GUI 上同步调用阻塞工具，不提前扩写按软件名字选择的执行器。缺绑定或派发器返回 DEPENDENCY_UNAVAILABLE。§3.5 的通用能力执行器接入此接口。
+- 异步 worker 预留完成到宿主调用 dispatcher 之间仍可取消：宿主同步标记尚未开始派发的 token，进入 dispatcher 前再核对。只有该 token 证明未开始时，才可将预留 dispatching 标记 cancelled；真正开始后不抹去已发生副作用，继续接收回执。派发不能仅凭稍早的预留成功绕过停止操作。
+- 本阶段绑定的工具参数为 connection_key、conversation_id（远端）、reply_to_message_id（远端，可空）、text；结构化发送回执包含 remote_message_id、content、occurred_at。宿主注册的适配器负责从 ToolExecutionOutcome 提取并验证这些字段，不将任意自然语言 success 当作回执。发送失败区分未执行和结果未知，结果未知只留记录，不自动重发。
+- recordDeliveryReceipt 只处理已登记的 requestId/generation 和原目标，dispatcher 在宿主线程异步启动，完成回到 worker；完成状态及 outgoing 消息在 runtime 单事务保存，可接受当前生成任务已经过期后的真实结果。remoteMessageId 与先到的自身回显合并，保留同一原始消息，重复回执不增加 revision 或事件。新副作用不能由过期模型结果触发。本地流式输出在首次实际展示时绑定请求；后到消息不抹掉已经开始的流式结果，终态按既有 Complete/Interrupted/Stopped/Failed 保存。尚未发生的外部发送始终检查当前 revision。
+- 自身回显先到时，回执合并同一消息的宿主 replyToId/sourceMessageIds，保留原 ID、origin 和原始时间；已有引用冲突明确拒绝，不再次制造 MessageObserved。历史迁移每批 100 条与 cursor/冲突 ID 映射同事务，真正的旧文件读取失败不标记为空历史成功。
+
 #### 4. 数据变更
 
-新增 agent_conversations、agent_messages；正文在现有角色存储边界内保存，敏感内容继续执行现有隐私处理。桌面旧 history 以稳定导入 ID 幂等导入 local_owner 会话，旧文件保留为来源。agent_messages 是会话事实来源，内存 conversationMemory 是可重建窗口。
+新增 agent_conversations、agent_messages、agent_response_dispatches，复用 agent_runtime_migrations 保存历史导入位置；正文在现有角色存储边界内保存，敏感内容继续执行现有隐私处理。桌面旧 history 以稳定导入 ID 幂等导入 local_owner 会话，旧文件保留为来源。agent_messages 是会话事实来源，内存 conversationMemory 是可重建窗口。agent_response_dispatches 仅维护消息发布绑定/回执，不拥有活动状态；§3.6 的 action_calls 可引用此发布记录。runtime 库 user_version 从 1 升至 2，0/1 库增量建表与版本同事务提交，未知高版本拒绝打开；旧程序已有的高版本拒绝逻辑阻止继续以旧历史模式使用升级角色。SleepSessionRepository 与事件仓库使用同一 runtime 库，其版本识别同步允许 2 且不得降写版本，睡眠表和恢复逻辑不变；private_psyche 使用另一数据库版本，不随本次修改。
+
+已处于 v2 的事件仓库只做版本门禁，不在每次准备/接收时重跑 DDL。0/1 迁移使用 BEGIN IMMEDIATE，并在取得写锁后重新检查版本。会话读后写事务在首次读取前预留 writer，避免独立 worker 在 WAL 快照上升级写锁失败；普通只读不占 writer，不修改其他模块的全局事务语义。
 
 #### 5. 实现锚点
 
@@ -416,11 +457,20 @@ Result<void, DomainError> publishResponse(const RoutedResponse& response);
 | AIBrain::m_memory、m_activeDialogueResponse | 状态按 conversation 保留；只有前台快照进入当前模型调用 |
 | ChatPreparationExecutor::prepare | 现有 requestId + generation 外增加 contextRevision 与身份 revision 校验 |
 | ContextAssembler::assemble(ModelRole, ContextRequest) | 角色可见范围与场景 audience 共同投影 |
+| ui/petwindow.cpp、ChatConversationModel::appendToStore | 提供 runtimeDatabasePath，沿用串行后台持久化和原 UI 消息生命周期 |
+| include/ai_types.h 的 ContextRequest / ContextProjection | 宿主 ContextSpec 与投影范围，无范围材料不流入显式外部/内部请求 |
+| SqliteEventRepository::open、EventOutbox::enqueue | 新会话、消息、派发和迁移表；消息与 MessageObserved outbox 单事务提交 |
+| SleepSessionRepository::migrateSchema | 共用 runtime 库允许 schema v2，不降低现有 user_version，不修改睡眠表/恢复语义 |
+| ChatSideEffectQueue 来源查询 | 读取 ConversationStore/MessageObserved 的实际发言人、文本、会话及已解析引用，与 UserMessageReceived 使用同一归属契约 |
+| AgentRuntimeServices::processIdentityEvents / readCommittedEvents / schedulePostResponseReflection | 成长使用唯一原始来源；人格窗口按本地主人范围投影；会话处理文本仍可供反思 |
+| PersonalityConsolidationStage::isOriginal 及 source alias 展开 | 处理日志不作为原始事件，聚合输入展开已验证多来源；排除 historical_import 与自身消息 |
+| event_types::isOriginalOwnerExperience | 人格与日记共享原始材料门禁；显式 external/internal 不走历史兼容，历史无 origin 仅接受约定宿主来源 |
 
 #### 6. 异常场景
 
 - 业务异常：响应目标不匹配、引用了另一会话的消息，返回 INVALID_INPUT，不尝试猜目标。
 - 系统异常：收消息落库失败不确认游标；适配器重试后依赖稳定 messageId 去重。上下文准备失败返回错误，不清空已有会话记录。
+- 系统异常：仅 event_log 投递失败时，消息与 outbox 已提交则接收仍成功；后台按原 eventId 重投，来源验证保持 pending，不触发再次发送。
 - 迟到回调按 STALE_CONTEXT 丢弃；如果工具已发送，照常归档实际回执，不能因为 UI 回调过期而遗失事实。按 §1.5 处理。
 
 #### 7. 关键行为场景
@@ -429,6 +479,12 @@ Result<void, DomainError> publishResponse(const RoutedResponse& response);
 - prepareContext：桌面主人对话切到 QQ 私聊再切回，历史和续问话题分别恢复。
 - publishResponse：回复群 A 时恰好收到私聊 B，A 的内容仍只发到 A；B 不修改 A 已保存的目标。
 - 已过期的模型回复不被发送；已经成功发送的回执仍入正确会话。
+- recordDeliveryReceipt：派发后切换会话或取消生成，原发送成功回执仍只进入原会话；重复回执和先到自身回显合并，不能再次发消息。
+- 旧 JSONL 历史含用户、助手、错误/中断状态与 reply 链时导入后保持；重复导入不增加消息或事件，失败保留可恢复 cursor，后续 UI 新写只进会话库。
+- 原本地输入被 UI writer 和准备 worker 同时提交时仅一条消息/来源；新旧会话不会混拼历史，接收失败不进入模型处理或确认观察游标。
+- 一条 MessageObserved 加上会话处理日志、助手回复和派生反思，只计一份原始证据；聚合两条消息仍保留两个原 origin，重试不增加关系证据。
+- 外部用户的反馈只更新对应人物关系，不变成人格主人指导；旧历史导入及自身回显不增加互动成长、不再次触发回复，旧未带新字段的本地事件仍能按原规则消费。
+- event_log 暂时拒绝插入但 outbox 已提交时，外部输入仍恰好进入一次处理，恢复投递不再次回复；群中两个人的历史和本轮消息均可逐条核对发言人。
 
 ### 3.5 插件发现、按需加载与通用执行
 
@@ -754,16 +810,19 @@ Result<SourceStatus, DomainError> setObservationSource(const SourceControl& cont
 | ResolvePersonRequest / PersonResolution | 输入 profileId、externalIdentity 或可信 ownerLocal（两者不可同时提供）；返回 personId 可空、status=resolved/provisional/unresolved、人物 identityRevision（未解析为 0）、externalIdentity |
 | BindIdentityRequest | profileId、externalIdentity、personId、expectedRevision（目标人物版本）、bindingEvidenceRef（已提交 IdentityBindingAccepted 事件 ID）；校验与幂等规则见 §3.2 |
 | OriginKind | local_owner/external/internal，C++ 显式枚举；由宿主确定，未知值不按本地主人解释 |
-| AttributionContext | profileId、originId、speakerPersonId 可空、conversationId 可空、occurredAt、claimKind=fact/reported/inferred、audience、resolution=resolved/unresolved；origin.sourceStatus=pending/committed 由宿主来源查询决定 |
+| AttributionContext | profileId、originId、speakerPersonId 可空、conversationId 可空、occurredAt、claimKind=fact/reported/inferred、audience、resolution=resolved/unresolved；inferSelfStatementClaim 为宿主本地抽取开关，默认 false；origin.sourceStatus=pending/committed 由宿主来源查询决定 |
 | MemoryOriginSource（宿主内部来源查询 DTO） | profileId、originId、speakerPersonId、conversationId、text、occurredAt、originKind、resolvedPeople[{personId,role}]；全部由已提交原事件与宿主解析取得，不能由抽取模型填写 |
-| AttributedMemoryInput / MemoryWriteResult | entry、attribution、describedPeople[{personId, role=subject/participant}]；返回 memoryIds、written、merged、unresolved |
+| AttributedMemoryInput / MemoryWriteResult | entry、attribution、describedPeople[{personId, role=subject/participant}]、explicitRequest=false；返回 memoryIds、written、merged、unresolved |
 | ScopedMemoryQuery | text、subjectPersonIds、ContextSpec、limit；返回现有 RetrievedMemory 数组，不改变 ACT-R 等评分含义 |
-| AttributionMigrationRequest / MigrationProgress | profileId、cursor、batchSize；返回 nextCursor、processed、unresolved、complete；cursor 以稳定 memoryId 扫描，不依赖会被更新的时间 |
+| AttributionMigrationRequest / MigrationProgress | profileId、cursor、batchSize；返回 nextCursor、processed、unresolved、complete、deferredForRecovery；cursor 以稳定 memoryId 扫描，不依赖会被更新的时间 |
 | ContextSpec | profileId、channel、conversationId 可空、activityId 可空、participantPersonIds、originKind=local_owner/external/internal、conversationRevision、identityRevision、audienceProjectionRef；内部活动可以没有会话；宿主授权投影 allowOwnerMemory=false、authorizedConversationIds=[]、allowInternalMemory=false |
 | ReplyTarget | channel、connectionKey、conversationId、remoteConversationId、replyToMessageId 可空；host 绑定，外部目标必须是当前连接可访问的会话 |
-| IncomingMessage / AcceptedMessage | 输入远端定位、speakerIdentity、remoteMessageId 可空、sourceEventId、content、occurredAt、引用消息；返回 messageId、conversationId、personResolution、duplicate、revision；外部重复投递须有稳定 messageId 或来源事件 ID |
-| ContextRequestV2 / PreparedContext | 输入 ContextSpec、requestId、generation、reason、replyTarget；返回 messages、允许的能力引用、快照版本与来源引用 |
+| IncomingMessage / AcceptedMessage | 输入远端定位、speakerIdentity、remoteMessageId 可空、sourceEventId、content、occurredAt、引用消息、kind/title、可信本地 localMessageId；originKind 由宿主入口核验；返回 messageId、conversationId、personResolution、duplicate、revision、originId、ContextSpec、ReplyTarget；外部重复投递须有稳定 messageId 或来源事件 ID |
+| ContextRequestV2 / PreparedContext | 输入 ContextSpec、requestId、generation、reason、replyTarget、sourceMessageIds；返回 messages、允许的能力引用、快照版本、来源引用和 subjectPersonId 可空；群无明确回复对象时使用参与人投影 |
 | RoutedResponse | requestId、generation、ContextSpec、replyTarget、content、sourceMessageIds；执行前再次核对目标与版本 |
+| HostConversationBinding | 宿主配置的 channel、connectionKey、remoteConversationId、kind、selfIdentity 可空、toolName、ToolPolicyContext 和异步 ReplyDispatcher；没有派发器不允许外部发送 |
+| DeliveryReceipt | 已登记的 requestId/generation、原 ReplyTarget、实际执行结果和 remoteMessageId/content/occurredAt；仅由宿主执行回调提供，可在生成已失效后归档 |
+| ContextRequest / ContextProjection 范围 | ContextRequest.context 为可选 ContextSpec；projection 附 profileId 和 audience；显式新上下文同时满足模型角色及 audience，缺范围材料不得进入 external/internal |
 | ActivityIntent | goal、reason、origin=user/self/event、ContextSpec、evidenceRefs、capabilityRefs、stopWhen、reconsiderWhen；预算由宿主附加 |
 | ActivitySnapshot | activityId、profileId、state、revision、context、intent、executionPhase、checkpoint、waitingCondition、budget、generation |
 | ActivityTransition | profileId、activityId、expectedRevision、targetState、reason、checkpoint；进入等待附 waitingCondition，终结附 result 与 evidenceRefs |
@@ -900,6 +959,7 @@ erDiagram
 | relationship_state（现有） | (profile_id, subject_id, version) | 复用 state_json、版本和来源；subject_id 解释为 personId |
 | agent_conversations | (profile_id, id)，远端定位唯一 | channel、connection_key、remote_id、kind、title、revision |
 | agent_messages | (profile_id, id)，会话内远端 ID 唯一 | conversation_id、speaker_id、remote_id、direction、payload_json、occurred_at、received_at |
+| agent_response_dispatches | (profile_id, request_id, generation) | conversation_id、context_json、target_json、source_ids_json、content、status、receipt_json；消息发布幂等绑定 |
 | agent_activities | (profile_id, id)，profile 的 focus_owned=1 唯一 | state、revision、context_json、intent_json、execution_json、waiting_json、budget_json、generation、next_eligible_at |
 | agent_action_calls | (profile_id, call_id)，activity 内 logical_key 唯一 | capability_ref_json、argument_ref、status、result_json、generation；敏感参数留在受控存储引用 |
 | agent_runtime_state | profile_id | revision、control_json；自主开关、暂停、选择预留、来源游标、预算与退避 |
@@ -915,7 +975,8 @@ erDiagram
 
 | 字段 | 结构 | 事实来源 |
 | --- | --- | --- |
-| agent_messages.payload_json | {text, externalSpeaker, senderKind, replyToRemoteId, attachments, originId} | 适配器输入经宿主校验；senderKind=person/self/unknown，由连接身份与解析结果确定；SQL speaker_id 只表示已解析人物 |
+| agent_messages.payload_json | {text, externalSpeaker, senderKind, replyToRemoteId, attachments, originId, role, status, replyToId, sourceMessageIds, errorMessage} | 适配器输入经宿主校验；senderKind=person/self/unknown，由连接身份与解析结果确定；SQL speaker_id 只表示已解析人物 |
+| agent_response_dispatches.status / receipt_json | prepared/dispatching/completed/failed/unknown/cancelled；receipt 为已校验的实际工具结果 | 发布预留与回执服务；unknown/dispatching 不自动重发 |
 | context_json | §4.1 ContextSpec + replyTarget | 宿主上下文绑定；记录快照值，不用远端名字做 join |
 | intent_json | goal、reason、origin、evidenceRefs、capabilityRefs、stopWhen、reconsiderWhen | 已接受的意图；并不证明执行发生 |
 | execution_json | executionPhase、plan、steps、completionCriteria、evidence、checkpoint、personalitySnapshot、relationshipSnapshot、emotionSnapshot | 执行器保存；从 TaskRecord 投影，排除其 id/status/budget 等重复权威字段 |
@@ -1071,6 +1132,25 @@ CREATE TABLE IF NOT EXISTS agent_messages (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_message_conversation_time
     ON agent_messages(profile_id, conversation_id, received_at, id);
+CREATE TABLE IF NOT EXISTS agent_response_dispatches (
+    profile_id TEXT NOT NULL,
+    request_id TEXT NOT NULL,
+    generation INTEGER NOT NULL CHECK(generation >= 0),
+    conversation_id TEXT NOT NULL,
+    context_json TEXT NOT NULL DEFAULT '{}',
+    target_json TEXT NOT NULL DEFAULT '{}',
+    source_ids_json TEXT NOT NULL DEFAULT '[]',
+    content TEXT NOT NULL DEFAULT '',
+    status TEXT NOT NULL DEFAULT 'prepared'
+        CHECK(status IN ('prepared','dispatching','completed','failed','unknown','cancelled')),
+    receipt_json TEXT NOT NULL DEFAULT '{}',
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
+    PRIMARY KEY(profile_id, request_id, generation),
+    FOREIGN KEY(profile_id, conversation_id) REFERENCES agent_conversations(profile_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_response_conversation
+    ON agent_response_dispatches(profile_id, conversation_id, status);
 CREATE TABLE IF NOT EXISTS agent_activities (
     profile_id TEXT NOT NULL,
     id TEXT NOT NULL,
@@ -1129,6 +1209,7 @@ CREATE TABLE IF NOT EXISTS agent_runtime_migrations (
     updated_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ','now')),
     PRIMARY KEY(profile_id, migration_id)
 );
+PRAGMA user_version=2;
 COMMIT;
 ```
 
@@ -1205,11 +1286,13 @@ SELECT (SELECT COUNT(*) FROM agent_persons)
      + (SELECT COUNT(*) FROM agent_external_identities)
      + (SELECT COUNT(*) FROM agent_conversations)
      + (SELECT COUNT(*) FROM agent_messages)
+     + (SELECT COUNT(*) FROM agent_response_dispatches)
      + (SELECT COUNT(*) FROM agent_activities)
      + (SELECT COUNT(*) FROM agent_action_calls)
      + (SELECT COUNT(*) FROM agent_runtime_state)
      + (SELECT COUNT(*) FROM agent_runtime_migrations);
 DROP TABLE agent_action_calls;
+DROP TABLE agent_response_dispatches;
 DROP TABLE agent_messages;
 DROP TABLE agent_external_identities;
 DROP TABLE agent_activities;
@@ -1218,6 +1301,7 @@ DROP TABLE agent_persons;
 DROP TABLE agent_runtime_state;
 DROP TABLE agent_runtime_migrations;
 DROP TABLE agent_runtime_rollback_guard;
+PRAGMA user_version=1;
 COMMIT;
 ```
 

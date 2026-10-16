@@ -114,7 +114,9 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
     };
     user.optionalFields = {{QStringLiteral("inputMethod"), EventFieldType::String},
         {QStringLiteral("origin_kind"), EventFieldType::String},
-        {QStringLiteral("subject_id"), EventFieldType::String}};
+        {QStringLiteral("subject_id"), EventFieldType::String},
+        {QStringLiteral("original_origin_ids"), EventFieldType::Array},
+        {QStringLiteral("source_message_ids"), EventFieldType::Array}};
     definitions.append(user);
 
     for (const auto& type : {QStringLiteral("IdentityBindingAccepted"), QStringLiteral("IdentityBound")}) {
@@ -132,6 +134,16 @@ Result<void, DomainError> registerBuiltInEventSchemas(EventSchemaRegistry& regis
         }
         definitions.append(identity);
     }
+
+    EventSchemaDefinition observed;
+    observed.type = QStringLiteral("MessageObserved");
+    observed.requiredFields = {{QStringLiteral("message_id"), EventFieldType::String},
+        {QStringLiteral("conversation_id"), EventFieldType::String},
+        {QStringLiteral("speaker_id"), EventFieldType::String},
+        {QStringLiteral("text"), EventFieldType::String},
+        {QStringLiteral("origin_kind"), EventFieldType::String}};
+    observed.optionalFields = {{QStringLiteral("historical_import"), EventFieldType::Boolean}};
+    definitions.append(observed);
 
     EventSchemaDefinition assistant;
     assistant.type = QStringLiteral("AssistantResponseProduced");

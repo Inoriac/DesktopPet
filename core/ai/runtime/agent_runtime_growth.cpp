@@ -68,15 +68,20 @@ Result<void, DomainError> AgentRuntimeServices::processIdentityEvents(const QDat
     const auto authorization = authorizationFor(QStringLiteral("identity"));
     if (!authorization.isOk()) return Result<void, DomainError>::failure(authorization.error());
     const auto events = m_eventLedger->readAfter(checkpoint.value(),
-        {{QStringLiteral("UserMessageReceived"), QStringLiteral("TaskExperienceRecorded")}, {}, authorization.value()}, 64);
+        {{QStringLiteral("UserMessageReceived"), QStringLiteral("MessageObserved"), QStringLiteral("TaskExperienceRecorded")}, {}, authorization.value()}, 64);
     if (!events.isOk()) return Result<void, DomainError>::failure(events.error());
     qint64 sequence = checkpoint.value();
     for (const auto& event : events.value()) {
         const QString trigger = event.payload.value(QStringLiteral("triggerTag")).toString();
-        const bool interaction = event.type == QLatin1String("UserMessageReceived")
+        const bool observation = event.type == QLatin1String("MessageObserved")
+            && event.source == QLatin1String("ConversationStore")
+            && event.payload.value(QStringLiteral("sender_kind")).toString() == QLatin1String("person")
+            && !event.payload.value(QStringLiteral("historical_import")).toBool();
+        const bool legacyInput = event.type == QLatin1String("UserMessageReceived")
+            && !event.payload.contains(QStringLiteral("original_origin_ids"))
             && (trigger == QLatin1String("manual") || trigger == QLatin1String("user_request"))
-            && !event.payload.value(QStringLiteral("task_related")).toBool()
-            && event.privacy == EventPrivacy::Normal;
+            && !event.payload.value(QStringLiteral("task_related")).toBool();
+        const bool interaction = (observation || legacyInput) && event.privacy == EventPrivacy::Normal;
         const bool taskExperience = event.type == QLatin1String("TaskExperienceRecorded")
             && event.privacy == EventPrivacy::Normal;
         const QString text = interaction ? event.payload.value(QStringLiteral("text")).toString() : QString();

@@ -33,13 +33,7 @@ QString sceneFor(const EventRecord& event) {
 }
 
 bool isOriginal(const EventRecord& event) {
-    // A task request and its pause/resume/stop commands belong to the terminal
-    // TaskExperience event, rather than adding independent growth evidence.
-    if (event.type == QStringLiteral("UserMessageReceived")
-        && event.payload.value(QStringLiteral("task_related")).toBool()) return false;
-    return event.type == QStringLiteral("UserMessageReceived")
-        || event.type == QStringLiteral("UserFeedbackReceived")
-        || event.type.startsWith(QStringLiteral("TaskExperience"));
+    return isOriginalOwnerExperience(event);
 }
 
 QJsonObject objectSchema(const QJsonObject& properties) {
@@ -92,7 +86,7 @@ struct PersonalityConsolidationStage::Attempt {
     PersonalityEvolutionHandler handler;
     QList<EventRecord> events;
     QMap<QString, EventRecord> originals;
-    QMap<QString, QString> originalAliases;
+    QMap<QString, QStringList> originalAliases;
     QMap<QString, QStringList> materialSources;
     QSet<QString> reflectiveMaterials;
     QJsonArray materials;
@@ -161,7 +155,7 @@ void PersonalityConsolidationStage::consolidateAsync(
         const auto& event = originals.at(count == 1 ? 0
             : i * (originals.size() - 1) / (count - 1));
         attempt->originals.insert(event.eventId, event);
-        attempt->originalAliases.insert(event.eventId, event.eventId);
+        attempt->originalAliases.insert(event.eventId, {event.eventId});
         attempt->materialSources.insert(event.eventId, {event.eventId});
         attempt->materials.append(QJsonObject{
             {QStringLiteral("materialId"), event.eventId},
@@ -173,15 +167,36 @@ void PersonalityConsolidationStage::consolidateAsync(
     }
     // Ordinary chat thoughts historically referenced the assistant response.
     // Resolve that derivative to the preceding user interaction in its session.
-    QMap<QString, QString> latestUserBySession;
+    QMap<QString, QStringList> latestUserBySession;
     for (const auto& event : attempt->events) {
         if (event.sessionId.isEmpty()) continue;
         if (event.type == QStringLiteral("UserMessageReceived")) {
-            latestUserBySession.insert(event.sessionId, event.eventId);
+            QStringList sources;
+            if (event.payload.contains(QStringLiteral("original_origin_ids"))) {
+                const auto origins=event.payload.value(QStringLiteral("original_origin_ids")).toArray();
+                const auto messages=event.payload.value(QStringLiteral("source_message_ids")).toArray();
+                bool valid=event.source == QStringLiteral("AIBrain") && !origins.isEmpty() && origins.size()==messages.size();
+                for (qsizetype i=0;valid && i<origins.size();++i) {
+                    const auto found=attempt->originals.constFind(origins[i].toString());
+                    if (found==attempt->originals.cend() || found->type!=QStringLiteral("MessageObserved")
+                        || found->source!=QStringLiteral("ConversationStore") || found->profileId!=event.profileId
+                        // Delivery may be deferred past the processing log; the
+                        // frozen cutoff above and actual occurrence define eligibility.
+                        || found->occurredAt>event.occurredAt
+                        || found->payload.value(QStringLiteral("message_id"))!=messages[i]
+                        || found->payload.value(QStringLiteral("conversation_id"))!=event.payload.value(QStringLiteral("conversation_id"))
+                        || found->payload.value(QStringLiteral("speaker_id"))!=event.payload.value(QStringLiteral("subject_id"))) {
+                        valid=false;break;
+                    }
+                    if (!sources.contains(found->eventId)) sources.append(found->eventId);
+                }
+                if (!valid) sources.clear();
+            } else if (attempt->originals.contains(event.eventId)) sources={event.eventId};
+            latestUserBySession.insert(event.sessionId,sources);
+            if (!sources.isEmpty()) attempt->originalAliases.insert(event.eventId,sources);
         } else if (event.type == QStringLiteral("AssistantResponseProduced")) {
-            const QString source = latestUserBySession.value(event.sessionId);
-            if (attempt->originals.contains(source))
-                attempt->originalAliases.insert(event.eventId, source);
+            const auto sources=latestUserBySession.value(event.sessionId);
+            if (!sources.isEmpty()) attempt->originalAliases.insert(event.eventId,sources);
         }
     }
     int diaryCount = 0;
@@ -222,7 +237,7 @@ void PersonalityConsolidationStage::consolidateAsync(
             if (!thought.isOk() || thought.value().profileId != m_profileId
                 || !attempt->originalAliases.contains(thought.value().sourceEventId)) continue;
             ++thoughtCount;
-            const QStringList sources{attempt->originalAliases.value(thought.value().sourceEventId)};
+            const QStringList sources=attempt->originalAliases.value(thought.value().sourceEventId);
             attempt->materialSources.insert(reference.recordId, sources);
             attempt->reflectiveMaterials.insert(reference.recordId);
             attempt->materials.append(QJsonObject{

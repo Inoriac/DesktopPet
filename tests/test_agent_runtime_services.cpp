@@ -12,6 +12,7 @@
 
 #include "ai/agent/agent_session.h"
 #include "ai/ai_brain.h"
+#include "ai/chat/conversation_store.h"
 #include "ai/event/event_ledger.h"
 #include "ai/memory/memory_store.h"
 #include "ai/identity/person_directory.h"
@@ -188,6 +189,7 @@ class TestAgentRuntimeServices : public QObject {
     Q_OBJECT
 
 private slots:
+    void observedMessage_growthCountsOriginalOnceAndSkipsHistoricalImport();
     void taskExperience_preservesExternalOriginAcrossRestart();
     void captureSnapshot_emptySubject_doesNotUseOwner();
     void processIdentityEvents_usesTrustedOriginAndResolvedPerson_data();
@@ -843,6 +845,25 @@ void TestAgentRuntimeServices::stop_whenRuntimeEnds_shouldReleaseBridgeBeforePet
 
     services.stop();
     QVERIFY(services.eventLedger() == nullptr);
+}
+
+void TestAgentRuntimeServices::observedMessage_growthCountsOriginalOnceAndSkipsHistoricalImport() {
+    StartedRuntime runtime;QVERIFY(runtime.ready());const auto path=runtime.services.chatPreparationRuntimeMetadata().runtimeDatabasePath;
+    ConversationStore store(kProfileId,path);QVERIFY(store.initialize());
+    ChatHistoryEntry history;history.id="legacy-user";history.role="user";history.content="谢谢你";history.timestamp=QDateTime::currentDateTimeUtc();
+    QVERIFY(store.importLocalHistory({history},"legacy-source"));QVERIFY(runtime.services.processIdentityEvents());
+    SqliteIdentityRepository identity;QVERIFY(identity.open(path));QVERIFY(!identity.currentRelationship(kProfileId,"owner").value());
+    IncomingMessage message;message.channel="desktop";message.connectionKey="local_owner";message.remoteConversationId="local_owner";
+    message.localMessageId="new-user";message.kind=ConversationKind::LocalOwner;message.originKind=OriginKind::LocalOwner;
+    message.content="谢谢你";message.occurredAt=QDateTime::currentDateTimeUtc();
+    auto accepted=store.acceptMessage(message);QVERIFY(accepted);
+    auto log=normalDraft();log.source="AIBrain";log.payload={{"text","谢谢你"},{"triggerTag","user_request"},{"origin_kind","local_owner"},{"subject_id","owner"},
+        {"conversation_id","local_owner"},{"original_origin_ids",QJsonArray{accepted.value().originId}},{"source_message_ids",QJsonArray{accepted.value().messageId}}};
+    auto recorded=runtime.services.eventLedger()->append(log);QVERIFY(recorded);
+    QVERIFY(runtime.services.processIdentityEvents());const auto relationship=identity.currentRelationship(kProfileId,"owner");QVERIFY(relationship);QVERIFY(relationship.value());
+    QCOMPARE(relationship.value()->version,2);QVERIFY(identity.evidenceBySource(kProfileId,recorded.value().eventId).value().isEmpty());
+    QCOMPARE(identity.evidenceBySource(kProfileId,accepted.value().originId).value().size(),1);
+    QVERIFY(store.acceptMessage(message));QVERIFY(runtime.services.processIdentityEvents());QCOMPARE(identity.currentRelationship(kProfileId,"owner").value()->version,2);
 }
 
 QTEST_GUILESS_MAIN(TestAgentRuntimeServices)

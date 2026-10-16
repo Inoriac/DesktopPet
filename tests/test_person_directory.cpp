@@ -283,6 +283,8 @@ void PersonDirectoryTests::migration_existingRelationshipSubjects_preservesIdsAn
     auto old = f.identities.currentRelationship(profile, "legacy-friend").value();
     QVERIFY(sql(f.path, "DROP TABLE agent_external_identities").isValid());
     QVERIFY(sql(f.path, "DROP TABLE agent_persons").isValid());
+    // Simulate an old database; a current v2 database must not rerun migration DDL.
+    QVERIFY(sql(f.path, "PRAGMA user_version=1").isValid());
     QVERIFY(f.events.open(f.path).isOk()); QVERIFY(f.events.open(f.path).isOk());
     QVERIFY(f.people.initialize().isOk()); QVERIFY(f.people.initialize().isOk());
     QCOMPARE(sql(f.path, "SELECT count(*) FROM agent_persons").toInt(), 2);

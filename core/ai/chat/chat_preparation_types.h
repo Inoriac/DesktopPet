@@ -20,6 +20,7 @@
 #include "ai/runtime/runtime_types.h"
 #include "ai/skill/skill_types.h"
 #include "ai_types.h"
+#include "conversation_types.h"
 #include "emotion/emotion_types.h"
 
 struct ChatPreparationEnvironment {
@@ -51,6 +52,10 @@ struct ChatPreparationRequest {
     std::optional<EmotionSnapshot> emotion;
     ChatPreparationRuntimeMetadata runtimeMetadata;
     std::optional<ContextSpec> context;
+    std::optional<ReplyTarget> replyTarget;
+    QStringList sourceMessageIds;
+    QList<IncomingMessage> originalMessages;
+    QJsonArray currentInputMessages;
     IdentityBaseline identityBaseline = IdentityBaseline::defaults();
     PersonalityPolicy personalityPolicy;
     PromptTemplate promptTemplate;
@@ -58,6 +63,8 @@ struct ChatPreparationRequest {
 
 struct ChatPreparationResult {
     std::optional<ContextSpec> context;
+    std::optional<ReplyTarget> replyTarget;
+    QString subjectPersonId;
     QString requestId;
     quint64 generation = 0;
     QString sessionId;

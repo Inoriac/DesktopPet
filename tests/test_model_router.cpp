@@ -154,6 +154,7 @@ class ModelRouterTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void context_scopeFiltersExternalAndMissingProjections();
     void cognitiveRolesInheritDialogueAndRespectExplicitDisable();
     void evolutionCanReadPrivateMaterialWithoutOwnerAccess();
     void configExposesCognitiveRoleOverrides();
@@ -950,6 +951,19 @@ void ModelRouterTests::configExposesCognitiveRoleOverrides() {
     QCOMPARE(ConfigManager::instance().getModelRoleConfig(ModelRole::PersonalityEvolution).routes.first().llm.model,
         QString("reflection-model"));
     QVERIFY(ConfigManager::instance().getModelRoleConfig(ModelRole::TaskExecution).routes.isEmpty());
+}
+
+void ModelRouterTests::context_scopeFiltersExternalAndMissingProjections() {
+    ContextAssembler assembler;ContextRequest request;ContextSpec context;
+    context.profileId="profile-a";context.conversationId="group-a";context.originKind=OriginKind::External;
+    request.context=context;request.requestedPartitions={ContextPartition::RelevantMemory};
+    ChatMessage text;text.role="user";
+    ContextProjection missing;missing.partition=ContextPartition::RelevantMemory;text.content="missing scope";missing.messages={text};
+    ContextProjection owner=missing;MemoryAttribution scope;scope.profileId="profile-a";owner.scope=scope;owner.messages[0].content="private owner";
+    ContextProjection allowed=owner;allowed.scope->audience.kind=MemoryAudienceKind::Conversation;allowed.scope->audience.conversationIds={"group-a"};allowed.messages[0].content="allowed";
+    ContextProjection wrong=allowed;wrong.scope->profileId="profile-b";wrong.messages[0].content="wrong profile";
+    request.projections={missing,owner,allowed,wrong};const auto result=assembler.assemble(ModelRole::Dialogue,request);
+    QVERIFY(result);QCOMPARE(result.value().size(),1);QCOMPARE(result.value().first().content,QString("allowed"));
 }
 
 QTEST_MAIN(ModelRouterTests)

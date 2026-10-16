@@ -270,7 +270,8 @@ ChatPreparationRequest AIBrain::makeChatPreparationRequest(
     request.conversationMemory = m_activeDialogueResponse
         ? m_activeDialogueResponse->priorConversation : m_memory;
     request.workingMemory = m_workingMemoryCache.all();
-    request.skills = m_skillStore.all();
+    if (m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner)
+        request.skills = m_skillStore.all();
     request.emotion = currentEmotionSnapshot();
     request.runtimeMetadata = m_chatPreparationRuntimeMetadata;
     ContextSpec context;
@@ -278,6 +279,16 @@ ChatPreparationRequest AIBrain::makeChatPreparationRequest(
     context.originKind = m_chatPreparationRuntimeMetadata.originKind;
     if (context.originKind == OriginKind::LocalOwner)
         context = ContextSpec::localOwner(context.profileId);
+    if (m_activeDialogueResponse && m_activeDialogueResponse->replyTarget) {
+        context = *m_activeDialogueResponse->context;
+        context.conversationRevision = 0;
+        context.identityRevision = 0;
+        request.replyTarget = m_activeDialogueResponse->replyTarget;
+        request.sourceMessageIds = m_activeDialogueResponse->sourceMessageIds;
+        for (const auto& original : m_activeDialogueResponse->originalMessages)
+            if (original.original && original.original->originKind == OriginKind::LocalOwner)
+                request.originalMessages.append(*original.original);
+    }
     request.context = context;
     request.identityBaseline = m_identityBaseline;
     request.personalityPolicy = m_personalityPolicy;

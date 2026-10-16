@@ -12,6 +12,7 @@
 class AgentBootstrap;
 class AgentScheduler;
 class ContextAssembler;
+class ConversationService;
 class CancellationSource;
 class MemoryConsolidationService;
 class DiaryService;
@@ -66,6 +67,7 @@ public:
     EventConsumerCheckpointStore* checkpointStore() const {
         return m_checkpointStore.get();
     }
+    ConversationService* conversationService() const { return m_conversationService.get(); }
     PersonDirectory* personDirectory() const { return m_personDirectory.get(); }
     PersonalityService* personalityService() const { return m_personalityService.get(); }
     RelationshipService* relationshipService() const { return m_relationshipService.get(); }
@@ -134,6 +136,7 @@ private:
     std::unique_ptr<NullEmotionStateProvider> m_nullEmotionStateProvider;
     std::unique_ptr<SqliteIdentityRepository> m_identityRepository;
     std::unique_ptr<PersonDirectory> m_personDirectory;
+    std::unique_ptr<ConversationService> m_conversationService;
     std::unique_ptr<PersonalityService> m_personalityService;
     std::unique_ptr<RelationshipService> m_relationshipService;
     std::unique_ptr<SelfModelService> m_selfModelService;

@@ -97,11 +97,11 @@ Wave 2 五项校验通过。下一设计项为 Task 3；真实 QQ 尚未接入�
 ## Task 3: 会话输入、上下文准备与回复定位
 
 - 关联设计: §3.4 会话输入、上下文准备与回复定位
-- 状态: [ ]
+- 状态: [x]
 - Wave: 3
 - 依赖: Task 1、Task 2
 
-文件：`core/ai/chat/` 新增会话目录、`core/ai/chat/profile_chat_history_store.h/.cpp`、`core/ai/chat/chat_preparation_types.h`、`core/ai/chat/chat_preparation_executor.h/.cpp`、`core/ai/context/context_assembler.h/.cpp`、`core/ai/ai_brain.h` 及聊天实现；`tests/test_chat_preparation_executor.cpp`、`tests/test_chat_history.cpp`、新增 `tests/test_conversation_routing.cpp`；`CMakeLists.txt`。
+文件：`core/ai/chat/` 新增会话目录/服务、历史存储、准备 DTO/executor、写队列来源适配；`core/ai/context/context_assembler.h/.cpp`、`context_spec.h`、`include/ai_types.h`；`core/ai/ai_brain.h` 及聊天实现；生产历史接入 `ui/petwindow.cpp`、`ui/chat_conversation_model.h/.cpp`；runtime 表/MessageObserved 接入：`core/ai/event/sqlite_event_repository.cpp`、`core/ai/event/event_schema_registry.cpp`、`core/ai/runtime/agent_runtime_services.*`、`runtime_types.h`；同库版本兼容 `core/ai/reflection/sleep_session_repository.cpp`；`tests/test_chat_preparation_executor.cpp`、`tests/test_chat_history.cpp`、`tests/test_chat_conversation_model.cpp`、`tests/test_streaming_dialogue.cpp`、`tests/test_model_router.cpp`（已有 ContextAssembler 测试）、`tests/test_event_ledger.cpp`（runtime schema 版本门禁）、`tests/test_sleep_cycle.cpp`（共用库兼容）、新增 `tests/test_conversation_routing.cpp`；`CMakeLists.txt`。
 
 测试用例：
 - acceptMessage_remoteMessageRetry_persistsOnce（happy path）。
@@ -109,6 +109,34 @@ Wave 2 五项校验通过。下一设计项为 Task 3；真实 QQ 尚未接入�
 - prepareContext_switchConversations_restoresOwnHistoryAndTopic（happy path）。
 - publishResponse_newMessageInOtherChat_keepsOriginalTarget（happy path）。
 - publishResponse_staleGeneration_rejectsSendButArchivesActualReceipt。
+- recordDeliveryReceipt_lateOrDuplicateReceipt_mergesSelfEchoOnce（happy path）。
+- historyMigration_existingJsonl_importsOnceAndKeepsReplyChain（happy path）。
+- historyMigration_v2Failure_neverFallsBackToJsonlWrites。
+- acceptMessage_uiAndPreparationRace_oneCommittedMessageAndOrigin。
+- acceptMessage_claimedSelfOrOwner_requiresHostIdentityAndLocalBinding。
+- publishResponse_missingDispatcherAndRepeatedDispatch_doesNotSend。
+- contextAssembler_externalContext_requiresRoleAndAudience。
+- conversationService_asyncStorageAndDispatcher_doNotBlockUi。
+- aiBrain_externalConversationQueue_keepsOriginalTargetAndSeparateHistory（happy path）。
+- sourceEvidence_observationAndProcessingLog_countOnce（happy path，重试幂等）。
+- sourceEvidence_aggregatedInputAndReflection_preserveAllOriginals。
+- sourceEvidence_externalFeedback_doesNotBecomeOwnerGuidance。
+- historyMigration_importAndSelfEcho_doNotReplayGrowthOrPersonality。
+- acceptMessage_outboxDeliveryFailure_keepsAcceptedInputAndRetriesSameEvent。
+- prepareContext_groupHistoryAndCurrentInput_preserveSpeakerPerMessage。
+
+来源消费接入文件（主设计 §3.4 / v1.3）：`core/ai/runtime/agent_runtime_growth.cpp`、`core/ai/runtime/agent_runtime_personality.cpp`、`core/ai/reflection/personality_consolidation_stage.h/.cpp`、`core/ai/event/event_types.h/.cpp`；相应回归在 `tests/test_agent_runtime_services.cpp`、`tests/test_personality_consolidation.cpp`、`tests/test_sleep_cycle.cpp` 及既有集成测试。原始事实、会话日志和派生反思的计数边界遵守主设计，不新增成长规则。
+
+全量兼容核对：`tests/test_person_directory.cpp` 的旧库模拟在删除旧版尚无的身份表后须显式设置 user_version=1；v2 正常打开不重复 DDL，既有 ID/版本保留断言不变。统计测试目标按新增共享类型补 core include 路径。
+
+Wave 3 校验（2026-10-16）：
+- 文件冲突：通过，单 Task 实现 agent 串行修改源代码，主 agent 维护设计与审查；最终构建权已交回。
+- 构建/全量测试：完整应用及所有测试目标构建成功，最终 CTest **50/50 组通过**，42.64 秒。原迁移 fixture 已明确旧版本；统计目标保留并通过，未跳过失败测试。
+- 行为覆盖：各项与真实方法的映射见审查记录；新增双 worker 同 ID、消息与回执幂等、取消窗口、群聊逐条身份、来源计数、历史 I/O 与范围隔离均通过。
+- 测试布局：通过，新增 tests/test_conversation_routing.cpp 由根 CMakeLists.txt 注册。
+- 实现锚点与留痕：通过，会话 Store/Service、生产 AIBrain/UI、准备器、范围投影及原事件消费者已与主设计核对，context.md 有记录。主设计四段 SQL 的两库迁移/重复迁移/空库撤销和全部本地文件链接再次验证通过。
+
+Wave 3 五项校验通过。下一设计项为 Task 4；自主活动选择与真实 QQ 仍不属于此阶段交付能力。
 
 ## Task 4: 插件发现、按需加载与通用执行
 

@@ -154,6 +154,8 @@ PetWindow::PetWindow(PetProfile profile,
     ProfileChatStoreOptions chatStoreOptions;
     chatStoreOptions.appDataRoot = this->profileMigration.appDataRoot;
     chatStoreOptions.profileId = this->profileMigration.profileId;
+    chatStoreOptions.runtimeDatabasePath = QDir(this->profileMigration.appDataRoot).filePath(
+        QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(this->profileMigration.profileId));
     chatStoreOptions.registeredProfileIds =
         this->profileMigration.registeredProfileIds;
     chatStoreOptions.legacyHistoryPath = QDir::current().filePath(

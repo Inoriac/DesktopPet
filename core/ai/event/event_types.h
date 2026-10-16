@@ -86,6 +86,7 @@ struct EventSchemaDefinition {
     bool preserveUnknownFields = true;
 };
 
+bool isOriginalOwnerExperience(const EventRecord& event);
 QString eventPrivacyToString(EventPrivacy privacy);
 std::optional<EventPrivacy> eventPrivacyFromString(const QString& value);
 bool isCanonicalEventUuid(const QString& value);

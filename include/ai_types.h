@@ -12,6 +12,7 @@
 #include <QTime>
 #include <QList>
 #include <QStringList>
+#include "ai/memory/memory_attribution_types.h"
 
 // tool的类别标记
 enum class ToolCategory {
@@ -310,9 +311,11 @@ struct ModelCompletion {
 struct ContextProjection {
     ContextPartition partition = ContextPartition::CurrentInput;
     QList<ChatMessage> messages;
+    std::optional<MemoryAttribution> scope;
 };
 
 struct ContextRequest {
+    std::optional<ContextSpec> context;
     int queryBudgetChars = 12000;
     QList<ContextPartition> requestedPartitions;
     QList<ContextProjection> projections;

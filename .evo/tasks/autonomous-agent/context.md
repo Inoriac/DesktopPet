@@ -28,6 +28,10 @@
 
 - [code-impl Task 2 TDD 与验收] 原始来源校验、错配、关联读写失败、图/临时记忆范围、维护分组、转述对象证明、模型跨人冲突、恢复顺序均取得实际 RED→GREEN。新增损坏 audience 四场景、writer 原置信度门槛和强化时范围/敏感/过期复核；最终完整构建成功，CTest 49/49 通过。聊天缓存断言等待实际异步提交，保留原行为验证。
 - [code-impl Task 2 锚点复核] MemoryAttributionService::ingestMemory/recallForContext/migrateAttribution、ChatSideEffectQueue::persistCandidates/migrateNextBatch、MemoryStore::summaryForContext(ContextSpec)、DaydreamConsolidator::recoverMaintenance 已按主设计接入；正式 staging 在迁移写事务内复查，只有精确维护重试租约不阻塞。
+- [code-impl Task 3 sanity check] ProfileChatHistoryStore::load/appendFinal、ChatPreparationExecutor::submit/Worker::prepare、AIBrain::submitUserMessage/ActiveDialogueResponse、ContextAssembler::assemble 签名均存在。额外核对 UI 先异步持久化后提交 AIBrain、ProfileChatHistoryStore 按值复制到 QThreadPool、ContextProjection 实际位于 include/ai_types.h，已按主设计 1.3 补齐接入文件与线程边界。
+- [code-impl Task 3 原始证据补全] 主设计 §1.3/§3.3/§3.4 v1.3 已同步：MessageObserved 是会话原始消息；UserMessageReceived 保留为处理日志，宿主填写 original_origin_ids/source_message_ids，聚合输入保留多来源。growth 跳过处理日志，反思 alias 回溯已验证原事件，人格/日记继续本地主人范围。历史导入标记 historical_import，自身消息与导入不重放成长或自主回复；外部 request.skills 不读取缺 audience 的学习文本。属于原始事实唯一性和既有功能兼容的修订，沿用持续开发授权。
+- [code-impl Task 3 并发与接收边界] 已同步主设计：schema v2 仅门禁，旧版本在写锁内复核迁移；会话读后写事务先预留 writer。消息/回执/导入以事务提交为成功，event_log 后续投递失败由单个后台低频 timer 重投同一 outbox，不漏输入或重发；记忆仍核验真正已提交原事件。外部上下文逐条保留宿主 speaker/message 标签与独立正文，避免参与人列表无法对应发言。显式 external/internal 旧事件同样不得走主人材料 fallback。
+- [code-impl Task 3 锚点复核] 已核对 ConversationStore::acceptMessage/prepareContext/publishResponse/recordDeliveryReceipt 与 ConversationService 异步 facade、AIBrain::submitIncomingMessage、ChatPreparationExecutor 权威历史准备、ContextAssembler::assemble 的 scope 门禁、isOriginalOwnerExperience 及反思多来源回溯。ProfileChatHistoryStore 的生产 runtime 路径由 PetWindow 注入，按值复制的存储不持有跨线程 QSqlDatabase。完整构建覆盖新增共享头依赖，统计测试目标亦需 core include，不移除原测试。
 
 ## 设计偏差
 
@@ -35,6 +39,7 @@
 - [code-impl Task 2 设计补全] 主设计 1.2 明确事件预分配 UUID、writer 查询已提交来源、pending 来源、共享 ContextSpec、按上下文缓存与迁移顺序。现有 GUI 先 stage 后异步落库不能直接证明事件已提交；最终人物去重和冲突须移到/复核于 writer。新写先统一带保守归属后再批量迁移，不长时间暂停写入；这是 §3.3/§5.3 的明确修订，不改变产品范围。
 - [code-impl Task 2 转述引用补全] 目录存在性无法证明原文对象。主设计新增宿主来源 DTO 的 resolvedPeople，转述对象须来自已提交事件的宿主解析引用，未验证 ID 返回 UNKNOWN_REFERENCE。现有规则不会凭昵称认人，缺引用的候选保持 unresolved；严格第一人称沿用已验证 speaker。属于来源校验的工程细化，沿用用户自主推进授权。
 - [code-impl Task 2 恢复顺序补全] 归属迁移会改变语义 revision，必须先恢复原 maintenance/daydream_maintenance 批次，并在正式 Prepared staging 清空前延后迁移；使用原 changeId/hash/CAS，不重新调用模型。正常 bootstrap 沿用既有睡眠恢复顺序，独立 writer 用单个低频计时器等待。已同步主设计 §3.3，正式睡眠仍归协调器决策。
+- [code-impl Task 3 设计补全] 主设计 1.3 明确 SQLite 会话权威切换、宿主连接及自身账号核验、单 worker 异步 facade、通用 AIBrain 会话入口和消息派发幂等表。新增 recordDeliveryReceipt 保存已发生的迟到结果；外部工具派发通过宿主异步接口，第 4 阶段通用执行器接入，不在 GUI 同步阻塞或添加软件专用分支。历史空 runtimePath 只保留旧解析兼容，生产明确启用 v2，失败不回退。沿用用户顺序开发授权，不新增产品方向。
 
 无未同步的设计偏差。initialize 显式启动接口、人物 revision CAS、接受事件校验与 TaskStore 来源持久化均已回填主设计。
 

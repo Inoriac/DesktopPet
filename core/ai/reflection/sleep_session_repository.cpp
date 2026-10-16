@@ -145,7 +145,7 @@ Result<void, DomainError> SleepSessionRepository::migrateSchema(
                             query.lastError()));
     }
     const int version = query.value(0).toInt();
-    if (version < 0 || version > 1) {
+    if (version < 0 || version > 2) {
         return Result<void, DomainError>::failure(
             repositoryError(QStringLiteral("runtime schema version is newer than supported")));
     }

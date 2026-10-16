@@ -108,7 +108,15 @@ set(EVENT_LEDGER_SOURCES
     core/ai/event/sqlite_event_repository.cpp
 )
 
+set(CONVERSATION_SOURCES
+    core/ai/chat/conversation_types.h core/ai/chat/conversation_types.cpp
+    core/ai/chat/conversation_store.h core/ai/chat/conversation_store.cpp
+    core/ai/chat/conversation_service.h core/ai/chat/conversation_service.cpp
+    core/ai/chat/chat_types.cpp
+)
+
 set(AGENT_RUNTIME_SOURCES
+    ${CONVERSATION_SOURCES}
     core/ai/runtime/runtime_types.h
     core/ai/runtime/runtime_ui_bridge.h
     core/ai/runtime/runtime_ui_bridge.cpp
@@ -1132,22 +1140,30 @@ target_compile_definitions(chat_side_effect_queue_tests PRIVATE
 # ---- Profile-scoped chat persistence tests (no ONNX dependency) ----
 add_desktop_pet_cpp_test(chat_history_tests ChatHistoryTests
     SOURCES
+        ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
         tests/test_chat_history.cpp
         core/ai/chat/chat_types.h
         core/ai/chat/chat_types.cpp
         core/ai/chat/profile_chat_history_store.h
         core/ai/chat/profile_chat_history_store.cpp
     INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/core
     LIBRARIES
         Qt::Core
+        Qt::Sql
         Qt::Test
 )
 
 # ---- Shared streaming conversation model tests (no ONNX dependency) ----
 add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
     SOURCES
+        ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
         tests/test_chat_conversation_model.cpp
         ui/chat_conversation_model.h
         ui/chat_conversation_model.cpp
@@ -1156,10 +1172,12 @@ add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
         core/ai/chat/profile_chat_history_store.h
         core/ai/chat/profile_chat_history_store.cpp
     INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${CMAKE_CURRENT_SOURCE_DIR}/core
     LIBRARIES
         Qt::Core
+        Qt::Sql
         Qt::Test
 )
 
@@ -1212,6 +1230,7 @@ add_desktop_pet_cpp_test(statistic_manager_tests StatisticManagerTests
     INCLUDE_DIRS
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/statistic
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
     LIBRARIES
         Qt::Core
         Qt::Test
@@ -1328,6 +1347,17 @@ add_desktop_pet_cpp_test(emotion_runtime_tests EmotionRuntimeTests
         Qt::Core
         Qt::Sql
         Qt::Test
+)
+
+add_desktop_pet_cpp_test(conversation_routing_tests ConversationRoutingTests
+    SOURCES tests/test_conversation_routing.cpp
+        ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+        core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp
+        core/ai/tools/runtime/tool_result_sanitizer.cpp core/ai/tool_registry.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES Qt::Core Qt::Network Qt::Sql Qt::Test
 )
 
 add_desktop_pet_cpp_test(memory_attribution_tests MemoryAttributionTests

@@ -1,4 +1,5 @@
 #include "profile_chat_history_store.h"
+#include "conversation_store.h"
 
 #include <QDir>
 #include <QFile>
@@ -130,17 +131,19 @@ std::optional<ChatHistoryEntry> decodeLegacy(const QJsonObject& object,
 }
 
 template <typename Decoder>
-QList<ChatHistoryEntry> readLines(QFile& file, Decoder decoder, bool* skippedLines) {
+std::optional<QList<ChatHistoryEntry>> readLines(QFile& file, Decoder decoder, bool* skippedLines) {
     QList<ChatHistoryEntry> entries;
     QSet<QString> ids;
     qint64 lineNumber = 0;
     while (!file.atEnd()) {
         ++lineNumber;
         QByteArray line = file.readLine(kMaximumHistoryLineBytes + 2);
+        if (file.error() != QFileDevice::NoError) return std::nullopt;
         const bool completeLine = line.endsWith('\n');
         if (!completeLine) {
             if (!file.atEnd()) {
                 while (!file.atEnd() && !file.readLine(kMaximumHistoryLineBytes + 2).endsWith('\n')) {
+                    if (file.error() != QFileDevice::NoError) return std::nullopt;
                 }
             }
             *skippedLines = true;
@@ -166,6 +169,7 @@ QList<ChatHistoryEntry> readLines(QFile& file, Decoder decoder, bool* skippedLin
         ids.insert(decoded->id);
         entries.append(*decoded);
     }
+    if (file.error() != QFileDevice::NoError) return std::nullopt;
     return entries;
 }
 
@@ -187,6 +191,7 @@ bool ProfileChatHistoryStore::open(const ProfileChatStoreOptions& options,
     clearError(errorMessage);
     m_open = false;
     m_historyPath.clear();
+    m_runtimeDatabasePath.clear();
     m_profileId.clear();
     if (options.appDataRoot.trimmed().isEmpty()
         || !isCanonicalProfileId(options.profileId)) {
@@ -202,6 +207,18 @@ bool ProfileChatHistoryStore::open(const ProfileChatStoreOptions& options,
     m_historyPath = QDir(profileRoot).filePath(QStringLiteral("chat_history.jsonl"));
     m_open = true;
 
+    if (!options.runtimeDatabasePath.isEmpty()) {
+        ConversationStore store(m_profileId, options.runtimeDatabasePath);
+        const auto ready = store.initialize();
+        if (!ready) { m_open = false; return fail(errorMessage, ready.error().message); }
+        const auto completed = store.localHistoryMigrationComplete();
+        if (!completed) { m_open = false; return fail(errorMessage, completed.error().message); }
+        if (completed.value()) {
+            m_runtimeDatabasePath = options.runtimeDatabasePath;
+            return true;
+        }
+    }
+
     QLockFile lock(m_historyPath + QStringLiteral(".lock"));
     lock.setStaleLockTime(30000);
     if (!lock.tryLock(kHistoryLockTimeoutMs)) {
@@ -213,6 +230,14 @@ bool ProfileChatHistoryStore::open(const ProfileChatStoreOptions& options,
         m_open = false;
         return false;
     }
+    if (!options.runtimeDatabasePath.isEmpty()) {
+        const auto existing = loadLegacy(errorMessage);
+        if (!existing) { m_open = false; return false; }
+        ConversationStore store(m_profileId, options.runtimeDatabasePath);
+        const auto ready = store.importLocalHistory(*existing, m_historyPath);
+        if (!ready) { m_open = false; return fail(errorMessage, ready.error().message); }
+        m_runtimeDatabasePath = options.runtimeDatabasePath;
+    }
     return true;
 }
 
@@ -222,18 +247,31 @@ QList<ChatHistoryEntry> ProfileChatHistoryStore::load(QString* errorMessage) con
         fail(errorMessage, QStringLiteral("Chat history is not open."));
         return {};
     }
+    if (!m_runtimeDatabasePath.isEmpty()) {
+        const auto result = ConversationStore(m_profileId, m_runtimeDatabasePath).loadHistory(QStringLiteral("local_owner"));
+        if (!result) { fail(errorMessage, result.error().message); return {}; }
+        return result.value();
+    }
+    return loadLegacy(errorMessage).value_or(QList<ChatHistoryEntry>{});
+}
+
+std::optional<QList<ChatHistoryEntry>> ProfileChatHistoryStore::loadLegacy(QString* errorMessage) const {
     QFile file(m_historyPath);
     if (!file.open(QIODevice::ReadOnly | QIODevice::Text)) {
         fail(errorMessage, QStringLiteral("Unable to read chat history."));
-        return {};
+        return std::nullopt;
     }
     bool skippedLines = false;
-    QList<ChatHistoryEntry> entries = readLines(
+    auto entries = readLines(
         file,
         [](const QJsonObject& object, qint64, const QByteArray&) {
             return decodeVersionTwo(object);
         },
         &skippedLines);
+    if (!entries) {
+        fail(errorMessage, QStringLiteral("Unable to finish reading chat history: %1").arg(file.errorString()));
+        return std::nullopt;
+    }
     if (skippedLines && errorMessage) {
         *errorMessage = QStringLiteral("Some invalid chat history entries were skipped.");
     }
@@ -250,6 +288,11 @@ bool ProfileChatHistoryStore::appendFinal(const ChatHistoryEntry& entry,
         return fail(errorMessage, QStringLiteral("Chat history entry is invalid or non-terminal."));
     }
 
+    if (!m_runtimeDatabasePath.isEmpty()) {
+        const auto result = ConversationStore(m_profileId, m_runtimeDatabasePath).appendLocalHistory(entry);
+        if (!result) return fail(errorMessage, result.error().message);
+        return true;
+    }
     QLockFile lock(m_historyPath + QStringLiteral(".lock"));
     lock.setStaleLockTime(30000);
     if (!lock.tryLock(kHistoryLockTimeoutMs)) {
@@ -303,19 +346,22 @@ bool ProfileChatHistoryStore::importLegacyIfEligible(
         return fail(errorMessage, QStringLiteral("Unable to read legacy chat history."));
     }
     bool skippedLines = false;
-    const QList<ChatHistoryEntry> imported = readLines(
+    const auto imported = readLines(
         legacy,
         [this](const QJsonObject& object, qint64 lineNumber, const QByteArray& rawLine) {
             return decodeLegacy(object, m_profileId, lineNumber, rawLine);
         },
         &skippedLines);
     Q_UNUSED(skippedLines)
+    if (!imported) {
+        return fail(errorMessage, QStringLiteral("Unable to finish reading legacy chat history: %1").arg(legacy.errorString()));
+    }
 
     QSaveFile target(m_historyPath);
     if (!target.open(QIODevice::WriteOnly)) {
         return fail(errorMessage, QStringLiteral("Unable to prepare migrated chat history."));
     }
-    for (const ChatHistoryEntry& entry : imported) {
+    for (const ChatHistoryEntry& entry : *imported) {
         QByteArray line = encodeEntry(entry);
         line.append('\n');
         if (target.write(line) != line.size()) {

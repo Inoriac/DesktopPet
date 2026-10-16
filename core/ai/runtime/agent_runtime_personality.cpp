@@ -61,7 +61,7 @@ void AgentRuntimeServices::initializePersonalityStage(const SleepPolicy& policy)
         qint64 after = qMax<qint64>(0, cutoff - 2048);
         for (int page = 0; page < 8 && after < cutoff; ++page) {
             const auto batch = m_eventLedger->readAfter(after, {{
-                QStringLiteral("UserMessageReceived"), QStringLiteral("AssistantResponseProduced"),
+                QStringLiteral("UserMessageReceived"), QStringLiteral("MessageObserved"), QStringLiteral("AssistantResponseProduced"),
                 QStringLiteral("UserFeedbackReceived"), QStringLiteral("TaskExperienceRecorded"),
                 QStringLiteral("DiaryStored"), QStringLiteral("InnerThoughtStored")}, {}, auth.value()}, 256);
             if (!batch.isOk()) return Result<QList<EventRecord>, DomainError>::failure(batch.error());
@@ -93,11 +93,7 @@ void AgentRuntimeServices::initializePersonalityStage(const SleepPolicy& policy)
             if (!events.isOk()) return Result<QList<EventRecord>, DomainError>::failure(events.error());
             QList<EventRecord> sources;
             for (const auto& event : events.value()) {
-                if (event.occurredAt.toLocalTime().date() == date
-                    && ((event.type == QStringLiteral("UserMessageReceived")
-                            && !event.payload.value(QStringLiteral("task_related")).toBool())
-                        || event.type == QStringLiteral("UserFeedbackReceived")
-                        || event.type == QStringLiteral("TaskExperienceRecorded")))
+                if (event.occurredAt.toLocalTime().date() == date && isOriginalOwnerExperience(event))
                     sources.append(event);
             }
             return Result<QList<EventRecord>, DomainError>::success(sources.mid(qMax(0, int(sources.size()) - 64)));

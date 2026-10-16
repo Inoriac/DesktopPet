@@ -1,3 +1,4 @@
+#include "ai/chat/conversation_service.h"
 #include "agent_runtime_services.h"
 
 #include <QCryptographicHash>
@@ -104,6 +105,7 @@ Result<RuntimeStartReport, DomainError> AgentRuntimeServices::startAfterStorageR
     m_eventOutbox = std::make_unique<SqliteEventOutbox>(
         runtimeDatabasePath, m_eventSchemas.get(), m_profileId);
     report.capabilities.eventLedger = true;
+    m_conversationService = std::make_unique<ConversationService>(m_profileId, runtimeDatabasePath);
 
     if (migration.profileStoreReady()) {
         m_nullEmotionStateProvider = std::make_unique<NullEmotionStateProvider>();
@@ -479,6 +481,7 @@ void AgentRuntimeServices::stop() {
     m_personaProjector.reset();
     m_selfModelService.reset();
     m_relationshipService.reset();
+    m_conversationService.reset();
     m_personDirectory.reset();
     m_personalityService.reset();
     m_identityRepository.reset();

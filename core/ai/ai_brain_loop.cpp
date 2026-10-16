@@ -47,7 +47,7 @@ void AIBrain::thinkInternal(const QString& reason,
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     if (suppressMutedAutomaticResponse()) return;
     const bool proactive = triggerTag == QLatin1String("proactive_chat");
-    const QJsonArray tools = m_toolRegistry && !proactive
+    const QJsonArray tools = m_toolRegistry && !proactive && triggerTag != QLatin1String("external_message")
         ? m_toolRegistry->allToolSchemas() : QJsonArray{};
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     const quint64 requestGeneration = m_requestGeneration;
@@ -224,6 +224,10 @@ void AIBrain::thinkInternal(const QString& reason,
             assistantMessage.content = response.content;
             assistantMessage.transportBlocks = response.transportBlocks;
 
+            if (triggerTag == QLatin1String("external_message") && !response.toolCalls.isEmpty()) {
+                finishActiveResponse(ChatMessageStatus::Failed, QStringLiteral("No tools are authorized for this conversation"));
+                return;
+            }
             if (response.toolCalls.isEmpty() || !m_toolRegistry || toolRound >= m_maxToolRounds) {
                 if (!response.toolCalls.isEmpty() && toolRound >= m_maxToolRounds
                     && (!m_activeDialogueResponse

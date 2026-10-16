@@ -7,11 +7,16 @@
 #include <QJsonObject>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QThreadPool>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <atomic>
 
 #include <memory>
 #include <optional>
 
 #include "ai/chat/profile_chat_history_store.h"
+#include "ai/event/runtime_unit_of_work.h"
 
 namespace {
 
@@ -93,6 +98,10 @@ private slots:
     void appendFinal_whenAssistantHasReplyToId_shouldRoundTripReplyLink();
     void appendFinal_whenHistoryEndsWithPartialLine_shouldWriteIndependentValidLine();
     void appendFinal_whenEntryIsNonTerminal_shouldRejectWithoutWriting();
+    void v2History_importsOnceAndWritesOnlySqliteAcrossThreadCopies();
+    void historyMigration_v2Failure_neverFallsBackToJsonlWrites();
+    void historyMigration_completedSqlite_doesNotRequireLegacyFile();
+    void historyMigration_sourceReadFailure_doesNotCompleteEmptyImport();
     void appendFinal_whenNonAssistantHasReplyToId_shouldRejectWithoutWriting();
 
 private:
@@ -384,6 +393,91 @@ void TestChatHistory::appendFinal_whenNonAssistantHasReplyToId_shouldRejectWitho
     QVERIFY(!store.appendFinal(invalid, &error));
     QVERIFY(!error.isEmpty());
     QCOMPARE(nonEmptyLineCount(historyPath(options)), 0);
+}
+
+void TestChatHistory::v2History_importsOnceAndWritesOnlySqliteAcrossThreadCopies() {
+    QTemporaryDir directory;auto options=optionsFor(directory);QString error;
+    ProfileChatHistoryStore legacy;QVERIFY(legacy.open(options,&error));
+    auto first=entry("old-user","user","original");QVERIFY(legacy.appendFinal(first,&error));
+    auto interrupted=entry("old-assistant","assistant","partial",ChatMessageStatus::Interrupted);
+    interrupted.replyToId=first.id;interrupted.sourceMessageIds={first.id};QVERIFY(legacy.appendFinal(interrupted,&error));
+    options.runtimeDatabasePath=QDir(options.appDataRoot).filePath(QStringLiteral("profiles/%1/agent_runtime.sqlite").arg(options.profileId));
+    ProfileChatHistoryStore store;QVERIFY2(store.open(options,&error),qPrintable(error));
+    const auto loaded=store.load(&error);QCOMPARE(loaded.size(),2);QCOMPARE(loaded.last().status,ChatMessageStatus::Interrupted);
+    QCOMPARE(loaded.last().replyToId,first.id);
+    std::atomic_bool done=false;QString threadError;
+    QThreadPool::globalInstance()->start([copy=store,&done,&threadError]()mutable{
+        copy.appendFinal(entry("new-user","user","only sqlite"),&threadError);done=true;
+    });
+    QTRY_VERIFY(done.load());QVERIFY2(threadError.isEmpty(),qPrintable(threadError));
+    QCOMPARE(store.load(&error).size(),3);QCOMPARE(nonEmptyLineCount(historyPath(options)),2);
+    // Once SQLite is authoritative, an old writer cannot inject new history on reopen.
+    QVERIFY(legacy.appendFinal(entry("injected-jsonl","user","do not import"),&error));
+    ProfileChatHistoryStore reopened;QVERIFY(reopened.open(options,&error));QCOMPARE(reopened.load(&error).size(),3);
+}
+
+void TestChatHistory::historyMigration_v2Failure_neverFallsBackToJsonlWrites() {
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    QString error;
+    ProfileChatHistoryStore legacy;
+    QVERIFY(legacy.open(options, &error));
+    QVERIFY(legacy.appendFinal(entry("original", "user", "preserve this file"), &error));
+    QFile file(historyPath(options));
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    const auto originalBytes = file.readAll();
+    file.close();
+    options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    ProfileChatHistoryStore store;
+    QVERIFY2(store.open(options, &error), qPrintable(error));
+    {
+        auto unit = SqliteRuntimeUnitOfWork::begin(options.runtimeDatabasePath);
+        QVERIFY(unit);
+        QSqlQuery query(QSqlDatabase::database(unit.value()->connectionName()));
+        QVERIFY(query.exec("CREATE TRIGGER fail_history BEFORE INSERT ON agent_messages BEGIN SELECT RAISE(ABORT,'injected write failure'); END"));
+        QVERIFY(unit.value()->commit());
+    }
+    QVERIFY(!store.appendFinal(entry("new", "user", "must not fall back"), &error));
+    QVERIFY(error.contains("injected write failure"));
+    QCOMPARE(store.load(&error).size(), 1);
+    QVERIFY(file.open(QIODevice::ReadOnly));
+    QCOMPARE(file.readAll(), originalBytes);
+}
+
+void TestChatHistory::historyMigration_completedSqlite_doesNotRequireLegacyFile() {
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    QString error;
+    ProfileChatHistoryStore store;
+    QVERIFY(store.open(options, &error));
+    QVERIFY(store.appendFinal(entry("live", "user", "authoritative SQLite"), &error));
+    QVERIFY(QFile::remove(historyPath(options)));
+    // Replace the source with a directory: neither reading nor recreating it is valid.
+    QVERIFY(QDir().mkpath(historyPath(options)));
+    ProfileChatHistoryStore reopened;
+    QVERIFY2(reopened.open(options, &error), qPrintable(error));
+    const auto history = reopened.load(&error);
+    QCOMPARE(history.size(), 1);
+    QCOMPARE(history.first().id, QString("live"));
+}
+
+void TestChatHistory::historyMigration_sourceReadFailure_doesNotCompleteEmptyImport() {
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    QVERIFY(QDir().mkpath(historyPath(options)));
+    QString error;
+    ProfileChatHistoryStore store;
+    QVERIFY(!store.open(options, &error));
+    QVERIFY(!error.isEmpty());
+    QVERIFY(QDir(historyPath(options)).removeRecursively());
+    QFile file(historyPath(options));
+    QVERIFY(file.open(QIODevice::WriteOnly));
+    file.write(encodedLine(entry("recoverable", "user", "read after repair")) + '\n');
+    file.close();
+    QVERIFY2(store.open(options, &error), qPrintable(error));
+    QCOMPARE(store.load(&error).size(), 1);
 }
 
 QTEST_GUILESS_MAIN(TestChatHistory)

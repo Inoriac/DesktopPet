@@ -52,6 +52,7 @@ struct ChatPreparationResult;
 #include "router/intent_router.h"
 #include "skill/skill_store.h"
 #include "tool_registry.h"
+#include "chat/conversation_types.h"
 #include "tools/runtime/tool_runtime.h"
 
 class MemoryConsolidationService;
@@ -78,6 +79,9 @@ public:
     bool isStorageInitialized() const { return m_storageInitialized; }
     void setRuntimeServices(AgentRuntimeServices* services);
 
+    Result<void, DomainError> registerConversationBinding(const HostConversationBinding& binding);
+    void submitIncomingMessage(IncomingMessage message,
+        std::function<void(Result<AcceptedMessage, DomainError>)> completion = {});
     void setPetName(const QString& petName);
     void setToolRegistry(ToolRegistry* registry);
     void setAgentScheduler(AgentScheduler* scheduler); // non-owning，供 Daydream 距待办判定
@@ -186,6 +190,8 @@ private:
         QString id;
         QDateTime receivedAt;
         bool rememberInput = true;
+        std::optional<AcceptedMessage> accepted;
+        std::optional<IncomingMessage> original;
     };
     void schedulePendingUserMessages();
     void dispatchPendingUserMessages();
@@ -193,6 +199,11 @@ private:
     QTimer m_userMessageDispatchTimer;
     QList<PendingUserMessage> m_pendingUserMessages;
     QList<PendingUserMessage> m_dispatchingUserMessages;
+    int m_acceptingMessageCount = 0;
+    quint64 m_inputEpoch = 0;
+    QSet<QString> m_scheduledMessageIds;
+    QString m_currentConversationId = QStringLiteral("local_owner");
+    QHash<QString, QList<ChatMessage>> m_conversationWindows;
     QString m_proactiveStatePath;
     static bool isAutomaticTrigger(const QString& triggerTag);
     bool automaticTextAllowed() const;
@@ -234,6 +245,9 @@ private:
                              bool initiatedByLlm,
                              const ToolExecutionOutcome& outcome,
                              const QString& sessionId = QString());
+    void enqueueUserMemoryWriteForSource(const QString& input, const QString& triggerTag,
+        const QString& requestId, quint64 generation, const QString& sessionId,
+        const std::optional<AcceptedMessage>& source, const QDateTime& originalTime);
     void enqueueUserMemoryWrite(const QString& input,
                                 const QString& triggerTag,
                                 const QString& requestId,
@@ -328,6 +342,11 @@ private:
 
     struct ActiveDialogueResponse {
         QString messageId;
+        std::optional<ContextSpec> context;
+        std::optional<ReplyTarget> replyTarget;
+        QList<PendingUserMessage> originalMessages;
+        bool publishing = false;
+        bool publicationFinished = false;
         QString replyToId;
         QString triggerTag;
         QString sessionId;

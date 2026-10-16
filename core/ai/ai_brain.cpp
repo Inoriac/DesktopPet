@@ -1,3 +1,4 @@
+#include "ai/chat/conversation_service.h"
 //
 // AIBrain implementation
 //
@@ -373,7 +374,7 @@ void AIBrain::stop() {
 }
 
 bool AIBrain::canAcceptUserMessage() const {
-    return m_enabled && m_storageInitialized && m_pendingUserMessages.size() < 64;
+    return m_enabled && m_storageInitialized && m_pendingUserMessages.size() + m_acceptingMessageCount < 64;
 }
 
 Result<void, DomainError> AIBrain::submitUserMessage(
@@ -386,6 +387,23 @@ Result<void, DomainError> AIBrain::submitUserMessage(
     if (!canAcceptUserMessage()) {
         return Result<void, DomainError>::failure(domainError(
             QStringLiteral("CHAT_UNAVAILABLE"), QStringLiteral("聊天尚未就绪或等待中的消息过多，请稍后再试。")));
+    }
+    if (m_runtimeServices && m_runtimeServices->conversationService()) {
+        IncomingMessage message;
+        message.channel = QStringLiteral("desktop");
+        message.connectionKey = QStringLiteral("local_owner");
+        message.remoteConversationId = QStringLiteral("local_owner");
+        message.localMessageId = messageId;
+        message.content = input;
+        message.occurredAt = QDateTime::currentDateTimeUtc();
+        message.originKind = OriginKind::LocalOwner;
+        message.kind = ConversationKind::LocalOwner;
+        submitIncomingMessage(message, [this, messageId, rememberInput](Result<AcceptedMessage, DomainError> result) {
+            if (!result) { emit thinkRequestRejected(messageId, result.error().message); return; }
+            for (auto& pending : m_pendingUserMessages)
+                if (pending.id == messageId) pending.rememberInput = rememberInput;
+        });
+        return Result<void, DomainError>::success();
     }
     // UI history owns durable original messages; this queue only schedules turns.
     if (isTaskActive()) pauseTask();
@@ -400,6 +418,49 @@ Result<void, DomainError> AIBrain::submitUserMessage(
     emit pendingUserMessagesChanged();
     schedulePendingUserMessages();
     return Result<void, DomainError>::success();
+}
+
+Result<void, DomainError> AIBrain::registerConversationBinding(const HostConversationBinding& binding) {
+    if (!m_runtimeServices || !m_runtimeServices->conversationService())
+        return Result<void, DomainError>::failure(domainError("DEPENDENCY_UNAVAILABLE", "Conversation runtime is unavailable"));
+    return m_runtimeServices->conversationService()->registerBinding(binding);
+}
+
+void AIBrain::submitIncomingMessage(IncomingMessage message,
+    std::function<void(Result<AcceptedMessage, DomainError>)> completion) {
+    if (!canAcceptUserMessage() || !m_runtimeServices || !m_runtimeServices->conversationService()) {
+        if (completion) completion(Result<AcceptedMessage, DomainError>::failure(
+            domainError("DEPENDENCY_UNAVAILABLE", "Conversation runtime is unavailable or busy")));
+        return;
+    }
+    ++m_acceptingMessageCount;
+    const quint64 inputEpoch = m_inputEpoch;
+    QPointer<AIBrain> guard(this);
+    m_runtimeServices->conversationService()->acceptMessageAsync(message,
+        [this, guard, message, inputEpoch, completion=std::move(completion)](Result<AcceptedMessage, DomainError> result) mutable {
+            if (!guard) return;
+            --m_acceptingMessageCount;
+            if (result && inputEpoch == m_inputEpoch && !result.value().selfMessage
+                && (!result.value().duplicate || message.originKind == OriginKind::LocalOwner)
+                && !m_scheduledMessageIds.contains(result.value().messageId)) {
+                const auto accepted = result.value();
+                m_scheduledMessageIds.insert(accepted.messageId);
+                PendingUserMessage pending{message.content, accepted.messageId, message.occurredAt, true};
+                pending.accepted = accepted; pending.original = message;
+                m_pendingUserMessages.append(pending);
+                ++m_interactionRevision;
+                if (message.originKind == OriginKind::LocalOwner) {
+                    if (isTaskActive()) pauseTask();
+                    m_unansweredProactiveChats = 0;
+                    m_cooldownAfterProactive = false;
+                    m_conversationCooldown.start();
+                    if (m_runtimeServices) m_runtimeServices->cancelSleepForUserInteraction();
+                }
+                emit pendingUserMessagesChanged();
+            }
+            if (completion) completion(result);
+            schedulePendingUserMessages();
+        });
 }
 
 QStringList AIBrain::activeUserMessageIds() const {
@@ -418,8 +479,20 @@ void AIBrain::dispatchPendingUserMessages() {
     QStringList fragments;
     qsizetype characters = 0;
     const bool rememberInput = m_pendingUserMessages.first().rememberInput;
+    const auto first = m_pendingUserMessages.first();
+    const QString conversationId = first.accepted ? first.accepted->conversationId : QStringLiteral("local_owner");
+    m_conversationWindows.insert(m_currentConversationId, m_memory);
+    m_currentConversationId = conversationId;
+    m_memory = m_conversationWindows.value(conversationId);
+    if (m_runtimeServices) m_chatPreparationRuntimeMetadata = m_runtimeServices->chatPreparationRuntimeMetadata();
+    if (first.accepted) {
+        m_chatPreparationRuntimeMetadata.originKind = first.accepted->context.originKind;
+        m_chatPreparationRuntimeMetadata.subjectId = first.accepted->personResolution.personId.value_or(QString());
+    }
     while (!m_pendingUserMessages.isEmpty()) {
         const auto& next = m_pendingUserMessages.first();
+        const QString nextConversation = next.accepted ? next.accepted->conversationId : QStringLiteral("local_owner");
+        if (nextConversation != conversationId) break;
         if (!fragments.isEmpty() && (characters + 1 + next.text.size() > 8000
                                     || next.rememberInput != rememberInput)) break;
         characters += next.text.size() + (fragments.isEmpty() ? 0 : 1);
@@ -427,7 +500,8 @@ void AIBrain::dispatchPendingUserMessages() {
         m_dispatchingUserMessages.append(m_pendingUserMessages.takeFirst());
     }
     const QString replyToId = m_dispatchingUserMessages.last().id;
-    triggerThink(fragments.join('\n'), QStringLiteral("user_request"), replyToId);
+    triggerThink(fragments.join('\n'), conversationId == QLatin1String("local_owner")
+        ? QStringLiteral("user_request") : QStringLiteral("external_message"), replyToId);
     m_dispatchingUserMessages.clear();
     emit pendingUserMessagesChanged();
     schedulePendingUserMessages();
@@ -548,7 +622,7 @@ void AIBrain::triggerThink(const QString& reason,
     qInfo() << "[AIBrain] accepted request, trigger:" << triggerTag;
     std::cerr << "[AIBrain] accepted request: trigger="
               << triggerTag.toStdString() << std::endl;
-    if (!isAutomaticTrigger(triggerTag)) emit thinkingStarted(reason);
+    if (!isAutomaticTrigger(triggerTag) && triggerTag != QLatin1String("external_message")) emit thinkingStarted(reason);
     beginActiveResponse(replyToId, triggerTag, {});
     m_workingMemoryCache.cleanup();
     if (shouldUseLocalRouter(triggerTag)) {
@@ -651,6 +725,8 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
         return;
     }
 
+    if (result.context) m_activeDialogueResponse->context = result.context;
+    if (result.replyTarget) m_activeDialogueResponse->replyTarget = result.replyTarget;
     const QString reason = m_activeDialogueResponse->reason;
     const QString triggerTag = m_activeDialogueResponse->triggerTag;
     const QString sessionId = m_activeDialogueResponse->sessionId;
@@ -705,6 +781,11 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
     response.generation = m_requestGeneration;
     response.acceptedAtMonotonicMs = monotonicMilliseconds();
     response.priorConversation = m_memory;
+    response.originalMessages = m_dispatchingUserMessages;
+    if (!m_dispatchingUserMessages.isEmpty() && m_dispatchingUserMessages.last().accepted) {
+        response.context = m_dispatchingUserMessages.last().accepted->context;
+        response.replyTarget = m_dispatchingUserMessages.last().accepted->replyTarget;
+    }
     if (m_dispatchingUserMessages.isEmpty()) {
         if (!replyToId.isEmpty()) response.sourceMessageIds.append(replyToId);
     } else {
@@ -713,7 +794,7 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
         response.rememberInput = m_dispatchingUserMessages.first().rememberInput;
     }
     m_activeDialogueResponse.emplace(std::move(response));
-    if (isAutomaticTrigger(triggerTag)) return;
+    if (isAutomaticTrigger(triggerTag) || triggerTag == QLatin1String("external_message")) return;
     m_activeDialogueResponse->announced = true;
     emit assistantResponseStarted(m_activeDialogueResponse->messageId,
                                   m_activeDialogueResponse->replyToId,
@@ -738,6 +819,10 @@ void AIBrain::appendActiveDelta(const QString& textDelta) {
         || textDelta.isEmpty()) {
         return;
     }
+    if (m_activeDialogueResponse->triggerTag == QLatin1String("external_message")) {
+        m_activeDialogueResponse->visibleContent += textDelta;
+        return;
+    }
     if (!m_activeDialogueResponse->announced) {
         m_activeDialogueResponse->announced = true;
         emit assistantResponseStarted(m_activeDialogueResponse->messageId,
@@ -755,6 +840,37 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
                                    const QJsonObject& responseLog) {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     if (status == ChatMessageStatus::Complete && suppressMutedAutomaticResponse()) return;
+    if (status == ChatMessageStatus::Complete
+        && m_activeDialogueResponse->triggerTag == QLatin1String("external_message")
+        && !m_activeDialogueResponse->publicationFinished && !m_activeDialogueResponse->visibleContent.isEmpty()) {
+        if (m_activeDialogueResponse->publishing) return;
+        if (!m_runtimeServices || !m_runtimeServices->conversationService()
+            || !m_activeDialogueResponse->context || !m_activeDialogueResponse->replyTarget) {
+            finishActiveResponse(ChatMessageStatus::Failed, QStringLiteral("Conversation sender unavailable"));
+            return;
+        }
+        m_activeDialogueResponse->publishing = true;
+        RoutedResponse response;
+        response.requestId = m_activeDialogueResponse->preparationRequestId;
+        response.generation = m_activeDialogueResponse->generation;
+        response.context = *m_activeDialogueResponse->context;
+        response.replyTarget = *m_activeDialogueResponse->replyTarget;
+        response.sourceMessageIds = m_activeDialogueResponse->sourceMessageIds;
+        response.content = m_activeDialogueResponse->visibleContent;
+        const QString messageId = m_activeDialogueResponse->messageId;
+        QPointer<AIBrain> guard(this);
+        m_runtimeServices->conversationService()->publishResponseAsync(response,
+            [this, guard, messageId, responseLog](Result<void, DomainError> result) {
+                if (!guard || !m_activeDialogueResponse || m_activeDialogueResponse->messageId != messageId) return;
+                m_activeDialogueResponse->publicationFinished = true;
+                finishActiveResponse(result ? ChatMessageStatus::Complete : ChatMessageStatus::Failed,
+                    result ? QString() : result.error().message, responseLog);
+            });
+        return;
+    }
+    if (m_activeDialogueResponse->triggerTag == QLatin1String("external_message")
+        && status != ChatMessageStatus::Complete)
+        qWarning() << "[Conversation] external response failed:" << errorMessage;
     m_activeDialogueResponse->terminal = true;
     m_activeDialogueResponse->status = status;
     ActiveDialogueResponse finished = std::move(*m_activeDialogueResponse);
@@ -789,12 +905,28 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
                        finished.sessionId, finished.generation, responseLog);
     }
 
+    if (finished.triggerTag != QLatin1String("external_message") && m_runtimeServices
+        && m_runtimeServices->conversationService() && finished.announced) {
+        ChatHistoryEntry entry;
+        entry.id = finished.messageId; entry.role = QStringLiteral("assistant");
+        entry.content = finished.visibleContent; entry.replyToId = finished.replyToId;
+        entry.sourceMessageIds = finished.sourceMessageIds; entry.status = status;
+        entry.errorMessage = errorMessage; entry.timestamp = QDateTime::currentDateTimeUtc();
+        m_runtimeServices->conversationService()->appendLocalHistoryAsync(entry, [](Result<void, DomainError> result) {
+            if (!result) qWarning() << "[Conversation] local response persistence failed:" << result.error().message;
+        });
+    }
     finishRuntimeSession(finished.sessionId, finished.generation);
+    m_conversationWindows.insert(m_currentConversationId, m_memory);
+    m_currentConversationId = QStringLiteral("local_owner");
+    m_memory = m_conversationWindows.value(m_currentConversationId);
+    if (m_runtimeServices) m_chatPreparationRuntimeMetadata = m_runtimeServices->chatPreparationRuntimeMetadata();
     m_busy = false;
     if (isAutomaticTrigger(finished.triggerTag)) {
         scheduleTrigger(finished.triggerTag);
     }
     if (status == ChatMessageStatus::Complete
+        && finished.triggerTag != QLatin1String("external_message")
         && !finished.visibleContent.isEmpty()) {
         emit assistantResponseReady(finished.visibleContent, finished.voiceSource);
     }
@@ -806,6 +938,7 @@ void AIBrain::finishActiveResponse(ChatMessageStatus status,
 }
 
 void AIBrain::stopCurrentResponse() {
+    ++m_inputEpoch;
     stopTask();
     m_userMessageDispatchTimer.stop();
     if (!m_pendingUserMessages.isEmpty()) {
@@ -819,6 +952,8 @@ void AIBrain::cancelActiveResponse() {
     if (!m_activeDialogueResponse || m_activeDialogueResponse->terminal) return;
     const QString sessionId = m_activeDialogueResponse->sessionId;
     const quint64 generation = m_activeDialogueResponse->generation;
+    if (m_runtimeServices && m_runtimeServices->conversationService())
+        m_runtimeServices->conversationService()->cancelRequestAsync(m_activeDialogueResponse->preparationRequestId, generation);
     const auto pendingIds = m_pendingResponseLogs.keys();
     for (const QString& requestId : pendingIds) {
         const PendingResponseLog pending = m_pendingResponseLogs.value(requestId);
@@ -912,12 +1047,25 @@ bool AIBrain::appendRuntimeEvent(const QString& type,
     draft.sessionId = sessionId;
     draft.payload = payload;
     if (type == QLatin1String("UserMessageReceived")) {
+        if (m_activeDialogueResponse && !m_activeDialogueResponse->originalMessages.isEmpty()) {
+            QJsonArray origins, messages;
+            for (const auto& original : m_activeDialogueResponse->originalMessages) {
+                if (!original.accepted) continue;
+                origins.append(original.accepted->originId);
+                messages.append(original.accepted->messageId);
+            }
+            if (!origins.isEmpty()) {
+                draft.payload.insert(QStringLiteral("original_origin_ids"), origins);
+                draft.payload.insert(QStringLiteral("source_message_ids"), messages);
+            }
+        }
         draft.payload.insert(QStringLiteral("origin_kind"), originKindToString(m_chatPreparationRuntimeMetadata.originKind));
         draft.payload.insert(QStringLiteral("subject_id"), m_chatPreparationRuntimeMetadata.subjectId);
         draft.payload.insert(QStringLiteral("conversation_id"),
-                             m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner
-                                 ? QStringLiteral("local_owner")
-                                 : QString());
+                             m_activeDialogueResponse && m_activeDialogueResponse->context
+                                 ? m_activeDialogueResponse->context->conversationId
+                                 : m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner
+                                     ? QStringLiteral("local_owner") : QString());
         draft.payload.insert(QStringLiteral("request_id"),
                              !requestId.isEmpty() ? requestId
                              : m_activeDialogueResponse
@@ -974,11 +1122,24 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
                                      const QString& requestId,
                                      quint64 generation,
                                      const QString& sessionId) {
-    if (!shouldUseLocalRouter(triggerTag)) {
+    if (m_activeDialogueResponse && !m_activeDialogueResponse->originalMessages.isEmpty()) {
+        for (const auto& original : m_activeDialogueResponse->originalMessages)
+            enqueueUserMemoryWriteForSource(original.text, triggerTag, requestId, generation,
+                                            sessionId, original.accepted, original.receivedAt);
+        return;
+    }
+    enqueueUserMemoryWriteForSource(input, triggerTag, requestId, generation, sessionId, std::nullopt, {});
+}
+
+void AIBrain::enqueueUserMemoryWriteForSource(const QString& input, const QString& triggerTag,
+    const QString& requestId, quint64 generation, const QString& sessionId,
+    const std::optional<AcceptedMessage>& source, const QDateTime& originalTime) {
+    if (!shouldUseLocalRouter(triggerTag) && triggerTag != QLatin1String("external_message")) {
         return;
     }
     if (m_activeDialogueResponse && !m_activeDialogueResponse->rememberInput) return;
-    const auto annotateInput = [this](MemoryEntry& entry) {
+    const auto annotateInput = [this, originalTime](MemoryEntry& entry) {
+        if (originalTime.isValid()) { entry.lastMentionedAt = originalTime; return; }
         if (!m_activeDialogueResponse) return;
         if (m_activeDialogueResponse->inputMentionedAt.isValid())
             entry.lastMentionedAt = m_activeDialogueResponse->inputMentionedAt;
@@ -1031,6 +1192,15 @@ void AIBrain::enqueueUserMemoryWrite(const QString& input,
         m_chatPreparationRuntimeMetadata.originKind == OriginKind::LocalOwner
             ? QStringLiteral("local_owner")
             : QString();
+    if (source) {
+        effect.attributionContext.originId = source->originId;
+        effect.attributionContext.speakerPersonId = source->personResolution.personId.value_or(QString());
+        effect.attributionContext.conversationId = source->conversationId;
+        if (source->context.originKind == OriginKind::External) {
+            effect.attributionContext.audience.kind = MemoryAudienceKind::Conversation;
+            effect.attributionContext.audience.conversationIds = {source->conversationId};
+        }
+    }
     effect.attributionContext.claimKind = MemoryClaimKind::Reported;
     effect.attributionContext.inferSelfStatementClaim = true;
     if (!m_chatSideEffectQueue->tryEnqueue(std::move(effect)))

@@ -8,9 +8,14 @@
 #include <optional>
 
 #include "ai/llm/llm_stream_types.h"
+#include "conversation_types.h"
 
 struct ChatHistoryEntry {
     QString id;
+    QString conversationId;
+    QString speakerId;
+    std::optional<ContextSpec> context;
+    std::optional<ReplyTarget> replyTarget;
     QString role;
     QString replyToId;
     QString content;

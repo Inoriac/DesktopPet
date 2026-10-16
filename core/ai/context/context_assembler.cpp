@@ -54,6 +54,10 @@ Result<QList<ChatMessage>, DomainError> ContextAssembler::assemble(
     for (ContextPartition requested : request.requestedPartitions) {
         for (const ContextProjection& projection : request.projections) {
             if (projection.partition != requested) continue;
+            if (request.context) {
+                if (!projection.scope && request.context->originKind != OriginKind::LocalOwner) continue;
+                if (projection.scope && !memoryVisibleInContext(*projection.scope, *request.context)) continue;
+            }
             for (const ChatMessage& source : projection.messages) {
                 if (remaining <= 0) return Result<QList<ChatMessage>, DomainError>::success(messages);
                 ChatMessage bounded = source;

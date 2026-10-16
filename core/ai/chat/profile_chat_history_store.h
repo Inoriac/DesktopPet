@@ -9,6 +9,7 @@
 
 struct ProfileChatStoreOptions {
     QString appDataRoot;
+    QString runtimeDatabasePath;
     QString profileId;
     QStringList registeredProfileIds;
     QString legacyHistoryPath;
@@ -24,8 +25,10 @@ private:
     bool importLegacyIfEligible(const ProfileChatStoreOptions& options,
                                 QString* errorMessage);
     bool ensureHistoryFile(QString* errorMessage) const;
+    std::optional<QList<ChatHistoryEntry>> loadLegacy(QString* errorMessage) const;
 
     QString m_historyPath;
+    QString m_runtimeDatabasePath;
     QString m_profileId;
     bool m_open = false;
 };

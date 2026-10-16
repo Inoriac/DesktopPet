@@ -13,6 +13,7 @@
 
 #include "ai/ai_brain.h"
 #include "ai/chat/profile_chat_history_store.h"
+#include "ai/chat/conversation_service.h"
 #include "ai/ai_tool.h"
 #include "ai/event/event_ledger.h"
 #include "ai/identity/sqlite_identity_repository.h"
@@ -76,6 +77,7 @@ public:
     QList<Attempt> attempts;
     QList<QString> routeIds;
     QList<QList<ChatMessage>> messageBatches;
+    QList<QJsonArray> toolBatches;
     QList<std::shared_ptr<FakeRequestHandle>> handles;
     std::optional<Pending> pending;
 
@@ -94,7 +96,7 @@ public:
         LlmStreamObserver observer,
         LlmCompletionHandler completion,
         const QString& petName) override {
-        Q_UNUSED(tools)
+        toolBatches.append(tools);
         Q_UNUSED(petName)
         routeIds.append(selectedRoute.routeId);
         messageBatches.append(messages);
@@ -274,6 +276,7 @@ class StreamingDialogueTests : public QObject {
 
 private slots:
     void bufferedInput_dispatchesWithoutWaitingForMoreInput();
+    void externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory();
     void bufferedInput_keepsStreamingAndCombinesPendingMessages();
     void bufferedInput_stopClearsPendingAndIgnoresLateCompletion();
     void bufferedInput_failureStillDrainsPending();
@@ -2127,6 +2130,45 @@ messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillise
     QVERIFY(observed.uiAcknowledgeMs < 16);
     QVERIFY(observed.preparationMs >= 80);
     QVERIFY(observed.dispatchLagMs >= 0);
+}
+
+void StreamingDialogueTests::externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory() {
+    QTemporaryDir directory;FakeStreamingClient client;
+    FakeStreamingClient::Attempt first;first.deferred=true;first.response=textResponse(QStringLiteral("给群A的回答"));
+    FakeStreamingClient::Attempt second;second.response=textResponse(QStringLiteral("给群B的回答"));
+    FakeStreamingClient::Attempt third;third.response=textResponse(QStringLiteral("继续群A"));
+    client.attempts={first,second,third};AIBrain brain(&client,{dialogueRoutes({route("dialogue")})});
+    auto bridge=makeRuntimeBridge();AgentRuntimeServices services;
+    QVERIFY(AgentBootstrap::start(services,runtimeRequestFor(directory,&brain,bridge.get())).isOk());
+    QStringList sentTargets;QStringList sentTexts;
+    auto host=[&](const QString& remote){
+        HostConversationBinding b;b.channel="fixture-chat";b.connectionKey="account";b.remoteConversationId=remote;
+        b.kind=ConversationKind::Group;b.toolName="fixture_send";
+        b.dispatcher=[&](const ReplyDispatch& dispatch,ReplyCompletion completion){
+            sentTargets.append(dispatch.response.replyTarget.remoteConversationId);sentTexts.append(dispatch.response.content);
+            DeliveryReceipt receipt;receipt.outcome=DeliveryOutcome::Completed;receipt.remoteMessageId=QString("sent-%1").arg(sentTargets.size());
+            receipt.content=dispatch.response.content;receipt.occurredAt=QDateTime::currentDateTimeUtc();completion(receipt);
+        };return b;
+    };
+    QVERIFY(brain.registerConversationBinding(host("a")));QVERIFY(brain.registerConversationBinding(host("b")));
+    auto incoming=[&](const QString& remote,const QString& id,const QString& text){
+        IncomingMessage m;m.channel="fixture-chat";m.connectionKey="account";m.remoteConversationId=remote;m.remoteMessageId=id;
+        m.kind=ConversationKind::Group;m.content=text;m.occurredAt=QDateTime::currentDateTimeUtc();
+        m.speakerIdentity={"fixture-chat","account",remote+"-person",remote};return m;
+    };
+    QSignalSpy desktopDeltas(&brain,&AIBrain::assistantResponseDelta);
+    int accepted=0;brain.submitIncomingMessage(incoming("a","a-1","群A讨论天文"),[&](auto r){QVERIFY(r);++accepted;});
+    QTRY_VERIFY(client.pending);QCOMPARE(accepted,1);
+    brain.submitIncomingMessage(incoming("b","b-1","群B讨论私人菜谱"),[&](auto r){QVERIFY(r);++accepted;});
+    QTRY_COMPARE(accepted,2);QCOMPARE(client.messageBatches.size(),1);
+    client.finishPendingEvenIfCancelled();QTRY_COMPARE(sentTargets.size(),2);
+    QCOMPARE(sentTargets,QStringList({"a","b"}));QCOMPARE(desktopDeltas.size(),0);
+    brain.submitIncomingMessage(incoming("a","a-2","继续刚才的话题"),[&](auto r){QVERIFY(r);++accepted;});
+    QTRY_COMPARE(sentTargets.size(),3);QTRY_VERIFY(!brain.isBusy());QCOMPARE(sentTargets.last(),QString("a"));
+    QString thirdPrompt;for(const auto& message:client.messageBatches.last())thirdPrompt+=message.content;
+    QVERIFY(thirdPrompt.contains("群A讨论天文"));QVERIFY(thirdPrompt.contains("给群A的回答"));
+    QVERIFY(!thirdPrompt.contains("群B讨论私人菜谱"));
+    for(const auto& tools:client.toolBatches)QVERIFY(tools.isEmpty());
 }
 
 QTEST_MAIN(StreamingDialogueTests)

@@ -60,7 +60,8 @@ QList<EventRecord> events() {
         event.occurredAt = now.addDays(i == 0 ? -20 : i == 1 ? -10 : -1);
         event.type = i == 1 ? QStringLiteral("TaskExperienceCommitted")
                             : QStringLiteral("UserMessageReceived");
-        event.payload = {{QStringLiteral("text"), QStringLiteral("a shared experience")}};
+        event.source = event.type == QStringLiteral("UserMessageReceived") ? QStringLiteral("AIBrain") : QStringLiteral("TaskExperienceAdapter");
+        event.payload = {{QStringLiteral("text"), QStringLiteral("a shared experience")}, {QStringLiteral("origin_kind"), QStringLiteral("local_owner")}};
         result.append(event);
     }
     return result;
@@ -139,6 +140,9 @@ struct Fixture {
 class PersonalityConsolidationTests : public QObject {
     Q_OBJECT
 private slots:
+    void explicitExternalAndInternalLegacyEvents_doNotEnterOwnerMaterials();
+    void observedMessagesAndSessionLog_preserveOriginalSetWithoutDuplicateEvidence();
+    void observedMessagesAndSessionLog_deferredDeliveryPreservesSourcesWithinCutoff();
     void lateExtractionCannotWriteAfterCancellation();
     void lateSummaryCannotCommitAfterCancellation();
     void providerFailureKeepsVersionAndEvidence();
@@ -461,6 +465,95 @@ void PersonalityConsolidationTests::reflectionAcrossConversationScenesCanContrib
     QVERIFY(f.result.has_value() && f.result->isOk());
     QCOMPARE(f.result->value().version, 1);
     QCOMPARE(f.result->value().sourceEvidenceIds.size(), 3);
+}
+
+void PersonalityConsolidationTests::observedMessagesAndSessionLog_preserveOriginalSetWithoutDuplicateEvidence() {
+    Fixture f;QVERIFY(f.open());
+    for(int index:{0,2}){auto& e=f.committedEvents[index];e.type="MessageObserved";e.source="ConversationStore";
+        e.payload={{"text","original input"},{"message_id",QString("message-%1").arg(index+1)},{"conversation_id","local_owner"},
+                   {"speaker_id","owner"},{"subject_id","owner"},{"sender_kind","person"},{"origin_kind","local_owner"}};}
+    EventRecord log;log.profileId=profile;log.eventId="processing-log";log.sequence=4;log.occurredAt=now.addSecs(-60);
+    log.type="UserMessageReceived";log.source="AIBrain";log.sessionId="conversation-turn";
+    log.payload={{"text","combined turn"},{"subject_id","owner"},{"conversation_id","local_owner"},
+                 {"original_origin_ids",QJsonArray{"original-1","original-3"}},{"source_message_ids",QJsonArray{"message-1","message-3"}}};
+    f.committedEvents.append(log);
+    EventRecord assistant=log;assistant.eventId="assistant-response";assistant.sequence=5;assistant.type="AssistantResponseProduced";assistant.payload={};f.committedEvents.append(assistant);
+    EventRecord thought=log;thought.eventId="thought-event";thought.sequence=6;thought.type="InnerThoughtStored";
+    thought.privateReference=PrivateEventReference{"private_psyche","inner_thought","thought",profile};f.committedEvents.append(thought);
+    auto historical=f.committedEvents.first();historical.eventId="imported-history";historical.sequence=7;historical.payload["historical_import"]=true;f.committedEvents.append(historical);
+    f.hooks.readInnerThought=[](const QString& id){InnerThoughtSummary thought;thought.entryId=id;thought.profileId=profile;thought.sourceEventId="assistant-response";return Result<InnerThoughtSummary,DomainError>::success(thought);};
+    f.run(7);QCOMPARE(f.model.requests.size(),1);
+    const auto materials=QJsonDocument::fromJson(f.model.requests.first().last().content.toUtf8()).object()["materials"].toArray();
+    QJsonArray origins;for(const auto& item:materials){const auto m=item.toObject();QVERIFY(m["materialId"]!="processing-log");QVERIFY(m["materialId"]!="imported-history");if(m["materialId"]=="thought")origins=m["originalSourceIds"].toArray();}
+    QCOMPARE(origins,QJsonArray({"original-1","original-3"}));
+}
+
+void PersonalityConsolidationTests::explicitExternalAndInternalLegacyEvents_doNotEnterOwnerMaterials() {
+    Fixture f;QVERIFY(f.open());f.committedEvents[0].payload["origin_kind"]="external";
+    f.committedEvents[1].payload["origin_kind"]="external";
+    f.committedEvents[2].payload["origin_kind"]="internal";
+    auto owner=events().first();owner.eventId="trusted-owner";owner.source="AIBrain";owner.sequence=4;f.committedEvents.append(owner);
+    f.run(4);QCOMPARE(f.model.requests.size(),1);
+    const auto materials=QJsonDocument::fromJson(f.model.requests.first().last().content.toUtf8()).object()["materials"].toArray();
+    QCOMPARE(materials.size(),1);QCOMPARE(materials.first().toObject()["materialId"].toString(),QString("trusted-owner"));
+}
+
+void PersonalityConsolidationTests::observedMessagesAndSessionLog_deferredDeliveryPreservesSourcesWithinCutoff() {
+    for (const bool sourceWithinCutoff : {true, false}) {
+        Fixture f;
+        QVERIFY(f.open());
+        for (int index : {0, 2}) {
+            auto& original = f.committedEvents[index];
+            original.sequence = index == 0 ? 8 : 9;
+            original.type = "MessageObserved";
+            original.source = "ConversationStore";
+            original.payload = {{"text", "original input"}, {"message_id", QString("message-%1").arg(index + 1)},
+                {"conversation_id", "local_owner"}, {"speaker_id", "owner"},
+                {"subject_id", "owner"}, {"sender_kind", "person"}, {"origin_kind", "local_owner"}};
+        }
+        EventRecord log;
+        log.profileId = profile;
+        log.eventId = "processing-log";
+        log.sequence = 4;
+        log.occurredAt = now.addSecs(-60);
+        log.type = "UserMessageReceived";
+        log.source = "AIBrain";
+        log.sessionId = "turn";
+        log.payload = {{"subject_id", "owner"}, {"conversation_id", "local_owner"},
+            {"original_origin_ids", QJsonArray{"original-1", "original-3"}},
+            {"source_message_ids", QJsonArray{"message-1", "message-3"}}};
+        f.committedEvents.append(log);
+        auto assistant = log;
+        assistant.eventId = "assistant";
+        assistant.sequence = 5;
+        assistant.type = "AssistantResponseProduced";
+        assistant.payload = {};
+        f.committedEvents.append(assistant);
+        auto thought = assistant;
+        thought.eventId = "thought-event";
+        thought.sequence = 6;
+        thought.type = "InnerThoughtStored";
+        thought.privateReference = PrivateEventReference{"private_psyche", "inner_thought", "thought", profile};
+        f.committedEvents.append(thought);
+        f.hooks.readInnerThought = [](const QString& id) {
+            InnerThoughtSummary thought;
+            thought.entryId = id;
+            thought.profileId = profile;
+            thought.sourceEventId = "assistant";
+            return Result<InnerThoughtSummary, DomainError>::success(thought);
+        };
+        f.run(sourceWithinCutoff ? 9 : 8);
+        QCOMPARE(f.model.requests.size(), 1);
+        const auto materials = QJsonDocument::fromJson(f.model.requests.first().last().content.toUtf8())
+                                   .object()["materials"].toArray();
+        QJsonArray origins;
+        for (const auto& item : materials) {
+            const auto material = item.toObject();
+            QVERIFY(material["materialId"] != "processing-log");
+            if (material["materialId"] == "thought") origins = material["originalSourceIds"].toArray();
+        }
+        QCOMPARE(origins, sourceWithinCutoff ? QJsonArray({"original-1", "original-3"}) : QJsonArray());
+    }
 }
 
 QTEST_GUILESS_MAIN(PersonalityConsolidationTests)

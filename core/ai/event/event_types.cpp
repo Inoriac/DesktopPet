@@ -123,3 +123,20 @@ Result<EventDraft, DomainError> eventDraftFromJson(const QJsonObject& object) {
     }
     return Result<EventDraft, DomainError>::success(std::move(draft));
 }
+
+bool isOriginalOwnerExperience(const EventRecord& event) {
+    if (event.privacy != EventPrivacy::Normal || event.payload.value(QStringLiteral("historical_import")).toBool()) return false;
+    if (event.type == QStringLiteral("UserMessageReceived")
+        && (event.payload.contains(QStringLiteral("original_origin_ids")) || event.payload.value(QStringLiteral("task_related")).toBool())) return false;
+    const bool local = event.payload.contains(QStringLiteral("origin_kind"))
+        ? event.payload.value(QStringLiteral("origin_kind")).toString() == QStringLiteral("local_owner")
+        : (event.type == QStringLiteral("UserMessageReceived") && event.source == QStringLiteral("AIBrain"))
+            || (event.type == QStringLiteral("TaskExperienceRecorded") && event.source == QStringLiteral("TaskExperienceAdapter"));
+    if (!local) return false;
+    if (event.type == QStringLiteral("MessageObserved"))
+        return event.source == QStringLiteral("ConversationStore")
+            && event.payload.value(QStringLiteral("sender_kind")).toString() == QStringLiteral("person")
+            && event.payload.value(QStringLiteral("speaker_id")).toString() == QStringLiteral("owner");
+    return event.type == QStringLiteral("UserMessageReceived") || event.type == QStringLiteral("UserFeedbackReceived")
+        || event.type.startsWith(QStringLiteral("TaskExperience"));
+}

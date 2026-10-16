@@ -89,3 +89,55 @@
 ### §3.3 最终结论
 
 代码审查通过，Wave 2 五项校验通过。最终完整构建成功；CTest **49/49 组通过**（13.50 秒），日志 `/tmp/memory-attribution-final-clean-build.log`、`/tmp/memory-attribution-final-clean-ctest.log`。`git diff --check` 通过。未改变真实 QQ 接入状态。
+
+## §3.4 会话路由审查
+
+本节记录会话路由的实现核对、修复及最终验收。
+
+- 统一会话事实来源、旧历史兼容模式、Store 独立连接和 Service 异步 worker 与主设计一致；生产 UI 明确启用 runtime 存储。
+- 原始 MessageObserved 与消息同事务，稳定 ID 区分会话，人物/自身账号核验不依赖正文。
+- 新外部输入不进入主人命令/任务快捷入口，过渡期不注入原全量工具；发送经过宿主异步绑定。
+- 已修复的审查项：预留到实际派发之间的停止窗口；原始消息水位隔离后到输入；historyLimit 校验；100 条迁移 checkpoint 与冲突 ID 映射；先到自身回显的回复链回填。
+- runtime 版本升级同步允许 SleepSessionRepository 使用 v2，不改睡眠表及恢复语义。
+- 路由测试覆盖取消派发窗口、历史水位、分批迁移及自身回显合并；生产 AIBrain/历史/来源消费与全量回归通过。
+- 已同步并落实主设计：会话处理日志不能重复计入原始证据，聚合与反思需多来源回溯；历史导入不重放已消费成长。外部 skills 同工具一样等待有范围目录。
+
+### §3.4 覆盖映射
+
+| 契约 | 实际测试入口 |
+| --- | --- |
+| 远端重试、不同群相同局部 ID、sourceEventId 回退 | test_conversation_routing.cpp：acceptMessage_remoteMessageRetry_persistsOnce、acceptMessage_sameLocalMessageIdAcrossGroups_isolated、acceptMessage_sourceEventFallback_isStableAndScoped |
+| 宿主连接及 local_owner 核验、自身稳定账号回显 | acceptMessage_unregisteredOrForgedLocalOrigin_rejected、acceptMessage_selfEcho_usesConnectionIdentity |
+| 按会话准备历史、人物投影、后到消息水位 | prepareContext_switchConversations_restoresOwnHistory、prepareContext_laterQueuedMessage_isNotPriorHistory |
+| 原目标固定、旧 generation 拒绝、真实迟到回执 | publishResponse_newMessageInOtherChat_keepsOriginalTarget、publishResponse_staleGeneration_rejectsSendButArchivesActualReceipt |
+| 重复/unknown 不重发、自身回显先到合并 | publishResponse_repeatedAndUnknown_neverResends、recordDeliveryReceipt_selfEchoArrivesFirst_mergesOnce |
+| 实际 ToolRuntime 异步派发、预留后取消窗口 | service_dispatchesThroughActualToolRuntime_andArchivesReceipt、service_cancelBetweenReservationAndDispatch_preventsSend |
+| 原始 outbox 原子回滚、提交后投递故障恢复 | acceptMessage_outboxFailure_rollsBackMessage、acceptMessage_eventDeliveryFailure_staysAcceptedAndRecovers |
+| 每批 100 条迁移与失败 cursor、重复启动 | importLocalHistory_commitsBatchesAndDoesNotReimportCompletedSource |
+| 旧历史状态/回复链、按值复制跨线程、SQLite 权威 | test_chat_history.cpp：v2History_importsOnceAndWritesOnlySqliteAcrossThreadCopies |
+| AIBrain 外部排队、发送目标与历史不串、桌面不显示外部流 | test_streaming_dialogue.cpp：externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory |
+| 显式上下文的角色与 audience 校验 | test_model_router.cpp：context_scopeFiltersExternalAndMissingProjections |
+| runtime v1→v2 与未来版本拒绝 | test_event_ledger.cpp：runtimeSchema_upgradesVersionOneWithoutDroppingEventsAndRejectsFuture |
+| 成长只计原始一次、历史导入不重放 | test_agent_runtime_services.cpp：observedMessage_growthCountsOriginalOnceAndSkipsHistoricalImport |
+| 聚合处理/反思多来源、历史及外部人格范围 | test_personality_consolidation.cpp：observedMessagesAndSessionLog_preserveOriginalSetWithoutDuplicateEvidence、explicitExternalAndInternalLegacyEvents_doNotEnterOwnerMaterials |
+| 双入口先后及同时到达仅一条消息、一份 origin、一次 revision | test_conversation_routing.cpp：acceptMessage_uiAndPreparationRace_oneCommittedMessageAndOrigin |
+| 同群两人历史与聚合当前输入、嵌入伪造 speaker 文本不改变宿主标签、historyLimit 门禁 | prepareContext_groupHistoryAndCurrentInput_preserveSpeakerPerMessage |
+| 缺派发器明确失败且无新增发出消息 | service_missingDispatcher_rejectsWithoutSending |
+| SQLite 写失败不写旧 JSONL、已迁移不依赖旧源、未迁移读取失败可恢复 | test_chat_history.cpp：historyMigration_v2Failure_neverFallsBackToJsonlWrites、historyMigration_completedSqlite_doesNotRequireLegacyFile、historyMigration_sourceReadFailure_doesNotCompleteEmptyImport |
+| 原事件投递晚于处理日志时可回溯，同时不越过 cutoff | test_personality_consolidation.cpp：observedMessagesAndSessionLog_deferredDeliveryPreservesSourcesWithinCutoff |
+| 存储等待不阻塞界面事件循环 | test_conversation_routing.cpp：service_storageWait_doesNotBlockUi |
+
+覆盖入口已补齐，代码审查无剩余阻塞项。上述测试均包含在最终 50/50 组通过的完整回归中。
+
+### §3.4 审查修复
+
+- 消息接收、历史写入和回执保存以 runtime 事务提交为成功边界，outbox 投递失败保留待恢复事件；Service 使用单个 1 秒 timer 串行检查，归零停止，不能重收或重发。记忆仍验证 event_log 原始来源，不从待投递状态假定已提交。
+- 会话读后写事务先预留 writer；已经 v2 的库只做版本门禁，旧版本在 BEGIN IMMEDIATE 内复查再迁移。普通 loadHistory/validateContext 保持只读事务。
+- 成长只消费原始 MessageObserved；处理日志保留多 origin 引用，反思 alias 用事实时间、会话/人物/消息和 cutoff 校验，投递顺序不冒充事实顺序。历史导入、自身回显与显式外部/内部来源排除主人材料。
+- 历史读取显式区分坏行警告和真实 I/O 失败；迁移完成重新打开只依赖 SQLite，升级失败不回退 JSONL。双 worker 测试的初始 revision 预期修正为 1 + 一次输入 = 2，消息和事件数量仍严格要求 1。
+- 外部提示保留逐条宿主 speaker/message 标识，正文独立编码；工具与无 audience 的旧学习技能不流入外部上下文，发送仍只走宿主异步绑定。
+- 全量回归对旧库模拟显式设置 user_version=1，不再把人为删除表的 v2 库当作正常旧库；统计目标补新增共享头所需 core include。保留原历史 ID/版本断言及全部测试目标。
+
+### §3.4 最终结论
+
+代码审查通过，Wave 3 五项校验通过。完整应用/所有测试目标构建成功，最终 CTest **50/50 组通过**（42.64 秒），`git diff --check` 通过。日志 `/tmp/conversation-routing-full-build.log`、`/tmp/conversation-routing-full-ctest.log`；首轮旧迁移 fixture 的 RED 保留为 `/tmp/conversation-routing-full-ctest-legacy-fixture-red.log`，未靠删测试取得通过。受控 ToolRuntime 发送证明宿主异步路由，不代表真实 QQ 已接通。
