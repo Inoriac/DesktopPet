@@ -14,6 +14,8 @@
 - [code-impl Task 1 sanity check] 已核对 music_tools.h 的 HTTP/Scheme 和状态字段、playlist.py 的三张表、三种包 schema、CapabilityExecutor reported /state 与 /data 映射。命令接口与设计一致。
 - [code-impl Task 1 review] /lyric 兼容文本 LRC；控制应答兼容 JSON/文本/空体，明确 false 不算成功；HTTP 截断与超时不会误报；来源 ID 保留旧脚本的路径斜杠语义，不据此推断特定平台的真实可播放格式。无接口契约变更。
 - [Windows handoff anchor] launcher/pet_registry.py 将角色列表放在 APPDATA/Desktop Pet Team/Desktop Pet/pets.json；main.cpp 用 Qt AppDataLocation，角色运行目录为 profiles/UUID。启动器 AI 页已有“自主活动”与暂停开关；插件自主 grant 不代替该总开关。
+- [code-impl Task 2 sanity check] PluginRuntime 构造/initialize/setHostConfiguration、discoverCapabilities/loadCapability/executeGateway 签名及 scope/grant/版本语义已核对；实际 configure.py 输出被专用 C++ 集成测试直接加载。CMake 使用发现的 Python3_EXECUTABLE，测试命名/目录与仓库一致。
+- [code-impl Task 2 review] 既有 effect=conditional 是合法契约，安装器必须保留，已先 RED 后 GREEN 修复。Windows 配置/诊断和业务 stdin 示例均处理 UTF-8；两文件配置只保证异常回滚，不宣称崩溃原子性，文档要求退出桌宠后应用并保留备份。
 
 ## 设计偏差
 

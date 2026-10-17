@@ -609,6 +609,10 @@ if(WIN32
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME LxMusicConfigureTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lx_music_configure.py)
+    set_tests_properties(LxMusicConfigureTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME LxMusicAdapterTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lx_music_adapter.py)
     set_tests_properties(LxMusicAdapterTests PROPERTIES
@@ -2140,6 +2144,19 @@ add_desktop_pet_cpp_test(plugin_runtime_tests PluginRuntimeTests
     LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
 
 target_compile_definitions(plugin_runtime_tests PRIVATE PLUGIN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugin_probe.py")
+if(Python3_Interpreter_FOUND)
+    add_desktop_pet_cpp_test(lx_music_plugin_tests LxMusicPluginTests
+        SOURCES tests/test_lx_music_plugin.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+          core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+          core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+          core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+        LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
+    target_compile_definitions(lx_music_plugin_tests PRIVATE
+        LX_MUSIC_PYTHON="${Python3_EXECUTABLE}"
+        LX_MUSIC_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/lx-music"
+        LX_MUSIC_BACKEND="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lx_music_backend.py")
+endif()
 get_property(desktop_pet_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(desktop_pet_target IN LISTS desktop_pet_targets)
     get_target_property(desktop_pet_target_sources ${desktop_pet_target} SOURCES)

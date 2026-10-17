@@ -17,9 +17,11 @@
 ## Task 2: 角色配置、运行时验证与 Windows 交接
 
 - 关联设计: §3.3
-- 状态: [ ]
+- 状态: [x]
 - Wave: 2
 - 依赖: Task 1
 - 文件: plugins/lx-music/{configure.py,README.md}；tests/test_lx_music_configure.py；tests/test_lx_music_plugin.cpp；tests/fixtures/lx_music_backend.py；CMakeLists.txt；contracts/tools/README.md。前序文件发现缺陷可在父级审查批准后修复并回归。
 - 测试用例: configuration_preview_no_write、apply_preserves_unrelated_and_backup、apply_idempotent、invalid_configuration_unchanged、autonomy_off_read_all、apply_failure_rollback、runtime_discover_load_skill_and_tools、runtime_command_http_and_sqlite、runtime_local_and_internal_permissions、runtime_external_denied、runtime_invalid_disabled_stale_no_write、runtime_unknown_single_dispatch。
 - 覆盖来源: §3.3.7；C++ 使用实际 PluginRuntime 与包，不使用既有内置音乐工具。
+
+验收：父级代码审查通过；最终完整构建成功，60/60 CTest 全通过（115.40s），其中音乐适配器 23 项、配置器 13 项、真实运行时 6 个行为用例。原有契约 94/94，三份音乐 manifest 通过 schema 与实际 catalog 加载。文档本地链接与 git diff --check 通过。Wave 五项（冲突、全量回归、行为覆盖、测试位置、锚点留痕）及两切片最终一致性检查通过；无未处理设计偏差。日志 /tmp/lx-final-build.log、/tmp/lx-final-ctest.log、/tmp/lx-contract-final.log；报告 /tmp/lx-task2-report.md。真实 Windows 播放器验收按 plugins/lx-music/README.md 独立执行。

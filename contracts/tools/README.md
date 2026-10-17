@@ -16,6 +16,7 @@
 | [观察源与聊天插件接入](./观察源与聊天插件接入.md) | 主动查询、可选 JSONL source、账号身份、监听游标及真实回执 |
 | [source.schema.json](./source.schema.json) | agent-observation-1 来源进程声明 |
 | [受控聊天示例](./examples/controlled-chat/README.md) | 可运行的本地聊天日志、宿主配置生成与可选监听 |
+| [LX Music 通用插件](../../plugins/lx-music/README.md) | 现有音乐工具＋Skill 的可执行接入样板、角色配置、macOS 验证与 Windows 实测步骤 |
 | [准入检查规则与示例核对](./准入检查规则与示例核对.md) | 区分结构检查、语义核对和当前运行条件 |
 | [现有工具契约适配验证](./现有工具契约适配验证.md) | 现有 46 个注册入口的现状与接入差距，范围已按外部 Skill/Tool 定位修正 |
 | [examples](./examples) | 脚本、通用 CLI、MCP 及受控聊天作者示例 |
