@@ -769,8 +769,10 @@ private slots:
     runtime.setObservationSource(
         {"account", true, {}, runtime.catalogRevision()}, [](auto) {});
     QTRY_COMPARE(f.count("agent_messages"), 2);
-    QCOMPARE(ObservationStore(profile, f.path).cursor(f.binding()).value(),
-             QString("cursor:2"));
+    // Query already stored event 2. Receiving event 1 brings the message count
+    // to two before the source has replayed event 2 and committed its cursor.
+    QTRY_COMPARE(ObservationStore(profile, f.path).cursor(f.binding()).value(),
+                 QString("cursor:2"));
     runtime.setObservationSource(
         {"account", false, {}, runtime.catalogRevision()}, [](auto) {});
   }
