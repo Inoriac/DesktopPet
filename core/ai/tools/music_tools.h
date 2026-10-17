@@ -29,8 +29,10 @@ inline void waitForLxMusicMs(int timeoutMs) {
     loop.exec();
 }
 
-inline ToolResult callLxMusicApiRaw(const QString& path, const QUrlQuery& query = {}, int timeoutMs = 3000) {
-    QUrl url(QString("http://127.0.0.1:23330") + path);
+// All HTTP calls are single attempts. Starting the player is an explicit action.
+inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {}, int timeoutMs = 3000,
+                               const QUrl& baseUrl = QUrl("http://127.0.0.1:23330")) {
+    QUrl url = baseUrl.resolved(QUrl(path));
     if (!query.isEmpty()) {
         url.setQuery(query);
     }
@@ -142,7 +144,7 @@ inline ToolResult waitForLxMusicApiReady(int timeoutMs = 12000) {
     int elapsed = 0;
     ToolResult last = ToolResult::fail("lx_music_api_not_checked");
     while (elapsed <= timeoutMs) {
-        last = callLxMusicApiRaw("/status", {}, 1200);
+        last = callLxMusicApi("/status", {}, 1200);
         if (last.success) {
             last.data["api_ready"] = true;
             return last;
@@ -154,7 +156,7 @@ inline ToolResult waitForLxMusicApiReady(int timeoutMs = 12000) {
 }
 
 inline ToolResult ensureLxMusicApiReady() {
-    ToolResult status = callLxMusicApiRaw("/status", {}, 1200);
+    ToolResult status = callLxMusicApi("/status", {}, 1200);
     if (status.success) {
         status.data["api_ready"] = true;
         return status;
@@ -171,24 +173,6 @@ inline ToolResult ensureLxMusicApiReady() {
         ready.data["launch"] = launch.data;
     }
     return ready;
-}
-
-inline ToolResult callLxMusicApi(const QString& path, const QUrlQuery& query = {}) {
-    ToolResult result = callLxMusicApiRaw(path, query);
-    if (result.success) {
-        return result;
-    }
-
-    ToolResult ready = ensureLxMusicApiReady();
-    if (!ready.success) {
-        return ready;
-    }
-
-    result = callLxMusicApiRaw(path, query);
-    if (result.success) {
-        result.data["auto_launched"] = ready.data.value("auto_launched").toBool(false);
-    }
-    return result;
 }
 
 inline bool lxMusicTextMatches(const QString& actual, const QString& expected) {
@@ -208,7 +192,7 @@ inline ToolResult waitForLxMusicPlayback(const QString& expectedSong = {}, const
     int elapsed = 0;
     ToolResult last = ToolResult::fail("lx_music_playback_not_checked");
     while (elapsed <= timeoutMs) {
-        last = callLxMusicApiRaw("/status", {}, 1200);
+        last = callLxMusicApi("/status", {}, 1200);
         if (last.success) {
             const QString status = last.data.value("status").toString();
             const QString name = last.data.value("name").toString();
@@ -241,7 +225,7 @@ inline ToolResult openLxMusicScheme(const QString& schemeUrl, bool verifyPlaybac
     }
 
     QJsonObject launchInfo;
-    bool apiReadyBeforeOpen = callLxMusicApiRaw("/status", {}, 1200).success;
+    bool apiReadyBeforeOpen = callLxMusicApi("/status", {}, 1200).success;
     const QString executable = findLxMusicExecutable();
     if (!apiReadyBeforeOpen && !executable.isEmpty()) {
         if (!startDetachedQuiet(executable)) {
@@ -376,7 +360,7 @@ public:
 class LxMusicPlayTool : public AITool {
 public:
     LxMusicPlayTool()
-        : AITool("lx_music_play", "让 LX Music 开始/继续播放。", ToolCategory::Action) {}
+        : AITool("lx_music_play", "让 LX Music 开始/继续播放；播放器未启动时先调用 lx_music_launch。", ToolCategory::Action) {}
 
     QJsonObject parameterSchema() const override {
         QJsonObject schema;

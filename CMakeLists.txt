@@ -606,6 +606,10 @@ if(WIN32
         CACHE FILEPATH "Python interpreter used by Desktop Pet tests" FORCE)
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
+add_desktop_pet_cpp_test(native_music_tests NativeMusicTests
+    SOURCES tests/test_native_music.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Test)
 if(Python3_Interpreter_FOUND)
     add_desktop_pet_cpp_test(voice_synthesis_tests VoiceSynthesisTests
         SOURCES tests/test_voice_synthesis.cpp core/voice/voice_synthesis_service.cpp

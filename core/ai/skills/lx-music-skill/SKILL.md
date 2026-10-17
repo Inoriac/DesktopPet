@@ -26,7 +26,7 @@ allowed-tools: Bash(curl *), Bash(python *)
 
 LX Music 桌面版需开启「开放 API 服务」（设置 → 开放 API → 启用）。默认地址：`http://127.0.0.1:23330`
 
-工具侧已内置自动拉起逻辑：当 `/status`、播放、暂停、切歌、音量等 HTTP API 不可达时，会优先通过 LX Music 桌面版可执行文件静默启动程序，等待开放 API 可用后重试原操作。
+状态和歌词查询不会启动播放器。HTTP 控制操作只发送一次，失败后不自动重试；响应失败时操作可能已经生效，尤其不能直接重复切歌。用户需要播放而播放器尚未启动时，先调用 `lx_music_launch` 等待 API 可用，再发起播放。失败后可查询状态，向用户说明当前结果。
 
 不要打开裸 `lxmusic://`：这会被 LX Music 识别为未知地址并弹出 `unknown url`。搜索点歌或歌单播放时，只打开完整业务 URL，例如 `lxmusic://music/searchPlay/...` 或 `lxmusic://songlist/play/...`。
 
