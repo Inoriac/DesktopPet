@@ -2,14 +2,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QSet>
-McpClient::McpClient(QObject* parent):QObject(parent) {}
 McpClient::~McpClient() { close(); }
-void McpClient::setPrototypeTools(const QList<McpToolDescriptor>& tools) {
-    close(); m_tools=tools; emit toolsChanged(); // Descriptors never prove protocol readiness.
-}
 void McpClient::close() {
     if (m_process.state()!=QProcess::NotRunning) { m_process.kill(); m_process.waitForFinished(1000); }
-    if (m_connected) { m_connected=false; emit connectedChanged(false); }
+    m_connected=false;
+    m_tools.clear();
     m_buffer.clear();
 }
 Result<QJsonObject,DomainError> McpClient::request(const QString& method,const QJsonObject& params,int timeoutMs) {
@@ -43,7 +40,7 @@ Result<QJsonObject,DomainError> McpClient::request(const QString& method,const Q
     return R::failure(domainError("MCP_TIMEOUT","MCP request timed out"));
 }
 Result<void,DomainError> McpClient::connectStdio(const QString& program,const QStringList& args,int timeoutMs) {
-    using R=Result<void,DomainError>; close(); m_tools.clear();
+    using R=Result<void,DomainError>; close();
     QElapsedTimer elapsed; elapsed.start();
     m_process.setProcessChannelMode(QProcess::SeparateChannels); m_process.start(program,args);
     if (!m_process.waitForStarted(qMin(timeoutMs,3000))) return R::failure(domainError("DEPENDENCY_UNAVAILABLE","MCP process could not start"));
@@ -67,7 +64,7 @@ Result<void,DomainError> McpClient::connectStdio(const QString& program,const QS
             names.insert(name); m_tools.append({name,tool["description"].toString(),tool["inputSchema"].toObject()});
         }
         cursor=list.value()["nextCursor"].toString();
-        if (cursor.isEmpty()) { m_connected=true; emit connectedChanged(true); emit toolsChanged(); return R::success(); }
+        if (cursor.isEmpty()) { m_connected=true; return R::success(); }
         if (cursors.contains(cursor)) break;
         cursors.insert(cursor);
     }

@@ -391,8 +391,6 @@ set(CORE_SOURCES
     core/ai/memory/model_downloader.cpp
     core/ai/mcp/mcp_server_process.h
     core/ai/mcp/mcp_server_process.cpp
-    core/ai/mcp/mcp_tool_adapter.h
-    core/ai/mcp/mcp_tool_adapter.cpp
     core/ai/tools/animation_tools.h
     core/ai/tools/companion_tools.h
     core/ai/tools/companion_tools.cpp

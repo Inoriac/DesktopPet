@@ -569,7 +569,7 @@ invoke 为异步接口，completion 恰好结算一次，迟到回执单独归�
 | TaskOrchestrator::allowedTool / readOnlyTool / sourceToolsForGoal | 按目录、声明和宿主策略替换固定名称集合与按目标文本猜必需工具 |
 | TaskToolExecutor 的工具构造分支 | 改为注入 ToolRuntime 的 facade；内置工具由 UI 显式注册工厂，删除第二份构造白名单 |
 | ToolRuntime::execute / PolicyEngine | 提供异步派发，检查 ContextSpec 与授权范围；保留执行前后事件 |
-| McpClient / McpToolAdapter | 当前原型补齐真实协议调用；协议内容与模型内容分离 |
+| McpClient / CapabilityExecutor | 由通用执行器完成真实 MCP 协议调用；不保留旧的内置工具适配器路径 |
 | SkillStore | 保留其学习工作流用途，通过独立适配器暴露；不冒充外部 Skill 清单加载器 |
 | AIBrain::thinkInternal、setToolRegistry、ai_brain_tasks.cpp、PetWindow::initAI | profile 生命周期持有 PluginRuntime，聊天/任务都接通异步发现、加载、调用；外部上下文仅导出范围内入口 |
 | ConversationService::ReplyDispatcher | 保留现有异步签名，使用 makeReplyDispatcher 的宿主绑定；结果带原请求、generation 与目标 |
