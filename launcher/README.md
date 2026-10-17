@@ -3,7 +3,7 @@
 PySide6 + PySide6-Fluent-Widgets 实现的 Fluent Design 启动器。
 负责配置管理 + 指定角色启动，通过命令行参数 `--config` / `--pet` 唤起 C++ 核心。
 
-详见仓库根 `前端修改计划.md`。
+配置结构以 [默认模板](../config/default_common_config.example.json) 为准；导出时保留未在界面中编辑的字段。
 
 ## 运行
 
@@ -25,7 +25,7 @@ py -3 -m venv .venv
 ## 主题共享
 
 启动器启动时 `setOrganizationName/ApplicationName` 逐字对齐 C++ `main.cpp`，
-经同名 QSettings（键 `ui/theme`）与 C++ 共享主题，无需配置文件中转。见计划 §3.1。
+经同名 QSettings（键 `ui/theme`）与 C++ 共享主题，无需配置文件中转。
 
 ## 文件
 

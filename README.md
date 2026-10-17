@@ -106,7 +106,7 @@
 
 ## 🚀 快速开始
 
-**当前主要目标环境**：Windows 10 / 11、C++20 编译器（MSVC 2019+ 或 MinGW 11+）、Qt 6.x、CMake 3.20+、Python 3（launcher 与语音）。macOS 当前未支持，也未纳入运行验证。
+**当前主要目标环境**：Windows 10 / 11、C++20 编译器（MSVC 2019+ 或 MinGW 11+）、Qt 6.x、CMake 3.20+、Python 3（launcher 与语音）。macOS 已纳入构建和自动化回归；Windows 桌面集成、真实播放器与音频设备仍需对应环境实测。
 
 ```powershell
 git clone <repo>
@@ -159,7 +159,8 @@ Desktop-Pet/
 ## 📖 相关文档
 
 * [自主 Agent：身份、记忆与活动运行时设计](contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)：后续实施主入口，含空闲定义、数据迁移、切片顺序与验收门槛
-* [插件系统开发指导](contracts/tools/插件系统开发指导.md)：Plugin、Skill、Tool 的定位、按需加载与开发验收要求（契约阶段）
-* `memory_improvement_plan.md`：记忆框架改进方案与实施进度
-* `daydream.md`：桌宠空闲记忆整理（Daydream）设计
-* `前端修改计划.md`：Python 前端改造方案
+* [插件系统开发指导](contracts/tools/插件系统开发指导.md)：Plugin、Skill、Tool 的定位、按需加载与验收要求
+* [插件运行时接入](contracts/tools/插件运行时接入.md)：当前配置、权限和调用方式
+* [LX Music 插件](plugins/lx-music/README.md)：可运行的音乐工具与 Skill 接入、Windows 实测步骤
+* [启动器说明](launcher/README.md)：配置、运行与主题共享
+* [情绪系统设计](emotion_system_plan.md)：情绪状态与已实施阶段

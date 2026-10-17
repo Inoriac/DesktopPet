@@ -8,6 +8,8 @@ reference/
 .env.*
 !.env.example
 runtime/memory/*
+runtime/emotion/
+/test.log
 
 # Python cache
 __pycache__/
@@ -55,4 +57,4 @@ build/
 前端修改计划.md
 memory_improvement_plan.md
 
-./build_noort
+/build_noort/

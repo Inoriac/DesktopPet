@@ -63,7 +63,7 @@ int main(int argc, char *argv[])
     //   --profile-id <uuid>   指定不可变的角色身份
     //   --owner-diary-bootstrap <file>  launcher 私有日记一次性凭据
     //   --launcher-chat-bootstrap <file> launcher 聊天一次性凭据
-    // 主题不走命令行，由 ThemeManager 经同名 QSettings(键 ui/theme)读取，见前端修改计划 §3.1。
+    // 主题由 ThemeManager 经同名 QSettings(键 ui/theme)读取，与 launcher 共享。
     QCommandLineParser parser;
     parser.setApplicationDescription("Desktop Pet Application");
     parser.addHelpOption();

@@ -1,7 +1,6 @@
 """配置加载与导出。
 
-遵循前端修改计划 §三：导出的 launch_config.json 必须与
-config/default_common_config.example.json 同构（四大块 + petSettings 新增块）。
+导出的 launch_config.json 以 config/default_common_config.example.json 为结构基线。
 策略：先完整加载模板，仅覆盖用户向字段，再整体导出，避免 colliders/相机/behaviorPolicy
 等内部字段丢失（loadConfig 为整体替换语义）。
 """

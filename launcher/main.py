@@ -1,6 +1,6 @@
 """DesktopPet Python 启动器入口。
 
-功能（见前端修改计划 §五）：
+功能（使用说明见 launcher/README.md）：
 1. Fluent Design 主框架 + 导航各设置页（对齐官方参考示例 demo.py：
    MSFluentWindow + 自定义标题栏 + 卡片分区页）；
 2. 收集各页配置 → config_loader 导出 launch_config.json；
