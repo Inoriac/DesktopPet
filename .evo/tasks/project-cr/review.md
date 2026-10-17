@@ -31,3 +31,9 @@
 - 删除 HTTP 调用失败后的自动拉起/重试包装。状态、歌词现在保持只读；切歌等控制调用只发起一次，响应失败不会自动重复操作。现有启动工具与搜索播放入口保留，原用户无需先安装新插件。
 - 更新原生音乐 Skill 的使用说明和播放工具提示，明确需要启动时先调用 lx_music_launch，结果不确定时查询状态。
 - 新增临时本机 HTTP 服务测试：7 个接口的 503 错误、切歌超时、参数与成功返回，不连接真实播放器。NativeMusicTests、LxMusicAdapterTests、LxMusicPluginTests 3/3 通过（20.47 秒），构建及 diff 检查通过。
+
+## 第四部分：模型回调取消与资源释放
+
+- 复现 OpenAI 兼容请求在 StageChanged 回调中取消后，继续调用已被清空的 observer，抛出 bad_function_call 并 SIGABRT。发布每个事件前核对终结状态，并保留当前回调直到调用结束；取消后不再产生正文。
+- OpenAI 与 Anthropic 的 reply 清理安排到完成回调之前，避免完成回调释放客户端后再访问已销毁的 reply。删除 Anthropic 请求状态没有使用的 enable_shared_from_this 继承。
+- 补充两种协议的回调内取消，以及成功/失败完成回调释放客户端，共 6 个行为用例。修复前定向复现 SIGABRT，修复后 AnthropicMessagesClientTests 全通过（1.96 秒），LlmTests 通过（0.61 秒）；构建及 diff 检查通过。

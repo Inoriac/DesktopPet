@@ -43,7 +43,7 @@ private:
     std::shared_ptr<AnthropicRequestState> m_state;
 };
 
-struct AnthropicRequestState : public std::enable_shared_from_this<AnthropicRequestState> {
+struct AnthropicRequestState {
     QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
     QPointer<QNetworkReply> reply;
     LlmStreamObserver observer;
@@ -72,7 +72,8 @@ struct AnthropicRequestState : public std::enable_shared_from_this<AnthropicRequ
                  ChatActivityStage stage = ChatActivityStage::WaitingForModel,
                  const QString& text = {}) {
         if (!terminal.load() && !cancelled.load() && observer) {
-            observer({type, requestId, stage, text});
+            const auto callback = observer;
+            callback({type, requestId, stage, text});
         }
     }
 
@@ -714,6 +715,8 @@ std::shared_ptr<LlmRequestHandle> AnthropicMessagesClient::sendChatCompletionStr
     });
     QObject::connect(reply, &QNetworkReply::finished, reply, [state, reply]() {
         const QByteArray finalBytes = reply->isOpen() ? reply->readAll() : QByteArray{};
+        // Completion may release the client and its network reply.
+        reply->deleteLater();
         if (!state->terminal.load()) {
             if (state->cancelled.load()) {
                 state->complete(false, {}, QStringLiteral("%1: request cancelled").arg(QString::fromLatin1(kCancelledError)));
@@ -742,7 +745,6 @@ std::shared_ptr<LlmRequestHandle> AnthropicMessagesClient::sendChatCompletionStr
                 }
             }
         }
-        reply->deleteLater();
     });
 
     return handle;

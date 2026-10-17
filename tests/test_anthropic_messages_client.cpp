@@ -210,7 +210,77 @@ private slots:
     void cancel_whenOpenAiReplyIsActive_shouldAbortAndCompleteExactlyOnce();
     void sendChatCompletionStreamAsync_whenOpenAiErrorContainsApiKey_shouldNotExposeIt();
     void cancel_whenLegacyAdapterFinishes_shouldRemainObservableWithEmptyCompletion();
+    void cancel_from_stream_observer_data();
+    void cancel_from_stream_observer();
+    void completion_can_release_client_data();
+    void completion_can_release_client();
 };
+
+void TestAnthropicMessagesClient::cancel_from_stream_observer_data() {
+    QTest::addColumn<bool>("anthropic");
+    QTest::newRow("openai") << false;
+    QTest::newRow("anthropic") << true;
+}
+
+void TestAnthropicMessagesClient::cancel_from_stream_observer() {
+    QFETCH(bool, anthropic);
+    LocalHttpServer server;
+    server.enqueue({200, anthropic ? "text/event-stream" : "application/json",
+        anthropic ? textResponse() : QByteArray(R"({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]})"), false});
+    std::unique_ptr<LlmClient> client;
+    if (anthropic) client = std::make_unique<AnthropicMessagesClient>();
+    else client = std::make_unique<OpenAICompatibleClient>();
+    auto config = anthropicConfig(server);
+    int completions = 0, deltas = 0;
+    bool success = true;
+    QString failure;
+    std::shared_ptr<LlmRequestHandle> handle;
+    handle = client->sendChatCompletionStreamAsync(config, {{"user", "hi", {}, {}, {}}}, {},
+        [&](const LlmStreamEvent &event) {
+            if (event.type == LlmStreamEventType::StageChanged) handle->cancel();
+            if (event.type == LlmStreamEventType::TextDelta) ++deltas;
+        },
+        [&](bool ok, LlmResponse, QString error) {
+            success = ok;
+            failure = error;
+            ++completions;
+        });
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
+    QVERIFY(!success);
+    QVERIFY(failure.contains("CANCELLED"));
+    QCOMPARE(deltas, 0);
+    handle->cancel();
+    QCOMPARE(completions, 1);
+}
+
+void TestAnthropicMessagesClient::completion_can_release_client_data() {
+    QTest::addColumn<bool>("anthropic");
+    QTest::addColumn<int>("status");
+    QTest::newRow("openai-success") << false << 200;
+    QTest::newRow("openai-failure") << false << 503;
+    QTest::newRow("anthropic-success") << true << 200;
+    QTest::newRow("anthropic-failure") << true << 503;
+}
+
+void TestAnthropicMessagesClient::completion_can_release_client() {
+    QFETCH(bool, anthropic);
+    QFETCH(int, status);
+    LocalHttpServer server;
+    server.enqueue({status, anthropic ? "text/event-stream" : "application/json",
+        anthropic ? textResponse() : QByteArray(R"({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]})"), false});
+    std::unique_ptr<LlmClient> client;
+    if (anthropic) client = std::make_unique<AnthropicMessagesClient>();
+    else client = std::make_unique<OpenAICompatibleClient>();
+    int completions = 0;
+    client->sendChatCompletionStreamAsync(anthropicConfig(server), {{"user", "hi", {}, {}, {}}}, {}, {},
+        [&](bool ok, LlmResponse, QString) {
+            QCOMPARE(ok, status == 200);
+            client.reset();
+            ++completions;
+        });
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 2000);
+    QVERIFY(!client);
+}
 
 void TestAnthropicMessagesClient::feed_whenEventIsSplitAcrossChunks_shouldPublishOneCompleteEvent() {
     QList<SseEvent> events;

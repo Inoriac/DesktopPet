@@ -39,6 +39,14 @@ struct OpenAiStreamState {
     std::atomic_bool cancelled{false};
     std::atomic_bool terminal{false};
 
+    void publish(LlmStreamEventType type, ChatActivityStage stage, const QString& text = {}) {
+        if (!terminal.load() && !cancelled.load() && observer) {
+            // A callback may cancel the request and clear the stored observer.
+            const auto callback = observer;
+            callback({type, requestId, stage, text});
+        }
+    }
+
     void complete(bool ok, LlmResponse response, QString error) {
         if (terminal.exchange(true)) {
             return;
@@ -129,10 +137,7 @@ std::shared_ptr<LlmRequestHandle> OpenAICompatibleClient::sendChatCompletionStre
     state->completion = std::move(completion);
     auto handle = std::make_shared<OpenAiRequestHandle>(state);
 
-    if (state->observer) {
-        state->observer({LlmStreamEventType::Started, state->requestId,
-                         ChatActivityStage::WaitingForModel, {}});
-    }
+    state->publish(LlmStreamEventType::Started, ChatActivityStage::WaitingForModel);
     state->reply = startChatCompletionRequest(
         config, messages, tools,
         [state](bool ok, LlmResponse response, QString error) mutable {
@@ -143,11 +148,9 @@ std::shared_ptr<LlmRequestHandle> OpenAICompatibleClient::sendChatCompletionStre
                 state->complete(false, {}, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
                 return;
             }
-            if (ok && state->observer && !response.content.isEmpty()) {
-                state->observer({LlmStreamEventType::StageChanged, state->requestId,
-                                 ChatActivityStage::StreamingText, {}});
-                state->observer({LlmStreamEventType::TextDelta, state->requestId,
-                                 ChatActivityStage::StreamingText, response.content});
+            if (ok && !response.content.isEmpty()) {
+                state->publish(LlmStreamEventType::StageChanged, ChatActivityStage::StreamingText);
+                state->publish(LlmStreamEventType::TextDelta, ChatActivityStage::StreamingText, response.content);
             }
             state->complete(ok, std::move(response), std::move(error));
         });
@@ -236,6 +239,8 @@ QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
         const QNetworkReply::NetworkError networkError = reply->error();
         const int httpStatus =
             reply->attribute(QNetworkRequest::HttpStatusCodeAttribute).toInt();
+        // Completion may release the client, which also owns the reply.
+        reply->deleteLater();
 
         if (networkError != QNetworkReply::NoError) {
             const QString transportMessage = httpStatus >= 100
@@ -252,7 +257,6 @@ QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
             if (callback) {
                 callback(false, {}, errorMessage);
             }
-            reply->deleteLater();
             return;
         }
 
@@ -262,7 +266,6 @@ QNetworkReply* OpenAICompatibleClient::startChatCompletionRequest(
         if (callback) {
             callback(ok, std::move(response), redactSecret(parseError, apiKey));
         }
-        reply->deleteLater();
     });
     return reply;
 }
