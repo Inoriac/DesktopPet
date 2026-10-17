@@ -1,0 +1,30 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.lx-music.skill",
+  "name": "使用 LX Music 听音乐",
+  "version": "1.0.0",
+  "summary": "查询歌单、选择音乐、按权限播放并核对真实状态，处理不确定写入结果",
+  "instructions": "SKILL.md",
+  "dependencies": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.lx-music.tools",
+      "version": "1.0.0",
+      "operations": [
+        "status",
+        "launch",
+        "play",
+        "pause",
+        "skip_next",
+        "skip_prev",
+        "lyric",
+        "set_volume",
+        "search_play",
+        "list_playlists",
+        "playlist_songs",
+        "play_playlist"
+      ],
+      "required": true
+    }
+  ]
+}

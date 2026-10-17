@@ -1,0 +1,19 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.lx-music",
+  "name": "LX Music 音乐插件",
+  "version": "1.0.0",
+  "summary": "使用本地开放 API、只读歌单和显式播放器进程的音乐能力包",
+  "entries": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.lx-music.tools",
+      "definition": "tool.json"
+    },
+    {
+      "kind": "skill",
+      "id": "desktop-pet.lx-music.skill",
+      "definition": "skill.json"
+    }
+  ]
+}

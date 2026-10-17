@@ -609,6 +609,10 @@ if(WIN32
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_test(NAME LxMusicAdapterTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lx_music_adapter.py)
+    set_tests_properties(LxMusicAdapterTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME LauncherConfigTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_config.py)
     set_tests_properties(LauncherConfigTests PROPERTIES

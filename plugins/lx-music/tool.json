@@ -1,0 +1,599 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.lx-music.tools",
+  "name": "LX Music 音乐工具",
+  "version": "1.0.0",
+  "summary": "查询状态、歌词、歌单，以及显式播放控制；写入不确定时不自动重发",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {
+        "id": "python",
+        "description": "Python 3.9+，只使用标准库",
+        "setup": "在宿主配置绝对 Python 解释器与随包 adapter.py 路径"
+      },
+      {
+        "id": "lx-music",
+        "description": "使用 API 控制需要已启用的 LX Music 本地开放 API；歌单查询需要可读 SQLite 文件",
+        "setup": "配置连接 JSON 中的 apiUrl、database 和可选 executable；先运行只读 --diagnose"
+      }
+    ],
+    "configuration": [
+      {
+        "key": "program",
+        "description": "可信 Python 3.9+ 解释器绝对路径",
+        "kind": "executable",
+        "required": true
+      },
+      {
+        "key": "script",
+        "description": "本能力包 adapter.py 的绝对路径",
+        "kind": "path",
+        "required": true
+      },
+      {
+        "key": "settings",
+        "description": "宿主管理的连接 JSON 绝对路径",
+        "kind": "path",
+        "required": true
+      }
+    ],
+    "operations": [
+      {
+        "id": "status",
+        "description": "获取真实播放状态",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "status"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "只读本地 API 或数据库，不启动播放器"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "取得真实播放状态",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "launch",
+        "description": "显式启动播放器并等待 API",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "launch"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "API 已可用或启动后验证 API 可用",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "play",
+        "description": "开始或继续播放",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "play"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "单次应答后观察到正在播放",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "pause",
+        "description": "暂停播放",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "pause"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "单次应答后观察到已暂停",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "skip_next",
+        "description": "切到下一首，完成仅表示 API 应答",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "skip_next"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "API 明确应答，不证明曲目变化",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "skip_prev",
+        "description": "切到上一首，完成仅表示 API 应答",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "skip_prev"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "API 明确应答，不证明曲目变化",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "lyric",
+        "description": "读取当前歌词，支持纯文本 LRC",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "lyric"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "只读本地 API 或数据库，不启动播放器"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "取得真实歌词文本",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "set_volume",
+        "description": "设置音量并核对结果",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "volume": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100
+              }
+            },
+            "required": [
+              "volume"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "set_volume"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "观察到目标音量",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "search_play",
+        "description": "搜索并播放歌名与可选歌手",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "song": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "\\S"
+              },
+              "artist": {
+                "type": "string",
+                "maxLength": 256
+              }
+            },
+            "required": [
+              "song"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "search_play"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "观察到正在播放且歌名与可选歌手匹配",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "list_playlists",
+        "description": "只读列出已有歌单",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "list_playlists"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "只读本地 API 或数据库，不启动播放器"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "取得按 position 排序的实际歌单列表",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "playlist_songs",
+        "description": "只读列出指定歌单歌曲",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "playlist_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "playlist_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "playlist_songs"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "只读本地 API 或数据库，不启动播放器"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "确认歌单存在并取得有序歌曲列表",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      },
+      {
+        "id": "play_playlist",
+        "description": "通过歌单来源播放并核对播放状态",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "playlist_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 512,
+                "pattern": "\\S"
+              }
+            },
+            "required": [
+              "playlist_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "play_playlist"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "可能改变播放器运行、播放或音量状态；只派发一次"
+        },
+        "result": {
+          "format": "json",
+          "description": "适配器 envelope.data 中的真实结果与可选错误",
+          "successMeaning": "观察到正在播放；不证明指定歌单 ID 已被 API 确认",
+          "failureMeaning": "未取得已声明的成功结果；unknown 时可能已经发生写入，禁止自动重发",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed、failed 或 unknown；宿主必须配置 /state 与 /data 映射"
+        }
+      }
+    ]
+  }
+}
