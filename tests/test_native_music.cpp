@@ -68,6 +68,25 @@ private slots:
         QCOMPARE(result.data["api_path"].toString(), "/volume");
         QCOMPARE(fixture.targets, QList<QByteArray>{"/volume?volume=27"});
     }
+    void polling_budget_includes_http_wait_data() {
+        QTest::addColumn<bool>("playback");
+        QTest::newRow("startup") << false;
+        QTest::newRow("playback") << true;
+    }
+    void polling_budget_includes_http_wait() {
+        QFETCH(bool, playback);
+        MusicServer fixture;
+        QVERIFY(fixture.server.listen(QHostAddress::LocalHost));
+        fixture.hold = true;
+        QElapsedTimer elapsed;
+        elapsed.start();
+        const auto result = playback ? waitForLxMusicPlayback({}, {}, 250, fixture.url())
+                                     : waitForLxMusicApiReady(250, fixture.url());
+        QVERIFY(!result.success);
+        // Allow scheduling jitter, but never wait a full 1200 ms HTTP timeout.
+        QVERIFY2(elapsed.elapsed() < 1000, qPrintable(QString::number(elapsed.elapsed())));
+        QVERIFY(!fixture.targets.isEmpty());
+    }
 };
 QTEST_GUILESS_MAIN(NativeMusicTests)
 #include "test_native_music.moc"

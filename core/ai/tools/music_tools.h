@@ -11,6 +11,7 @@
 #include <QCoreApplication>
 #include <QDir>
 #include <QDesktopServices>
+#include <QDeadlineTimer>
 #include <QFile>
 #include <QJsonDocument>
 #include <QNetworkAccessManager>
@@ -139,18 +140,19 @@ inline ToolResult launchLxMusicDesktop() {
     return ToolResult::fail("failed_to_launch_lx_music_executable");
 }
 
-inline ToolResult waitForLxMusicApiReady(int timeoutMs = 12000) {
+inline ToolResult waitForLxMusicApiReady(int timeoutMs = 12000,
+                                       const QUrl& baseUrl = QUrl("http://127.0.0.1:23330")) {
     const int stepMs = 600;
-    int elapsed = 0;
+    QDeadlineTimer deadline(timeoutMs);
     ToolResult last = ToolResult::fail("lx_music_api_not_checked");
-    while (elapsed <= timeoutMs) {
-        last = callLxMusicApi("/status", {}, 1200);
+    while (!deadline.hasExpired()) {
+        last = callLxMusicApi("/status", {}, qMin(1200, int(deadline.remainingTime())), baseUrl);
         if (last.success) {
             last.data["api_ready"] = true;
             return last;
         }
-        waitForLxMusicMs(stepMs);
-        elapsed += stepMs;
+        const int pauseMs = qMin(stepMs, int(deadline.remainingTime()));
+        if (pauseMs > 0) waitForLxMusicMs(pauseMs);
     }
     return ToolResult::fail(QString("lx_music_api_not_ready_after_launch: %1").arg(last.errorMessage));
 }
@@ -187,12 +189,13 @@ inline bool lxMusicTextMatches(const QString& actual, const QString& expected) {
     return current.contains(trimmed, Qt::CaseInsensitive) || trimmed.contains(current, Qt::CaseInsensitive);
 }
 
-inline ToolResult waitForLxMusicPlayback(const QString& expectedSong = {}, const QString& expectedArtist = {}, int timeoutMs = 15000) {
+inline ToolResult waitForLxMusicPlayback(const QString& expectedSong = {}, const QString& expectedArtist = {}, int timeoutMs = 15000,
+                                       const QUrl& baseUrl = QUrl("http://127.0.0.1:23330")) {
     const int stepMs = 700;
-    int elapsed = 0;
+    QDeadlineTimer deadline(timeoutMs);
     ToolResult last = ToolResult::fail("lx_music_playback_not_checked");
-    while (elapsed <= timeoutMs) {
-        last = callLxMusicApi("/status", {}, 1200);
+    while (!deadline.hasExpired()) {
+        last = callLxMusicApi("/status", {}, qMin(1200, int(deadline.remainingTime())), baseUrl);
         if (last.success) {
             const QString status = last.data.value("status").toString();
             const QString name = last.data.value("name").toString();
@@ -205,8 +208,8 @@ inline ToolResult waitForLxMusicPlayback(const QString& expectedSong = {}, const
                 return last;
             }
         }
-        waitForLxMusicMs(stepMs);
-        elapsed += stepMs;
+        const int pauseMs = qMin(stepMs, int(deadline.remainingTime()));
+        if (pauseMs > 0) waitForLxMusicMs(pauseMs);
     }
 
     if (last.success) {
