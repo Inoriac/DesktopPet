@@ -607,6 +607,11 @@ if(WIN32
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
 if(Python3_Interpreter_FOUND)
+    add_desktop_pet_cpp_test(voice_synthesis_tests VoiceSynthesisTests
+        SOURCES tests/test_voice_synthesis.cpp core/voice/voice_synthesis_service.cpp
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+        LIBRARIES Qt::Core Qt::Gui Qt::Test)
+    target_compile_definitions(voice_synthesis_tests PRIVATE VOICE_TEST_PYTHON="${Python3_EXECUTABLE}")
     add_test(NAME LxMusicConfigureTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lx_music_configure.py)
     set_tests_properties(LxMusicConfigureTests PROPERTIES

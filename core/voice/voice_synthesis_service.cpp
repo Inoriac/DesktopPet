@@ -31,7 +31,7 @@ VoiceSynthesisService::~VoiceSynthesisService() {
 void VoiceSynthesisService::setConfig(const VoiceConfig& config) {
     const QString oldKey = m_lastConfigKey;
     m_config = config;
-    m_lastConfigKey = configKey(m_config);
+    m_lastConfigKey = configKey();
 
     if (!m_config.enabled) {
         stop();
@@ -96,6 +96,8 @@ void VoiceSynthesisService::stop() {
         return;
     }
 
+    // Normal shutdown must not run worker callbacks or dispatch queued speech.
+    disconnect(m_process, nullptr, this, nullptr);
     if (m_process->state() != QProcess::NotRunning) {
         sendLine(QJsonObject{{"type", "shutdown"}});
         m_process->closeWriteChannel();
@@ -131,6 +133,7 @@ bool VoiceSynthesisService::ensureStarted() {
         }
         return true;
     }
+    stop();
 
     const QString scriptPath = resolvePath(m_config.workerScript);
     if (!QFileInfo::exists(scriptPath)) {
@@ -158,17 +161,14 @@ bool VoiceSynthesisService::ensureStarted() {
             this,
             &VoiceSynthesisService::handleProcessFinished);
 
+    m_process = process;
     process->start();
     if (!process->waitForStarted(1000)) {
         warnOnce("start_failed", QString("[Voice] failed to start Python worker: %1").arg(process->errorString()));
-        process->deleteLater();
+        stop();
         return false;
     }
 
-    m_process = process;
-    m_configured = false;
-    m_configureInFlight = false;
-    m_configureRequestId.clear();
     sendConfigure();
     return true;
 }
@@ -306,11 +306,7 @@ void VoiceSynthesisService::handleProcessFinished(int exitCode, QProcess::ExitSt
     if (m_config.enabled) {
         warnOnce("worker_finished", QString("[Voice] worker exited: %1").arg(exitCode));
     }
-    m_requestInFlight = false;
-    m_configureInFlight = false;
-    m_configured = false;
-    m_activeRequestId.clear();
-    m_configureRequestId.clear();
+    stop();
 }
 
 void VoiceSynthesisService::handleProcessError(QProcess::ProcessError error) {
@@ -388,23 +384,13 @@ QJsonObject VoiceSynthesisService::configToJson() const {
     };
 }
 
-QString VoiceSynthesisService::configKey(const VoiceConfig& config) const {
-    const QJsonObject object{
-        {"enabled", config.enabled},
-        {"pythonExecutable", config.pythonExecutable},
-        {"venvPath", config.venvPath},
-        {"workerScript", config.workerScript},
-        {"allowAutoDownload", config.allowAutoDownload},
-        {"genieDataDir", config.genieDataDir},
-        {"characterModelsDir", config.characterModelsDir},
-        {"customCharactersDir", config.customCharactersDir},
-        {"speakerMode", config.speakerMode},
-        {"selectedSpeaker", config.selectedSpeaker},
-        {"customName", config.customSpeaker.name},
-        {"customLanguage", config.customSpeaker.language},
-        {"customModel", config.customSpeaker.onnxModelDir},
-        {"customReference", config.customSpeaker.referenceAudioPath}
-    };
+QString VoiceSynthesisService::configKey() const {
+    // Use the actual worker payload so new settings cannot silently miss reloads.
+    QJsonObject object = configToJson();
+    object["enabled"] = m_config.enabled;
+    object["pythonExecutable"] = m_config.pythonExecutable;
+    object["venvPath"] = m_config.venvPath;
+    object["workerScript"] = m_config.workerScript;
     return QString::fromUtf8(QJsonDocument(object).toJson(QJsonDocument::Compact));
 }
 

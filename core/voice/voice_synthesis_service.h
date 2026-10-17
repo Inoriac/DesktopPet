@@ -41,7 +41,7 @@ private:
     QString resolvePath(const QString& path) const;
     QString resolvePythonExecutable() const;
     QJsonObject configToJson() const;
-    QString configKey(const VoiceConfig& config) const;
+    QString configKey() const;
     QString newRequestId() const;
 
     VoiceConfig m_config;
