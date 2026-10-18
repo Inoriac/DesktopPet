@@ -159,7 +159,7 @@ QList<MemoryCandidate> MemoryExtractor::extractFromUserInput(const QString& inpu
     }
 
     if (matchFirst(text, {
-            QRegularExpression(QStringLiteral("^(?:请)?(?:帮我)?(?:记住|记一下|记下来|帮我记住|帮我记一下)[：:，, ]*(.+)$")),
+            QRegularExpression(QStringLiteral("^(?:补充(?:一条|一下)[：:，, ]*)?(?:请)?(?:帮我)?(?:长期|一直)?(?:记住|记一下|记下来)[：:，, ]*(.+)$")),
             QRegularExpression(QStringLiteral("^(.+?)(?:这件事|这个事情)?(?:要|需要)?(?:一直|长期)?记住$"))
         }, &captured)) {
         MemoryType type = MemoryType::Semantic;

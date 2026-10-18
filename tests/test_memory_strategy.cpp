@@ -74,6 +74,9 @@ private slots:
     void testMemoryOrganizeRespectsPeopleAndAtomicOrigins();
     void testExtractorCreatesPreferenceFromLikeStatement();
     void testExtractorCreatesSemanticFromRememberStatement();
+    void testExplicitLongTermRequest_data();
+    void testExplicitLongTermRequest();
+    void testRememberPhraseInQuotationOrNegationIsNotAnExplicitWrite();
     void testExtractorCreatesForgetCandidate();
     void testExtractorCreatesDaydreamImpressionForSelfDisclosure();
     void testExtractorRejectsUnsafeDaydreamImpressions();
@@ -234,6 +237,52 @@ void TestMemoryStrategy::testExtractorCreatesSemanticFromRememberStatement() {
     QCOMPARE(candidates.first().entry.scope, QStringLiteral("user"));
     QVERIFY(candidates.first().entry.summary.contains(QStringLiteral("Desktop-Pet")));
     QVERIFY(candidates.first().entry.evidence.contains(QStringLiteral("请记住 Desktop-Pet 使用 C++20 和 Qt6")));
+}
+
+void TestMemoryStrategy::testExplicitLongTermRequest_data() {
+    QTest::addColumn<QString>("prefix");
+    QTest::newRow("windows-report") << QString("补充一条请长期记住：");
+    QTest::newRow("long-term") << QString("请长期记住：");
+    QTest::newRow("supplement") << QString("补充一下，请帮我记住：");
+    QTest::newRow("original") << QString("记住：");
+}
+
+void TestMemoryStrategy::testExplicitLongTermRequest() {
+    QFETCH(QString, prefix);
+    const QString fact = "我的测试盆栽叫雾蓝松果，放在北侧窗台，每周三浇水";
+    const auto candidates = MemoryExtractor().extractFromUserInput(prefix + fact, "user_request");
+    QCOMPARE(candidates.size(), 1);
+    QVERIFY(candidates.first().explicitRequest);
+    QCOMPARE(candidates.first().entry.summary, fact);
+    QTemporaryDir directory;
+    const auto database = directory.filePath("memory.db");
+    {
+        MemoryStore store;
+        store.setDatabasePath(database);
+        store.setStoragePath(directory.filePath("memory.json"));
+        QVERIFY(store.load());
+        const auto report = MemoryPolicy().applyCandidates(candidates, &store);
+        QCOMPARE(report.written, 1);
+    }
+    MemoryStore reopened;
+    reopened.setDatabasePath(database);
+    reopened.setStoragePath(directory.filePath("memory.json"));
+    QVERIFY(reopened.load());
+    const auto records = reopened.loadRecentFromDatabase(10);
+    QCOMPARE(records.size(), 1);
+    QCOMPARE(records.first().type, MemoryType::Semantic);
+    QCOMPARE(records.first().source, QString("user_explicit"));
+    QCOMPARE(records.first().payload["extractor"].toString(), QString("rule_v1"));
+    QCOMPARE(records.first().summary, fact);
+}
+
+void TestMemoryStrategy::testRememberPhraseInQuotationOrNegationIsNotAnExplicitWrite() {
+    MemoryExtractor extractor;
+    for (const auto& input : {QString("他说：请长期记住：盆栽叫雾蓝松果"),
+                              QString("补充一条，但不要长期记住：盆栽叫雾蓝松果"),
+                              QString("请不要长期记住：盆栽叫雾蓝松果")}) {
+        QVERIFY2(extractor.extractFromUserInput(input, "user_request").isEmpty(), qPrintable(input));
+    }
 }
 
 void TestMemoryStrategy::testExtractorCreatesForgetCandidate() {
