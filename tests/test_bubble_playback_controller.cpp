@@ -64,7 +64,9 @@ void TestBubblePlaybackController::setHovered_whenAutoTimerIsRunning_shouldResum
     QVERIFY(controller.autoAdvanceActive());
     const int initialRemaining = controller.remainingAutoAdvanceMs();
     QVERIFY(initialRemaining > 0);
-    QTest::qWait(80);
+    // Leave enough elapsed time to distinguish a resumed timer from a reset,
+    // even with QTimer's default coarse scheduling (up to 5% rounding).
+    QTest::qWait(350);
 
     controller.setHovered(true);
     const int pausedRemaining = controller.remainingAutoAdvanceMs();
@@ -78,8 +80,10 @@ void TestBubblePlaybackController::setHovered_whenAutoTimerIsRunning_shouldResum
     controller.setHovered(false);
     QVERIFY(!controller.isHovered());
     QVERIFY(controller.autoAdvanceActive());
-    QVERIFY(controller.remainingAutoAdvanceMs() <= pausedRemaining);
-    QVERIFY(controller.remainingAutoAdvanceMs() > pausedRemaining - 100);
+    const int resumedRemaining = controller.remainingAutoAdvanceMs();
+    const int roundingTolerance = (pausedRemaining + 19) / 20 + 2;
+    QVERIFY(qAbs(resumedRemaining - pausedRemaining) <= roundingTolerance);
+    QVERIFY(resumedRemaining < initialRemaining - 150);
 }
 
 void TestBubblePlaybackController::toggleUserPause_whenHovered_shouldPublishResumedStateAfterLeave() {
