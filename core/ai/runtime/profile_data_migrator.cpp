@@ -184,10 +184,8 @@ ProfileMigrationResult readyResult(ProfileMigrationStatus status,
     return {status, databasePath, jsonPath, QString()};
 }
 
-ProfileMigrationResult legacyResult(ProfileMigrationStatus status,
-                                    const ProfileMigrationRequest& request,
-                                    const QString& diagnostic) {
-    return {status, request.legacyDatabasePath, request.legacyJsonPath, diagnostic};
+ProfileMigrationResult failedResult(const QString& diagnostic) {
+    return {ProfileMigrationStatus::Failed, QString(), QString(), diagnostic};
 }
 
 } // namespace
@@ -195,34 +193,31 @@ ProfileMigrationResult legacyResult(ProfileMigrationStatus status,
 bool ProfileMigrationResult::profileStoreReady() const {
     return status == ProfileMigrationStatus::NoLegacyData
         || status == ProfileMigrationStatus::AlreadyMigrated
-        || status == ProfileMigrationStatus::Migrated;
+        || status == ProfileMigrationStatus::Migrated
+        || status == ProfileMigrationStatus::Ambiguous;
 }
 
 ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
     const ProfileMigrationRequest& request) const {
     if (!isCanonicalProfileId(request.profileId) || request.appDataRoot.trimmed().isEmpty()) {
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("profile migration request is invalid"));
+        return failedResult(QStringLiteral("profile migration request is invalid"));
     }
 
     QSet<QString> registeredIds;
     for (const QString& registeredProfileId : request.registeredProfileIds) {
         if (!isCanonicalProfileId(registeredProfileId)
             || registeredIds.contains(registeredProfileId)) {
-            return legacyResult(ProfileMigrationStatus::Failed, request,
-                                QStringLiteral("registered profile ids are invalid or duplicated"));
+            return failedResult(QStringLiteral("registered profile ids are invalid or duplicated"));
         }
         registeredIds.insert(registeredProfileId);
     }
     if (!registeredIds.contains(request.profileId)) {
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("migration profile is not present in the registry"));
+        return failedResult(QStringLiteral("migration profile is not present in the registry"));
     }
     if (request.confirmedLegacyOwnerProfileId.has_value()
         && (!isCanonicalProfileId(*request.confirmedLegacyOwnerProfileId)
             || !registeredIds.contains(*request.confirmedLegacyOwnerProfileId))) {
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("confirmed legacy owner is not a registered profile"));
+        return failedResult(QStringLiteral("confirmed legacy owner is not a registered profile"));
     }
 
     const QDir appData(request.appDataRoot);
@@ -237,9 +232,8 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
             return readyResult(ProfileMigrationStatus::AlreadyMigrated,
                                targetDatabase, targetJson);
         }
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("existing profile database is invalid: %1")
-                                .arg(diagnostic));
+        return failedResult(QStringLiteral("existing profile database is invalid: %1")
+                            .arg(diagnostic));
     }
 
     const bool uniqueProfile = registeredIds.size() == 1 && registeredIds.contains(request.profileId);
@@ -247,16 +241,14 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
         && *request.confirmedLegacyOwnerProfileId == request.profileId;
 
     if (!QDir().mkpath(profilesRoot) || !QDir().mkpath(profileRoot)) {
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("failed to create profile data directory"));
+        return failedResult(QStringLiteral("failed to create profile data directory"));
     }
 
     QLockFile migrationLock(QDir(profilesRoot).filePath(
         QStringLiteral(".legacy-memory-migration.lock")));
     migrationLock.setStaleLockTime(30000);
     if (!migrationLock.tryLock(5000)) {
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("timed out waiting for legacy memory migration lock"));
+        return failedResult(QStringLiteral("timed out waiting for legacy memory migration lock"));
     }
 
     if (QFile::exists(targetDatabase)) {
@@ -265,9 +257,8 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
             return readyResult(ProfileMigrationStatus::AlreadyMigrated,
                                targetDatabase, targetJson);
         }
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("existing profile database is invalid: %1")
-                                .arg(diagnostic));
+        return failedResult(QStringLiteral("existing profile database is invalid: %1")
+                            .arg(diagnostic));
     }
 
     const bool hasLegacyDatabase = QFile::exists(request.legacyDatabasePath);
@@ -277,8 +268,9 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
                            targetDatabase, targetJson);
     }
     if (!uniqueProfile && !confirmedOwner) {
-        return legacyResult(ProfileMigrationStatus::Ambiguous, request,
-                            QStringLiteral("legacy memory owner is ambiguous"));
+        return {ProfileMigrationStatus::Ambiguous, targetDatabase, targetJson,
+                QStringLiteral("legacy memory owner is ambiguous; using an independent profile "
+                               "store and leaving legacy memory untouched")};
     }
 
     const QString temporaryDatabase = targetDatabase + QStringLiteral(".tmp");
@@ -290,7 +282,7 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
             || !QFile::copy(request.legacyDatabasePath, temporaryDatabase)) {
             removeTemporaryDatabase(temporaryDatabase);
             if (diagnostic.isEmpty()) diagnostic = QStringLiteral("failed to copy legacy database");
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
 
         QMap<QString, qint64> sourceCounts;
@@ -302,13 +294,13 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
             || sourceCounts != temporaryCounts) {
             removeTemporaryDatabase(temporaryDatabase);
             if (diagnostic.isEmpty()) diagnostic = QStringLiteral("legacy database row counts differ");
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
     } else {
         const std::optional<qint64> expectedCount =
             uniqueLegacyJsonEntryCount(request.legacyJsonPath, &diagnostic);
         if (!expectedCount) {
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
         bool imported = false;
         {
@@ -318,11 +310,11 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
         }
         if (!imported) {
             removeTemporaryDatabase(temporaryDatabase);
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
         if (!checkpointLegacyDatabase(temporaryDatabase, &diagnostic)) {
             removeTemporaryDatabase(temporaryDatabase);
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
         QMap<QString, qint64> counts;
         if (!integrityCheck(temporaryDatabase, &diagnostic)
@@ -330,14 +322,13 @@ ProfileMigrationResult ProfileDataMigrator::migrateLegacyMemory(
             || counts.value(QStringLiteral("memory_items"), -1) != *expectedCount) {
             removeTemporaryDatabase(temporaryDatabase);
             if (diagnostic.isEmpty()) diagnostic = QStringLiteral("legacy JSON row count differs");
-            return legacyResult(ProfileMigrationStatus::Failed, request, diagnostic);
+            return failedResult(diagnostic);
         }
     }
 
     if (!QFile::rename(temporaryDatabase, targetDatabase)) {
         removeTemporaryDatabase(temporaryDatabase);
-        return legacyResult(ProfileMigrationStatus::Failed, request,
-                            QStringLiteral("failed to atomically activate profile database"));
+        return failedResult(QStringLiteral("failed to atomically activate profile database"));
     }
     return readyResult(ProfileMigrationStatus::Migrated, targetDatabase, targetJson);
 }

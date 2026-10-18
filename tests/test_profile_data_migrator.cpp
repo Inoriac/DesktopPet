@@ -25,8 +25,8 @@ private slots:
     void resolve_whenRegistryProfileFieldsAreInvalid_shouldRejectEntireMapping();
     void load_whenAnyRegistryEntryIsMalformed_shouldRejectEntireRegistry();
     void migrateLegacyMemory_whenSingleProfileAndValidLegacyDb_shouldCopyVerifyAndAtomicallyActivate();
-    void migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldPreserveLegacyDbAndRequireSelection();
-    void migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndKeepLegacyPath();
+    void migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldUseIsolatedPathsWithoutImportingLegacy();
+    void migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndExposeNoWritableStore();
     void migrateLegacyMemory_whenTargetAlreadyCommitted_shouldRemainIdempotent();
     void migrateLegacyMemory_whenOnlyLegacyJsonExists_shouldImportIntoProfileDatabase();
     void migrateLegacyMemory_whenRegisteredProfilesAreInvalid_shouldRejectRequest();
@@ -177,7 +177,7 @@ void TestProfileDataMigrator::migrateLegacyMemory_whenSingleProfileAndValidLegac
     QVERIFY(!QFile::exists(result.activeDatabasePath + QStringLiteral(".tmp")));
 }
 
-void TestProfileDataMigrator::migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldPreserveLegacyDbAndRequireSelection() {
+void TestProfileDataMigrator::migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldUseIsolatedPathsWithoutImportingLegacy() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     ProfileMigrationRequest request = requestFor(directory);
@@ -189,12 +189,15 @@ void TestProfileDataMigrator::migrateLegacyMemory_whenMultipleProfilesAreAmbiguo
     const ProfileMigrationResult result = ProfileDataMigrator().migrateLegacyMemory(request);
 
     QCOMPARE(result.status, ProfileMigrationStatus::Ambiguous);
-    QVERIFY(!result.profileStoreReady());
-    QCOMPARE(result.activeDatabasePath, request.legacyDatabasePath);
+    QVERIFY(result.profileStoreReady());
+    QCOMPARE(result.activeDatabasePath, QDir(request.appDataRoot).filePath(
+        QStringLiteral("profiles/%1/memory.db").arg(kProfileId)));
+    QVERIFY(!QFile::exists(result.activeDatabasePath));
+    QVERIFY(result.activeJsonPath != request.legacyJsonPath);
     QVERIFY(QFile::exists(request.legacyDatabasePath));
 }
 
-void TestProfileDataMigrator::migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndKeepLegacyPath() {
+void TestProfileDataMigrator::migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndExposeNoWritableStore() {
     QTemporaryDir directory;
     QVERIFY(directory.isValid());
     ProfileMigrationRequest request = requestFor(directory);
@@ -210,6 +213,8 @@ void TestProfileDataMigrator::migrateLegacyMemory_whenIntegrityCheckFails_should
 
     QCOMPARE(result.status, ProfileMigrationStatus::Failed);
     QVERIFY(!result.profileStoreReady());
+    QVERIFY(result.activeDatabasePath.isEmpty());
+    QVERIFY(result.activeJsonPath.isEmpty());
     QVERIFY(QFile::exists(request.legacyDatabasePath));
     QVERIFY(!QFile::exists(target + QStringLiteral(".tmp")));
 }
@@ -271,6 +276,8 @@ void TestProfileDataMigrator::migrateLegacyMemory_whenRegisteredProfilesAreInval
 
     QCOMPARE(result.status, ProfileMigrationStatus::Failed);
     QVERIFY(!result.profileStoreReady());
+    QVERIFY(result.activeDatabasePath.isEmpty());
+    QVERIFY(result.activeJsonPath.isEmpty());
     QVERIFY(QFile::exists(request.legacyDatabasePath));
 }
 

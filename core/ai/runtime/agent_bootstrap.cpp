@@ -42,6 +42,10 @@ Result<RuntimeStartReport, DomainError> AgentBootstrap::start(
 
     const ProfileMigrationResult migration =
         ProfileDataMigrator().migrateLegacyMemory(sanitizedRequest.profileMigration);
+    if (!migration.profileStoreReady()) {
+        return Result<RuntimeStartReport, DomainError>::failure(
+            domainError(QStringLiteral("PROFILE_MIGRATION_FAILED"), migration.diagnostic));
+    }
     const Result<void, DomainError> storage = request.aiBrain->initializeStorage({
         migration.activeDatabasePath,
         migration.activeJsonPath

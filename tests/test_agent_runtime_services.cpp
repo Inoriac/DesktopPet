@@ -208,7 +208,8 @@ private slots:
     void readAfter_whenAuthorizationProfileDoesNotMatch_shouldRejectRead();
 
     void start_whenMigrationIsReady_shouldConfigureActivePathsBeforeFirstMemoryStoreOpen();
-    void start_whenMigrationIsAmbiguous_shouldUseLegacyPathsAndDisableProfileGrowth();
+    void start_whenMigrationIsAmbiguous_shouldUseIndependentStoreAndLeaveLegacyUntouched();
+    void start_whenProfileMigrationFails_shouldNotOpenSharedLegacyStore();
     void start_whenNewSchemaMigrationFails_shouldKeepLegacyChatToolAndSkillPathAvailable();
     void initializeStorage_whenCalledTwice_shouldKeepFirstPathsAndRejectSecondCall();
     void initializeStorage_whenFirstAttemptFails_shouldRejectRetryWithoutSwitchingPaths();
@@ -566,23 +567,63 @@ void TestAgentRuntimeServices::start_whenMigrationIsReady_shouldConfigureActiveP
     QVERIFY(result.value().capabilities.eventLedger);
 }
 
-void TestAgentRuntimeServices::start_whenMigrationIsAmbiguous_shouldUseLegacyPathsAndDisableProfileGrowth() {
+void TestAgentRuntimeServices::start_whenMigrationIsAmbiguous_shouldUseIndependentStoreAndLeaveLegacyUntouched() {
     QTemporaryDir directory;
-    QVERIFY(writeFile(directory.filePath(QStringLiteral("legacy-memory.json")), "[]"));
     AIBrain brain;
     auto bridge = makeBridge();
     AgentRuntimeServices services;
     RuntimeStartRequest request = requestFor(directory, &brain, bridge.get());
     request.profileMigration.registeredProfileIds.append(kOtherProfileId);
+    const QString legacyPath = request.profileMigration.legacyDatabasePath;
+    {
+        MemoryStore legacy;
+        legacy.setDatabasePath(legacyPath);
+        legacy.setStoragePath(request.profileMigration.legacyJsonPath);
+        QVERIFY(legacy.load());
+        legacy.add(MemoryType::Preference, "legacy-sentinel", "must stay unassigned");
+        QVERIFY(legacy.save());
+    }
+    QFile legacyFile(legacyPath);
+    QVERIFY(legacyFile.open(QIODevice::ReadOnly));
+    const QByteArray before = legacyFile.readAll();
+    legacyFile.close();
 
     const auto result = AgentBootstrap::start(services, request);
 
     QVERIFY(result.isOk());
     QCOMPARE(result.value().profileMigration.status, ProfileMigrationStatus::Ambiguous);
-    QCOMPARE(result.value().mode, RuntimeMode::Degraded);
-    QVERIFY(!result.value().capabilities.profileStore);
-    QVERIFY(!result.value().capabilities.profileGrowth);
-    QCOMPARE(brain.memoryStore()->databasePath(), request.profileMigration.legacyDatabasePath);
+    QCOMPARE(result.value().mode, RuntimeMode::Running);
+    QVERIFY(result.value().capabilities.profileStore);
+    QVERIFY(result.value().capabilities.profileGrowth);
+    QCOMPARE(brain.memoryStore()->databasePath(), directory.filePath(
+        QStringLiteral("profiles/%1/memory.db").arg(kProfileId)));
+    QVERIFY(brain.memoryStore()->loadRecentFromDatabase(10).isEmpty());
+    QSignalSpy completed(&brain, &AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage(QStringLiteral("记住：我喜欢无糖绿茶"), "new-owner-input"));
+    QTRY_VERIFY_WITH_TIMEOUT(!completed.isEmpty(), 5000);
+    QTRY_VERIFY_WITH_TIMEOUT(!brain.memoryStore()->loadRecentFromDatabase(10).isEmpty(), 5000);
+    brain.stop();
+    QVERIFY(legacyFile.open(QIODevice::ReadOnly));
+    QCOMPARE(legacyFile.readAll(), before);
+}
+
+void TestAgentRuntimeServices::start_whenProfileMigrationFails_shouldNotOpenSharedLegacyStore() {
+    QTemporaryDir directory;
+    AIBrain brain;
+    auto bridge = makeBridge();
+    AgentRuntimeServices services;
+    auto request = requestFor(directory, &brain, bridge.get());
+    // An invalid private target must never fall back to a valid shared source.
+    const QString target = directory.filePath(QStringLiteral("profiles/%1/memory.db").arg(kProfileId));
+    QVERIFY(QDir().mkpath(QFileInfo(target).absolutePath()));
+    QVERIFY(writeFile(target, "broken database"));
+    QVERIFY(writeFile(request.profileMigration.legacyJsonPath, "[]"));
+    const auto result = AgentBootstrap::start(services, request);
+    QVERIFY(!result);
+    QCOMPARE(result.error().code, QStringLiteral("PROFILE_MIGRATION_FAILED"));
+    QVERIFY(!brain.isStorageInitialized());
+    QVERIFY(!services.isStarted());
+    QVERIFY(!QFile::exists(request.profileMigration.legacyDatabasePath));
 }
 
 void TestAgentRuntimeServices::start_whenNewSchemaMigrationFails_shouldKeepLegacyChatToolAndSkillPathAvailable() {

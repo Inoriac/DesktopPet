@@ -123,8 +123,8 @@ void PetWindow::setupAiBrain() {
         return;
     }
     const RuntimeStartReport& runtimeReport = runtimeStarted.value();
-    if (runtimeReport.mode == RuntimeMode::Degraded) {
-        qWarning() << "[AIBrain] runtime started in degraded mode:"
+    if (!runtimeReport.diagnostics.isEmpty()) {
+        qWarning() << "[AIBrain] runtime startup diagnostics:"
                    << runtimeReport.diagnostics;
     }
     std::cerr << "[AIBrain] storage initialized; runtime mode="
