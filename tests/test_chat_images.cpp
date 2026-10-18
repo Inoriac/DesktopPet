@@ -55,8 +55,18 @@ private slots:
         QCOMPARE(model.sourceImagesForReply("reply"),entry.images);
         const auto retry=model.appendUserMessage("",QDateTime::currentDateTime(),model.sourceImagesForReply("reply")); QVERIFY(!retry.isEmpty());
         ChatConversationModel reopened; QVERIFY(reopened.initialize(o,&error)); QCOMPARE(reopened.messages().first().images,entry.images);
-        std::optional<ChatHistoryResult> page; reopened.requestHistory("get_chat_history",{{"limit",1},{"beforeMessageId",retry}},[&](auto r){page=std::move(r);});
-        QTRY_VERIFY(page.has_value()); QVERIFY(*page); QCOMPARE(page->value()["messages"].toArray().first().toObject()["images"].toArray(),entry.images);
+        QCOMPARE(reopened.sourceImagesForReply("reply"), entry.images);
+        std::optional<ChatHistoryResult> page;
+        reopened.requestHistory("get_chat_history", {{"limit", 2}, {"beforeMessageId", retry}},
+                                [&](auto r) { page = std::move(r); });
+        QTRY_VERIFY(page.has_value());
+        QVERIFY(*page);
+        const auto messages = page->value()["messages"].toArray();
+        QCOMPARE(messages.size(), 2);
+        QCOMPARE(messages.first().toObject()["images"].toArray(), entry.images);
+        QCOMPARE(messages.last().toObject()["id"].toString(), QString("reply"));
+        QCOMPARE(messages.last().toObject()["status"].toString(), QString("failed"));
+        QCOMPARE(messages.last().toObject()["replyToId"].toString(), entry.id);
         if (sqlite) {
             ConversationStore store(profile,o.runtimeDatabasePath); IncomingMessage m; m.channel="desktop";m.connectionKey="local_owner";m.remoteConversationId="local_owner";
             m.localMessageId=entry.id;m.content="";m.occurredAt=entry.timestamp;m.originKind=OriginKind::LocalOwner;m.kind=ConversationKind::LocalOwner;m.images=entry.images;

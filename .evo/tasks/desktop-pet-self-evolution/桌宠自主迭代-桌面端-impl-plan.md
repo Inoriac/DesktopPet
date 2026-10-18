@@ -36,7 +36,7 @@ ProfileResolver.resolve:
 
 ProfileDataMigrator.migrateLegacyMemory:
 - `migrateLegacyMemory_whenSingleProfileAndValidLegacyDb_shouldCopyVerifyAndAtomicallyActivate`（happy path）
-- `migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldPreserveLegacyDbAndRequireSelection`
+- `migrateLegacyMemory_whenMultipleProfilesAreAmbiguous_shouldUseIsolatedPathsWithoutImportingLegacy`
 - `migrateLegacyMemory_whenIntegrityCheckFails_shouldRemoveTempCopyAndKeepLegacyPath`
 - `migrateLegacyMemory_whenTargetAlreadyCommitted_shouldRemainIdempotent`
 - `migrateLegacyMemory_whenOnlyLegacyJsonExists_shouldImportIntoProfileDatabase`
@@ -97,7 +97,7 @@ EventOutbox.dispatchPending:
 
 AgentBootstrap.start/AIBrain.initializeStorage:
 - `start_whenMigrationIsReady_shouldConfigureActivePathsBeforeFirstMemoryStoreOpen`（happy path）
-- `start_whenMigrationIsAmbiguous_shouldUseLegacyPathsAndDisableProfileGrowth`
+- `start_whenMigrationIsAmbiguous_shouldUseIndependentStoreAndLeaveLegacyUntouched`
 - `start_whenNewSchemaMigrationFails_shouldKeepLegacyChatToolAndSkillPathAvailable`
 - `initializeStorage_whenCalledTwice_shouldKeepFirstPathsAndRejectSecondCall`
 
