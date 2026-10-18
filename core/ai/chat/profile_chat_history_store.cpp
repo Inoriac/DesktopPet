@@ -278,6 +278,19 @@ std::optional<QList<ChatHistoryEntry>> ProfileChatHistoryStore::loadLegacy(QStri
     return entries;
 }
 
+ChatHistoryResult ProfileChatHistoryStore::queryHistory(const QJsonObject& request) const {
+    const auto normalized = normalizeChatHistoryQuery(request, request.contains("query"));
+    if (!normalized) return normalized;
+    if (!m_open) return ChatHistoryResult::failure(domainError("STORE_UNAVAILABLE",
+        QStringLiteral("聊天记录尚未打开。")));
+    if (!m_runtimeDatabasePath.isEmpty())
+        return ConversationStore(m_profileId, m_runtimeDatabasePath).queryLocalHistory(normalized.value());
+    QString error;
+    const auto entries = loadLegacy(&error);
+    if (!entries) return ChatHistoryResult::failure(domainError("STORE_UNAVAILABLE", error));
+    return queryChatHistoryEntries(*entries, normalized.value());
+}
+
 bool ProfileChatHistoryStore::appendFinal(const ChatHistoryEntry& entry,
                                           QString* errorMessage) {
     clearError(errorMessage);

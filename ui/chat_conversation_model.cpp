@@ -5,6 +5,7 @@
 #include <QRegularExpression>
 #include <QSettings>
 #include <QUuid>
+#include <QJsonArray>
 
 namespace {
 
@@ -67,6 +68,7 @@ void ChatConversationModel::setDeferredPersistence(bool enabled) {
 bool ChatConversationModel::initialize(const ProfileChatStoreOptions& options,
                                        QString* errorMessage) {
     if (errorMessage) errorMessage->clear();
+    ++m_historyGeneration;
     m_initialized = false;
     m_persistenceAvailable = false;
     m_messages.clear();
@@ -245,6 +247,45 @@ QString ChatConversationModel::lastReadMessageId() const {
 
 QList<ChatHistoryEntry> ChatConversationModel::messages() const {
     return m_messages;
+}
+
+QJsonObject ChatConversationModel::recentHistoryPage(int limit) const {
+    QList<ChatHistoryEntry> visible, diagnostics;
+    for (const auto& entry : m_messages) {
+        if (isVisibleChatHistoryEntry(entry)) visible.append(entry);
+        else diagnostics.append(entry);
+    }
+    const int first = std::max(0, int(visible.size()) - qBound(1, limit, 80));
+    QJsonObject page = chatHistoryPage(visible.mid(first), first > 0, false);
+    QJsonArray diagnosticMessages;
+    for (const auto& entry : diagnostics.mid(std::max(qsizetype(0), diagnostics.size() - 20)))
+        diagnosticMessages.append(chatHistoryEntryJson(entry));
+    page["diagnosticMessages"] = diagnosticMessages;
+    return page;
+}
+
+void ChatConversationModel::requestHistory(const QString& action,
+                                           const QJsonObject& request,
+                                           ChatHistoryCompletion completion) {
+    const auto normalized = normalizeChatHistoryQuery(request, action == "search_chat_history");
+    const auto store = m_store;
+    const bool useStore = m_persistenceAvailable;
+    // Only memory-only sessions need a copy of the working set. Persisted history
+    // must be queried independently, including records outside the loaded window.
+    const auto entries = useStore ? QList<ChatHistoryEntry>{} : m_messages;
+    const quint64 generation = m_historyGeneration;
+    // Destruction waits for this queue before QObject teardown. The queued callback
+    // has this object as receiver, so Qt drops it if the model has gone away.
+    m_persistencePool.start([this, store, useStore, entries, normalized, generation,
+                            completion = std::move(completion)]() mutable {
+        auto result = !normalized ? normalized
+            : useStore ? store.queryHistory(normalized.value())
+            : queryChatHistoryEntries(entries, normalized.value());
+        QMetaObject::invokeMethod(this,
+            [this, generation, completion = std::move(completion), result = std::move(result)]() mutable {
+                if (generation == m_historyGeneration && completion) completion(std::move(result));
+            }, Qt::QueuedConnection);
+    });
 }
 
 int ChatConversationModel::indexOf(const QString& messageId) const {

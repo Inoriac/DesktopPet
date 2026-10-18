@@ -3,7 +3,7 @@
 用户授权自主推进、每部分提交；本文件为进度唯一来源。设计：Launcher聊天重构-桌面端-系分.md。
 
 ## Task 1: 历史查询与管道协议
-- 关联设计：§3.2；状态：[ ]；Wave：1；依赖：无。
+- 关联设计：§3.2；状态：[x]；Wave：1；依赖：无。
 - 文件：conversation_store、profile_chat_history_store、chat_types、chat_conversation_model、launcher_chat_server 的 h/cpp；ui/petwindow.cpp；launcher/launcher_chat_client.py；tests/test_chat_history.cpp、test_chat_conversation_model.cpp、test_launcher_chat_transport.py、必要的 test_launcher_chat_server.cpp 与 CMakeLists.txt。
 - 测试：超过120条多页不重不漏/同时间戳/追加后游标稳定；全文搜索中文/%/_及页尾；around邻居；跨profile/外部会话拒绝；JSONL兼容；异步非阻塞及销毁；snapshot40和流式；认证查询协议及请求关联。
 - 必须先 RED 后实现；主代理审查后提交。

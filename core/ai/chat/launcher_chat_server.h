@@ -11,12 +11,14 @@
 #include <functional>
 
 #include "ai/domain/domain_result.h"
+#include "ai/chat/chat_types.h"
 
 class QLocalServer;
 class QLocalSocket;
 
 struct LauncherChatCallbacks {
     std::function<QJsonObject()> snapshot;
+    std::function<void(const QString&, const QJsonObject&, ChatHistoryCompletion)> queryHistory;
     std::function<Result<QJsonObject, DomainError>(const QString&)> sendMessage;
     std::function<Result<QJsonObject, DomainError>(const QString&)> retryMessage;
     std::function<Result<void, DomainError>()> stopResponse;

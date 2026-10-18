@@ -14,6 +14,7 @@
 #include <QUuid>
 #include <QCryptographicHash>
 #include <limits>
+#include <algorithm>
 
 namespace {
 using VoidResult = Result<void, DomainError>;
@@ -390,6 +391,110 @@ Result<QList<ChatHistoryEntry>, DomainError> ConversationStore::loadHistory(cons
     auto db=QSqlDatabase::database(begun.value()->connectionName());
     return history(db,m_profileId,conversation,limit);
 }
+ChatHistoryResult ConversationStore::queryLocalHistory(const QJsonObject& request) const {
+    const bool search = request.contains("query");
+    const auto normalized = normalizeChatHistoryQuery(request, search);
+    if (!normalized) return normalized;
+    const auto& query = normalized.value();
+    const QString name = "chat_history_" + QUuid::createUuid().toString(QUuid::WithoutBraces);
+    auto db = QSqlDatabase::addDatabase("QSQLITE", name);
+    db.setDatabaseName(m_databasePath);
+    db.setConnectOptions("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=1000");
+    // A read transaction gives cursor resolution and page bounds the same snapshot,
+    // without reserving the writer used by terminal-message persistence.
+    const auto result = [&]() -> ChatHistoryResult {
+        if (!db.open() || !db.transaction())
+            return ChatHistoryResult::failure(storeError(QStringLiteral("无法读取聊天记录，请稍后重试。")));
+        const int limit = query["limit"].toInt();
+        const QString before = query["beforeMessageId"].toString();
+        const QString around = query["aroundMessageId"].toString();
+        const QString visible = " AND json_extract(payload_json,'$.role') IN ('user','assistant')"
+            " AND (length(trim(json_extract(payload_json,'$.text')))>0"
+            " OR json_extract(payload_json,'$.status') IN ('pending','streaming'))";
+        const QString cursorId = around.isEmpty() ? before : around;
+        qint64 cursor = std::numeric_limits<qint64>::max();
+        if (!cursorId.isEmpty()) {
+            QSqlQuery q(db);
+            q.prepare("SELECT rowid FROM agent_messages WHERE profile_id=? AND conversation_id='local_owner' AND id=?" + visible);
+            q.addBindValue(m_profileId); q.addBindValue(cursorId);
+            if (!q.exec()) return ChatHistoryResult::failure(storeError(q.lastError().text()));
+            if (!q.next()) return ChatHistoryResult::failure(domainError("CHAT_QUERY_INVALID",
+                QStringLiteral("这条聊天记录已不可用，请刷新后重试。")));
+            cursor = q.value(0).toLongLong();
+        }
+        struct Row { qint64 number; ChatHistoryEntry entry; };
+        using RowsResult = Result<QList<Row>, DomainError>;
+        const auto read = [&](const QString& comparison, qint64 bound, bool descending, int count) -> RowsResult {
+            QSqlQuery q(db);
+            QString sql = "SELECT rowid,id,payload_json,occurred_at FROM agent_messages "
+                "WHERE profile_id=? AND conversation_id='local_owner' AND rowid" + comparison + "?" + visible;
+            if (search) sql += " AND COALESCE(json_extract(payload_json,'$.status'),'complete') IN ('complete','interrupted','stopped','failed')"
+                " AND instr(lower(json_extract(payload_json,'$.text')),lower(?))>0";
+            sql += descending ? " ORDER BY rowid DESC LIMIT ?" : " ORDER BY rowid ASC LIMIT ?";
+            q.prepare(sql);
+            q.addBindValue(m_profileId); q.addBindValue(bound);
+            if (search) q.addBindValue(query["query"].toString());
+            q.addBindValue(count);
+            if (!q.exec()) return RowsResult::failure(storeError(q.lastError().text()));
+            QList<Row> rows;
+            while (q.next()) {
+                auto payload = parsedObject(q.value(2));
+                if (!payload) return RowsResult::failure(payload.error());
+                const auto& p = payload.value();
+                ChatHistoryEntry entry;
+                entry.id = q.value(1).toString();
+                entry.role = p["role"].toString(p["senderKind"] == "self" ? "assistant" : "user");
+                entry.content = p["text"].toString();
+                entry.replyToId = p["replyToId"].toString();
+                entry.timestamp = QDateTime::fromString(q.value(3).toString(), Qt::ISODateWithMs);
+                entry.status = chatMessageStatusFromStorageName(p["status"].toString("complete")).value_or(ChatMessageStatus::Failed);
+                entry.errorMessage = p["errorMessage"].toString();
+                rows.append({q.value(0).toLongLong(), entry});
+            }
+            return RowsResult::success(rows);
+        };
+        QList<Row> rows;
+        bool moreBefore = false, moreAfter = false;
+        if (!around.isEmpty()) {
+            auto left = read("<=", cursor, true, limit / 2 + 1);
+            if (!left) return ChatHistoryResult::failure(left.error());
+            auto right = read(">", cursor, false, limit - int(left.value().size()));
+            if (!right) return ChatHistoryResult::failure(right.error());
+            // Near either edge, fill the page from the other side.
+            if (left.value().size() + right.value().size() < limit) {
+                left = read("<=", cursor, true, limit - int(right.value().size()));
+                if (!left) return ChatHistoryResult::failure(left.error());
+            }
+            rows = left.takeValue();
+            std::reverse(rows.begin(), rows.end());
+            rows.append(right.value());
+        } else {
+            auto selected = read("<", cursor, true, limit + 1);
+            if (!selected) return ChatHistoryResult::failure(selected.error());
+            rows = selected.takeValue();
+            moreBefore = rows.size() > limit;
+            if (moreBefore) rows.removeLast();
+            if (!search) std::reverse(rows.begin(), rows.end());
+        }
+        if (!rows.isEmpty() && !search) {
+            auto older = read("<", rows.first().number, true, 1);
+            auto newer = read(">", rows.last().number, false, 1);
+            if (!older) return ChatHistoryResult::failure(older.error());
+            if (!newer) return ChatHistoryResult::failure(newer.error());
+            moreBefore = !older.value().isEmpty();
+            moreAfter = !newer.value().isEmpty();
+        }
+        QList<ChatHistoryEntry> entries;
+        for (const auto& row : rows) entries.append(row.entry);
+        return ChatHistoryResult::success(chatHistoryPage(entries, moreBefore, moreAfter, query, search));
+    }();
+    db.rollback();
+    db.close();
+    db = QSqlDatabase();
+    QSqlDatabase::removeDatabase(name);
+    return result;
+}
+
 VoidResult ConversationStore::appendLocalHistory(const ChatHistoryEntry& entry) {
     if (entry.id.isEmpty() || !entry.timestamp.isValid() || !isTerminalChatMessageStatus(entry.status)
         || (entry.role!="user" && entry.role!="assistant" && entry.role!="system")

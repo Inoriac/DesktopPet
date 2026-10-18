@@ -19,6 +19,7 @@ public:
                   const AcceptanceCommit &commit = {});
     Result<QList<ChatHistoryEntry>, DomainError> loadHistory(const QString& conversationId,
                                                            int limit = 10000) const;
+    ChatHistoryResult queryLocalHistory(const QJsonObject& request) const;
     Result<void, DomainError> appendLocalHistory(const ChatHistoryEntry& entry);
     Result<void, DomainError> importLocalHistory(const QList<ChatHistoryEntry>& history,
                                                 const QString& sourceRef);

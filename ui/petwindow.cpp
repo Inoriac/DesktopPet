@@ -68,24 +68,6 @@
 
 namespace {
 
-QString launcherChatStatusName(ChatMessageStatus status) {
-    switch (status) {
-    case ChatMessageStatus::Pending:
-        return QStringLiteral("pending");
-    case ChatMessageStatus::Streaming:
-        return QStringLiteral("streaming");
-    case ChatMessageStatus::Complete:
-        return QStringLiteral("complete");
-    case ChatMessageStatus::Interrupted:
-        return QStringLiteral("interrupted");
-    case ChatMessageStatus::Stopped:
-        return QStringLiteral("stopped");
-    case ChatMessageStatus::Failed:
-        return QStringLiteral("failed");
-    }
-    return QStringLiteral("failed");
-}
-
 QJsonObject launcherChatStatistics(const QString& petName) {
     const auto statistics =
         StatisticManager::getInstance().getPetStatistics(petName);
@@ -402,36 +384,26 @@ void PetWindow::setupLauncherChatBridge() {
 
     LauncherChatCallbacks callbacks;
     callbacks.snapshot = [this]() {
-        QJsonArray messageArray;
-        const QList<ChatHistoryEntry> messages = conversationModel
-            ? conversationModel->messages() : QList<ChatHistoryEntry>{};
-        constexpr int kMaximumVisibleMessages = 120;
-        const int first = std::max(
-            0, static_cast<int>(messages.size()) - kMaximumVisibleMessages);
-        for (int index = first; index < messages.size(); ++index) {
-            const ChatHistoryEntry& entry = messages.at(index);
-            messageArray.append(QJsonObject{
-                {QStringLiteral("id"), entry.id},
-                {QStringLiteral("role"), entry.role},
-                {QStringLiteral("replyToId"), entry.replyToId},
-                {QStringLiteral("content"), entry.content},
-                {QStringLiteral("timestamp"),
-                 entry.timestamp.toString(Qt::ISODateWithMs)},
-                {QStringLiteral("status"),
-                 launcherChatStatusName(entry.status)},
-                {QStringLiteral("errorMessage"), entry.errorMessage}
-            });
-        }
-        return QJsonObject{
+        QJsonObject snapshot = conversationModel ? conversationModel->recentHistoryPage()
+                                                 : chatHistoryPage({}, false, false);
+        const QJsonObject runtime{
             {QStringLiteral("petName"), modelName},
             {QStringLiteral("profileId"), profileMigration.profileId},
             {QStringLiteral("aiEnabled"), aiBrain && aiBrain->isEnabled()},
             {QStringLiteral("busy"), aiBrain && (aiBrain->isBusy() || aiBrain->pendingUserMessageCount() > 0)},
             {QStringLiteral("pendingMessageCount"), aiBrain ? aiBrain->pendingUserMessageCount() : 0},
-            {QStringLiteral("messages"), messageArray},
             {QStringLiteral("task"), aiBrain ? aiBrain->taskSnapshot() : QJsonObject{}},
             {QStringLiteral("statistics"), launcherChatStatistics(modelName)}
         };
+        for (auto it = runtime.constBegin(); it != runtime.constEnd(); ++it)
+            snapshot.insert(it.key(), it.value());
+        return snapshot;
+    };
+    callbacks.queryHistory = [this](const QString& action, const QJsonObject& request,
+                                    ChatHistoryCompletion completion) {
+        if (conversationModel) conversationModel->requestHistory(action, request, std::move(completion));
+        else completion(ChatHistoryResult::failure(domainError("STORE_UNAVAILABLE",
+            QStringLiteral("聊天记录尚未准备好。"))));
     };
     callbacks.sendMessage = [this](const QString& rawText)
         -> Result<QJsonObject, DomainError> {

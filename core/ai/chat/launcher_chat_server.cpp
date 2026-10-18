@@ -1,6 +1,7 @@
 #include "launcher_chat_server.h"
 
 #include <QJsonDocument>
+#include <QPointer>
 #include <QLocalServer>
 #include <QLocalSocket>
 #include <QSet>
@@ -213,7 +214,8 @@ void LauncherChatServer::processFrame(
             QStringLiteral("Launcher chat frame is invalid")));
         return;
     }
-    writeResponse(socket, handleRequest(socket, parsed.value()));
+    const auto response = handleRequest(socket, parsed.value());
+    if (!response.isEmpty()) writeResponse(socket, response);
 }
 
 QJsonObject LauncherChatServer::handleRequest(
@@ -260,6 +262,23 @@ QJsonObject LauncherChatServer::handleRequest(
             data.insert(QStringLiteral("unchanged"), false);
         }
         return ownerDiarySuccessResponse(requestId, data);
+    }
+    if (action == QLatin1String("get_chat_history") || action == QLatin1String("search_chat_history")) {
+        QJsonObject queryPayload = payload;
+        queryPayload.remove("sessionToken");
+        const auto normalized = normalizeChatHistoryQuery(queryPayload, action == "search_chat_history");
+        if (!normalized) return resultError(requestId, normalized.error());
+        if (!m_callbacks.queryHistory) return ownerDiaryErrorResponse(requestId,
+            QStringLiteral("ACTION_UNSUPPORTED"), QStringLiteral("当前版本不支持聊天记录查询。"));
+        QPointer<LauncherChatServer> server(this);
+        QPointer<QLocalSocket> receiver(socket);
+        m_callbacks.queryHistory(action, normalized.value(),
+            [server, receiver, requestId](ChatHistoryResult result) {
+                if (!server || !receiver || !server->m_connections.contains(receiver.data())) return;
+                server->writeResponse(receiver, result ? ownerDiarySuccessResponse(requestId, result.value())
+                                                       : resultError(requestId, result.error()));
+            });
+        return {}; // The model completes the read asynchronously on the owner thread.
     }
     if (action == QLatin1String("send_message")) {
         const auto result = m_callbacks.sendMessage(

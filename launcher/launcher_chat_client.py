@@ -42,6 +42,18 @@ class LauncherChatClient(OwnerDiaryClient):
             "afterRevision": int(after_revision),
         })
 
+    def request_history(self, before_message_id: str = "", around_message_id: str = "",
+                        limit: int = 40, request_token: str = "") -> dict:
+        return self._chat_exchange("get_chat_history", {
+            "beforeMessageId": before_message_id, "aroundMessageId": around_message_id,
+            "limit": limit, "requestToken": request_token})
+
+    def search_history(self, query: str, before_message_id: str = "",
+                       limit: int = 30, request_token: str = "") -> dict:
+        return self._chat_exchange("search_chat_history", {
+            "query": query, "beforeMessageId": before_message_id,
+            "limit": limit, "requestToken": request_token})
+
     def send_message(self, text: str) -> dict:
         return self._chat_exchange("send_message", {"text": str(text)})
 
@@ -87,6 +99,7 @@ class AsyncLauncherChatClient(QObject):
     stateReceived = Signal(dict)
     operationFinished = Signal(str, dict)
     operationFailed = Signal(str, str)
+    historyFailed = Signal(str, str, str)
 
     def __init__(self, socket_factory=QLocalSocket, timeout_ms: int = 2000,
                  max_frame_bytes: int = 1024 * 1024, parent=None):
@@ -139,6 +152,18 @@ class AsyncLauncherChatClient(QObject):
             return
         self._pending_revision = int(after_revision)
         self._dispatch_next()
+
+    def request_history(self, before_message_id: str = "", around_message_id: str = "",
+                        limit: int = 40, request_token: str = "") -> None:
+        self._queue_operation("get_chat_history", {
+            "beforeMessageId": before_message_id, "aroundMessageId": around_message_id,
+            "limit": limit, "requestToken": request_token})
+
+    def search_history(self, query: str, before_message_id: str = "",
+                       limit: int = 30, request_token: str = "") -> None:
+        self._queue_operation("search_chat_history", {
+            "query": query, "beforeMessageId": before_message_id,
+            "limit": limit, "requestToken": request_token})
 
     def send_message(self, text: str) -> None:
         self._queue_operation("send_message", {"text": str(text)})
@@ -196,13 +221,19 @@ class AsyncLauncherChatClient(QObject):
             "clientNonce": _base64url_token(16),
         }, restart_deadline=False)
 
+    def _report_operation_failure(self, action: str, payload: dict, message: str) -> None:
+        if action in {"get_chat_history", "search_chat_history"}:
+            self.historyFailed.emit(action, str(payload.get("requestToken", "")), message)
+        else:
+            self.operationFailed.emit(action, message)
+
     def _queue_operation(self, action: str, payload: dict) -> None:
         if not self.is_connected:
-            self.operationFailed.emit(action, "聊天连接已断开")
+            self._report_operation_failure(action, payload, "聊天连接已断开")
             return
         # Bound pending UI input while a response is stalled.
         if len(self._operations) >= 32:
-            self.operationFailed.emit(action, "待发送操作过多，请稍后再试")
+            self._report_operation_failure(action, payload, "待发送操作过多，请稍后再试")
             return
         self._operations.append((action, payload))
         self._dispatch_next()
@@ -233,10 +264,10 @@ class AsyncLauncherChatClient(QObject):
             "payload": payload,
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         if len(encoded) > self._max_frame_bytes:
-            self.operationFailed.emit(action, "消息过长，请缩短后重试")
+            self._report_operation_failure(action, payload, "消息过长，请缩短后重试")
             self._dispatch_next()
             return
-        self._request = (action, request_id)
+        self._request = (action, request_id, payload)
         if restart_deadline:
             self._deadline.start(self._timeout_ms)
         frame = struct.pack(">I", len(encoded)) + encoded
@@ -270,7 +301,7 @@ class AsyncLauncherChatClient(QObject):
                 or response.get("requestId") != self._request[1]:
             self._fail_connection("聊天服务响应与请求不匹配")
             return
-        action = self._request[0]
+        action, _, payload = self._request
         if not response.get("ok"):
             error = response.get("error")
             error = error if isinstance(error, dict) else {}
@@ -282,7 +313,7 @@ class AsyncLauncherChatClient(QObject):
                 return
             self._request = None
             self._deadline.stop()
-            self.operationFailed.emit(action, message)
+            self._report_operation_failure(action, payload, message)
             self._dispatch_next()
             return
         data = response.get("data")
@@ -325,11 +356,12 @@ class AsyncLauncherChatClient(QObject):
         was_connected = self._connected
         action = "connect" if self._connecting else (
             self._request[0] if self._request is not None else "")
-        pending_actions = [operation[0] for operation in self._operations]
+        payload = self._request[2] if self._request is not None else {}
+        pending_operations = list(self._operations)
         self.close()
         if action:
-            self.operationFailed.emit(action, message)
-        for pending_action in pending_actions:
-            self.operationFailed.emit(pending_action, message)
+            self._report_operation_failure(action, payload, message)
+        for pending_action, pending_payload in pending_operations:
+            self._report_operation_failure(pending_action, pending_payload, message)
         if was_connected:
             self.disconnected.emit()

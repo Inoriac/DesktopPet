@@ -16,6 +16,8 @@
 #include <optional>
 
 #include "ai/chat/profile_chat_history_store.h"
+#include "ai/chat/conversation_store.h"
+#include <QJsonArray>
 #include "ai/event/runtime_unit_of_work.h"
 
 namespace {
@@ -85,6 +87,9 @@ class TestChatHistory : public QObject {
     Q_OBJECT
 
 private slots:
+    void queryHistory_data();
+    void queryHistory();
+    void queryHistory_sqliteFullArchiveAndScope();
     void initTestCase();
     void cleanup();
     void openAndLoad_whenProfilesDiffer_shouldKeepHistoriesIsolated();
@@ -478,6 +483,143 @@ void TestChatHistory::historyMigration_sourceReadFailure_doesNotCompleteEmptyImp
     file.close();
     QVERIFY2(store.open(options, &error), qPrintable(error));
     QCOMPARE(store.load(&error).size(), 1);
+}
+
+
+void TestChatHistory::queryHistory_data() {
+    QTest::addColumn<bool>("sqlite");
+    QTest::newRow("jsonl") << false;
+    QTest::newRow("sqlite") << true;
+}
+
+void TestChatHistory::queryHistory() {
+    QFETCH(bool, sqlite);
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    if (sqlite) options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    ProfileChatHistoryStore store;
+    QString error;
+    QVERIFY2(store.open(options, &error), qPrintable(error));
+    auto empty = store.queryHistory({});
+    QVERIFY(empty);
+    QVERIFY(empty.value()["messages"].toArray().isEmpty());
+    QVERIFY(!empty.value()["hasMoreBefore"].toBool());
+    for (int i = 0; i < 185; ++i) {
+        QVERIFY(store.appendFinal(entry(QString::number(i), i % 2 ? "assistant" : "user",
+            i % 3 ? QString("合成消息 %1").arg(i) : QString("中文 100%_ TeSt %1").arg(i)), &error));
+    }
+    // Diagnostics and empty failures must not consume a visible history page.
+    QVERIFY(store.appendFinal(entry("internal", "system", "中文 100%_ test internal"), &error));
+    QVERIFY(store.appendFinal(entry("empty-failure", "assistant", "", ChatMessageStatus::Failed), &error));
+    QStringList all;
+    QJsonObject request{{"limit", 40}, {"requestToken", "page-token"}};
+    bool more = true;
+    while (more) {
+        auto page = store.queryHistory(request);
+        QVERIFY2(page, page ? "" : qPrintable(page.error().message));
+        QCOMPARE(page.value()["requestToken"].toString(), QString("page-token"));
+        const auto messages = page.value()["messages"].toArray();
+        QVERIFY(messages.size() <= 40);
+        QStringList ids;
+        for (const auto& message : messages) ids.append(message.toObject()["id"].toString());
+        all = ids + all;
+        request["beforeMessageId"] = page.value()["oldestMessageId"];
+        more = page.value()["hasMoreBefore"].toBool();
+        if (all.size() == 40) {
+            QVERIFY(store.appendFinal(entry("new", "user", "later append"), &error));
+        }
+    }
+    QCOMPARE(all.size(), 185);
+    for (int i = 0; i < all.size(); ++i) QCOMPARE(all[i], QString::number(i));
+
+    auto search = store.queryHistory({{"query", "  中文 100%_ test  "}, {"limit", 30}});
+    QVERIFY(search);
+    QCOMPARE(search.value()["query"].toString(), QString("中文 100%_ test"));
+    QCOMPARE(search.value()["messages"].toArray().size(), 30);
+    QCOMPARE(search.value()["messages"].toArray()[0].toObject()["id"].toString(), QString("183"));
+    auto search2 = store.queryHistory({{"query", "中文 100%_ test"}, {"limit", 50},
+        {"beforeMessageId", search.value()["nextBeforeMessageId"]}});
+    QVERIFY(search2);
+    QCOMPARE(search2.value()["messages"].toArray().size(), 32);
+    QVERIFY(!search2.value()["hasMoreBefore"].toBool());
+    QCOMPARE(search2.value()["messages"].toArray().last().toObject()["id"].toString(), QString("0"));
+    auto noMatch = store.queryHistory({{"query", "找不到"}});
+    QVERIFY(noMatch);
+    QVERIFY(noMatch.value()["messages"].toArray().isEmpty());
+
+    auto around = store.queryHistory({{"aroundMessageId", "75"}, {"limit", 5}});
+    QVERIFY(around);
+    QCOMPARE(around.value()["anchorMessageId"].toString(), QString("75"));
+    QCOMPARE(around.value()["messages"].toArray().size(), 5);
+    QCOMPARE(around.value()["messages"].toArray()[2].toObject()["id"].toString(), QString("75"));
+    QVERIFY(around.value()["hasMoreBefore"].toBool());
+    QVERIFY(around.value()["hasMoreAfter"].toBool());
+    for (const auto& invalid : QList<QJsonObject>{
+        {{"beforeMessageId", "missing"}}, {{"aroundMessageId", "missing"}},
+        {{"beforeMessageId", "internal"}}, {{"aroundMessageId", "empty-failure"}},
+        {{"beforeMessageId", "4"}, {"aroundMessageId", "5"}},
+        {{"query", "   "}}, {{"query", QString(201, 'x')}}, {{"limit", 81}},
+        {{"query", "x"}, {"limit", 51}}, {{"limit", 1.5}}, {{"limit", "40"}},
+        {{"profileId", kOtherProfileId}}, {{"conversationId", "external"}}
+    }) {
+        auto result = store.queryHistory(invalid);
+        QVERIFY(!result);
+        QCOMPARE(result.error().code, QString("CHAT_QUERY_INVALID"));
+    }
+    if (sqlite) QVERIFY(QFile::remove(options.runtimeDatabasePath));
+    else QVERIFY(QFile::remove(historyPath(options)));
+    auto unavailable = store.queryHistory({});
+    QVERIFY(!unavailable);
+    QCOMPARE(unavailable.error().code, QString("STORE_UNAVAILABLE"));
+}
+
+void TestChatHistory::queryHistory_sqliteFullArchiveAndScope() {
+    QTemporaryDir directory;
+    const QString path = directory.filePath("runtime.sqlite");
+    ConversationStore store(kProfileId, path), other(kOtherProfileId, path);
+    QVERIFY(store.initialize());
+    QVERIFY(other.initialize());
+    {
+        auto transaction = SqliteRuntimeUnitOfWork::begin(path);
+        QVERIFY(transaction);
+        auto db = QSqlDatabase::database(transaction.value()->connectionName());
+        QSqlQuery insert(db);
+        insert.prepare("INSERT INTO agent_messages(profile_id,id,conversation_id,direction,payload_json,occurred_at) VALUES(?,?,'local_owner','incoming',?,?)");
+        for (int i = 0; i < 10125; ++i) {
+            insert.bindValue(0, kProfileId);
+            insert.bindValue(1, QString("archive-%1").arg(i));
+            insert.bindValue(2, QString::fromUtf8(QJsonDocument(QJsonObject{{"role", "user"}, {"text", QString("archive %1").arg(i)}}).toJson(QJsonDocument::Compact)));
+            insert.bindValue(3, "2026-10-18T01:00:00.000Z");
+            QVERIFY(insert.exec());
+        }
+        QVERIFY(transaction.value()->commit());
+    }
+    QVERIFY(other.appendLocalHistory(entry("other-only", "user", "private other")));
+    {
+        auto transaction = SqliteRuntimeUnitOfWork::begin(path);
+        QVERIFY(transaction);
+        auto db = QSqlDatabase::database(transaction.value()->connectionName());
+        QSqlQuery q(db);
+        q.prepare("INSERT INTO agent_conversations(profile_id,id,channel,connection_key,remote_id,kind) VALUES(?,'external','test','test','test','direct')");
+        q.addBindValue(kProfileId);
+        QVERIFY(q.exec());
+        q.prepare("INSERT INTO agent_messages(profile_id,id,conversation_id,direction,payload_json) VALUES(?,'external-only','external','incoming','{\"role\":\"user\",\"text\":\"private external\"}')");
+        q.addBindValue(kProfileId);
+        QVERIFY(q.exec());
+        QVERIFY(transaction.value()->commit());
+    }
+    auto earliest = store.queryLocalHistory({{"query", "archive 0"}});
+    QVERIFY(earliest);
+    QCOMPARE(earliest.value()["messages"].toArray().size(), 1);
+    QCOMPARE(earliest.value()["messages"].toArray()[0].toObject()["id"].toString(), QString("archive-0"));
+    auto privateSearch = store.queryLocalHistory({{"query", "private"}});
+    QVERIFY(privateSearch);
+    QVERIFY(privateSearch.value()["messages"].toArray().isEmpty());
+    for (const auto& id : {QString("other-only"), QString("external-only")}) {
+        auto denied = store.queryLocalHistory({{"aroundMessageId", id}});
+        QVERIFY(!denied);
+        QCOMPARE(denied.error().code, QString("CHAT_QUERY_INVALID"));
+    }
 }
 
 QTEST_GUILESS_MAIN(TestChatHistory)

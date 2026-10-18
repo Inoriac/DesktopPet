@@ -72,6 +72,8 @@ class ChatServer:
                 continue
             data = {"sessionToken": TOKEN, "serverVersion": 1} if action == "hello" \
                 else {"revision": len(self.requests), "messages": []}
+            if action in {"get_chat_history", "search_chat_history"}:
+                data = {"messages": [], "requestToken": request["payload"].get("requestToken", "")}
             error = self.response_error.get(action)
             response = {
                 "protocolVersion": 1,
@@ -208,6 +210,40 @@ class AsyncLauncherChatTests(unittest.TestCase):
         self.assertEqual(requests[3]["payload"]["callId"], "call-1")
         self.assertTrue(all(r["payload"]["sessionToken"] == TOKEN for r in requests))
         self.assertTrue(all(r["payload"]["taskId"] == "task-1" for r in requests))
+
+    def test_history_queries_are_authenticated_and_echo_request_tokens(self):
+        self.connect_client()
+        self.client.request_history(before_message_id="oldest", limit=40,
+                                    request_token="history-1")
+        self.client.search_history("中文 100%_", before_message_id="hit", limit=30,
+                                   request_token="search-2")
+        self.wait_for(lambda: len(self.finished) == 2)
+        self.assertEqual([item[0] for item in self.finished],
+                         ["get_chat_history", "search_chat_history"])
+        self.assertEqual([item[1]["requestToken"] for item in self.finished],
+                         ["history-1", "search-2"])
+        self.assertEqual(self.states, [])
+        self.assertEqual(self.server.requests[1]["payload"]["beforeMessageId"], "oldest")
+        self.assertEqual(self.server.requests[2]["payload"]["query"], "中文 100%_")
+        self.assertTrue(all(r["payload"]["sessionToken"] == TOKEN
+                            for r in self.server.requests[1:]))
+
+    def test_history_failures_keep_query_token_without_generic_operation_failure(self):
+        self.connect_client()
+        failures = []
+        self.client.historyFailed.connect(lambda *args: failures.append(args))
+        self.server.response_error["search_chat_history"] = "CHAT_QUERY_INVALID"
+        self.client.search_history("old", request_token="old-query")
+        self.wait_for(lambda: bool(failures))
+        self.assertEqual(failures, [("search_chat_history", "old-query", "request rejected")])
+        self.assertEqual(self.errors, [])
+        self.assertTrue(self.client.is_connected)
+        self.server.stall.add("get_chat_history")
+        self.client.request_history(request_token="in-flight")
+        self.client.search_history("new", request_token="queued")
+        self.wait_for(lambda: len(failures) == 3)
+        self.assertEqual([f[1] for f in failures], ["old-query", "in-flight", "queued"])
+        self.assertEqual(self.errors, [])
 
     def test_close_and_reconnect_ignore_previous_socket_callbacks(self):
         self.connect_client()

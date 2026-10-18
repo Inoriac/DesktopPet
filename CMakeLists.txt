@@ -1169,6 +1169,19 @@ target_compile_definitions(chat_side_effect_queue_tests PRIVATE
     DESKTOP_PET_ENABLE_TEST_SEAMS=1
 )
 
+# ---- Authenticated launcher history query protocol tests ----
+add_desktop_pet_cpp_test(launcher_chat_server_tests LauncherChatServerTests
+    SOURCES
+        tests/test_launcher_chat_server.cpp
+        core/ai/chat/launcher_chat_server.cpp
+        core/ai/chat/chat_types.cpp
+        core/ai/owner/owner_diary_protocol.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES Qt::Core Qt::Network Qt::Test
+)
+
 # ---- Profile-scoped chat persistence tests (no ONNX dependency) ----
 add_desktop_pet_cpp_test(chat_history_tests ChatHistoryTests
     SOURCES

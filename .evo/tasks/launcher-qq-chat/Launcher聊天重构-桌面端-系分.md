@@ -7,9 +7,10 @@
 
 ### 1.1 全局约束
 - 不改主体人物/记忆归属，不改当前模型配置。历史与搜索只读当前 profile 的 local_owner，不接受前端指定 profile 或外部会话。
-- 复用已有管道会话认证、operationFinished/operationFailed 与 request ID。查询为异步，不能阻塞 GUI 等磁盘；断线/切换角色后丢弃旧查询结果。
+- 复用已有管道会话认证、operationFinished/operationFailed 与 request ID；新增 historyFailed(action,requestToken,detail) 关联查询失败，普通操作信号不变。查询为异步，不能阻塞 GUI 等磁盘；断线/切换角色后丢弃旧查询结果。
 - 页大小默认 40、上限 80；搜索默认 30、上限 50，query 去两端空白后 1–200 字符。空历史为成功空页；坏游标/无查询/存储错误显示可重试提示，不重置已有聊天或自动发消息。
 - 实时状态只发最近窗口；历史页按消息 ID 合并、去重，滚动锚点不因 prepend、流式更新或新消息丢失。阅读旧消息时新消息不抢滚动，显示返回最新入口。
+- 分页、搜索与最近窗口仅计 user/assistant 可见正文；内存最近窗口另保留 pending/streaming 消息。system/空错误占位不占页、不进入对话气泡，诊断通过独立 diagnosticMessages（最近最多20条）供折叠诊断区使用；原 load 行为不变。
 - 不添加新第三方依赖或通用防御框架。截图使用合成消息，浅色/深色和窄窗口均可用；纯文本显示防止消息被当 HTML。
 
 ## 2 架构与改动
@@ -41,11 +42,11 @@ flowchart LR
 | ChatConversationModel::recentHistoryPage(int limit=40) const | limit 配置默认值；消息来自当前 model | QJsonObject 最近消息页 |
 | ChatConversationModel::requestHistory(const QString& action,const QJsonObject& request,completion) | action/request/回调由 server 传入 | 工作队列查询后在所属线程回调 |
 | LauncherChatCallbacks::queryHistory(action,payload,completion) | server 校验后的调用方输入；PetWindow 绑定当前 model | 异步完成 |
-| LauncherChatClient.request_history(before_message_id='',around_message_id='',limit=40,request_token='') / search_history(query,before_message_id='',limit=30,request_token='') | UI 传入；limit 默认配置 | 复用 operationFinished / operationFailed |
+| LauncherChatClient.request_history(before_message_id='',around_message_id='',limit=40,request_token='') / search_history(query,before_message_id='',limit=30,request_token='') | UI 传入；limit 默认配置 | operationFinished / historyFailed；成功与失败均关联 requestToken |
 完整字段见 §4。可将 wire 编码提取到 chat_types 复用，具体 helper 名为行内选择。
 #### 3 模块业务流程
-认证请求 → 校验组合与大小 → model 将查询排到现有持久化串行队列，保证此前终态写入已完成 → Store 按 profile/local_owner 和 ID 对应 rowid 查询 → 回 owner 线程，带 requestToken 响应。socket 或 model 销毁时不访问旧对象。正常实时快照取内存最近 40 条，含正在生成的消息。
-页查询取 limit+1 判断是否还有更早；around 取目标及前后邻居，不将全部历史搬入 launcher。搜索仅 user/assistant 正文非空的已保存消息，按 rowid 倒序取 limit+1；匹配为字面子串，中文/ASCII 英文正常。搜索不到为成功空结果。
+认证请求 → 校验组合与大小 → model 将查询排到现有持久化串行队列，保证此前终态写入已完成 → Store 使用函数内只读 SQLite 连接和读取事务，按 profile/local_owner 和 ID 对应 rowid 查询（不使用现有 BEGIN IMMEDIATE 写事务） → 回 owner 线程，带 requestToken 响应。socket 或 model 销毁时不访问旧对象。正常实时快照取内存最近 40 条，含正在生成的消息。
+页查询在数据库中先筛选可见正文，再取 limit+1 判断是否还有更早，避免过滤产生空页；around 取目标及前后邻居，不将全部历史搬入 launcher。搜索仅 user/assistant 正文非空的已保存消息，按 rowid 倒序取 limit+1；匹配为字面子串，中文/ASCII 英文正常。搜索不到为成功空结果。
 #### 4 数据变更
 N/A — 无表结构变更，所有查询只读。沿用已有终态持久化、JSONL 迁移和内存消息生命周期。
 #### 5 实现锚点
@@ -109,7 +110,7 @@ client.search_history / request_history 及 operationFinished 的 requestToken �
 搜索首屏外历史并定位正确消息；重复搜索迟到响应不污染新结果；搜索翻页去重且无更多按钮正确；无结果/空关键词/断线可恢复；命中上下文不与最新页伪造相邻，返回最新恢复；角色切换清空结果；Ctrl+F/Esc 和鼠标入口可用。
 
 ## 4 管道接口
-保留 protocolVersion=1，新增已认证 action：get_chat_history、search_chat_history。
+保留 protocolVersion=1，新增已认证 action：get_chat_history、search_chat_history。认证 sessionToken 在 server 归一化请求时剥离，再执行严格查询参数校验。
 
 | payload 字段 | 类型/规则 | 来源 |
 | --- | --- | --- |
@@ -119,7 +120,7 @@ client.search_history / request_history 及 operationFinished 的 requestToken �
 | limit | 可选正整数；history 40/80，search 30/50 | 默认配置/调用方 |
 | requestToken | 可选字符串，原样回传 | UI 会话/查询代际 |
 
-响应：messages（history 正序，search 倒序；id/role/replyToId/content/timestamp/status/errorMessage），hasMoreBefore、hasMoreAfter、oldestMessageId、newestMessageId、requestToken；search 另有 query、nextBeforeMessageId；around 另有 anchorMessageId。所有状态 snapshot 包含最近页字段，与 petName/profileId/busy/aiEnabled/task/statistics 并列。查询不变更 revision/openRequestId。
+响应：messages（history 正序，search 倒序；id/role/replyToId/content/timestamp/status/errorMessage），hasMoreBefore、hasMoreAfter、oldestMessageId、newestMessageId、requestToken；search 另有 query、nextBeforeMessageId；around 另有 anchorMessageId。所有状态 snapshot 包含最近页字段及单独的 diagnosticMessages，与 petName/profileId/busy/aiEnabled/task/statistics 并列。查询不变更 revision/openRequestId。
 
 错误沿用 DomainError，参数/游标错误 CHAT_QUERY_INVALID，存储 STORE_UNAVAILABLE，失去会话认证用现有认证错误。原接口继续支持；新增 client 不把查询结果当成发送成功或重置草稿。
 

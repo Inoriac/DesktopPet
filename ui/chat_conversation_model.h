@@ -34,6 +34,9 @@ public:
     void markReadThrough(const QString& messageId);
     QString lastReadMessageId() const;
     QList<ChatHistoryEntry> messages() const;
+    QJsonObject recentHistoryPage(int limit = 40) const;
+    void requestHistory(const QString& action, const QJsonObject& request,
+                        ChatHistoryCompletion completion);
 
 signals:
     void messageInserted(int index, const QString& messageId);
@@ -56,6 +59,7 @@ private:
     bool m_persistenceAvailable = false;
     bool m_deferredPersistence = false;
     QThreadPool m_persistencePool;
+    quint64 m_historyGeneration = 0;
 };
 
 #endif // DESKTOP_PET_CHAT_CONVERSATION_MODEL_H

@@ -19,6 +19,7 @@ class ProfileChatHistoryStore {
 public:
     bool open(const ProfileChatStoreOptions& options, QString* errorMessage);
     QList<ChatHistoryEntry> load(QString* errorMessage) const;
+    ChatHistoryResult queryHistory(const QJsonObject& request) const;
     bool appendFinal(const ChatHistoryEntry& entry, QString* errorMessage);
 
 private:

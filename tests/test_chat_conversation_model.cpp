@@ -5,6 +5,10 @@
 #include <QSettings>
 #include <QSignalSpy>
 #include <QTemporaryDir>
+#include <QJsonArray>
+#include <QElapsedTimer>
+#include <QLockFile>
+#include <QTimer>
 
 #include <memory>
 
@@ -49,6 +53,9 @@ class TestChatConversationModel : public QObject {
 
 private slots:
     void groupedReply_shouldRestoreAllSourceMessagesForRetry();
+    void recentPage_keepsStreamingAndHistoryQueryWaitsForWrites();
+    void historyQuery_isAsyncAndSafeAcrossDestroyOrReinitialize();
+    void historyQuery_memoryOnlyMode();
     void initTestCase();
     void cleanup();
     void appendUserMessage_whenTextIsValid_shouldInsertPersistAndReturnStableId();
@@ -318,6 +325,97 @@ void TestChatConversationModel::initialize_whenLastReadMarkerIsStale_shouldRetur
 
     QVERIFY2(model.initialize(options, &error), qPrintable(error));
     QVERIFY(model.lastReadMessageId().isEmpty());
+}
+
+
+void TestChatConversationModel::recentPage_keepsStreamingAndHistoryQueryWaitsForWrites() {
+    QTemporaryDir directory;
+    ChatConversationModel model;
+    auto options = optionsFor(directory);
+    options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    QString error;
+    QVERIFY(model.initialize(options, &error));
+    // Old diagnostic messages remain available only in the folded debug view.
+    ProfileChatHistoryStore store;
+    QVERIFY(store.open(options, &error));
+    ChatHistoryEntry diagnostic;
+    diagnostic.id = "internal"; diagnostic.role = "system";
+    diagnostic.content = "internal detail"; diagnostic.timestamp = QDateTime::currentDateTime();
+    QVERIFY(store.appendFinal(diagnostic, &error));
+    QVERIFY(model.initialize(options, &error));
+    model.setDeferredPersistence(true);
+    QString first;
+    for (int i = 0; i < 135; ++i) {
+        const auto id = model.appendUserMessage(QString("合成历史 %1").arg(i));
+        if (i == 0) first = id;
+    }
+    model.beginAssistantMessage("stream");
+    model.appendAssistantDelta("stream", "正在回复");
+    const auto recent = model.recentHistoryPage();
+    QCOMPARE(recent["messages"].toArray().size(), 40);
+    QCOMPARE(recent["diagnosticMessages"].toArray().size(), 1);
+    QVERIFY(recent["hasMoreBefore"].toBool());
+    QCOMPARE(recent["messages"].toArray().last().toObject()["content"].toString(), QString("正在回复"));
+    QCOMPARE(recent["messages"].toArray().last().toObject()["status"].toString(), QString("streaming"));
+    std::optional<Result<QJsonObject, DomainError>> result;
+    model.requestHistory("search_chat_history", {{"query", "历史 0"}, {"requestToken", "ordered"}},
+        [&](auto value) { result = value; });
+    QVERIFY(!result);
+    QTRY_VERIFY_WITH_TIMEOUT(result.has_value(), 10000);
+    QVERIFY(*result);
+    QCOMPARE(result->value()["messages"].toArray()[0].toObject()["id"].toString(), first);
+    QCOMPARE(result->value()["requestToken"].toString(), QString("ordered"));
+}
+
+void TestChatConversationModel::historyQuery_isAsyncAndSafeAcrossDestroyOrReinitialize() {
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    QString error;
+    auto model = std::make_unique<ChatConversationModel>();
+    QVERIFY(model->initialize(options, &error));
+    model->setDeferredPersistence(true);
+    QLockFile lock(historyPath(options) + ".lock");
+    QVERIFY(lock.tryLock());
+    model->appendUserMessage("queued write");
+    bool completed = false;
+    QElapsedTimer elapsed;
+    elapsed.start();
+    model->requestHistory("get_chat_history", {}, [&](auto) { completed = true; });
+    QVERIFY(elapsed.elapsed() < 100);
+    bool ticked = false;
+    QTimer::singleShot(0, [&]() { ticked = true; });
+    QTRY_VERIFY(ticked);
+    QVERIFY(!completed);
+    lock.unlock();
+    model.reset(); // queued completion must never run after model destruction
+    QTest::qWait(50);
+    QVERIFY(!completed);
+
+    ChatConversationModel reinitialized;
+    QVERIFY(reinitialized.initialize(options, &error));
+    reinitialized.requestHistory("get_chat_history", {}, [&](auto) { completed = true; });
+    QVERIFY(reinitialized.initialize(optionsFor(directory, kOtherProfileId), &error));
+    QTest::qWait(50);
+    QVERIFY(!completed);
+}
+
+void TestChatConversationModel::historyQuery_memoryOnlyMode() {
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    options.appDataRoot = directory.filePath("unwritable-file");
+    QFile blocking(options.appDataRoot);
+    QVERIFY(blocking.open(QIODevice::WriteOnly));
+    blocking.close();
+    ChatConversationModel model;
+    QString error;
+    QVERIFY(model.initialize(options, &error));
+    const auto id = model.appendUserMessage("无存储搜索");
+    std::optional<Result<QJsonObject, DomainError>> result;
+    model.requestHistory("search_chat_history", {{"query", "无存储"}}, [&](auto value) { result = value; });
+    QVERIFY(!result);
+    QTRY_VERIFY(result.has_value());
+    QVERIFY(*result);
+    QCOMPARE(result->value()["messages"].toArray().first().toObject()["id"].toString(), id);
 }
 
 QTEST_GUILESS_MAIN(TestChatConversationModel)
