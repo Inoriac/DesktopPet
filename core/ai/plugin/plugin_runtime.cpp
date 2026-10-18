@@ -43,6 +43,9 @@ Result<void,DomainError> PluginRuntime::initialize() {
     if (!file.exists()) return Result<void,DomainError>::success();
     if (!file.open(QIODevice::ReadOnly) || file.size()>2*1024*1024) return fail<void>("STORE_UNAVAILABLE","Plugin settings unavailable");
     QJsonParseError error; auto doc=QJsonDocument::fromJson(file.readAll(),&error);
+    // setHostConfiguration atomically rewrites this file; Windows cannot
+    // replace it while this read handle is still open.
+    file.close();
     if (error.error!=QJsonParseError::NoError || !doc.isObject()) return fail<void>("INVALID_INPUT","Invalid plugin host configuration");
     return setHostConfiguration(doc.object());
 }

@@ -12,7 +12,7 @@
 
 macOS 上已用临时角色、临时 SQLite、loopback HTTP 服务和真实 Python 子进程验证：清单加载、Skill 正文、全部 12 个操作定义、HTTP/歌单结果、控制状态核对、参数拒绝、权限隔离、禁用及旧句柄拒绝、unknown 写入只派发一次、配置合并备份与异常回滚。C++ 集成测试使用本目录真实 `configure.py` 生成配置，再交给实际 `PluginRuntime` 执行；没有注册原生 `lx_music_*` 工具。
 
-Windows 上真实 LX 版本的开放 API、SQLite 结构、EXE 启动、Scheme 转发和出声效果仍需按下表实测。macOS 测试服务通过不代表 Windows 软件已经接好。没有播放器时，`--diagnose` 显示 partial/unavailable 是正常结果；本包不会为了诊断启动程序。
+2026-10-18 已在 Windows 11 / LX 2.12.2 验证真实 API、SQLite 歌单、EXE 启动、搜索/歌单 Scheme、播放/暂停/切歌及 C++ 通用网关只读链路，详见 [Windows 验证记录](../../WINDOWS_VALIDATION_2026-10-18.md)。该版本状态 API 不返回音量；调音量实际生效仍保守返回 unknown，不能自动重发。其他 LX 版本和人工听感仍按下表核对。没有播放器时，`--diagnose` 显示 partial/unavailable 是正常结果；本包不会为了诊断启动程序。
 
 ## Windows：准备路径
 

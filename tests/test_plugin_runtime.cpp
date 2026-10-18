@@ -1,3 +1,4 @@
+#include "python_test_support.h"
 #include <QtTest>
 #include <QTemporaryDir>
 #include <QFile>
@@ -46,11 +47,11 @@ void makeTool(const QString& root, const QString& kind = "command") {
 QJsonObject hostConfig(const QString& root, const QString& kind = "command") {
     const QString script=QStringLiteral(PLUGIN_FIXTURE_PATH);
     const QJsonObject grant{{"id","test-grant"},{"pluginId","example.plugin"},{"profileId","pet"},{"conversationId","local_owner"},{"entryId","example.tool"},{"operationId","probe"},
-        {"effects",QJsonArray{"read"}},{"executor",kind=="command"?QStringLiteral("/usr/bin/python3"):QStringLiteral("fixture")},{"autonomous",false}};
+        {"effects",QJsonArray{"read"}},{"executor",kind=="command"?testPythonExecutable():QStringLiteral("fixture")},{"autonomous",false}};
     return {{"plugins",QJsonArray{QJsonObject{{"rootPath",root},{"enabled",true}}}},
-        {"configuration",QJsonObject{{"example.tool",kind=="command"?QJsonObject{{"program","/usr/bin/python3"},{"script",script}}:QJsonObject{{"connection","fixture"}}}}},
+        {"configuration",QJsonObject{{"example.tool",kind=="command"?QJsonObject{{"program",testPythonExecutable()},{"script",script}}:QJsonObject{{"connection","fixture"}}}}},
         {"grants",QJsonArray{grant}},
-        {"connections",QJsonObject{{"fixture",QJsonObject{{"program","/usr/bin/python3"},{"arguments",QJsonArray{script,"--mcp"}}}}}}};
+        {"connections",QJsonObject{{"fixture",QJsonObject{{"program",testPythonExecutable()},{"arguments",QJsonArray{script,"--mcp"}}}}}}};
 }
 void editTool(const QString& root,const std::function<void(QJsonObject&)>& edit) {
     QFile f(root+"/tool.json"); QVERIFY(f.open(QIODevice::ReadOnly)); auto object=QJsonDocument::fromJson(f.readAll()).object(); f.close(); edit(object); writeJson(f.fileName(),object);

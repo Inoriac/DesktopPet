@@ -63,6 +63,7 @@ def configuration(profile, database, python, with_source=True):
 
 
 def main():
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--profile', required=True, help='Existing host profile UUID')
     parser.add_argument('--database', required=True, help='Local adapter journal outside the package')

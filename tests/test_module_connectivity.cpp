@@ -1,3 +1,4 @@
+#include "python_test_support.h"
 #include <QTest>
 #include <QTemporaryDir>
 #include <QFile>
@@ -139,9 +140,19 @@ class Crypto : public PrivatePsycheCrypto {
 };
 }
 
+#include "live_model_acceptance.h"
+
 class TestModuleConnectivity : public QObject {
     Q_OBJECT
 private slots:
+  void liveModelBehavior_data() {
+      QTest::addColumn<QString>("scenario");
+      QTest::newRow("evidence_and_untrusted_output") << QString("evidence_and_untrusted_output");
+      QTest::newRow("unavailable_source") << QString("unavailable_source");
+      QTest::newRow("empty_autonomy") << QString("empty_autonomy");
+      QTest::newRow("music_gateway") << QString("music_gateway");
+  }
+  void liveModelBehavior() { QFETCH(QString, scenario); runLiveModelAcceptance(scenario); }
   void autonomyEnabledRoutesLegacyTriggersWithoutConsumerOrModel();
   void aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner_data();
   void aiBrain_consumerThroughRealRouterAndRuntime_startsActualRunner();
@@ -914,7 +925,7 @@ void TestModuleConnectivity::
         {"plugins",
          QJsonArray{QJsonObject{{"rootPath", root}, {"enabled", true}}}},
         {"configuration",
-         QJsonObject{{entry, QJsonObject{{"program", "/usr/bin/python3"},
+         QJsonObject{{entry, QJsonObject{{"program", testPythonExecutable()},
                                          {"script", root + "/read.py"}}}}},
         {"grants", QJsonArray{QJsonObject{{"id", "internal-read"},
                                           {"pluginId", package},
@@ -923,7 +934,7 @@ void TestModuleConnectivity::
                                           {"entryId", entry},
                                           {"operationId", operation},
                                           {"effects", QJsonArray{"read"}},
-                                          {"executor", "/usr/bin/python3"},
+                                          {"executor", testPythonExecutable()},
                                           {"autonomous", true}}}}};
     QVERIFY(r.brain.pluginRuntime()->setHostConfiguration(config));
     r.brain.refreshTaskDependencies();

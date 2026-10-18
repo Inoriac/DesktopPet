@@ -2,6 +2,7 @@
 #include <QDir>
 #include <QEventLoop>
 #include <QFile>
+#include <QFileInfo>
 #include <QJsonDocument>
 #include <QPointer>
 #include <QProcess>
@@ -123,6 +124,40 @@ ToolExecutionOutcome invoke(PluginRuntime &runtime, const ContextSpec &context,
 class LxMusicPluginTests : public QObject {
     Q_OBJECT
 private slots:
+    void real_player_read_only_gateway() {
+        const QString hostPath = qEnvironmentVariable("DESKTOP_PET_LX_ACCEPTANCE_HOST");
+        if (hostPath.isEmpty())
+            QSKIP("Opt-in real player acceptance: set DESKTOP_PET_LX_ACCEPTANCE_HOST to an isolated configured profile");
+        const QString liveProfile = QFileInfo(hostPath).dir().dirName();
+        PluginRuntime runtime(liveProfile, hostPath);
+        const auto initialized = runtime.initialize();
+        QVERIFY2(initialized, qPrintable(initialized ? QString() : initialized.error().message));
+        const auto context = ContextSpec::localOwner(liveProfile);
+        QVERIFY(gateway(runtime, context, "discover_capabilities").result.success);
+        const CapabilityRef skill{pluginId, skillId, "1.0.0", {}};
+        QVERIFY(gateway(runtime, context, "load_capability", {{"ref", skill.toJson()}}).result.success);
+        const auto tool = gateway(runtime, context, "load_capability", {{"ref", reference({}).toJson()}});
+        QVERIFY(tool.result.success);
+        QCOMPARE(tool.result.data["operations"].toArray().size(), 12);
+        QJsonArray playlists;
+        for (const QString &operation : {QString("status"), QString("lyric"), QString("list_playlists")}) {
+            const auto result = invoke(runtime, context, operation);
+            qInfo().noquote() << operation << QJsonDocument(result.result.data).toJson(QJsonDocument::Compact);
+            QVERIFY2(result.result.success, qPrintable(result.result.errorMessage));
+            QVERIFY(result.executed);
+            QCOMPARE(result.result.data["stage"].toString(), "completed");
+            if (operation == "list_playlists")
+                playlists = result.result.data["data"].toObject()["items"].toArray();
+        }
+        if (!playlists.isEmpty()) {
+            const auto result = invoke(runtime, context, "playlist_songs",
+                                       {{"playlist_id", playlists[0].toObject()["id"]}});
+            QVERIFY2(result.result.success, qPrintable(result.result.errorMessage));
+            QCOMPARE(result.result.data["stage"].toString(), "completed");
+            qInfo() << "playlist_songs count" << result.result.data["data"].toObject()["items"].toArray().size();
+        }
+    }
+
     void runtime_discover_load_skill_and_tools() {
         Fixture fixture;
         QVERIFY2(fixture.start(), qPrintable(fixture.error));

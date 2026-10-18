@@ -2185,3 +2185,8 @@ target_compile_definitions(external_observation_tests PRIVATE CONTROLLED_CHAT_PA
 
 target_compile_definitions(external_observation_tests PRIVATE OBSERVATION_SOURCE_PROBE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observation_source_probe.py")
 target_compile_definitions(autonomous_chat_tests PRIVATE OBSERVATION_SOURCE_PROBE="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/observation_source_probe.py")
+
+if(Python3_EXECUTABLE)
+    set_tests_properties(AutonomousChatTests PluginRuntimeTests ExternalObservationTests ModuleConnectivityTests
+        PROPERTIES ENVIRONMENT "DESKTOP_PET_TEST_PYTHON=${Python3_EXECUTABLE}")
+endif()

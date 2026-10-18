@@ -4,9 +4,10 @@ import argparse
 import datetime
 import json
 import os
-import select
+import queue
 import sqlite3
 import sys
+import threading
 import time
 
 
@@ -52,6 +53,14 @@ def stream(db, provider, namespace):
     if first.get('type') != 'start':
         raise ValueError('Expected host start')
     last = cursor_number(first.get('cursor', ''))
+    controls = queue.Queue(maxsize=256)
+    def read_controls():
+        while True:
+            line = control_input.readline(65537)
+            controls.put(line)
+            if not line:
+                return
+    threading.Thread(target=read_controls, daemon=True).start()
     while True:
         for row in db.execute('SELECT * FROM journal WHERE seq>? ORDER BY seq LIMIT 64', (last,)).fetchall():
             v = item(row)
@@ -61,9 +70,11 @@ def stream(db, provider, namespace):
                             message=dict(remoteMessageId=v['message_id'], text=v['text'], replyToRemoteId=v['reply_to']))
             print(json.dumps(envelope, ensure_ascii=False), flush=True)
             last = row[0]
-        ready, _, _ = select.select([control_input], [], [], 0.05)
-        if ready:
-            line = control_input.readline(65537)
+        try:
+            line = controls.get(timeout=0.05)
+        except queue.Empty:
+            continue
+        else:
             if not line:
                 return
             control = json.loads(line)
@@ -75,6 +86,8 @@ def stream(db, provider, namespace):
 
 
 def main():
+    sys.stdin.reconfigure(encoding='utf-8')
+    sys.stdout.reconfigure(encoding='utf-8')
     parser = argparse.ArgumentParser()
     parser.add_argument('--database', required=True)
     parser.add_argument('--operation', choices=['list', 'read', 'send', 'receipt', 'source', 'inject'], required=True)
@@ -82,7 +95,12 @@ def main():
     parser.add_argument('--namespace', default='account-one')
     args = parser.parse_args()
     root = os.path.dirname(os.path.realpath(__file__))
-    if os.path.commonpath([root, os.path.realpath(args.database)]) == root:
+    try:
+        inside_package = os.path.commonpath([root, os.path.realpath(args.database)]) == root
+    except ValueError:
+        # Windows paths on different drives cannot be inside the same package.
+        inside_package = False
+    if inside_package:
         raise ValueError('Keep the mutable journal outside the immutable package')
     db = connect(args.database)
     if args.operation == 'source':

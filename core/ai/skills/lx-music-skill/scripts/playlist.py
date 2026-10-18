@@ -65,8 +65,11 @@ def get_playlist_songs(list_id):
     conn = sqlite3.connect(LX_DATA)
     conn.text_factory = str
     c = conn.cursor()
+    columns = {row[1] for row in c.execute('PRAGMA table_info(my_list_music_info)')}
+    list_join = ' AND o.listId = m.listId' if 'listId' in columns else ''
     c.execute(
-        f'SELECT m.name, m.singer FROM my_list_music_info_order o JOIN my_list_music_info m ON o.musicInfoId = m.id WHERE o.listId = ? ORDER BY o."order"',
+        'SELECT m.name, m.singer FROM my_list_music_info_order o JOIN my_list_music_info m '
+        'ON o.musicInfoId = m.id' + list_join + ' WHERE o.listId = ? ORDER BY o."order"',
         (list_id,),
     )
     result = [{"name": r[0], "singer": r[1]} for r in c.fetchall()]

@@ -4,6 +4,7 @@ Requires jsonschema==4.23.0 and Git. Uses temporary fixtures only; no MCP,
 network, desktop actions, or real user databases. See README.md for scope.
 """
 
+import contextlib
 import copy
 import json
 import os
@@ -135,6 +136,11 @@ def controlled_chat_checks(check, plugin_validator, tool_validator):
                 raise RuntimeError('Controlled adapter failed: ' + result.stderr)
             return json.loads(result.stdout)
         first = invoke('inject', dict(chat_id='group-a', speaker_id='alice', text='原始消息'))
+        encoded = subprocess.run(base + ['read'], input=json.dumps(dict(chat_id='group-a')).encode('utf-8'),
+                                 capture_output=True, timeout=10,
+                                 env=dict(os.environ, PYTHONUTF8='0', PYTHONIOENCODING='cp936'))
+        check('controlled_utf8_despite_windows_codepage', encoded.returncode == 0
+              and json.loads(encoded.stdout.decode('utf-8'))['items'][0]['text'] == '原始消息')
         sent = invoke('send', dict(chat_id='group-a', text='实际回复', reply_to=first['remote_message_id']))
         check('controlled_list', invoke('list', {}) == {'conversations': [{'chat_id': 'group-a', 'kind': 'group'}]})
         items = invoke('read', dict(chat_id='group-a'))['items']
@@ -149,7 +155,7 @@ def controlled_chat_checks(check, plugin_validator, tool_validator):
         check('controlled_source_actual_jsonl', stream.returncode == 0 and len(observed) == 2
               and [v['eventId'] for v in observed] == [v['event_id'] for v in items]
               and [v['message']['remoteMessageId'] for v in observed] == [v['message_id'] for v in items])
-        with sqlite3.connect(journal) as db:
+        with contextlib.closing(sqlite3.connect(journal)) as db:
             check('controlled_source_ack', db.execute('SELECT event_id,cursor FROM acknowledgements').fetchall() == [(items[0]['event_id'], items[0]['cursor'])])
         controls = [dict(type='start', cursor=items[0]['cursor']), dict(type='stop')]
         replay = subprocess.run(base + ['source'], input=''.join(json.dumps(c)+'\n' for c in controls), capture_output=True, text=True, timeout=10)
@@ -162,7 +168,7 @@ def controlled_chat_checks(check, plugin_validator, tool_validator):
             acknowledged = 0
             deadline = time.monotonic() + 3
             while time.monotonic() < deadline:
-                with sqlite3.connect(journal) as db:
+                with contextlib.closing(sqlite3.connect(journal)) as db:
                     acknowledged = db.execute('SELECT count(*) FROM acknowledgements').fetchone()[0]
                 if acknowledged == 2:
                     break
@@ -360,7 +366,7 @@ def main():
         playlist_path = ROOT.parents[1] / "core/ai/skills/lx-music-skill/scripts/playlist.py"
         namespace = runpy.run_path(str(playlist_path))
         database = work / "playlist.db"
-        with sqlite3.connect(database) as connection:
+        with contextlib.closing(sqlite3.connect(database)) as connection:
             connection.executescript("""
                 CREATE TABLE my_list (id TEXT, name TEXT, source TEXT, sourceListId TEXT, position INTEGER);
                 CREATE TABLE my_list_music_info (id TEXT, name TEXT, singer TEXT);
@@ -376,6 +382,13 @@ def main():
         check("existing_playlist_songs", namespace["get_playlist_songs"]("fixture") == [
             {"name": "示例歌曲", "singer": "示例歌手"}])
         check("existing_playlist_empty", namespace["get_playlist_songs"]("missing") == [])
+        with contextlib.closing(sqlite3.connect(database)) as connection, connection:
+            connection.execute('ALTER TABLE my_list_music_info ADD COLUMN listId TEXT')
+            connection.execute('UPDATE my_list_music_info SET listId=?', ('fixture',))
+            connection.execute('INSERT INTO my_list_music_info VALUES(?,?,?,?)',
+                               ('song', '其他歌单歌曲', '其他歌手', 'other'))
+        check("existing_playlist_current_lx_scope", namespace["get_playlist_songs"]("fixture") == [
+            {"name": "示例歌曲", "singer": "示例歌手"}])
 
     print(json.dumps({"checks": len(checks), "passed": sum(item["passed"] for item in checks),
                       "results": checks}, ensure_ascii=False, indent=2))

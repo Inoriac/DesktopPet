@@ -11,6 +11,7 @@
 #include <memory>
 #include <optional>
 #include <atomic>
+#include <algorithm>
 
 namespace {
 
@@ -519,6 +520,19 @@ void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
                               const ModelRouteConfig &route, QList<ChatMessage> messages,
                               LlmStreamObserver observer, LlmCompletionHandler completion,
                               int routeIndex, bool streaming) {
+    if (!state->request.responseSchema.isEmpty()) {
+        ChatMessage format;
+        format.role = QStringLiteral("system");
+        format.content = QStringLiteral("Return only a JSON object matching this schema. Do not use Markdown fences.\n")
+            + QString::fromUtf8(QJsonDocument(state->request.responseSchema).toJson(QJsonDocument::Compact));
+        auto system = std::find_if(messages.begin(), messages.end(), [](const ChatMessage &message) {
+            return message.role == QStringLiteral("system");
+        });
+        if (system != messages.end())
+            system->content += QStringLiteral("\n\n") + format.content;
+        else
+            messages.prepend(format);
+    }
     const auto hooks = state->request.attemptHooks;
     const auto alive = m_alive;
     const auto gate = m_callbackGate;

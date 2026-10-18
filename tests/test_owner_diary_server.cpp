@@ -242,11 +242,14 @@ bool connectSocket(QLocalSocket& socket, const QString& name) {
 
 QJsonObject exchange(QLocalSocket& socket, const QJsonObject& request) {
     const QByteArray frame = encodeOwnerDiaryFrame(request);
-    if (socket.write(frame) != frame.size() || !socket.waitForBytesWritten(1000)) {
-        return {};
-    }
+    if (socket.write(frame) != frame.size()) return {};
     QElapsedTimer timer;
     timer.start();
+    // Client and server share this thread. Windows named-pipe writes need the
+    // server's accept/completion events, so do not block its event loop.
+    while (socket.bytesToWrite() > 0 && timer.elapsed() < 1000)
+        QTest::qWait(1);
+    if (socket.bytesToWrite() > 0) return {};
     while (socket.bytesAvailable() < 4 && timer.elapsed() < 1000) {
         QCoreApplication::processEvents();
         socket.waitForReadyRead(10);
@@ -259,7 +262,7 @@ QJsonObject exchange(QLocalSocket& socket, const QJsonObject& request) {
     while (payload.size() < static_cast<int>(size)) {
         if (socket.bytesAvailable() == 0) {
             QCoreApplication::processEvents();
-            if (!socket.waitForReadyRead(1000)) return {};
+            if (socket.bytesAvailable() == 0 && !socket.waitForReadyRead(1000)) return {};
         }
         payload += socket.read(size - payload.size());
     }
@@ -580,7 +583,7 @@ void OwnerDiaryServerTests::handleFrame_whenFrameTooLargeOrVersionInvalid_should
     qToBigEndian<quint32>(1025,
         reinterpret_cast<uchar*>(prefix.data()));
     oversized.write(prefix);
-    QVERIFY(oversized.waitForBytesWritten(1000));
+    QTRY_COMPARE_WITH_TIMEOUT(oversized.bytesToWrite(), 0, 1000);
     QTRY_VERIFY_WITH_TIMEOUT(
         oversized.state() == QLocalSocket::UnconnectedState, 1000);
     QVERIFY(server.bufferedBytesForTesting() <= 4);

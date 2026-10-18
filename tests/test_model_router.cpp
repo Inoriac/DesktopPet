@@ -294,8 +294,23 @@ void ModelRouterTests::completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThe
     QVERIFY(result->isOk());
     QCOMPARE(client.routeIds, QList<QString>({QStringLiteral("extract-primary"),
                                               QStringLiteral("extract-primary")}));
-    QCOMPARE(client.messageBatches.at(1).size(), request.messages.size() + 1);
+    QCOMPARE(client.messageBatches.at(0).size(), request.messages.size() + 1);
+    QCOMPARE(client.messageBatches.at(0).first().role, QStringLiteral("system"));
+    QVERIFY(client.messageBatches.at(0).first().content.contains(
+        QString::fromUtf8(QJsonDocument(request.responseSchema).toJson(QJsonDocument::Compact))));
+    QCOMPARE(client.messageBatches.at(1).first().content, client.messageBatches.at(0).first().content);
+    QCOMPARE(client.messageBatches.at(1).size(), request.messages.size() + 2);
     QVERIFY(client.messageBatches.at(1).last().content.contains(QStringLiteral("JSON")));
+
+    request.messages.prepend(message(QStringLiteral("system"), QStringLiteral("Original selection instructions")));
+    client.replies = {{true, responseWithContent(QStringLiteral("{\"answer\":\"ok\"}")), {}}};
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result->isOk());
+    const auto sent = client.messageBatches.last();
+    QCOMPARE(sent.size(), request.messages.size());
+    QVERIFY(sent.first().content.startsWith(request.messages.first().content));
+    QVERIFY(sent.first().content.contains(
+        QString::fromUtf8(QJsonDocument(request.responseSchema).toJson(QJsonDocument::Compact))));
 }
 
 void ModelRouterTests::completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope() {

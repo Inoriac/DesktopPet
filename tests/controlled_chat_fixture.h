@@ -1,3 +1,4 @@
+#include "python_test_support.h"
 #pragma once
 #include "ai/event/runtime_unit_of_work.h"
 #include "ai/plugin/plugin_runtime.h"
@@ -75,7 +76,7 @@ struct Fixture {
       p.remove("sources");
       writeJson(root + "/plugin.json", p);
     }
-    QJsonObject settings{{"program", "/usr/bin/python3"},
+    QJsonObject settings{{"program", testPythonExecutable()},
                          {"script", root + "/adapter.py"},
                          {"database", journal}};
     QJsonObject observation{
@@ -96,7 +97,7 @@ struct Fixture {
     if (withSource)
       observation["source"] = QJsonObject{{"sourceId", source},
                                           {"configurationKey", source},
-                                          {"executor", "/usr/bin/python3"},
+                                          {"executor", testPythonExecutable()},
                                           {"enabled", false}};
     QJsonArray grants;
     for (const auto &scope : {QString(),
@@ -113,7 +114,7 @@ struct Fixture {
                       {"entryId", entry},
                       {"operationId", op},
                       {"effects", QJsonArray{op == send ? "write" : "read"}},
-                      {"executor", "/usr/bin/python3"},
+                      {"executor", testPythonExecutable()},
                       {"autonomous", true}};
         if (scope.isEmpty())
           g["scope"] = "internal_activity";
@@ -187,7 +188,7 @@ struct Fixture {
       return false;
     auto settings = configuration["configuration"].toObject();
     settings[source] =
-        QJsonObject{{"program", "/usr/bin/python3"},
+        QJsonObject{{"program", testPythonExecutable()},
                     {"script", QString(OBSERVATION_SOURCE_PROBE)},
                     {"database", journal},
                     {"wire", wire},
@@ -213,7 +214,7 @@ struct Fixture {
                      QString text = "A new real message",
                      QString room = "group-a", QString reply = {}) {
     QProcess process;
-    process.start("/usr/bin/python3", {root + "/adapter.py", "--database",
+    process.start(testPythonExecutable(), {root + "/adapter.py", "--database",
                                        journal, "--operation", "inject"});
     if (!process.waitForStarted())
       return {};

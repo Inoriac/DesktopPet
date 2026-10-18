@@ -145,7 +145,7 @@ CapabilityRef addReader(Fixture &f, bool renamed) {
                             {"operationId", op},
                             {"scope", "internal_activity"},
                             {"effects", QJsonArray{"read"}},
-                            {"executor", "/usr/bin/python3"},
+                            {"executor", testPythonExecutable()},
                             {"autonomous", true}});
   f.configuration["grants"] = grants;
   return f.ref(op);

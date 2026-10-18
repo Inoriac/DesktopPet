@@ -296,9 +296,13 @@ class MusicAdapter:
                 self.check_fields(row)
                 if not songs:
                     return self.playlist_item(row)
+                # Current LX stores a separate copy of each track per list.
+                # Older databases did not have listId on the info table.
+                info_columns = {column[1] for column in connection.execute('PRAGMA table_info(my_list_music_info)')}
+                list_join = ' AND o.listId=m.listId' if 'listId' in info_columns else ''
                 cursor = connection.execute(
                     'SELECT substr(m.name,1,?),substr(m.singer,1,?) FROM my_list_music_info_order o '
-                    'JOIN my_list_music_info m ON o.musicInfoId=m.id WHERE o.listId=? '
+                    'JOIN my_list_music_info m ON o.musicInfoId=m.id' + list_join + ' WHERE o.listId=? '
                     'ORDER BY o."order",o.musicInfoId LIMIT ?',
                     (MAX_FIELD_CHARS + 1, MAX_FIELD_CHARS + 1, playlist_id, MAX_ROWS + 1))
             else:

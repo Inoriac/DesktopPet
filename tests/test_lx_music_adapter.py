@@ -1,4 +1,5 @@
 """Exercise the distributable adapter using temporary databases and loopback HTTP."""
+from contextlib import closing
 import importlib.util
 import json
 import os
@@ -117,7 +118,7 @@ class LxMusicAdapterTests(unittest.TestCase):
         self.addCleanup(self.temp.cleanup)
         self.directory = Path(self.temp.name)
         self.database = self.directory / "music 数据.db"
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.executescript('''
                 CREATE TABLE my_list(id TEXT PRIMARY KEY, name TEXT, source TEXT, sourceListId TEXT, position INTEGER);
                 CREATE TABLE my_list_music_info(id TEXT PRIMARY KEY, name TEXT, singer TEXT);
@@ -211,8 +212,21 @@ class LxMusicAdapterTests(unittest.TestCase):
         self.assertEqual(result["state"], "completed")
         self.assertEqual(result["data"]["items"], [{"name": "晴天", "singer": "周杰伦"}])
 
+    def test_current_lx_schema_scopes_duplicate_song_ids_to_playlist(self):
+        with closing(sqlite3.connect(self.database)) as connection, connection:
+            connection.execute('ALTER TABLE my_list_music_info RENAME TO old_info')
+            connection.execute('CREATE TABLE my_list_music_info '
+                               '(id TEXT, name TEXT, singer TEXT, listId TEXT, UNIQUE(id,listId))')
+            connection.execute('INSERT INTO my_list_music_info SELECT id,name,singer,? FROM old_info', ('cloud',))
+            connection.execute('INSERT INTO my_list_music_info VALUES(?,?,?,?)',
+                               ('a', '另一个歌单版本', '其他歌手', 'other'))
+        result = self.invoke('playlist_songs', {'playlist_id': 'cloud'})
+        self.assertEqual(result['state'], 'completed')
+        self.assertEqual(result['data']['items'], [
+            {'name': '稻香', 'singer': '周杰伦'}, {'name': '晴天', 'singer': '周杰伦'}])
+
     def test_playlist_scheme_preserves_id_path_and_escapes_special_characters(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("INSERT INTO my_list VALUES(?,?,?,?,?)",
                                ("source-path", "路径歌单", "kg", 'id/123 空?#%"', 4))
             connection.execute("INSERT INTO my_list VALUES(?,?,?,?,?)",
@@ -425,7 +439,7 @@ class LxMusicAdapterTests(unittest.TestCase):
         self.assertIn("platform", invalid["data"])
 
     def test_database_schema_lock_and_bounded_list(self):
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.executemany("INSERT INTO my_list VALUES(?,?,?,?,?)",
                                    [("large-%d" % index, "歌单", "wy", str(index), 10 + index) for index in range(1100)])
         result = self.invoke("list_playlists")
@@ -439,7 +453,7 @@ class LxMusicAdapterTests(unittest.TestCase):
         finally:
             lock.rollback()
             lock.close()
-        with sqlite3.connect(self.database) as connection:
+        with closing(sqlite3.connect(self.database)) as connection, connection:
             connection.execute("DROP TABLE my_list")
         self.assertEqual(self.invoke("list_playlists")["state"], "failed")
 
