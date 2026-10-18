@@ -615,7 +615,8 @@ class TestActivityRuntime : public QObject {
         QTRY_VERIFY(ticks > 2);
         runtime.pauseTaskAsync();
         QTRY_VERIFY(!runtime.isActive());
-        QCOMPARE(runtime.taskSnapshot()["status"].toString(), "Paused");
+        // Activity and the persisted task snapshot arrive as separate queued signals.
+        QTRY_COMPARE(runtime.taskSnapshot()["status"].toString(), "Paused");
     }
     void runtimeUsesLiveCapabilityValidatorOnStartAndResume() {
         QTemporaryDir dir;
