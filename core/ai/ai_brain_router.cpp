@@ -413,7 +413,7 @@ void AIBrain::restoreConversationHistory(const QList<ChatHistoryEntry>& history)
     QSet<QString> seen;
     QSet<QString> userIds;
     for (const ChatHistoryEntry& entry : history) {
-        if (entry.status != ChatMessageStatus::Complete || entry.content.trimmed().isEmpty()
+        if (entry.status != ChatMessageStatus::Complete || (entry.content.trimmed().isEmpty() && entry.images.isEmpty())
             || (!entry.id.isEmpty() && seen.contains(entry.id))) continue;
         if (entry.role == QLatin1String("user")) {
             userIds.insert(entry.id);
@@ -425,6 +425,8 @@ void AIBrain::restoreConversationHistory(const QList<ChatHistoryEntry>& history)
         ChatMessage message;
         message.role = entry.role;
         message.content = entry.content;
+        if (!entry.images.isEmpty())
+            message.content += QStringLiteral("\n[用户发送了 %1 张图片；历史图片未重新识别]").arg(entry.images.size());
         appendToMemory(message);
     }
 }

@@ -281,11 +281,26 @@ QJsonObject LauncherChatServer::handleRequest(
         return {}; // The model completes the read asynchronously on the owner thread.
     }
     if (action == QLatin1String("send_message")) {
-        const auto result = m_callbacks.sendMessage(
-            payload.value(QStringLiteral("text")).toString());
-        if (!result.isOk()) return resultError(requestId, result.error());
-        notifyStateChanged();
-        return ownerDiarySuccessResponse(requestId, result.value());
+        if (!payload.value("text").isString() || (payload.contains("images") && !payload.value("images").isArray()))
+            return ownerDiaryErrorResponse(requestId,"CHAT_MESSAGE_INVALID",QStringLiteral("消息格式无效。"));
+        const auto text=payload.value("text").toString();
+        const auto images=payload.value("images").toArray();
+        if ((text.trimmed().isEmpty() && images.isEmpty()) || text.trimmed().size()>8000 || images.size()>4)
+            return ownerDiaryErrorResponse(requestId,"CHAT_MESSAGE_INVALID",QStringLiteral("消息为空、过长或图片超过 4 张。"));
+        for (const auto& image:images) {
+            const auto item=image.toObject();
+            if (!image.isObject() || !item["path"].isString() || item["path"].toString().isEmpty()
+                || (item.contains("name") && !item["name"].isString()))
+                return ownerDiaryErrorResponse(requestId,"CHAT_IMAGE_INVALID",QStringLiteral("图片引用无效。"));
+        }
+        QPointer<LauncherChatServer> server(this);
+        QPointer<QLocalSocket> receiver(socket);
+        m_callbacks.sendMessage(text,images,[server,receiver,requestId](ChatHistoryResult result) {
+            if (!server || !receiver || !server->m_connections.contains(receiver.data())) return;
+            if (result) server->notifyStateChanged();
+            server->writeResponse(receiver,result ? ownerDiarySuccessResponse(requestId,result.value()) : resultError(requestId,result.error()));
+        });
+        return {};
     }
     if (action == QLatin1String("retry_message")) {
         const auto result = m_callbacks.retryMessage(

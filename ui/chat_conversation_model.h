@@ -19,7 +19,11 @@ public:
                     QString* errorMessage);
     QString appendUserMessage(
         const QString& text,
-        const QDateTime& timestamp = QDateTime::currentDateTime());
+        const QDateTime& timestamp = QDateTime::currentDateTime(),
+        const QJsonArray& images = {});
+    void appendUserMessageWithImages(const QString& text, const QJsonArray& sources,
+                                     ChatHistoryCompletion completion);
+    QJsonArray sourceImagesForReply(const QString& assistantMessageId) const;
     void beginAssistantMessage(
         const QString& messageId,
         const QString& replyToId = {},
@@ -54,6 +58,7 @@ private:
     QList<ChatHistoryEntry> m_messages;
     QHash<QString, int> m_messageIndexes;
     QString m_profileId;
+    QString m_imageDirectory;
     QString m_lastReadMessageId;
     bool m_initialized = false;
     bool m_persistenceAvailable = false;

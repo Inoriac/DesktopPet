@@ -1,4 +1,6 @@
 #include "chat_conversation_model.h"
+#include "ai/chat/chat_image_store.h"
+#include <QDir>
 
 #include <QMetaObject>
 #include <QPointer>
@@ -85,6 +87,7 @@ bool ChatConversationModel::initialize(const ProfileChatStoreOptions& options,
         return false;
     }
     m_profileId = profileId;
+    m_imageDirectory = QDir(options.appDataRoot).filePath("profiles/" + profileId + "/chat/images");
 
     QString storeError;
     if (!m_store.open(options, &storeError)) {
@@ -116,14 +119,16 @@ bool ChatConversationModel::initialize(const ProfileChatStoreOptions& options,
 }
 
 QString ChatConversationModel::appendUserMessage(const QString& text,
-                                                 const QDateTime& timestamp) {
+                                                 const QDateTime& timestamp,
+                                                 const QJsonArray& images) {
     const QString normalized = text.trimmed();
-    if (!m_initialized || normalized.isEmpty()) return {};
+    if (!m_initialized || (normalized.isEmpty() && images.isEmpty())) return {};
 
     ChatHistoryEntry entry;
     entry.id = QUuid::createUuid().toString(QUuid::WithoutBraces);
     entry.role = QStringLiteral("user");
     entry.content = normalized;
+    entry.images = images;
     entry.timestamp = timestamp.isValid() ? timestamp : QDateTime::currentDateTime();
     entry.status = ChatMessageStatus::Complete;
     const int index = m_messages.size();
@@ -132,6 +137,61 @@ QString ChatConversationModel::appendUserMessage(const QString& text,
     emit messageInserted(index, entry.id);
     appendToStore(entry);
     return entry.id;
+}
+
+void ChatConversationModel::appendUserMessageWithImages(const QString& text, const QJsonArray& sources,
+                                                        ChatHistoryCompletion completion) {
+    if (!completion) return;
+    if (!m_initialized || (text.trimmed().isEmpty() && sources.isEmpty()) || text.trimmed().size()>8000) {
+        completion(ChatHistoryResult::failure(domainError("CHAT_MESSAGE_INVALID", QStringLiteral("消息为空或超过 8000 个字符。"))));
+        return;
+    }
+    if (sources.isEmpty()) {
+        completion(ChatHistoryResult::success({{"messageId",appendUserMessage(text)}}));
+        return;
+    }
+    if (!m_persistenceAvailable) {
+        completion(ChatHistoryResult::failure(domainError("STORE_UNAVAILABLE", QStringLiteral("无法保存图片，请稍后重试。"))));
+        return;
+    }
+    ChatHistoryEntry entry;
+    entry.id=QUuid::createUuid().toString(QUuid::WithoutBraces);
+    entry.role="user"; entry.content=text.trimmed(); entry.timestamp=QDateTime::currentDateTime();
+    const auto generation=m_historyGeneration;
+    auto store=m_store;
+    const ChatImageStore images(m_imageDirectory);
+    m_persistencePool.start([this, store, images, sources, entry, generation, completion=std::move(completion)]() mutable {
+        const auto imported=images.importImages(sources);
+        QString error;
+        auto result=ChatHistoryResult::failure(imported ? domainError("STORE_UNAVAILABLE", QStringLiteral("无法保存图片消息，请重试。")) : imported.error());
+        if (imported) {
+            entry.images=imported.value();
+            if (store.appendFinal(entry,&error)) result=ChatHistoryResult::success({{"messageId",entry.id},{"images",entry.images}});
+            else images.discardImages(entry.images);
+        }
+        QMetaObject::invokeMethod(this,[this,entry,generation,result=std::move(result),completion=std::move(completion)]() mutable {
+            if (generation!=m_historyGeneration) return;
+            if (result) {
+                const int index=m_messages.size(); m_messages.append(entry); m_messageIndexes.insert(entry.id,index);
+                emit messageInserted(index,entry.id);
+            }
+            completion(std::move(result));
+        },Qt::QueuedConnection);
+    });
+}
+
+QJsonArray ChatConversationModel::sourceImagesForReply(const QString& assistantMessageId) const {
+    const int index=indexOf(assistantMessageId);
+    if (index<0 || m_messages.at(index).role!="assistant") return {};
+    const auto& assistant=m_messages.at(index);
+    const auto ids=assistant.sourceMessageIds.isEmpty()?QStringList{assistant.replyToId}:assistant.sourceMessageIds;
+    QJsonArray images;
+    for (const auto& id:ids) {
+        const int source=indexOf(id);
+        if (source<0 || m_messages.at(source).role!="user") return {};
+        for (const auto& image:m_messages.at(source).images) images.append(image);
+    }
+    return images;
 }
 
 void ChatConversationModel::beginAssistantMessage(const QString& messageId,

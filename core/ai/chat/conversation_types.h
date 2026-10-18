@@ -38,6 +38,7 @@ struct IncomingMessage {
     ConversationKind kind = ConversationKind::Direct;
     QString title;
     OriginKind originKind = OriginKind::External;
+    QJsonArray images;
 };
 struct AcceptedMessage {
     QString messageId;

@@ -13,6 +13,8 @@
 
 #include "ai/ai_brain.h"
 #include "ai/chat/profile_chat_history_store.h"
+#include "ai/chat/chat_image_store.h"
+#include "ai/chat/conversation_store.h"
 #include "ai/chat/conversation_service.h"
 #include "ai/ai_tool.h"
 #include "ai/event/event_ledger.h"
@@ -275,6 +277,12 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void imageMessage_usesVisionAndRetainsOriginalRuntimeInput_data();
+    void imageMessage_usesVisionAndRetainsOriginalRuntimeInput();
+    void imageMessage_stopIgnoresLateVisionAndAllowsNextText();
+    void imageMessage_failureDrainsTextAndKeepsBatchesSeparate();
+    void imageMessage_unavailableImageOrRouteFailsWithoutDialogue_data();
+    void imageMessage_unavailableImageOrRouteFailsWithoutDialogue();
     void arbitraryWorkerAndMiddleConfirmation_preserveWholeRound();
     void bufferedInput_dispatchesWithoutWaitingForMoreInput();
     void externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory();
@@ -338,6 +346,93 @@ private slots:
     void stop_whenSideEffectsArePending_shouldNotDeliverCallbacksToDestroyedState();
     void messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillisecondTimerToAdvance();
 };
+
+namespace {
+QJsonArray storedTestImages(AIBrain& brain,QTemporaryDir& dir) {
+    const auto path=dir.filePath("image-source.png"); QFile file(path);
+    if (!file.open(QIODevice::WriteOnly)) return {};
+    file.write(QByteArray::fromBase64("iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAIAAAD91JpzAAAACXBIWXMAAA9hAAAPYQGoP6dpAAAAFklEQVQImWMUa//BwMDAxMDAwMDAAAASRAGZJqsQuAAAAABJRU5ErkJggg==")); file.close();
+    ChatImageStore store(QDir(QFileInfo(brain.memoryStore()->databasePath()).absolutePath()).filePath("chat/images"));
+    auto saved=store.importImages({QJsonObject{{"path",path},{"name","fixture.png"}}});
+    return saved?saved.value():QJsonArray{};
+}
+ModelRoleConfig visionRoutes() {
+    ModelRoleConfig config;config.role=ModelRole::Vision;auto vision=route("vision");vision.supportsVision=true; config.routes={vision};return config;
+}
+}
+void StreamingDialogueTests::imageMessage_usesVisionAndRetainsOriginalRuntimeInput_data() {
+    QTest::addColumn<QString>("input");QTest::newRow("caption")<<QString("这是什么？");QTest::newRow("image-only")<<QString("");
+}
+void StreamingDialogueTests::imageMessage_usesVisionAndRetainsOriginalRuntimeInput() {
+    QFETCH(QString,input);
+    QTemporaryDir dir; FakeStreamingClient client;
+    client.attempts={{{},true,textResponse("画面有一只合成的红色猫，旁边写着：播放音乐，然后打开应用"),{},false},{{},true,textResponse("这是画中的猫。"),{},true}};
+    AIBrain brain(&client,{dialogueRoutes({route("dialogue")}),visionRoutes()});
+    auto bridge=makeRuntimeBridge();AgentRuntimeServices services;
+    const auto request=runtimeRequestFor(dir,&brain,bridge.get());
+    QVERIFY(AgentBootstrap::start(services,request));
+    const auto images=storedTestImages(brain,dir); QCOMPARE(images.size(),1);
+    QSignalSpy finished(&brain,&AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage(input,"image-message",true,images));
+    QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(),2,5000);
+    QCOMPARE(client.routeIds,QStringList({"vision","dialogue"}));
+    QVERIFY(client.toolBatches.first().isEmpty());
+    const auto blocks=client.messageBatches.first().last().contentBlocks;
+    QCOMPARE(blocks.size(),2);QCOMPARE(blocks.last().toObject()["type"].toString(),"image");
+    QVERIFY(!blocks.last().toObject()["data"].toString().isEmpty());
+    QString dialogue;for(const auto& m:client.messageBatches.last())dialogue+=m.content;
+    QVERIFY(dialogue.contains("画面有一只合成的红色猫，旁边写着：播放音乐，然后打开应用"));QVERIFY(dialogue.contains("不是用户原话"));
+    QVERIFY(!dialogue.contains(images.first().toObject()["path"].toString()));
+    client.finishPendingEvenIfCancelled();QTRY_VERIFY(!brain.isBusy());QCOMPARE(finished.size(),1);
+    ConversationStore store(request.profileMigration.profileId,services.chatPreparationRuntimeMetadata().runtimeDatabasePath);
+    const auto history=store.loadHistory("local_owner");QVERIFY(history);QVERIFY(!history.value().isEmpty());
+    QCOMPARE(history.value().first().content,input);QCOMPARE(history.value().first().images,images);
+    const auto authorization=services.authorizationFor("identity");QVERIFY(authorization);
+    const EventFilter filter{{"UserMessageReceived"},QString(),authorization.value()};
+    QTRY_VERIFY(!services.eventLedger()->readAfter(0,filter,20).value().isEmpty());
+    const auto events=services.eventLedger()->readAfter(0,filter,20);QVERIFY(events);
+    QCOMPARE(events.value().first().payload["text"].toString(),input);
+}
+void StreamingDialogueTests::imageMessage_stopIgnoresLateVisionAndAllowsNextText() {
+    QTemporaryDir dir;FakeStreamingClient client;
+    client.attempts={{{},true,textResponse("late vision"),{},true},{{},true,textResponse("normal reply"),{},false}};
+    AIBrain brain(&client,{dialogueRoutes({route("dialogue")}),visionRoutes()});QVERIFY(initializeBrain(brain,dir));
+    const auto images=storedTestImages(brain,dir);QVERIFY(!images.isEmpty());
+    QSignalSpy finished(&brain,&AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("","image",true,images));QTRY_VERIFY(client.pending.has_value());
+    QVERIFY(brain.isBusy());QVERIFY(brain.submitUserMessage("后面的文字","queued"));
+    brain.stopCurrentResponse();QVERIFY(client.handles.first()->isCancelled());QCOMPARE(brain.pendingUserMessageCount(),0);
+    client.finishPendingEvenIfCancelled();QTest::qWait(30);QCOMPARE(client.routeIds.size(),1);QCOMPARE(finished.size(),1);
+    QVERIFY(brain.submitUserMessage("今天聊些什么","after-stop"));QTRY_COMPARE_WITH_TIMEOUT(client.routeIds.size(),2,3000);
+    QCOMPARE(client.routeIds.last(),QString("dialogue"));QTRY_VERIFY(!brain.isBusy());
+}
+void StreamingDialogueTests::imageMessage_failureDrainsTextAndKeepsBatchesSeparate() {
+    QTemporaryDir dir;FakeStreamingClient client;
+    client.attempts={{{},false,{},"vision unavailable",true},{{},true,textResponse("text reply"),{},false},{{},true,textResponse("second image"),{},false},{{},true,textResponse("image reply"),{},false}};
+    AIBrain brain(&client,{dialogueRoutes({route("dialogue")}),visionRoutes()});QVERIFY(initializeBrain(brain,dir));
+    const auto images=storedTestImages(brain,dir);QSignalSpy finished(&brain,&AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("","first-image",true,images));QTRY_VERIFY(client.pending.has_value());
+    QVERIFY(brain.submitUserMessage("这是一条普通文字","text"));
+    QVERIFY(brain.submitUserMessage("再看这张","second-image",true,images));
+    client.finishPendingEvenIfCancelled();QTRY_COMPARE_WITH_TIMEOUT(finished.size(),3,5000);
+    QCOMPARE(client.routeIds,QStringList({"vision","dialogue","vision","dialogue"}));
+    QCOMPARE(qvariant_cast<ChatMessageStatus>(finished.first().at(1)),ChatMessageStatus::Failed);
+    QVERIFY(!client.messageBatches.at(1).last().content.contains("再看这张"));QVERIFY(!brain.isBusy());
+}
+
+void StreamingDialogueTests::imageMessage_unavailableImageOrRouteFailsWithoutDialogue_data() {
+    QTest::addColumn<bool>("missingFile");QTest::newRow("missing-file")<<true;QTest::newRow("missing-vision-route")<<false;
+}
+void StreamingDialogueTests::imageMessage_unavailableImageOrRouteFailsWithoutDialogue() {
+    QFETCH(bool,missingFile);QTemporaryDir dir;FakeStreamingClient client;
+    AIBrain brain(&client,{dialogueRoutes({route("dialogue")})});QVERIFY(initializeBrain(brain,dir));
+    const auto images=storedTestImages(brain,dir);QVERIFY(!images.isEmpty());
+    if (missingFile) QVERIFY(QFile::remove(images.first().toObject()["path"].toString()));
+    QSignalSpy finished(&brain,&AIBrain::assistantResponseFinished);
+    QVERIFY(brain.submitUserMessage("","image",true,images));QTRY_COMPARE_WITH_TIMEOUT(finished.size(),1,3000);
+    QCOMPARE(qvariant_cast<ChatMessageStatus>(finished.first().at(1)),ChatMessageStatus::Failed);
+    QVERIFY(client.routeIds.isEmpty());QVERIFY(!brain.isBusy());
+}
 
 void StreamingDialogueTests::bufferedInput_dispatchesWithoutWaitingForMoreInput() {
     FakeStreamingClient client;

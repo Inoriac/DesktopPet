@@ -25,6 +25,7 @@ struct ChatHistoryEntry {
     ChatMessageStatus status = ChatMessageStatus::Complete;
     QString errorMessage;
     QStringList sourceMessageIds;
+    QJsonArray images;
 };
 
 bool isTerminalChatMessageStatus(ChatMessageStatus status);

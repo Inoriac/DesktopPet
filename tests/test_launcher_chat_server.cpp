@@ -30,8 +30,8 @@ QJsonObject exchange(QLocalSocket& socket, const QJsonObject& request) {
 LauncherChatCallbacks callbacks() {
     LauncherChatCallbacks value;
     value.snapshot = [] { return QJsonObject{{"messages", QJsonArray{}}}; };
-    value.sendMessage = [](const QString&) { return ChatHistoryResult::success({}); };
-    value.retryMessage = value.sendMessage;
+    value.sendMessage = [](const QString&, const QJsonArray&, ChatHistoryCompletion complete) { complete(ChatHistoryResult::success({})); };
+    value.retryMessage = [](const QString&) { return ChatHistoryResult::success({}); };
     value.stopResponse = [] { return Result<void, DomainError>::success(); };
     return value;
 }
@@ -47,6 +47,7 @@ QString authenticate(QLocalSocket& socket, LauncherChatServer& server, const QSt
 class TestLauncherChatServer : public QObject {
     Q_OBJECT
 private slots:
+    void imageSendWaitsForPersistenceAndValidatesAuthentication();
     void authenticatedQueriesAreAsyncAndDoNotChangeStateRevision();
     void invalidQueriesAndAuthenticationNeverReachStore();
     void lateCompletionAfterDisconnectOrDestructionIsIgnored();
@@ -120,6 +121,26 @@ void TestLauncherChatServer::lateCompletionAfterDisconnectOrDestructionIsIgnored
     pending(ChatHistoryResult::success({}));
     server.reset();
     pending(ChatHistoryResult::success({}));
+}
+
+void TestLauncherChatServer::imageSendWaitsForPersistenceAndValidatesAuthentication() {
+    auto cb=callbacks(); int sends=0; bool heartbeat=false;
+    const QJsonArray images{QJsonObject{{"path","/tmp/synthetic.png"},{"name","synthetic.png"}}};
+    cb.sendMessage=[&](const QString& text,const QJsonArray& sources,ChatHistoryCompletion done) {
+        ++sends;QVERIFY(text.isEmpty());QCOMPARE(sources,images);
+        QTimer::singleShot(5,[&] { heartbeat=true; });
+        QTimer::singleShot(30,[done] { done(ChatHistoryResult::success({{"messageId","image-id"}})); });
+    };
+    LauncherChatServer server("11111111-1111-4111-8111-111111111111",cb);QLocalSocket socket;
+    const auto token=authenticate(socket,server,"dp-chat-"+QUuid::createUuid().toString(QUuid::Id128).left(12));QVERIFY(!token.isEmpty());
+    auto denied=exchange(socket,request("send_message",{{"sessionToken","forged"},{"text",""},{"images",images}}));
+    QCOMPARE(denied["error"].toObject()["code"].toString(),QString("CHAT_AUTH_FAILED"));QCOMPARE(sends,0);
+    auto invalid=exchange(socket,request("send_message",{{"sessionToken",token},{"text",""},{"images",QJsonArray{1}}}));
+    QCOMPARE(invalid["error"].toObject()["code"].toString(),QString("CHAT_IMAGE_INVALID"));QCOMPARE(sends,0);
+    const auto sent=exchange(socket,request("send_message",{{"sessionToken",token},{"text",""},{"images",images}}));
+    QVERIFY(sent["ok"].toBool());QCOMPARE(sent["data"].toObject()["messageId"].toString(),QString("image-id"));QVERIFY(heartbeat);QCOMPARE(sends,1);
+    auto state=exchange(socket,request("get_chat_state",{{"sessionToken",token},{"afterRevision",1}}));
+    QVERIFY(!state["data"].toObject()["unchanged"].toBool());
 }
 
 QTEST_GUILESS_MAIN(TestLauncherChatServer)

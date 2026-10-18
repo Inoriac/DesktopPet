@@ -53,7 +53,7 @@ bool isValidEntry(const ChatHistoryEntry& entry) {
     }
     if ((entry.role == QStringLiteral("user")
          || entry.role == QStringLiteral("system"))
-        && entry.content.trimmed().isEmpty()) {
+        && entry.content.trimmed().isEmpty() && entry.images.isEmpty()) {
         return false;
     }
     return true;
@@ -68,6 +68,7 @@ QByteArray encodeEntry(const ChatHistoryEntry& entry) {
         {QStringLiteral("timestamp"), entry.timestamp.toString(Qt::ISODateWithMs)},
         {QStringLiteral("status"), chatMessageStatusStorageName(entry.status)},
     };
+    if (!entry.images.isEmpty()) object.insert(QStringLiteral("images"), entry.images);
     if (!entry.replyToId.isEmpty()) {
         object.insert(QStringLiteral("replyToId"), entry.replyToId);
     }
@@ -92,6 +93,7 @@ std::optional<ChatHistoryEntry> decodeVersionTwo(const QJsonObject& object) {
             entry.sourceMessageIds.append(id.toString());
     }
     entry.content = object.value(QStringLiteral("content")).toString();
+    entry.images = object.value(QStringLiteral("images")).toArray();
     entry.errorMessage = object.value(QStringLiteral("errorMessage")).toString();
     entry.timestamp = QDateTime::fromString(
         object.value(QStringLiteral("timestamp")).toString(), Qt::ISODateWithMs);

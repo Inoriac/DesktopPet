@@ -121,6 +121,7 @@ Result<QList<ChatHistoryEntry>, DomainError> history(QSqlDatabase& db, const QSt
         ChatHistoryEntry entry;
         entry.id=q.value(0).toString(); entry.speakerId=q.value(1).toString();
         entry.conversationId=conversation; entry.content=p.value()["text"].toString();
+        entry.images=p.value()["images"].toArray();
         entry.role=p.value()["role"].toString(p.value()["senderKind"]=="self" ? "assistant" : "user");
         entry.replyToId=p.value()["replyToId"].toString();
         if(context) entry.context=context.value();
@@ -163,11 +164,11 @@ VoidResult insertLocal(QSqlDatabase& db, RuntimeUnitOfWork& unit, SqliteEventOut
     if (existing.next()) {
         auto p=parsedObject(existing.value(1)); if (!p) return VoidResult::failure(p.error());
         if (existing.value(0).toString()!="local_owner" || p.value()["text"].toString()!=entry.content
-            || p.value()["role"].toString()!=entry.role)
+            || p.value()["role"].toString()!=entry.role || p.value()["images"].toArray()!=entry.images)
             return VoidResult::failure(invalid("Message id already identifies different content"));
         return VoidResult::success();
     }
-    QJsonObject p={{"text",entry.content},{"role",entry.role},{"senderKind",entry.role=="assistant"?"self":entry.role=="user"?"person":"unknown"},
+    QJsonObject p={{"images",entry.images},{"text",entry.content},{"role",entry.role},{"senderKind",entry.role=="assistant"?"self":entry.role=="user"?"person":"unknown"},
         {"status",chatMessageStatusStorageName(entry.status)},{"replyToId",entry.replyToId},
         {"sourceMessageIds",QJsonArray::fromStringList(entry.sourceMessageIds)}, {"errorMessage",entry.errorMessage},
         {"originId",stableId("origin",profile,entry.id)},{"historical_import",historicalImport}};
@@ -225,7 +226,8 @@ ConversationStore::acceptMessage(const IncomingMessage &message,
   if (message.kind != binding->kind ||
       (local ? message.originKind != OriginKind::LocalOwner
              : message.originKind != OriginKind::External) ||
-      message.content.trimmed().isEmpty() || message.content.size() > 8000 ||
+      (message.content.trimmed().isEmpty() && message.images.isEmpty()) || message.content.size() > 8000 ||
+      message.images.size()>4 || (!local && !message.images.isEmpty()) ||
       (local && !message.occurredAt.isValid()) ||
       (local ? message.localMessageId.isEmpty()
              : (!message.localMessageId.isEmpty() ||
@@ -308,6 +310,7 @@ ConversationStore::acceptMessage(const IncomingMessage &message,
     if (!p)
       return R::failure(p.error());
     if (p.value()["text"].toString() != message.content ||
+        p.value()["images"].toArray() != message.images ||
         q.value(1).toString() != resolution.personId.value_or(QString()) ||
         (p.value()["senderKind"] == "self") != self)
       return R::failure(invalid(
@@ -323,6 +326,7 @@ ConversationStore::acceptMessage(const IncomingMessage &message,
   } else {
     QJsonObject p = {
         {"text", message.content},
+        {"images", message.images},
         {"senderKind", self                  ? "self"
                        : resolution.personId ? "person"
                                              : "unknown"},
@@ -410,7 +414,7 @@ ChatHistoryResult ConversationStore::queryLocalHistory(const QJsonObject& reques
         const QString around = query["aroundMessageId"].toString();
         const QString visible = " AND json_extract(payload_json,'$.role') IN ('user','assistant')"
             " AND (length(trim(json_extract(payload_json,'$.text')))>0"
-            " OR json_extract(payload_json,'$.status') IN ('pending','streaming'))";
+            " OR COALESCE(json_array_length(payload_json,'$.images'),0)>0 OR json_extract(payload_json,'$.status') IN ('pending','streaming'))";
         const QString cursorId = around.isEmpty() ? before : around;
         qint64 cursor = std::numeric_limits<qint64>::max();
         if (!cursorId.isEmpty()) {
@@ -445,6 +449,7 @@ ChatHistoryResult ConversationStore::queryLocalHistory(const QJsonObject& reques
                 entry.id = q.value(1).toString();
                 entry.role = p["role"].toString(p["senderKind"] == "self" ? "assistant" : "user");
                 entry.content = p["text"].toString();
+                entry.images = p["images"].toArray();
                 entry.replyToId = p["replyToId"].toString();
                 entry.timestamp = QDateTime::fromString(q.value(3).toString(), Qt::ISODateWithMs);
                 entry.status = chatMessageStatusFromStorageName(p["status"].toString("complete")).value_or(ChatMessageStatus::Failed);
@@ -498,7 +503,7 @@ ChatHistoryResult ConversationStore::queryLocalHistory(const QJsonObject& reques
 VoidResult ConversationStore::appendLocalHistory(const ChatHistoryEntry& entry) {
     if (entry.id.isEmpty() || !entry.timestamp.isValid() || !isTerminalChatMessageStatus(entry.status)
         || (entry.role!="user" && entry.role!="assistant" && entry.role!="system")
-        || (entry.role!="assistant" && (!entry.replyToId.isEmpty() || entry.content.trimmed().isEmpty())))
+        || (entry.role!="assistant" && (!entry.replyToId.isEmpty() || (entry.content.trimmed().isEmpty() && entry.images.isEmpty()))))
         return VoidResult::failure(invalid("Invalid terminal chat history entry"));
     EventSchemaRegistry schemas; registerBuiltInEventSchemas(schemas);
     SqliteEventOutbox outbox(m_databasePath,&schemas,m_profileId);
@@ -534,7 +539,7 @@ VoidResult ConversationStore::importLocalHistory(const QList<ChatHistoryEntry>& 
                 QSqlQuery q(db);q.prepare("SELECT conversation_id,payload_json FROM agent_messages WHERE profile_id=? AND id=?");
                 q.addBindValue(m_profileId);q.addBindValue(id);if(!q.exec())return VoidResult::failure(storeError(q.lastError().text()));
                 if(q.next()) {auto p=parsedObject(q.value(1));if(!p)return VoidResult::failure(p.error());
-                    if(q.value(0).toString()!="local_owner" || p.value()["text"].toString()!=entry.content || p.value()["role"].toString()!=entry.role)
+                    if(q.value(0).toString()!="local_owner" || p.value()["text"].toString()!=entry.content || p.value()["role"].toString()!=entry.role || p.value()["images"].toArray()!=entry.images)
                         id=stableId("legacy",m_profileId,sourceRef+":"+entry.id);
                 }
                 mapping.insert(entry.id,id);
@@ -617,8 +622,9 @@ Result<PreparedContext, DomainError> ConversationStore::prepareContext(const Con
     if (!entries) return R::failure(entries.error());
     for (const auto& entry:entries.value()) {
         if (request.sourceMessageIds.contains(entry.id) || entry.status!=ChatMessageStatus::Complete
-            || (entry.role!="user" && entry.role!="assistant") || entry.content.isEmpty()) continue;
+            || (entry.role!="user" && entry.role!="assistant") || (entry.content.isEmpty() && entry.images.isEmpty())) continue;
         ChatMessage message; message.role=entry.role; message.content=entry.content;
+        if (!entry.images.isEmpty()) message.content+=QStringLiteral("\n[用户发送了 %1 张图片；历史图片未重新识别]").arg(entry.images.size());
         if (prepared.context.originKind==OriginKind::External)
             message.content=json(QJsonObject{{"message_id",entry.id},{"speaker_id",entry.role=="assistant"?QStringLiteral("self"):entry.speakerId},{"text",entry.content}});
         prepared.messages.append(message);

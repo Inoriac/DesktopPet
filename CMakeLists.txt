@@ -116,6 +116,7 @@ set(CONVERSATION_SOURCES
     core/ai/chat/conversation_store.h core/ai/chat/conversation_store.cpp
     core/ai/chat/conversation_service.h core/ai/chat/conversation_service.cpp
     core/ai/chat/chat_types.cpp
+    core/ai/chat/chat_image_store.cpp
 )
 
 set(AGENT_RUNTIME_SOURCES
@@ -282,6 +283,7 @@ set(CORE_SOURCES
 
     core/ai/chat/chat_types.h
     core/ai/chat/chat_types.cpp
+    core/ai/chat/chat_image_store.cpp
     core/ai/chat/profile_chat_history_store.h
     core/ai/chat/profile_chat_history_store.cpp
     core/ai/chat/launcher_chat_server.h
@@ -1210,6 +1212,28 @@ add_desktop_pet_cpp_test(chat_ui_model_tests ChatUiModelTests
         core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
         core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
         tests/test_chat_conversation_model.cpp
+        ui/chat_conversation_model.h
+        ui/chat_conversation_model.cpp
+        core/ai/chat/chat_types.h
+        core/ai/chat/chat_types.cpp
+        core/ai/chat/profile_chat_history_store.h
+        core/ai/chat/profile_chat_history_store.cpp
+    INCLUDE_DIRS
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES
+        Qt::Core
+        Qt::Sql
+        Qt::Test
+)
+
+add_desktop_pet_cpp_test(chat_image_tests ChatImageTests
+    SOURCES
+        ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+        tests/test_chat_images.cpp
         ui/chat_conversation_model.h
         ui/chat_conversation_model.cpp
         core/ai/chat/chat_types.h

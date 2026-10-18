@@ -9,6 +9,7 @@
 #include <QObject>
 #include <QHash>
 #include <QTimer>
+#include <QThreadPool>
 #include <QElapsedTimer>
 #include <QList>
 #include <QStringList>
@@ -124,7 +125,8 @@ public:
     bool canAcceptUserMessage() const;
     Result<void, DomainError> submitUserMessage(const QString& text,
                                                const QString& messageId,
-                                               bool rememberInput = true);
+                                               bool rememberInput = true,
+                                               const QJsonArray& images = {});
     int pendingUserMessageCount() const { return m_pendingUserMessages.size(); }
     QStringList activeUserMessageIds() const;
     quint64 interactionRevision() const { return m_interactionRevision; }
@@ -221,10 +223,14 @@ private:
         std::optional<AcceptedMessage> accepted;
         std::optional<IncomingMessage> original;
         qint64 queuedAtMonotonicMs = 0;
+        QJsonArray images;
     };
     void schedulePendingUserMessages();
     void dispatchPendingUserMessages();
     void cancelActiveResponse();
+    void continueAcceptedThink(const QString& reason);
+    void prepareImageObservation(const QJsonArray& images);
+    QThreadPool m_imageReadPool;
     QTimer m_userMessageDispatchTimer;
     QList<PendingUserMessage> m_pendingUserMessages;
     QList<PendingUserMessage> m_dispatchingUserMessages;
@@ -405,6 +411,7 @@ private:
         qint64 uiAcknowledgeMs = 0;
         qint64 preparationMs = 0;
         std::shared_ptr<LlmRequestHandle> requestHandle;
+        bool awaitingImageObservation = false;
         bool terminal = false;
         bool announced = false;
     };

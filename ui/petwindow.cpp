@@ -405,41 +405,39 @@ void PetWindow::setupLauncherChatBridge() {
         else completion(ChatHistoryResult::failure(domainError("STORE_UNAVAILABLE",
             QStringLiteral("聊天记录尚未准备好。"))));
     };
-    callbacks.sendMessage = [this](const QString& rawText)
-        -> Result<QJsonObject, DomainError> {
+    callbacks.sendMessage = [this](const QString& rawText, const QJsonArray& sources,
+                                   ChatHistoryCompletion completion) {
         const QString text = rawText.trimmed();
-        if (text.isEmpty() || text.size() > 8000) {
-            return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("CHAT_MESSAGE_INVALID"),
-                QStringLiteral("消息为空或超过 8000 个字符。")));
+        if ((text.isEmpty() && sources.isEmpty()) || text.size() > 8000) {
+            completion(ChatHistoryResult::failure(domainError("CHAT_MESSAGE_INVALID", QStringLiteral("消息为空或超过 8000 个字符。"))));
+            return;
         }
         if (!conversationModel || !aiBrain || !aiBrain->isStorageInitialized()) {
-            return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("CHAT_UNAVAILABLE"),
-                QStringLiteral("聊天运行时尚未准备好。")));
+            completion(ChatHistoryResult::failure(domainError("CHAT_UNAVAILABLE", QStringLiteral("聊天运行时尚未准备好。"))));
+            return;
         }
         if (!aiBrain->isEnabled()) {
-            return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("AI_DISABLED"),
-                QStringLiteral("AI 当前没有启用。")));
+            completion(ChatHistoryResult::failure(domainError("AI_DISABLED", QStringLiteral("AI 当前没有启用。"))));
+            return;
         }
         if (!aiBrain->canAcceptUserMessage()) {
-            return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("CHAT_BUSY"),
-                QStringLiteral("等待中的消息过多，请稍后再试。")));
+            completion(ChatHistoryResult::failure(domainError("CHAT_BUSY", QStringLiteral("等待中的消息过多，请稍后再试。"))));
+            return;
         }
-        const QString userMessageId = conversationModel->appendUserMessage(text);
-        if (userMessageId.isEmpty()) {
-            return Result<QJsonObject, DomainError>::failure(domainError(
-                QStringLiteral("CHAT_MESSAGE_INVALID"),
-                QStringLiteral("消息无法加入聊天记录。")));
-        }
-        if (petController) petController->recordExplicitFeedbackText(text);
-        const auto submitted = aiBrain->submitUserMessage(text, userMessageId);
-        if (!submitted.isOk()) return Result<QJsonObject, DomainError>::failure(submitted.error());
-        return Result<QJsonObject, DomainError>::success({
-            {QStringLiteral("messageId"), userMessageId}
-        });
+        conversationModel->appendUserMessageWithImages(text,sources,
+            [this,text,completion=std::move(completion)](ChatHistoryResult saved) mutable {
+                if (!saved) { completion(std::move(saved)); return; }
+                if (petController) petController->recordExplicitFeedbackText(text);
+                const QString id=saved.value()["messageId"].toString();
+                const auto submitted=aiBrain->submitUserMessage(text,id,true,saved.value()["images"].toArray());
+                if (!submitted) {
+                    // The durable user message remains retryable if the runtime changed during import.
+                    const auto reply=QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    conversationModel->beginAssistantMessage(reply,id);
+                    conversationModel->finishAssistantMessage(reply,ChatMessageStatus::Failed,submitted.error().message);
+                }
+                completion(std::move(saved));
+            });
     };
     callbacks.retryMessage = [this](const QString& assistantMessageId)
         -> Result<QJsonObject, DomainError> {
@@ -465,18 +463,19 @@ void PetWindow::setupLauncherChatBridge() {
                 QStringLiteral("找不到可重试的回复。")));
         }
         const QString text = conversationModel->sourceInputForReply(assistantMessageId);
-        if (text.isEmpty()) {
+        const auto images=conversationModel->sourceImagesForReply(assistantMessageId);
+        if (text.isEmpty() && images.isEmpty()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_MESSAGE_NOT_FOUND"), QStringLiteral("找不到完整的原始用户消息。")));
         }
-        const QString newUserId = conversationModel->appendUserMessage(text);
+        const QString newUserId = conversationModel->appendUserMessage(text,QDateTime::currentDateTime(),images);
         if (newUserId.isEmpty()) {
             return Result<QJsonObject, DomainError>::failure(domainError(
                 QStringLiteral("CHAT_MESSAGE_INVALID"),
                 QStringLiteral("消息无法加入聊天记录。")));
         }
         if (petController) petController->recordExplicitFeedbackText(text);
-        const auto submitted = aiBrain->submitUserMessage(text, newUserId, false);
+        const auto submitted = aiBrain->submitUserMessage(text, newUserId, false,images);
         if (!submitted.isOk()) return Result<QJsonObject, DomainError>::failure(submitted.error());
         return Result<QJsonObject, DomainError>::success({
             {QStringLiteral("messageId"), newUserId}

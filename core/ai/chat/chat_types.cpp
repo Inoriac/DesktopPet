@@ -68,7 +68,7 @@ ChatHistoryResult normalizeChatHistoryQuery(const QJsonObject& request, bool sea
 
 bool isVisibleChatHistoryEntry(const ChatHistoryEntry& entry) {
     return (entry.role == "user" || entry.role == "assistant")
-        && (!entry.content.trimmed().isEmpty() || entry.status == ChatMessageStatus::Pending
+        && (!entry.content.trimmed().isEmpty() || !entry.images.isEmpty() || entry.status == ChatMessageStatus::Pending
             || entry.status == ChatMessageStatus::Streaming);
 }
 
@@ -78,7 +78,7 @@ QJsonObject chatHistoryEntryJson(const ChatHistoryEntry& entry) {
         : chatMessageStatusStorageName(entry.status);
     return {{"id", entry.id}, {"role", entry.role}, {"replyToId", entry.replyToId},
         {"content", entry.content}, {"timestamp", entry.timestamp.toString(Qt::ISODateWithMs)},
-        {"status", status}, {"errorMessage", entry.errorMessage}};
+        {"status", status}, {"errorMessage", entry.errorMessage}, {"images",entry.images}};
 }
 
 QJsonObject chatHistoryPage(const QList<ChatHistoryEntry>& entries,

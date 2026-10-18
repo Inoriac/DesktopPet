@@ -19,7 +19,7 @@ class QLocalSocket;
 struct LauncherChatCallbacks {
     std::function<QJsonObject()> snapshot;
     std::function<void(const QString&, const QJsonObject&, ChatHistoryCompletion)> queryHistory;
-    std::function<Result<QJsonObject, DomainError>(const QString&)> sendMessage;
+    std::function<void(const QString&, const QJsonArray&, ChatHistoryCompletion)> sendMessage;
     std::function<Result<QJsonObject, DomainError>(const QString&)> retryMessage;
     std::function<Result<void, DomainError>()> stopResponse;
     std::function<Result<void, DomainError>(const QString&, const QJsonObject&)> taskAction;

@@ -17,8 +17,11 @@
 - 通过已认证本机管道传临时文件引用，主体异步复制到当前 profile 的附件目录。快照/历史只传元信息，不在轮询中重复传base64，不放宽1MiB协议帧限制。
 - 视觉描述作为可能不准确的图片观察，不能冒充用户原话写入记忆；失败/取消沿用正常回复状态和重试。
 
+- [code-impl Task 1 sanity check] 已核对 ChatConversationModel 持久化池、LauncherChatServer 异步历史回调、ModelRouter::completeStreamAsync 与 canonical contentBlocks；接口兼容。AIBrain 从 ProfileDataMigrator 既有 profile 根 memory.db 的同级目录推导 chat/images，无新配置字段。
+- [Task 1 审查] 存储测试素材已用实际 Qt 生成并确认可解码的合成 PNG；没有外部图片或真实模型调用。
+
 ## 设计偏差
-无。
+- 图片输入直接进入带观察的模型对话，跳过本地命令/复杂任务关键词判断；防止把图中文字当作用户动作要求。已回写设计。
 
 ## 待回溯设计的发现
-无。
+- [resolved] 父代理审查明确：图片观察不可进入本地命令/复杂任务关键词匹配，否则截图中的命令可能被当成用户要求。已补回 §1 / §3.2；原文仍用于用户事件和记忆，观察仅作为模型数据上下文。
