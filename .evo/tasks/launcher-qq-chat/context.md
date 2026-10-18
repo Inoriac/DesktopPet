@@ -21,6 +21,7 @@
 - [Task 1 接口补充] historyFailed(action,requestToken,detail) 关联查询错误（包括超时/断线），防止旧搜索失败污染新搜索；保留普通 operationFailed 两参数接口。
 - [Task 1 可见消息边界] 查询与页数只统计 user/assistant 非空正文，内存快照也保留 pending/streaming；system 仅在独立 diagnosticMessages（最多20条）提供给诊断区。先筛选再分页，覆盖交错 system/空错误占位；原 load 行为不变。server 认证后剥离 sessionToken 再校验查询参数。
 - [code-impl Task 1 sanity check] §3.2 存储/query、model recentHistoryPage/requestHistory、LauncherChatCallbacks::queryHistory、Python request_history/search_history/historyFailed 实际签名已核实，与修订后的设计一致。
+- [code-impl Task 2 sanity check] §3.3 request_history、historyFailed、ChatPage 发送/停止/任务与滚动锚点入口核实一致。全部用户滚动可取消待恢复位置，仅向上动作触发旧页；断线保留已读内容，换角色清空。
 - 保留 PySide6/Fluent、现有认证管道和任务操作；不更换 UI 框架、不增数据库。
 - 目前主体 snapshot 固定最近 120 条，launcher 仅本地展开。改为最近 40 条实时窗口和独立分页/搜索查询，历史不会随轮询被删掉。
 - 采用 ID 游标，数据库内按现有 rowid 插入顺序翻页；同一时间戳不会丢消息。仅访问当前 profile 的 local_owner。
