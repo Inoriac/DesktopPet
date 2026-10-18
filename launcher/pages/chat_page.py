@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent
+from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractSlider, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout, QPlainTextEdit,
-    QPushButton, QScrollArea, QVBoxLayout, QWidget,
+    QAbstractSlider, QBoxLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
+    QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
+    QSizePolicy, QVBoxLayout, QWidget,
 )
 from qfluentwidgets import (
     CaptionLabel, InfoBar, InfoBarPosition,
@@ -65,6 +66,21 @@ class ChatPage(QWidget):
         self._task: dict = {}
         self._task_action_pending = False
         self._task_feedback = ""
+        self._search_serial = 0
+        self._search_request_token = ""
+        self._search_query = ""
+        self._search_cursor = ""
+        self._search_has_more = False
+        self._search_loading_more = False
+        self._search_error_kind = ""
+        self._search_messages: list[dict] = []
+        self._locate_request_token = ""
+        self._locate_message_id = ""
+        self._highlighted_message_id = ""
+        self._highlight_timer = QTimer(self)
+        self._highlight_timer.setSingleShot(True)
+        self._highlight_timer.setInterval(4000)
+        self._highlight_timer.timeout.connect(self._clear_highlight)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -89,6 +105,16 @@ class ChatPage(QWidget):
         header.addLayout(identity)
         header.addStretch(1)
         root.addWidget(self.header)
+
+        self.body_layout = QBoxLayout(QBoxLayout.LeftToRight)
+        self.body_layout.setContentsMargins(0, 0, 0, 0)
+        self.body_layout.setSpacing(0)
+        root.addLayout(self.body_layout, 1)
+        self.conversation = QWidget(self)
+        conversation = QVBoxLayout(self.conversation)
+        conversation.setContentsMargins(0, 0, 0, 0)
+        conversation.setSpacing(0)
+        self.body_layout.addWidget(self.conversation, 1)
 
         self.task_card = QFrame(self)
         task_layout = QVBoxLayout(self.task_card)
@@ -123,7 +149,7 @@ class ChatPage(QWidget):
                               self.task_confirm_done, self.task_confirm_absent, self.task_stop)
         task_layout.addLayout(self.task_controls)
         self.task_card.hide()
-        root.addWidget(self.task_card)
+        conversation.addWidget(self.task_card)
 
         self.message_area = QScrollArea(self)
         self.message_area.setWidgetResizable(True)
@@ -145,7 +171,7 @@ class ChatPage(QWidget):
         self.message_layout.addWidget(self.empty_label)
         self.message_layout.addStretch(1)
         self.message_area.setWidget(self.message_view)
-        root.addWidget(self.message_area, 1)
+        conversation.addWidget(self.message_area, 1)
         self.jump_button = QPushButton("↓ 回到最新", self.message_area.viewport())
         self.jump_button.setObjectName("chatJumpToBottom")
         self.jump_button.setToolTip("查看最新消息")
@@ -180,7 +206,7 @@ class ChatPage(QWidget):
         self.diagnostics_text.setPlaceholderText("暂无诊断信息")
         diagnostics_layout.addWidget(self.diagnostics_text)
         self.diagnostics_panel.hide()
-        root.addWidget(self.diagnostics_panel)
+        conversation.addWidget(self.diagnostics_panel)
 
         self.composer = QFrame(self)
         self.composer.setObjectName("chatComposer")
@@ -192,6 +218,11 @@ class ChatPage(QWidget):
         self.composer_label = CaptionLabel("消息", self.composer)
         self.composer_toolbar.addWidget(self.composer_label)
         self.composer_toolbar.addStretch(1)
+        self.history_search_button = PushButton("聊天记录", self.composer)
+        self.history_search_button.setToolTip("搜索聊天记录 (Ctrl+F)")
+        self.history_search_button.setFixedHeight(28)
+        self.history_search_button.clicked.connect(self.open_history_search)
+        self.composer_toolbar.addWidget(self.history_search_button)
         self.debug_button = PushButton("调试信息", self.composer)
         self.debug_button.setCheckable(True)
         self.debug_button.setToolTip("查看调用统计与技术诊断")
@@ -218,13 +249,233 @@ class ChatPage(QWidget):
         self.action_button.clicked.connect(self._submit)
         controls.addWidget(self.action_button)
         composer.addLayout(controls)
-        root.addWidget(self.composer)
+        conversation.addWidget(self.composer)
+
+        self._build_history_search()
+        for sequence, callback in (("Ctrl+F", self.open_history_search),
+                                   ("Esc", self.close_history_search)):
+            shortcut = QShortcut(QKeySequence(sequence), self)
+            shortcut.setContext(Qt.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(callback)
 
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(250)
         self._poll_timer.timeout.connect(self.poll_once)
         self._sync_controls()
         self.refresh_theme()
+
+    def _build_history_search(self) -> None:
+        self.search_panel = QFrame(self)
+        self.search_panel.setObjectName("chatSearchPanel")
+        layout = QVBoxLayout(self.search_panel)
+        layout.setContentsMargins(16, 12, 16, 12)
+        layout.setSpacing(9)
+        title = QHBoxLayout()
+        title.addWidget(StrongBodyLabel("聊天记录", self.search_panel))
+        title.addStretch(1)
+        self.close_search_button = QPushButton("×", self.search_panel)
+        self.close_search_button.setFixedSize(26, 26)
+        self.close_search_button.setToolTip("关闭聊天记录 (Esc)")
+        self.close_search_button.clicked.connect(self.close_history_search)
+        title.addWidget(self.close_search_button)
+        layout.addLayout(title)
+        form = QHBoxLayout()
+        self.search_input = QLineEdit(self.search_panel)
+        self.search_input.setPlaceholderText("搜索消息内容")
+        self.search_input.setMaxLength(200)
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.returnPressed.connect(self._search_history)
+        form.addWidget(self.search_input, 1)
+        self.search_button = PushButton("搜索", self.search_panel)
+        self.search_button.setFixedWidth(60)
+        self.search_button.clicked.connect(self._search_history)
+        form.addWidget(self.search_button)
+        layout.addLayout(form)
+        self.search_status = QLabel("输入关键词，搜索全部聊天记录", self.search_panel)
+        self.search_status.setTextFormat(Qt.PlainText)
+        self.search_status.setWordWrap(True)
+        layout.addWidget(self.search_status)
+        self.search_results = QListWidget(self.search_panel)
+        self.search_results.setWordWrap(True)
+        self.search_results.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.search_results.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Expanding)
+        self.search_results.setMinimumHeight(58)
+        self.search_results.itemClicked.connect(
+            lambda item: self._locate_history_message(str(item.data(Qt.UserRole))))
+        self.search_results.itemActivated.connect(
+            lambda item: self._locate_history_message(str(item.data(Qt.UserRole))))
+        layout.addWidget(self.search_results, 1)
+        self.search_more_button = PushButton("加载更多结果", self.search_panel)
+        self.search_more_button.clicked.connect(self._load_more_search_results)
+        layout.addWidget(self.search_more_button)
+        self.search_retry_button = PushButton("重试", self.search_panel)
+        self.search_retry_button.clicked.connect(self._retry_history_search)
+        layout.addWidget(self.search_retry_button)
+        self.search_more_button.hide()
+        self.search_retry_button.hide()
+        self.search_panel.hide()
+        self.body_layout.addWidget(self.search_panel)
+
+    def open_history_search(self) -> None:
+        self.search_panel.show()
+        self._layout_history_search()
+        self.search_input.setFocus()
+        self.search_input.selectAll()
+
+    def close_history_search(self) -> None:
+        if self.search_panel.isHidden():
+            return
+        self.search_panel.hide()
+        self.input_edit.setFocus()
+
+    def _layout_history_search(self) -> None:
+        narrow = self.width() < 860
+        self.body_layout.setDirection(QBoxLayout.TopToBottom if narrow else QBoxLayout.LeftToRight)
+        self.body_layout.removeWidget(self.search_panel)
+        self.body_layout.insertWidget(0 if narrow else 1, self.search_panel)
+        self.search_panel.setMinimumWidth(0 if narrow else 310)
+        self.search_panel.setMaximumWidth(16777215 if narrow else 310)
+        self.search_panel.setMaximumHeight(240 if narrow else 16777215)
+        conversation_width = self.width() - (310 if not narrow and self.search_panel.isVisible() else 0)
+        self.input_hint.setVisible(conversation_width >= 520)
+
+    def _reset_search(self) -> None:
+        self._search_request_token = self._locate_request_token = ""
+        self._search_query = self._search_cursor = self._locate_message_id = ""
+        self._search_has_more = self._search_loading_more = False
+        self._search_error_kind = ""
+        self._search_messages = []
+        self.search_input.clear()
+        self.search_results.clear()
+        self.search_status.setText("输入关键词，搜索全部聊天记录")
+        self._clear_highlight()
+        self._sync_search_controls()
+
+    def _search_history(self) -> None:
+        self._search_request_token = self._locate_request_token = ""
+        self._locate_message_id = ""
+        self._search_query = self.search_input.text().strip()
+        self._search_cursor = ""
+        self._search_messages = []
+        self._search_has_more = False
+        self._search_error_kind = ""
+        self.search_results.clear()
+        self._update_history_button()
+        if not self._search_query:
+            self.search_status.setText("请输入要查找的关键词")
+            self._sync_search_controls()
+            return
+        self._request_search_page(False)
+
+    def _request_search_page(self, more: bool) -> None:
+        if self._client is None or not self._client.is_connected:
+            self.search_status.setText("连接已断开，重新连接后可搜索")
+            self._sync_search_controls()
+            return
+        self._search_serial += 1
+        self._search_request_token = f"search:{self._search_serial}"
+        self._search_loading_more = more
+        self._search_error_kind = ""
+        self.search_status.setText("正在加载更多结果…" if more else "正在搜索…")
+        self._sync_search_controls()
+        self._client.search_history(self._search_query,
+            before_message_id=self._search_cursor if more else "", limit=30,
+            request_token=self._search_request_token)
+
+    def _load_more_search_results(self) -> None:
+        if self._search_has_more and not self._search_request_token:
+            self._request_search_page(True)
+
+    def _search_loaded(self, result: dict) -> None:
+        if not self._search_request_token or result.get("requestToken") != self._search_request_token:
+            return
+        self._search_request_token = ""
+        messages = [m for m in result.get("messages", [])
+                    if isinstance(m, dict) and self._visible_message(m)]
+        old_ids = {str(m.get("id")) for m in self._search_messages}
+        for message in messages:
+            mid = str(message.get("id"))
+            if mid in old_ids:
+                continue
+            old_ids.add(mid)
+            self._search_messages.append(message)
+            sender = "我" if message.get("role") == "user" else self.title_label.text()
+            timestamp = message_datetime(message)
+            time = timestamp.toString("MM-dd HH:mm") if timestamp.isValid() else ""
+            content = " ".join(str(message.get("content") or "").split())
+            match = content.lower().find(self._search_query.lower())
+            start = max(0, match - 28)
+            content = ("…" if start else "") + content[start:start + 120] + (
+                "…" if len(content) > start + 120 else "")
+            item = QListWidgetItem(f"{sender} · {time}\n{content}")
+            item.setData(Qt.UserRole, mid)
+            self.search_results.addItem(item)
+        self._search_has_more = bool(result.get("hasMoreBefore"))
+        self._search_cursor = str(result.get("nextBeforeMessageId") or "")
+        self._search_loading_more = False
+        count = len(self._search_messages)
+        self.search_status.setText(f"已找到 {count} 条，点击查看上下文" if count else "没有找到相关聊天记录")
+        self._sync_search_controls()
+
+    def _locate_history_message(self, message_id: str) -> None:
+        if self._client is None or not self._client.is_connected:
+            return
+        if self._locate_request_token and self._locate_message_id == message_id:
+            return
+        self._history_request_token = ""
+        self._search_request_token = ""
+        self._search_loading_more = False
+        self._history_error = False
+        self._search_serial += 1
+        self._locate_request_token = f"locate:{self._search_serial}"
+        self._locate_message_id = message_id
+        self._search_error_kind = ""
+        self.search_status.setText("正在定位消息…")
+        self._update_history_button()
+        self._sync_search_controls()
+        self._client.request_history(around_message_id=message_id, limit=self.PAGE_SIZE,
+                                     request_token=self._locate_request_token)
+
+    def _located_history_loaded(self, result: dict) -> None:
+        if not self._locate_request_token or result.get("requestToken") != self._locate_request_token:
+            return
+        self._locate_request_token = ""
+        self._clear_highlight()
+        self._messages = [m for m in result.get("messages", [])
+                          if isinstance(m, dict) and self._visible_message(m)]
+        self._has_more_before = bool(result.get("hasMoreBefore"))
+        self._has_more_after = bool(result.get("hasMoreAfter"))
+        self._follow_bottom = False
+        self._render_messages(self._messages, center_message_id=self._locate_message_id)
+        if self._locate_message_id in self._rows:
+            self._highlighted_message_id = self._locate_message_id
+            self._rows[self._highlighted_message_id].set_highlighted(True)
+            self._highlight_timer.start()
+        self.search_status.setText("已定位，可上下滚动查看附近消息")
+        self._sync_search_controls()
+
+    def _clear_highlight(self) -> None:
+        self._highlight_timer.stop()
+        row = self._rows.get(self._highlighted_message_id)
+        if row is not None:
+            row.set_highlighted(False)
+        self._highlighted_message_id = ""
+
+    def _retry_history_search(self) -> None:
+        if self._search_error_kind == "locate":
+            self._locate_history_message(self._locate_message_id)
+        else:
+            self._request_search_page(self._search_error_kind == "more")
+
+    def _sync_search_controls(self) -> None:
+        connected = self._client is not None and self._client.is_connected
+        self.search_button.setEnabled(connected)
+        self.search_results.setEnabled(connected)
+        self.search_more_button.setVisible(self._search_has_more and not self._search_error_kind)
+        self.search_more_button.setEnabled(connected and not self._search_request_token
+                                           and not self._locate_request_token)
+        self.search_retry_button.setVisible(bool(self._search_error_kind))
+        self.search_retry_button.setEnabled(connected)
 
     def set_client(self, client) -> None:
         if self._client is not None:
@@ -358,6 +609,7 @@ class ChatPage(QWidget):
             "pending", "streaming"}
 
     def _reset_history(self) -> None:
+        self._reset_search()
         self._history_serial += 1
         self._user_scroll_serial += 1
         self._history_request_token = ""
@@ -387,11 +639,16 @@ class ChatPage(QWidget):
     def _row_width(self) -> int:
         return max(100, self.message_area.viewport().width() - 44)
 
-    def _render_messages(self, messages: list[dict]) -> None:
+    def _render_messages(self, messages: list[dict], center_message_id: str = "") -> None:
         scrollbar = self.message_area.verticalScrollBar()
         position = scrollbar.value()
         following = self._follow_bottom
-        anchor = None if following else self._capture_anchor()
+        # Consecutive results/polls can render before Qt has laid out the new
+        # rows. Preserve the intended position until restoration settles;
+        # explicit user scrolling clears this pending anchor in _user_scrolled.
+        anchor = None if following else (
+            self._scroll_anchor if self._restoring_scroll and self._scroll_anchor
+            else self._capture_anchor())
         self._scroll_anchor = anchor
         self._restoring_scroll = True
         selected = [m for m in messages if self._visible_message(m)]
@@ -422,6 +679,10 @@ class ChatPage(QWidget):
             row.set_available_width(self._row_width())
             previous_time = timestamp
         self.empty_label.setVisible(not selected)
+        if center_message_id in self._rows:
+            row = self._rows[center_message_id]
+            anchor = (center_message_id, max(0, (self.message_area.viewport().height() - row.height()) // 2))
+            self._scroll_anchor = anchor
         self._update_history_button()
         self._render_generation += 1
         generation = self._render_generation
@@ -450,7 +711,7 @@ class ChatPage(QWidget):
         QTimer.singleShot(0, self, restore)
 
     def _update_history_button(self) -> None:
-        loading = bool(self._history_request_token)
+        loading = bool(self._history_request_token or self._locate_request_token)
         text = ("正在加载…" if loading else "加载失败，点击重试" if self._history_error
                 else "向上滚动查看更早消息" if self._has_more_before else "已显示最早的消息")
         self.history_button.setText(text)
@@ -459,7 +720,7 @@ class ChatPage(QWidget):
                                        and self._client is not None and self._client.is_connected)
 
     def _load_older(self) -> None:
-        if self._history_request_token or not self._has_more_before or not self._messages \
+        if self._history_request_token or self._locate_request_token or not self._has_more_before or not self._messages \
                 or self._client is None or not self._client.is_connected:
             return
         self._history_serial += 1
@@ -481,6 +742,24 @@ class ChatPage(QWidget):
         self._render_messages(self._messages)
 
     def _history_failed(self, action: str, token: str, detail: str) -> None:
+        if action == "search_chat_history" and self._search_request_token and token == self._search_request_token:
+            self._search_request_token = ""
+            self._search_error_kind = "more" if self._search_loading_more else "search"
+            self.search_status.setText("搜索失败，请稍后重试")
+        elif action == "get_chat_history" and self._locate_request_token and token == self._locate_request_token:
+            self._locate_request_token = ""
+            self._search_error_kind = "locate"
+            self.search_status.setText("定位失败，请稍后重试")
+        else:
+            self._older_history_failed(action, token, detail)
+            return
+        self._diagnostic_events.append(f"聊天记录: {detail}")
+        self._diagnostic_events = self._diagnostic_events[-30:]
+        self._update_diagnostics()
+        self._sync_search_controls()
+        self._update_history_button()
+
+    def _older_history_failed(self, action: str, token: str, detail: str) -> None:
         if action != "get_chat_history" or not self._history_request_token or token != self._history_request_token:
             return
         self._history_request_token = ""
@@ -491,6 +770,14 @@ class ChatPage(QWidget):
         self._update_history_button()
 
     def scroll_to_bottom(self) -> None:
+        self._locate_request_token = ""
+        self._locate_message_id = ""
+        self._clear_highlight()
+        if self._search_error_kind == "locate":
+            self._search_error_kind = ""
+        if self._search_messages and not self._search_request_token:
+            self.search_status.setText(f"已找到 {len(self._search_messages)} 条，点击查看上下文")
+        self._sync_search_controls()
         self._history_request_token = ""
         self._history_error = False
         self._has_more_after = False
@@ -571,7 +858,7 @@ class ChatPage(QWidget):
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
-        self.input_hint.setVisible(self.width() >= 520)
+        self._layout_history_search()
 
     def _submit(self) -> None:
         if self._client is None or not self._client.is_connected \
@@ -635,7 +922,13 @@ class ChatPage(QWidget):
 
     def _operation_finished(self, operation: str, _result: dict) -> None:
         if operation == "get_chat_history":
-            self._history_loaded(_result)
+            if self._locate_request_token and _result.get("requestToken") == self._locate_request_token:
+                self._located_history_loaded(_result)
+            else:
+                self._history_loaded(_result)
+            return
+        if operation == "search_chat_history":
+            self._search_loaded(_result)
             return
         self._last_error = ""
         if operation in {"resume_task", "pause_task", "stop_task", "resolve_task_call"}:
@@ -725,6 +1018,9 @@ class ChatPage(QWidget):
         self._send_inflight = False
         self._task_action_pending = False
         self._history_request_token = ""
+        self._search_request_token = self._locate_request_token = ""
+        if self._search_query:
+            self.search_status.setText("连接已断开，重新连接后可搜索")
         self._update_history_button()
         self.status_label.setText("离线")
         self._sync_controls()
@@ -740,6 +1036,7 @@ class ChatPage(QWidget):
         self.stop_button.setVisible(self._busy and connected)
         self.stop_button.setEnabled(connected)
         self._sync_task_card(connected)
+        self._sync_search_controls()
 
     def _sync_task_card(self, connected: bool) -> None:
         task = self._task
@@ -820,9 +1117,28 @@ class ChatPage(QWidget):
         self.jump_button.setStyleSheet(
             f"QPushButton {{ background: {surface}; color: #1687F8;"
             f"border: 1px solid {line}; border-radius: 16px; }}")
+        self.search_panel.setStyleSheet(
+            f"QFrame#chatSearchPanel {{ background: {surface}; border-left: 1px solid {line}; }}")
+        self.search_status.setStyleSheet(f"color: {muted}; font-size: 12px;")
+        self.search_input.setStyleSheet(
+            f"QLineEdit {{ background: {bg}; color: {fg}; border: 1px solid {line};"
+            "border-radius: 5px; padding: 6px; }"
+            "QLineEdit:focus { border-color: #1687F8; }")
+        self.search_results.setStyleSheet(
+            f"QListWidget {{ background: {surface}; color: {fg}; border: none; outline: none; }}"
+            f"QListWidget::item {{ padding: 12px 6px; border-bottom: 1px solid {line}; }}"
+            f"QListWidget::item:selected {{ background: {'#253E57' if dark else '#E8F3FF'}; color: {fg}; }}"
+            f"QListWidget::item:hover {{ background: {bg}; }}"
+            f"QScrollBar:vertical {{ background: {surface}; width: 8px; margin: 0px; }}"
+            f"QScrollBar::handle:vertical {{ background: {thumb}; min-height: 24px; border-radius: 4px; }}"
+            "QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical { height: 0px; }"
+            "QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical { background: none; }")
+        self.close_search_button.setStyleSheet(
+            f"QPushButton {{ color: {muted}; border: none; background: transparent; font-size: 20px; }}"
+            f"QPushButton:hover {{ background: {bg}; border-radius: 4px; }}")
         for row in self._rows.values():
             row.refresh_theme()
-        self.title_label.setStyleSheet("font-size: 17px;")
+        self.title_label.setStyleSheet(f"font-size: 17px; color: {fg};")
         self._sync_controls()
 
     @staticmethod

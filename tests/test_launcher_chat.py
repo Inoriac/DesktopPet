@@ -17,7 +17,7 @@ from PySide6.QtCore import QIODeviceBase, QObject, QPoint, QPointF, Signal, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtGui import QTextCursor, QWheelEvent
 from PySide6.QtNetwork import QLocalSocket
-from PySide6.QtWidgets import QApplication, QAbstractSlider
+from PySide6.QtWidgets import QApplication, QAbstractSlider, QStackedWidget, QPlainTextEdit
 
 from launcher_chat_client import LauncherChatClient
 from pages.chat_page import ChatPage, InfoBar
@@ -131,6 +131,7 @@ class StubChatClient(QObject):
         self.stop_calls = 0
         self.task_calls = []
         self.history_calls = []
+        self.search_calls = []
 
     def request_state(self, after_revision=-1):
         self.stateReceived.emit(self.get_state(after_revision))
@@ -161,6 +162,10 @@ class StubChatClient(QObject):
     def send_message(self, text):
         self.sent.append(text)
         self.operationFinished.emit("send_message", {"messageId": "u2"})
+
+    def search_history(self, query, before_message_id="", limit=30, request_token=""):
+        self.search_calls.append({"query": query, "beforeMessageId": before_message_id,
+                                  "limit": limit, "requestToken": request_token})
 
     def stop_response(self):
         self.stop_calls += 1
@@ -563,6 +568,277 @@ class LauncherChatTests(unittest.TestCase):
         self.assertEqual(client.sent, [])
         self.assertEqual(client.stop_calls, 1)
         self.assertTrue(page.input_edit.toPlainText())
+
+    def search_page(self, page, client, messages, has_more=False, token=None):
+        request = client.search_calls[-1]
+        client.operationFinished.emit("search_chat_history", {
+            "requestToken": token or request["requestToken"], "query": request["query"],
+            "messages": messages, "hasMoreBefore": has_more,
+            "nextBeforeMessageId": messages[-1]["id"] if messages else ""})
+        self.settle()
+
+    def start_search(self, page, text="验收"):
+        page.open_history_search()
+        page.search_input.setText(text)
+        QTest.keyClick(page.search_input, Qt.Key_Return)
+        self.settle()
+
+    def test_search_queries_archive_beyond_recent_and_pages_results_without_duplicates(self):
+        page, client = self.history_setup()
+        page.input_edit.setPlainText("搜索时保留草稿")
+        self.start_search(page, "  验收  ")
+        self.assertEqual(client.search_calls[-1]["query"], "验收")
+        self.assertEqual(client.search_calls[-1]["limit"], 30)
+        self.search_page(page, client, list(reversed(self.messages(90)[-30:])), True)
+        self.assertEqual(page.search_results.count(), 30)
+        self.assertNotIn("89", page._rows)
+        page.search_more_button.click()
+        self.assertEqual(client.search_calls[-1]["beforeMessageId"], "60")
+        self.search_page(page, client, list(reversed(self.messages(61)[-30:])))
+        self.assertEqual(page.search_results.count(), 59)
+        self.assertFalse(page.search_more_button.isVisible())
+        self.assertEqual(page.input_edit.toPlainText(), "搜索时保留草稿")
+        self.assertTrue(page.action_button.isEnabled())
+
+    def test_search_match_locates_context_highlights_and_returns_latest(self):
+        page, client = self.history_setup()
+        self.start_search(page)
+        self.search_page(page, client, [self.messages(61)[60]])
+        item = page.search_results.item(0)
+        page.search_results.itemClicked.emit(item)
+        self.assertEqual(client.history_calls[-1]["aroundMessageId"], "60")
+        self.history_page(page, client, self.messages(80)[40:80], True)
+        bar = page.message_area.verticalScrollBar()
+        row = page._rows["60"]
+        self.assertEqual(set(page._rows), {str(i) for i in range(40, 80)})
+        self.assertTrue(row.is_highlighted)
+        self.assertGreaterEqual(row.text_label.height(), row.text_label.heightForWidth(row.text_label.width()))
+        self.assertGreaterEqual(row.y() - bar.value(), 0)
+        self.assertLess(row.y() - bar.value(), page.message_area.viewport().height())
+        page._apply_state(self.state(self.messages(181)[-40:], revision=3, has_more=True))
+        self.settle()
+        self.assertEqual(set(page._rows), {str(i) for i in range(40, 80)})
+        self.assertTrue(page.jump_button.isVisible())
+        bar.setValue(0)
+        self.wheel_up(page)
+        self.assertEqual(client.history_calls[-1]["beforeMessageId"], "40")
+        self.history_page(page, client, self.messages(40))
+        self.assertEqual(len(page._rows), 80)
+        page.scroll_to_bottom()
+        self.settle()
+        self.assertEqual(set(page._rows), {str(i) for i in range(141, 181)})
+        self.assertEqual(bar.value(), bar.maximum())
+        self.assertTrue(page._follow_bottom)
+
+    def test_pending_locate_anchor_survives_snapshot_before_layout_settles(self):
+        page, client = self.history_setup()
+        self.start_search(page)
+        self.search_page(page, client, [self.messages(61)[60]])
+        page._locate_history_message("60")
+        client.operationFinished.emit("get_chat_history", {
+            "requestToken": client.history_calls[-1]["requestToken"],
+            "messages": self.messages(80)[40:], "hasMoreBefore": True,
+            "hasMoreAfter": True, "anchorMessageId": "60"})
+        # A poll can arrive in the same event-loop turn as the around result.
+        page._apply_state(self.state(self.messages(181)[-40:], revision=3, has_more=True))
+        self.settle()
+        row = page._rows["60"]
+        offset = row.y() - page.message_area.verticalScrollBar().value()
+        expected = max(0, (page.message_area.viewport().height() - row.height()) // 2)
+        self.assertLessEqual(abs(offset - expected), 2)
+        self.assertTrue(row.is_highlighted)
+
+    def test_pending_prepend_anchor_survives_snapshot_before_layout_settles(self):
+        page, client = self.history_setup()
+        bar = page.message_area.verticalScrollBar()
+        bar.setValue(0)
+        row = page._rows["140"]
+        offset = row.y() - bar.value()
+        page._load_older()
+        client.operationFinished.emit("get_chat_history", {
+            "requestToken": client.history_calls[-1]["requestToken"],
+            "messages": self.messages(140)[-40:], "hasMoreBefore": True,
+            "hasMoreAfter": True})
+        page._apply_state(self.state(self.messages(181)[-40:], revision=3, has_more=True))
+        self.settle()
+        self.assertEqual(len(page._rows), 81)
+        self.assertLessEqual(abs(row.y() - bar.value() - offset), 2)
+        self.assertEqual(len(client.history_calls), 1)
+
+    def test_user_scroll_cancels_pending_locate_even_when_snapshot_follows(self):
+        page, client = self.history_setup()
+        self.start_search(page)
+        self.search_page(page, client, [self.messages(61)[60]])
+        page._locate_history_message("60")
+        client.operationFinished.emit("get_chat_history", {
+            "requestToken": client.history_calls[-1]["requestToken"],
+            "messages": self.messages(80)[40:], "hasMoreBefore": True,
+            "hasMoreAfter": True, "anchorMessageId": "60"})
+        QTest.keyClick(page.message_area, Qt.Key_End)
+        page._apply_state(self.state(self.messages(181)[-40:], revision=3, has_more=True))
+        self.settle()
+        bar = page.message_area.verticalScrollBar()
+        self.assertGreater(bar.value(), bar.maximum() * 0.9)
+        self.assertLess(page._rows["60"].y() - bar.value(), 0)
+
+    def test_search_stale_success_and_failure_cannot_replace_current_query(self):
+        page, client = self.history_setup()
+        self.start_search(page, "旧")
+        old = client.search_calls[-1]["requestToken"]
+        self.start_search(page, "新")
+        new = client.search_calls[-1]["requestToken"]
+        self.assertNotEqual(old, new)
+        self.search_page(page, client, [self.messages(21)[20]], token=new)
+        self.search_page(page, client, [self.messages(41)[40]], token=old)
+        client.historyFailed.emit("search_chat_history", old, "old failure")
+        self.assertEqual(page.search_results.count(), 1)
+        self.assertEqual(page.search_results.item(0).data(Qt.UserRole), "20")
+        self.assertNotIn("失败", page.search_status.text())
+
+    def test_locate_is_invalidated_by_new_search_return_latest_and_profile_change(self):
+        for action in ("search", "latest", "profile", "disconnect"):
+            with self.subTest(action=action):
+                page, client = self.history_setup()
+                self.start_search(page)
+                self.search_page(page, client, [self.messages(61)[60]])
+                page._locate_history_message("60")
+                old = client.history_calls[-1]["requestToken"]
+                if action == "search":
+                    self.start_search(page, "新的检索")
+                elif action == "latest":
+                    page.scroll_to_bottom()
+                elif action == "profile":
+                    page._apply_state(self.state(self.messages(1), revision=3, profile="other"))
+                else:
+                    client.is_connected = False
+                    client.disconnected.emit()
+                expected = set(page._rows)
+                client.operationFinished.emit("get_chat_history", {"requestToken": old,
+                    "messages": self.messages(80)[40:], "anchorMessageId": "60", "hasMoreAfter": True})
+                client.historyFailed.emit("get_chat_history", old, "late locate error")
+                self.settle()
+                self.assertEqual(set(page._rows), expected)
+                self.assertNotIn("定位失败", page.search_status.text())
+                if action == "profile":
+                    self.assertEqual(page.search_results.count(), 0)
+                    self.assertEqual(page.search_input.text(), "")
+
+    def test_search_empty_no_match_failure_retry_and_disconnect_are_recoverable(self):
+        page, client = self.history_setup()
+        self.start_search(page, "   ")
+        self.assertEqual(client.search_calls, [])
+        self.assertIn("关键词", page.search_status.text())
+        self.start_search(page)
+        self.search_page(page, client, [])
+        self.assertIn("没有", page.search_status.text())
+        self.start_search(page)
+        token = client.search_calls[-1]["requestToken"]
+        client.historyFailed.emit("search_chat_history", token, "temporary failure")
+        self.assertTrue(page.search_retry_button.isVisible())
+        page.search_retry_button.click()
+        self.assertEqual(len(client.search_calls), 3)
+        self.search_page(page, client, [self.messages(2)[1]], True)
+        page.search_more_button.click()
+        token = client.search_calls[-1]["requestToken"]
+        client.historyFailed.emit("search_chat_history", token, "page failed")
+        page.search_retry_button.click()
+        self.assertEqual(client.search_calls[-1]["beforeMessageId"], "1")
+        client.is_connected = False
+        client.disconnected.emit()
+        self.search_page(page, client, [self.messages(1)[0]])
+        self.assertEqual(page.search_results.count(), 1)
+        self.assertFalse(page.search_button.isEnabled())
+        self.assertFalse(page.search_results.isEnabled())
+
+    def test_locate_failure_preserves_results_and_retry_targets_same_message(self):
+        page, client = self.history_setup()
+        self.start_search(page)
+        self.search_page(page, client, [self.messages(3)[2]])
+        page._locate_history_message("2")
+        client.historyFailed.emit("get_chat_history", client.history_calls[-1]["requestToken"], "bad cursor")
+        self.assertEqual(page.search_results.count(), 1)
+        self.assertEqual(len(page._rows), 40)
+        page.search_retry_button.click()
+        self.assertEqual(client.history_calls[-1]["aroundMessageId"], "2")
+
+    def test_search_shortcuts_are_scoped_and_narrow_panel_keeps_composer_usable(self):
+        page, _client = self.history_setup()
+        page.activateWindow()
+        page.input_edit.setFocus()
+        self.settle()
+        QTest.keyClick(page.input_edit, Qt.Key_F, Qt.ControlModifier)
+        self.settle()
+        self.assertTrue(page.search_panel.isVisible())
+        self.assertTrue(page.search_input.hasFocus())
+        page.resize(460, 760)
+        self.settle()
+        self.assertLessEqual(page.minimumSizeHint().width(), 460)
+        self.assertTrue(page.input_edit.isVisible())
+        self.assertGreater(page.message_area.viewport().height(), 60)
+        QTest.keyClick(page.search_input, Qt.Key_Escape)
+        self.settle()
+        self.assertFalse(page.search_panel.isVisible())
+        self.assertTrue(page.input_edit.hasFocus())
+
+    def test_search_shortcuts_do_not_open_hidden_chat_page(self):
+        stack = QStackedWidget()
+        page = ChatPage()
+        other = QPlainTextEdit()
+        stack.addWidget(page)
+        stack.addWidget(other)
+        stack.setCurrentWidget(other)
+        stack.resize(700, 700)
+        stack.show()
+        self.addCleanup(stack.deleteLater)
+        self.addCleanup(stack.close)
+        stack.activateWindow()
+        other.setFocus()
+        self.settle()
+        QTest.keyClick(other, Qt.Key_F, Qt.ControlModifier)
+        QTest.keyClick(other, Qt.Key_Escape)
+        self.settle()
+        self.assertTrue(page.search_panel.isHidden())
+        self.assertTrue(other.hasFocus())
+
+    def test_locate_discards_superseded_locate_older_page_and_search_page(self):
+        page, client = self.history_setup()
+        page._load_older()
+        older = client.history_calls[-1]["requestToken"]
+        self.start_search(page)
+        self.search_page(page, client, [self.messages(61)[60]], True)
+        page.search_more_button.click()
+        searching = client.search_calls[-1]["requestToken"]
+        page._locate_history_message("60")
+        locate = client.history_calls[-1]["requestToken"]
+        page._locate_history_message("20")
+        self.history_page(page, client, self.messages(40))
+        for token in (older, locate):
+            client.operationFinished.emit("get_chat_history", {"requestToken": token,
+                "messages": self.messages(140)[100:], "hasMoreBefore": True})
+            client.historyFailed.emit("get_chat_history", token, "superseded")
+        self.search_page(page, client, [self.messages(41)[40]], token=searching)
+        client.historyFailed.emit("search_chat_history", searching, "superseded search")
+        self.settle()
+        self.assertEqual(set(page._rows), {str(i) for i in range(40)})
+        self.assertTrue(page._rows["20"].is_highlighted)
+        self.assertEqual(page.search_results.count(), 1)
+        self.assertIn("已定位", page.search_status.text())
+
+    def test_profile_change_discards_search_and_plain_text_excerpt_keeps_match(self):
+        page, client = self.history_setup()
+        self.start_search(page, "目标")
+        match = dict(self.messages(1)[0], content="前文 " * 100 + "<b>目标</b>：%_ literal")
+        self.search_page(page, client, [match])
+        self.assertIn("<b>目标</b>", page.search_results.item(0).text())
+        self.assertLess(len(page.search_results.item(0).text()), 160)
+        self.start_search(page, "下一次")
+        token = client.search_calls[-1]["requestToken"]
+        page._apply_state(self.state(self.messages(2), revision=3, profile="other"))
+        self.search_page(page, client, [match], token=token)
+        client.historyFailed.emit("search_chat_history", token, "wrong profile error")
+        self.assertEqual(page.search_results.count(), 0)
+        self.assertEqual(page.search_input.text(), "")
+        self.assertNotIn("失败", page.search_status.text())
 
 
 if __name__ == "__main__":

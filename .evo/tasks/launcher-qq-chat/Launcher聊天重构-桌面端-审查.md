@@ -17,3 +17,15 @@
 - 覆盖 pending 失败移入诊断、断线 resize 保留内容、角色切换丢弃旧请求、快照不连续时保持历史窗口独立，以及发送/停止/任务/草稿回归。
 - RED：初版旧行为 7 失败/3 错误；新增向下滚动回归先复现失败，再修正。GREEN：UI 19 项、相关 CTest 2/2；主代理全量 CTest 63/63（19.54 秒）。测试位置、接口锚点、场景覆盖及无文件冲突已核对。
 - 主代理查看合成截图 light-1100 与 dark-task-460，头像/正文/按钮清晰，无横向溢出；最终交付截图随 Task 3 保存。日志 /tmp/qq-chat-task2-ctest.log。
+
+## Task 3 / §3.4 搜索与定位
+- 搜索当前角色完整档案，30 条一页；结果显示发言人、时间与关键词附近摘要，点击拉取上下文并高亮 4 秒。支持 Ctrl+F/Esc、继续上滑和返回最新。
+- 主代理核对查询代际、定位/分页竞争、角色与断线清理、失败重试、纯文本显示和窗口宽度。额外复现定位响应后紧接实时快照导致命中不在视口的缺陷，并同样复现 prepend 锚点偏移；修复为保留未完成的滚动锚点，用户滚动仍可取消。
+- RED → GREEN：缺失搜索接口、定位/分页即时快照竞争均先复现；聊天页 32 项与传输 13 项合计 45/45。全部设计场景有对应测试，新增测试遵循原目录，接口无偏差。
+- 180 条合成消息完成首屏 40、上滑 80、两页共 60 条搜索结果、定位 ID 24 和回到最新；浅/深主题 1100/700 截图及 460 宽断言通过。主代理查看浅色搜索、深色窄屏任务与完整 launcher 截图。
+- macOS 原生 Cocoa 实际打开完整 LauncherWindow，使用合成聊天服务和空进程跟踪，搜索/翻页/选中定位可用，横向溢出为 0。可复现脚本为 visual-qa/render_launcher.py。原无边框窗口库依赖原生窗口句柄，offscreen 创建完整主窗口会崩溃；完整窗口验收改用 Cocoa，独立 ChatPage 仍可 offscreen。这是验证环境边界，无产品改动。
+
+## 最终回归
+- 全构建通过。首轮全量有旧 ActivityRuntimeTests 偶发失败：isActive=false 与 Paused 快照经独立队列通知到达，立即 QCOMPARE 过早。单独复验通过，源码确认时序后改为等待 Paused 快照，并单独提交测试修正；未改变运行逻辑。
+- 最终全量 CTest **63/63（20.87 秒）**；合成视觉脚本、原生 launcher 脚本均 PASS，git diff --check 通过。日志 /tmp/qq-chat-final-build.log、/tmp/qq-chat-final-verified-ctest.log、/tmp/qq-chat-final-visual.log、/tmp/qq-chat-final-native.log。
+- 新 UI 尚未在 Windows 运行；launcher/README.md 已提供专属清单，不将旧 Windows 模型/工具报告混作 UI 验收。正式模型名称与 LX 音量状态限制保持基线说明。

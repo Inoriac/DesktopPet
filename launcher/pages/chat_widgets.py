@@ -17,6 +17,7 @@ class MessageRow(QWidget):
         self.message = {}
         self._available_width = 640
         self._sender_name = "桌宠"
+        self.is_highlighted = False
         self.row_layout = QVBoxLayout(self)
         self.row_layout.setContentsMargins(0, 0, 0, 0)
         self.row_layout.setSpacing(12)
@@ -83,9 +84,9 @@ class MessageRow(QWidget):
         text_width = max((metrics.horizontalAdvance(line)
                           for line in self.text_label.text().splitlines()), default=32)
         bubble_limit = max(60, min(620, int(width * 0.76), width - 54))
-        bubble_width = min(bubble_limit, max(64, text_width + 30))
+        bubble_width = min(bubble_limit, max(64, text_width + 34))
         self.bubble.setFixedWidth(bubble_width)
-        height = max(metrics.height(), self.text_label.heightForWidth(bubble_width - 28)) + 22
+        height = max(metrics.height(), self.text_label.heightForWidth(bubble_width - 32)) + 26
         self.bubble.setFixedHeight(height)
         time_height = self.time_label.sizeHint().height() + 12 if self.time_label.text() else 0
         self.setFixedHeight(max(height, 34) + time_height)
@@ -95,8 +96,11 @@ class MessageRow(QWidget):
         user = self.message.get("role") == "user"
         bg = "#1687F8" if user else ("#30343D" if dark else "#FFFFFF")
         fg = "#FFFFFF" if user or dark else "#262B35"
+        # Reserve the same border space in both states so highlighting cannot
+        # shrink the text area and clip a wrapped line.
+        border = "2px solid #FFBE54" if self.is_highlighted else "2px solid transparent"
         self.bubble.setStyleSheet(
-            f"QFrame#messageBubble {{ background: {bg}; border: none; border-radius: 12px; }}"
+            f"QFrame#messageBubble {{ background: {bg}; border: {border}; border-radius: 12px; }}"
             f"QLabel {{ color: {fg}; background: transparent; border: none; }}")
         avatar_bg = ("#244B6A" if user else "#474364") if dark else ("#D9EEFF" if user else "#E4DFFA")
         avatar_fg = ("#ABD9FF" if user else "#D5CEFF") if dark else ("#277ABC" if user else "#796AB4")
@@ -104,3 +108,7 @@ class MessageRow(QWidget):
             f"background: {avatar_bg}; color: {avatar_fg}; border-radius: 11px; font-weight: 600;")
         self.time_label.setStyleSheet(
             f"color: {'#979EAA' if dark else '#959CA7'}; background: transparent; font-size: 12px;")
+
+    def set_highlighted(self, highlighted: bool) -> None:
+        self.is_highlighted = highlighted
+        self.refresh_theme()
