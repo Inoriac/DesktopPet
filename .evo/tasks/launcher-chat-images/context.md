@@ -20,6 +20,10 @@
 - [code-impl Task 1 sanity check] 已核对 ChatConversationModel 持久化池、LauncherChatServer 异步历史回调、ModelRouter::completeStreamAsync 与 canonical contentBlocks；接口兼容。AIBrain 从 ProfileDataMigrator 既有 profile 根 memory.db 的同级目录推导 chat/images，无新配置字段。
 - [Task 1 审查] 存储测试素材已用实际 Qt 生成并确认可解码的合成 PNG；没有外部图片或真实模型调用。
 
+- [code-impl Task 2 sanity check] 已核对 ChatPage _submit/_send_pending/回调/set_client、ChatInput MIME 入口、MessageRow 尺寸更新与两种 client 的串行发送接口，使用 §3.2 path/name 和历史附件契约。
+- [Task 2 审查] 断线沿用同角色附件草稿，收到新 profileId 时清理；选图后焦点回输入框。Qt 原有能力完成 EXIF 方向处理与 DPR 显示，不新增库。
+- [视觉 QA] 合成脚本先因纯图不可见失败，完成后浅/深/窄屏与 native Launcher 均通过；修正深色附件栏、大图背景及 Retina 缩略图清晰度。
+
 ## 设计偏差
 - 图片输入直接进入带观察的模型对话，跳过本地命令/复杂任务关键词判断；防止把图中文字当作用户动作要求。已回写设计。
 

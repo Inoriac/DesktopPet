@@ -9,7 +9,7 @@
 - sanity check、主代理审查、相关及完整构建/测试后提交。
 
 ## Task 2: Launcher 图片编辑与历史显示
-- 关联设计：§3.3；状态：[ ]；Wave：2；依赖：Task 1。
+- 关联设计：§3.3；状态：[x]；Wave：2；依赖：Task 1。
 - 文件：launcher/launcher_chat_client.py、pages/chat_page.py/chat_widgets.py/chat_images.py；tests/test_launcher_chat.py、test_launcher_chat_transport.py、可选test_launcher_chat_images.py 与其 CMakeLists.txt 注册；launcher/README.md；本任务验收/QA产物。
 - RED/GREEN：选图/粘贴/拖入、预览移除、纯图与图文发送、原图规范化/格式数量边界、成功清理失败保留/在途修改/角色切换；历史缩略图/大图/丢失文件、滚动与搜索回归；浅深/窄屏合成视觉与完整launcher验收。
 - 主代理最终审查、全量CTest、总结后提交。

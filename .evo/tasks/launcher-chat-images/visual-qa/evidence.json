@@ -1,0 +1,16 @@
+[
+  {
+    "theme": "Light",
+    "native": false,
+    "sent_images": 4,
+    "history_with_images": true,
+    "search_located_image_message": "15"
+  },
+  {
+    "theme": "Dark",
+    "native": false,
+    "sent_images": 4,
+    "history_with_images": true,
+    "search_located_image_message": "15"
+  }
+]

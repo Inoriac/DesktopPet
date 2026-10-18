@@ -249,6 +249,18 @@ class LauncherChatTests(unittest.TestCase):
         return base64.urlsafe_b64encode(
             b"a" * 32).rstrip(b"=").decode("ascii")
 
+    def test_sync_image_send_restores_normal_timeout(self):
+        client = LauncherChatClient(timeout_ms=250)
+        sources = [{"path": "/synthetic/staged.png", "name": "test.png"}]
+        calls = []
+        def exchange(action, payload):
+            calls.append((action, payload, client._timeout_ms))
+            return {"messageId": "saved"}
+        with patch.object(client, "_chat_exchange", side_effect=exchange):
+            self.assertEqual(client.send_message("caption", sources), {"messageId": "saved"})
+        self.assertEqual(calls, [("send_message", {"text": "caption", "images": sources}, 10000)])
+        self.assertEqual(client._timeout_ms, 250)
+
     def test_client_whenConnected_shouldUseChatActions(self):
         socket = FakeLocalSocket()
         client = LauncherChatClient(socket_factory=lambda: socket)

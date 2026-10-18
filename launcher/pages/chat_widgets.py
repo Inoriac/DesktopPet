@@ -6,6 +6,8 @@ from PySide6.QtCore import QDateTime, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import isDarkTheme
 
+from .chat_images import MessageImageGrid
+
 
 def message_datetime(message: dict) -> QDateTime:
     return QDateTime.fromString(str(message.get("timestamp") or ""), Qt.ISODateWithMs).toLocalTime()
@@ -36,6 +38,7 @@ class MessageRow(QWidget):
         self.bubble.setObjectName("messageBubble")
         layout = QVBoxLayout(self.bubble)
         layout.setContentsMargins(14, 11, 14, 11)
+        layout.setSpacing(8)
         self.text_label = QLabel(self.bubble)
         self.text_label.setTextFormat(Qt.PlainText)
         self.text_label.setWordWrap(True)
@@ -45,6 +48,8 @@ class MessageRow(QWidget):
         font.setPointSizeF(11)
         self.text_label.setFont(font)
         layout.addWidget(self.text_label)
+        self.image_grid = MessageImageGrid(self.bubble)
+        layout.addWidget(self.image_grid)
         if message.get("role") == "user":
             line.addStretch(1)
             line.addWidget(self.bubble, 0, Qt.AlignTop)
@@ -65,7 +70,10 @@ class MessageRow(QWidget):
         if self.message == message:
             return
         self.message = dict(message)
-        text = str(message.get("content") or "") or "正在思考…"
+        images = [image for image in message.get("images", []) if isinstance(image, dict)]
+        self.image_grid.set_images(images)
+        text = str(message.get("content") or "") or ("" if images else "正在思考…")
+        self.text_label.setVisible(bool(text))
         # A status/timestamp change must not clear the user's text selection.
         if self.text_label.text() != text:
             self.text_label.setText(text)
@@ -84,9 +92,13 @@ class MessageRow(QWidget):
         text_width = max((metrics.horizontalAdvance(line)
                           for line in self.text_label.text().splitlines()), default=32)
         bubble_limit = max(60, min(620, int(width * 0.76), width - 54))
-        bubble_width = min(bubble_limit, max(64, text_width + 34))
+        image_width = (312 if len(self.image_grid.images) == 1 else 388) if self.image_grid.images else 0
+        bubble_width = min(bubble_limit, max(64, text_width + 34, image_width))
         self.bubble.setFixedWidth(bubble_width)
-        height = max(metrics.height(), self.text_label.heightForWidth(bubble_width - 32)) + 26
+        text_height = max(metrics.height(), self.text_label.heightForWidth(bubble_width - 32)) \
+            if self.text_label.text() else 0
+        image_height = self.image_grid.fit(bubble_width - 32)
+        height = text_height + image_height + (8 if text_height and image_height else 0) + 26
         self.bubble.setFixedHeight(height)
         time_height = self.time_label.sizeHint().height() + 12 if self.time_label.text() else 0
         self.setFixedHeight(max(height, 34) + time_height)
@@ -96,6 +108,8 @@ class MessageRow(QWidget):
         user = self.message.get("role") == "user"
         bg = "#1687F8" if user else ("#30343D" if dark else "#FFFFFF")
         fg = "#FFFFFF" if user or dark else "#262B35"
+        for thumbnail in self.image_grid.thumbnails:
+            thumbnail.refresh_theme(fg)
         # Reserve the same border space in both states so highlighting cannot
         # shrink the text area and clip a wrapped line.
         border = "2px solid #FFBE54" if self.is_highlighted else "2px solid transparent"

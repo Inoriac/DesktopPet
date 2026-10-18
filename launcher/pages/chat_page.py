@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, Qt, QTimer, Signal
-from PySide6.QtGui import QKeyEvent, QKeySequence, QShortcut
+from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QImage, QKeyEvent, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
-    QAbstractSlider, QBoxLayout, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
+    QAbstractSlider, QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
     QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
     QSizePolicy, QVBoxLayout, QWidget,
 )
@@ -15,10 +15,63 @@ from qfluentwidgets import (
 )
 
 from .chat_widgets import MessageRow, message_datetime
+from .chat_images import ChatImageDraft, MAX_IMAGES
 
 
 class ChatInput(QPlainTextEdit):
     submitRequested = Signal()
+    imagePasted = Signal(QImage)
+    filesDropped = Signal(list)
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.images_enabled = True
+        self.setAcceptDrops(True)
+
+    @staticmethod
+    def _image_mime(source) -> bool:
+        return source.hasImage() or any(url.isLocalFile() for url in source.urls())
+
+    def canInsertFromMimeData(self, source) -> bool:
+        if self._image_mime(source):
+            return self.images_enabled
+        return super().canInsertFromMimeData(source)
+
+    def insertFromMimeData(self, source) -> None:
+        if self._image_mime(source):
+            if self.images_enabled:
+                paths = [url.toLocalFile() for url in source.urls() if url.isLocalFile()]
+                if paths:
+                    self.filesDropped.emit(paths)
+                else:
+                    image = source.imageData()
+                    if isinstance(image, QPixmap):
+                        image = image.toImage()
+                    self.imagePasted.emit(image if isinstance(image, QImage) else QImage())
+            return
+        super().insertFromMimeData(source)
+
+    def dragEnterEvent(self, event) -> None:
+        if self._image_mime(event.mimeData()):
+            event.acceptProposedAction() if self.images_enabled else event.ignore()
+            return
+        super().dragEnterEvent(event)
+
+    def dragMoveEvent(self, event) -> None:
+        if self._image_mime(event.mimeData()):
+            event.acceptProposedAction() if self.images_enabled else event.ignore()
+            return
+        super().dragMoveEvent(event)
+
+    def dropEvent(self, event) -> None:
+        if self._image_mime(event.mimeData()):
+            if self.images_enabled:
+                self.insertFromMimeData(event.mimeData())
+                event.acceptProposedAction()
+            else:
+                event.ignore()
+            return
+        super().dropEvent(event)
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         if event.key() in (Qt.Key_Return, Qt.Key_Enter) \
@@ -60,6 +113,12 @@ class ChatPage(QWidget):
         self._user_scroll_serial = 0
         self._known_statuses: dict[str, str] | None = None
         self._pending_text: str | None = None
+        self._pending_draft_text: str | None = None
+        self._pending_images: list[dict] = []
+        self._image_draft = ChatImageDraft()
+        self.destroyed.connect(self._image_draft.clear)
+        self._draft_profile_id = None
+        self._image_remove_buttons = []
         self._send_inflight = False
         self._last_error = ""
         self._diagnostic_events: list[str] = []
@@ -217,6 +276,11 @@ class ChatPage(QWidget):
         self.composer_toolbar.setSpacing(10)
         self.composer_label = CaptionLabel("消息", self.composer)
         self.composer_toolbar.addWidget(self.composer_label)
+        self.attach_button = PushButton("图片", self.composer)
+        self.attach_button.setFixedHeight(28)
+        self.attach_button.setToolTip("选择图片，也可粘贴或拖入输入框（最多 4 张）")
+        self.attach_button.clicked.connect(self._choose_images)
+        self.composer_toolbar.addWidget(self.attach_button)
         self.composer_toolbar.addStretch(1)
         self.history_search_button = PushButton("聊天记录", self.composer)
         self.history_search_button.setToolTip("搜索聊天记录 (Ctrl+F)")
@@ -234,7 +298,23 @@ class ChatPage(QWidget):
         self.input_edit.setPlaceholderText("发送消息…")
         self.input_edit.setFixedHeight(78)
         self.input_edit.submitRequested.connect(self._submit)
+        self.input_edit.imagePasted.connect(self._add_clipboard_image)
+        self.input_edit.filesDropped.connect(self._add_image_files)
         composer.addWidget(self.input_edit)
+        self.image_tray = QScrollArea(self.composer)
+        self.image_tray.setObjectName("chatImageTray")
+        self.image_tray.setWidgetResizable(True)
+        self.image_tray.setFrameShape(QFrame.NoFrame)
+        self.image_tray.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.image_tray.setFixedHeight(86)
+        self.image_tray_content = QWidget(self.image_tray)
+        self.image_tray_content.setObjectName("chatImageDraftContent")
+        self.image_tray_layout = QHBoxLayout(self.image_tray_content)
+        self.image_tray_layout.setContentsMargins(0, 0, 0, 0)
+        self.image_tray_layout.setSpacing(8)
+        self.image_tray.setWidget(self.image_tray_content)
+        self.image_tray.hide()
+        composer.addWidget(self.image_tray)
         controls = QHBoxLayout()
         self.input_hint = CaptionLabel("Enter 发送 · Shift + Enter 换行", self.composer)
         controls.addWidget(self.input_hint)
@@ -490,6 +570,8 @@ class ChatPage(QWidget):
         self._open_request_id = 0
         self._known_statuses = None
         self._pending_text = None
+        self._pending_draft_text = None
+        self._pending_images = []
         self._send_inflight = False
         self._busy = self._ai_enabled = False
         self._task = {}
@@ -531,6 +613,13 @@ class ChatPage(QWidget):
         if state.get("unchanged", False):
             return
         profile_id = str(state.get("profileId") or "")
+        if self._draft_profile_id is not None and profile_id != self._draft_profile_id:
+            self._image_draft.clear()
+            self._pending_text = self._pending_draft_text = None
+            self._pending_images = []
+            self._send_inflight = False
+            self._refresh_image_tray()
+        self._draft_profile_id = profile_id
         if self._profile_id is not None and profile_id != self._profile_id:
             self._reset_history()
             self._known_statuses = None
@@ -605,7 +694,7 @@ class ChatPage(QWidget):
         if message.get("role") not in {"user", "assistant"}:
             return False
         # Diagnostics belong to the debug panel, not an empty error bubble.
-        return bool(message.get("content")) or message.get("status") in {
+        return bool(message.get("content") or message.get("images")) or message.get("status") in {
             "pending", "streaming"}
 
     def _reset_history(self) -> None:
@@ -860,18 +949,91 @@ class ChatPage(QWidget):
         super().resizeEvent(event)
         self._layout_history_search()
 
+    def _choose_images(self) -> None:
+        paths, _ = QFileDialog.getOpenFileNames(
+            self, "选择图片", "", "图片 (*.png *.jpg *.jpeg *.webp *.bmp *.gif *.tif *.tiff);;所有文件 (*)")
+        self._add_image_files(paths)
+
+    def _add_image_files(self, paths: list[str]) -> None:
+        if self._send_inflight:
+            return
+        errors = []
+        previous_count = len(self._image_draft.items)
+        for index, path in enumerate(paths):
+            try:
+                self._image_draft.add_file(path)
+            except (ValueError, OSError) as error:
+                errors.append(str(error) if isinstance(error, ValueError) else "无法保存临时图片，请检查磁盘空间和权限。")
+            if len(self._image_draft.items) >= MAX_IMAGES:
+                if index + 1 < len(paths):
+                    errors.append("每条消息最多发送 4 张图片。")
+                break
+        if errors:
+            self._show_problem("图片未添加", "\n".join(dict.fromkeys(errors)))
+        self._refresh_image_tray()
+        if len(self._image_draft.items) > previous_count:
+            self.input_edit.setFocus()
+
+    def _add_clipboard_image(self, image: QImage) -> None:
+        if self._send_inflight:
+            return
+        try:
+            self._image_draft.add_image(image)
+            self.input_edit.setFocus()
+        except ValueError as error:
+            self._show_problem("图片未添加", str(error))
+        except OSError:
+            self._show_problem("图片未添加", "无法保存临时图片，请检查磁盘空间和权限。")
+        self._refresh_image_tray()
+
+    def _remove_image(self, path: str) -> None:
+        if not self._send_inflight:
+            self._image_draft.remove(path)
+            self._refresh_image_tray()
+
+    def _refresh_image_tray(self) -> None:
+        while self.image_tray_layout.count():
+            item = self.image_tray_layout.takeAt(0)
+            if item.widget() is not None:
+                item.widget().hide()
+                item.widget().deleteLater()
+        self._image_remove_buttons = []
+        for image in self._image_draft.items:
+            card = QFrame(self.image_tray_content)
+            card.setFixedSize(84, 66)
+            label = QLabel(card)
+            label.setAlignment(Qt.AlignCenter)
+            label.setGeometry(0, 8, 78, 56)
+            ratio = label.devicePixelRatioF()
+            thumbnail = image.thumbnail.scaled(QSize(78, 56) * ratio, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            thumbnail.setDevicePixelRatio(ratio)
+            label.setPixmap(thumbnail)
+            label.setAccessibleName(image.name)
+            remove = QPushButton("×", card)
+            remove.setGeometry(62, 0, 22, 22)
+            remove.setToolTip("移除图片")
+            remove.setAccessibleName(f"移除图片：{image.name}")
+            remove.clicked.connect(lambda _checked=False, path=image.path: self._remove_image(path))
+            self._image_remove_buttons.append(remove)
+            self.image_tray_layout.addWidget(card)
+        self.image_tray_layout.addStretch(1)
+        self.image_tray.setVisible(bool(self._image_draft.items))
+        self._sync_controls()
+
     def _submit(self) -> None:
         if self._client is None or not self._client.is_connected \
                 or not self._ai_enabled or self._pending_text is not None:
             return
         text = self.input_edit.toPlainText().strip()
-        if not text:
+        if not text and not self._image_draft.items:
             return
         if len(text) > 8000:
             self._show_problem("消息过长", "请将消息缩短到 8000 个字符以内。")
             return
         self._last_error = ""
         self._pending_text = text
+        self._pending_draft_text = self.input_edit.toPlainText()
+        self._pending_images = [image.source() for image in self._image_draft.items]
         self._send_pending()
         self._sync_controls()
 
@@ -880,7 +1042,10 @@ class ChatPage(QWidget):
             return
         self._send_inflight = True
         self.scroll_to_bottom()
-        self._client.send_message(self._pending_text)
+        if self._pending_images:
+            self._client.send_message(self._pending_text, self._pending_images)
+        else:
+            self._client.send_message(self._pending_text)
         self._sync_controls()
 
     def _stop(self) -> None:
@@ -937,11 +1102,15 @@ class ChatPage(QWidget):
                     and self.input_edit.toPlainText().strip() == self._task_feedback:
                 self.input_edit.clear()
             self._task_feedback = ""
-        if operation == "send_message":
-            if self.input_edit.toPlainText().strip() == self._pending_text:
+        if operation == "send_message" and self._pending_text is not None:
+            if self.input_edit.toPlainText() == self._pending_draft_text:
                 self.input_edit.clear()
-            self._pending_text = None
+            for image in self._pending_images:
+                self._image_draft.remove(image["path"])
+            self._pending_text = self._pending_draft_text = None
+            self._pending_images = []
             self._send_inflight = False
+            self._refresh_image_tray()
             self.scroll_to_bottom()
         self._sync_controls()
         self.poll_once()
@@ -954,11 +1123,14 @@ class ChatPage(QWidget):
             self._sync_controls()
             self.poll_once()
             return
-        if operation in {"send_message", "stop_response"}:
-            self._pending_text = None
+        if operation == "send_message":
+            self._pending_text = self._pending_draft_text = None
+            self._pending_images = []
             self._send_inflight = False
         title = "发送失败" if operation == "send_message" else "连接暂时不可用"
-        self._show_problem(title, "请检查桌宠和模型服务的连接后重试，草稿已保留。", detail)
+        message = f"{detail or '请稍后重试。'} 草稿已保留。" if operation == "send_message" \
+            else "请检查桌宠和模型服务的连接后重试，草稿已保留。"
+        self._show_problem(title, message, detail)
         self._sync_controls()
 
     def _retry(self, message_id: str) -> None:
@@ -1015,6 +1187,8 @@ class ChatPage(QWidget):
         self._user_scroll_serial += 1
         self._busy = self._ai_enabled = False
         self._pending_text = None
+        self._pending_draft_text = None
+        self._pending_images = []
         self._send_inflight = False
         self._task_action_pending = False
         self._history_request_token = ""
@@ -1032,7 +1206,12 @@ class ChatPage(QWidget):
         self.input_edit.setEnabled(connected and self._ai_enabled)
         self.action_button.setEnabled(connected and self._ai_enabled
                                       and self._pending_text is None)
-        self.action_button.setText("发送中…" if self._pending_text else "发送")
+        self.action_button.setText("发送中…" if self._pending_text is not None else "发送")
+        self.attach_button.setEnabled(connected and self._ai_enabled and not self._send_inflight
+                                      and len(self._image_draft.items) < MAX_IMAGES)
+        self.input_edit.images_enabled = not self._send_inflight
+        for remove in self._image_remove_buttons:
+            remove.setEnabled(not self._send_inflight)
         self.stop_button.setVisible(self._busy and connected)
         self.stop_button.setEnabled(connected)
         self._sync_task_card(connected)
@@ -1111,6 +1290,17 @@ class ChatPage(QWidget):
         self.input_edit.setStyleSheet(
             f"QPlainTextEdit {{ color: {fg}; background: {surface}; border: none;"
             "padding: 4px 0px; font-size: 14px; selection-background-color: #1687F8; }")
+        self.image_tray.viewport().setStyleSheet(f"background: {surface};")
+        self.image_tray.setStyleSheet(
+            f"QScrollArea#chatImageTray {{ border: none; background: {surface}; }}"
+            f"QWidget#chatImageDraftContent {{ background: {surface}; }}"
+            f"QPushButton {{ color: {fg}; background: {surface}; border: 1px solid {line}; border-radius: 11px; }}"
+            f"QPushButton:hover {{ background: {bg}; }}"
+            f"QPushButton:disabled {{ color: {muted}; }}"
+            f"QScrollBar:horizontal {{ background: {surface}; height: 8px; margin: 0px; }}"
+            f"QScrollBar::handle:horizontal {{ background: {thumb}; min-width: 24px; border-radius: 4px; }}"
+            "QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal { width: 0px; }"
+            "QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal { background: none; }")
         self.task_card.setStyleSheet(
             f"QFrame {{ background: {surface}; border: none; }}"
             f"QLabel {{ color: {fg}; background: transparent; }}")

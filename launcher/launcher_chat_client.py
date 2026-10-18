@@ -54,8 +54,17 @@ class LauncherChatClient(OwnerDiaryClient):
             "query": query, "beforeMessageId": before_message_id,
             "limit": limit, "requestToken": request_token})
 
-    def send_message(self, text: str) -> dict:
-        return self._chat_exchange("send_message", {"text": str(text)})
+    def send_message(self, text: str, images: list[dict] | None = None) -> dict:
+        payload = {"text": str(text)}
+        if images:
+            payload["images"] = images
+        previous_timeout = self._timeout_ms
+        try:
+            if images:
+                self._timeout_ms = max(self._timeout_ms, 10000)
+            return self._chat_exchange("send_message", payload)
+        finally:
+            self._timeout_ms = previous_timeout
 
     def retry_message(self, message_id: str) -> dict:
         return self._chat_exchange(
@@ -165,8 +174,11 @@ class AsyncLauncherChatClient(QObject):
             "query": query, "beforeMessageId": before_message_id,
             "limit": limit, "requestToken": request_token})
 
-    def send_message(self, text: str) -> None:
-        self._queue_operation("send_message", {"text": str(text)})
+    def send_message(self, text: str, images: list[dict] | None = None) -> None:
+        payload = {"text": str(text)}
+        if images:
+            payload["images"] = [dict(image) for image in images]
+        self._queue_operation("send_message", payload)
 
     def retry_message(self, message_id: str) -> None:
         self._queue_operation("retry_message", {"messageId": str(message_id)})
@@ -269,7 +281,9 @@ class AsyncLauncherChatClient(QObject):
             return
         self._request = (action, request_id, payload)
         if restart_deadline:
-            self._deadline.start(self._timeout_ms)
+            timeout = max(self._timeout_ms, 10000) if action == "send_message" and payload.get("images") \
+                else self._timeout_ms
+            self._deadline.start(timeout)
         frame = struct.pack(">I", len(encoded)) + encoded
         written = socket.write(frame)
         if socket is self._socket and written != len(frame):

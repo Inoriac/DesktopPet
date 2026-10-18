@@ -143,6 +143,22 @@ class AsyncLauncherChatTests(unittest.TestCase):
         self.client.connect_to_server(self.server.name, TOKEN)
         self.wait_for(lambda: self.client.is_connected)
 
+    def test_image_send_uses_file_references_and_import_deadline(self):
+        self.connect_client()
+        self.server.stall.add("send_message")
+        sources = [{"path": "/synthetic/staged.png", "name": "示例.png"}]
+        self.client.send_message("", sources)
+        self.wait_for(lambda: len(self.server.requests) == 2)
+        request = self.server.requests[-1]
+        self.assertEqual(request["payload"]["text"], "")
+        self.assertEqual(request["payload"]["images"], sources)
+        self.assertGreaterEqual(self.client._deadline.interval(), 10000)
+        QTest.qWait(200)
+        self.assertTrue(self.client.is_connected)
+        self.assertEqual(self.errors, [])
+        self.client._on_timeout()
+        self.assertEqual(self.errors[0][0], "send_message")
+
     def test_connect_and_request_return_before_delayed_reply(self):
         self.server.stall.add("hello")
         started = time.monotonic()
