@@ -260,12 +260,13 @@ void TestChatConversationModel::finishAssistantMessage_whenFailed_shouldPersistS
     QString error;
     QVERIFY2(model.initialize(options, &error), qPrintable(error));
 
-    model.beginAssistantMessage(QStringLiteral("assistant-id"));
+    const auto userId = model.appendUserMessage("hello");
+    model.beginAssistantMessage(QStringLiteral("assistant-id"), userId);
     model.finishAssistantMessage(
         QStringLiteral("assistant-id"), ChatMessageStatus::Failed,
         QStringLiteral("LLM HTTP error (HTTP 400): api-key=super-secret"));
 
-    const ChatHistoryEntry failed = model.messages().first();
+    const ChatHistoryEntry failed = model.messages().last();
     QCOMPARE(failed.status, ChatMessageStatus::Failed);
     QVERIFY(failed.content.isEmpty());
     QVERIFY(failed.errorMessage.contains(QStringLiteral("HTTP 400")));
@@ -274,8 +275,13 @@ void TestChatConversationModel::finishAssistantMessage_whenFailed_shouldPersistS
 
     ProfileChatHistoryStore reloaded;
     QVERIFY2(reloaded.open(options, &error), qPrintable(error));
-    const ChatHistoryEntry persisted = reloaded.load(&error).first();
+    const ChatHistoryEntry persisted = reloaded.load(&error).last();
     QCOMPARE(persisted.errorMessage, failed.errorMessage);
+    QVERIFY(model.initialize(options, &error));
+    const auto page = model.recentHistoryPage();
+    QCOMPARE(page["messages"].toArray().size(), 2);
+    QVERIFY(page["diagnosticMessages"].toArray().isEmpty());
+    QCOMPARE(model.sourceInputForReply("assistant-id"), QString("hello"));
 }
 
 void TestChatConversationModel::markReadThrough_whenMessageExists_shouldRestoreProfileScopedMarker() {

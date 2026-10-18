@@ -67,6 +67,7 @@ public:
         QByteArray contentType = "text/event-stream";
         QByteArray body;
         bool holdOpen = false;
+        bool incompleteBody = false;
     };
 
     LocalHttpServer() {
@@ -100,12 +101,16 @@ public:
                     requestBodies.append(buffer.mid(bodyStart, contentLength));
                     m_buffers.remove(socket);
 
+                    if (closeBeforeHeaders) {
+                        socket->disconnectFromHost();
+                        return;
+                    }
                     const Response response = m_responses.isEmpty() ? Response{} : m_responses.takeFirst();
                     QByteArray responseHeader = "HTTP/1.1 " + QByteArray::number(response.status) +
                                                 (response.status == 200 ? " OK\r\n" : " Error\r\n");
                     responseHeader += "Content-Type: " + response.contentType + "\r\n";
                     if (!response.holdOpen) {
-                        responseHeader += "Content-Length: " + QByteArray::number(response.body.size()) + "\r\n";
+                        responseHeader += "Content-Length: " + QByteArray::number(response.body.size() + (response.incompleteBody ? 100 : 0)) + "\r\n";
                     }
                     responseHeader += "Connection: close\r\n\r\n";
                     socket->write(responseHeader);
@@ -136,6 +141,7 @@ public:
     QList<QByteArray> requestHeaders;
     QList<QByteArray> requestBodies;
     int clientDisconnects = 0;
+    bool closeBeforeHeaders = false;
 
 private:
     QTcpServer m_server;
@@ -210,11 +216,62 @@ private slots:
     void cancel_whenOpenAiReplyIsActive_shouldAbortAndCompleteExactlyOnce();
     void sendChatCompletionStreamAsync_whenOpenAiErrorContainsApiKey_shouldNotExposeIt();
     void cancel_whenLegacyAdapterFinishes_shouldRemainObservableWithEmptyCompletion();
+    void disconnected_request_finishes_once_and_next_request_recovers_data();
+    void disconnected_request_finishes_once_and_next_request_recovers();
     void cancel_from_stream_observer_data();
     void cancel_from_stream_observer();
     void completion_can_release_client_data();
     void completion_can_release_client();
 };
+
+void TestAnthropicMessagesClient::disconnected_request_finishes_once_and_next_request_recovers_data() {
+    QTest::addColumn<bool>("beforeHeaders");
+    QTest::newRow("before-response") << true;
+    QTest::newRow("after-visible-text") << false;
+}
+
+void TestAnthropicMessagesClient::disconnected_request_finishes_once_and_next_request_recovers() {
+    QFETCH(bool, beforeHeaders);
+    LocalHttpServer server;
+    server.closeBeforeHeaders = beforeHeaders;
+    if (!beforeHeaders) {
+        auto body = textResponse("partial answer");
+        body.truncate(body.indexOf("event: content_block_stop"));
+        server.enqueue({200, "text/event-stream", body, false, true});
+    }
+    AnthropicMessagesClient client;
+    int completions = 0;
+    bool success = true;
+    QString error, visible;
+    client.sendChatCompletionStreamAsync(anthropicConfig(server), {{"user", "hi", {}, {}, {}}}, {},
+        [&](const LlmStreamEvent& event) {
+            if (event.type == LlmStreamEventType::TextDelta) visible += event.textDelta;
+        },
+        [&](bool ok, LlmResponse, QString detail) {
+            ++completions;
+            success = ok;
+            error = detail;
+        });
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 1, 3000);
+    QVERIFY(!success);
+    QVERIFY2(!error.isEmpty(), "connection closure must report an error");
+    QCOMPARE(visible, beforeHeaders ? QString() : QString("partial answer"));
+    QTest::qWait(20);
+    QCOMPARE(completions, 1);
+
+    server.closeBeforeHeaders = false;
+    server.enqueue({200, "text/event-stream", textResponse("recovered"), false});
+    client.sendChatCompletionStreamAsync(anthropicConfig(server), {{"user", "retry", {}, {}, {}}}, {}, {},
+        [&](bool ok, LlmResponse response, QString detail) {
+            ++completions;
+            success = ok;
+            error = detail;
+            visible = response.content;
+        });
+    QTRY_COMPARE_WITH_TIMEOUT(completions, 2, 3000);
+    QVERIFY2(success, qPrintable(error));
+    QCOMPARE(visible, QString("recovered"));
+}
 
 void TestAnthropicMessagesClient::cancel_from_stream_observer_data() {
     QTest::addColumn<bool>("anthropic");

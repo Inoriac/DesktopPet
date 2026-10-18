@@ -69,7 +69,11 @@ ChatHistoryResult normalizeChatHistoryQuery(const QJsonObject& request, bool sea
 bool isVisibleChatHistoryEntry(const ChatHistoryEntry& entry) {
     return (entry.role == "user" || entry.role == "assistant")
         && (!entry.content.trimmed().isEmpty() || !entry.images.isEmpty() || entry.status == ChatMessageStatus::Pending
-            || entry.status == ChatMessageStatus::Streaming);
+            || entry.status == ChatMessageStatus::Streaming
+            || (entry.role == "assistant" && !entry.replyToId.isEmpty()
+                && (entry.status == ChatMessageStatus::Failed
+                    || entry.status == ChatMessageStatus::Interrupted
+                    || entry.status == ChatMessageStatus::Stopped)));
 }
 
 QJsonObject chatHistoryEntryJson(const ChatHistoryEntry& entry) {

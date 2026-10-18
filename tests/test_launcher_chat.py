@@ -129,6 +129,7 @@ class StubChatClient(QObject):
         self.busy = False
         self.sent = []
         self.stop_calls = 0
+        self.retry_calls = []
         self.task_calls = []
         self.history_calls = []
         self.search_calls = []
@@ -171,7 +172,8 @@ class StubChatClient(QObject):
         self.stop_calls += 1
         self.operationFinished.emit("stop_response", {})
 
-    def retry_message(self, _message_id):
+    def retry_message(self, message_id):
+        self.retry_calls.append(message_id)
         return {}
 
     def resume_task(self, task_id, feedback="", extend_budget=False):
@@ -463,20 +465,48 @@ class LauncherChatTests(unittest.TestCase):
                     self.assertEqual(bar.value(), bar.maximum())
                 self.assertEqual(client.history_calls, [])
 
-    def test_pending_failure_moves_to_diagnostics_and_retains_retry_notice(self):
+    def test_failed_reply_remains_visible_and_retryable_after_reopening(self):
         page = self.page()
-        pending = {"id": "answer", "role": "assistant", "status": "pending", "content": ""}
-        page._apply_state(self.state([pending], busy=True))
+        client = StubChatClient()
+        page.set_client(client)
+        user = {"id": "u1", "role": "user", "content": "你好", "status": "complete"}
+        pending = {"id": "answer", "replyToId": "u1", "role": "assistant", "status": "pending", "content": ""}
+        page._apply_state(self.state([user, pending], revision=2, busy=True))
         self.settle()
         self.assertIn("answer", page._rows)
-        failed = dict(pending, status="failed", errorMessage="network error")
+        failed = dict(pending, status="failed", errorMessage="network error: Connection closed")
         with patch("pages.chat_page.InfoBar.error", wraps=InfoBar.error) as notice:
-            page._apply_state(self.state([], revision=2, diagnostics=[failed]))
-            page._apply_state(self.state([], revision=3, diagnostics=[failed]))
+            page._apply_state(self.state([user, failed], revision=3))
+            page._apply_state(self.state([user, failed], revision=4))
             self.settle()
             self.assertEqual(notice.call_count, 1)
-        self.assertEqual(page._rows, {})
-        self.assertIn("network error", page.diagnostics_text.toPlainText())
+        row = page._rows["answer"]
+        self.assertEqual(row.status_label.text(), "回复失败")
+        self.assertEqual(row.text_label.text(), "")
+        self.assertTrue(row.retry_button.isVisible())
+        QTest.mouseClick(row.retry_button, Qt.LeftButton)
+        self.assertEqual(client.retry_calls, ["answer"])
+        self.assertIn("Connection closed", page.diagnostics_text.toPlainText())
+        reopened = self.page()
+        reopened.set_client(client)
+        reopened._apply_state(self.state([user, failed], revision=5))
+        self.settle()
+        self.assertIn("answer", reopened._rows)
+        reopened.set_client(None)
+        self.assertFalse(reopened._rows["answer"].retry_button.isEnabled())
+
+    def test_partial_interruption_keeps_text_and_shows_terminal_status(self):
+        page = self.page()
+        page.set_client(StubChatClient())
+        for status, label in (("interrupted", "回复中断"), ("stopped", "已停止回复")):
+            page._apply_state(self.state([{"id": status, "replyToId": "u1", "role": "assistant",
+                                          "content": "保留已生成的内容", "status": status}], revision=10))
+            self.settle()
+            row = page._rows[status]
+            self.assertEqual(row.text_label.text(), "保留已生成的内容")
+            self.assertEqual(row.status_label.text(), label)
+            self.assertEqual(row.retry_button.isVisible(), status == "interrupted")
+            self.assertLessEqual(row.status_bar.geometry().bottom(), row.bubble.height())
 
     def test_recent_snapshot_gap_does_not_fake_adjacency_while_reading(self):
         page, _client = self.history_setup()

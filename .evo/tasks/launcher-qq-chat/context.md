@@ -19,7 +19,7 @@
 ## 决策记录
 - [Task 1 sanity check] 实际模型测试名 ChatUiModelTests / chat_ui_model_tests；ConversationStore.loadHistory 使用写锁事务，新查询使用局部只读连接和读取事务，不占用写锁。签名核实通过。
 - [Task 1 接口补充] historyFailed(action,requestToken,detail) 关联查询错误（包括超时/断线），防止旧搜索失败污染新搜索；保留普通 operationFailed 两参数接口。
-- [Task 1 可见消息边界] 查询与页数只统计 user/assistant 非空正文，内存快照也保留 pending/streaming；system 仅在独立 diagnosticMessages（最多20条）提供给诊断区。先筛选再分页，覆盖交错 system/空错误占位；原 load 行为不变。server 认证后剥离 sessionToken 再校验查询参数。
+- [Task 1 可见消息边界，2026-10-18 已修订：带 replyToId 的失败/中断/停止回复现在保留可见状态，见系分与 windows-interaction-fixes] 查询与页数只统计 user/assistant 非空正文，内存快照也保留 pending/streaming；system 仅在独立 diagnosticMessages（最多20条）提供给诊断区。先筛选再分页，覆盖交错 system/空错误占位；原 load 行为不变。server 认证后剥离 sessionToken 再校验查询参数。
 - [code-impl Task 1 sanity check] §3.2 存储/query、model recentHistoryPage/requestHistory、LauncherChatCallbacks::queryHistory、Python request_history/search_history/historyFailed 实际签名已核实，与修订后的设计一致。
 - [code-impl Task 2 sanity check] §3.3 request_history、historyFailed、ChatPage 发送/停止/任务与滚动锚点入口核实一致。全部用户滚动可取消待恢复位置，仅向上动作触发旧页；断线保留已读内容，换角色清空。
 - [code-impl Task 3 sanity check] §3.4 search_history/request_history 与成功/失败 token、现有历史窗口字段核实一致；搜索面板宽屏靠右，窄屏置于顶部，避免挤压正文和任务按钮，已回写设计。

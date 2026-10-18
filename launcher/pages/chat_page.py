@@ -655,8 +655,7 @@ class ChatPage(QWidget):
         recent = [m for m in messages if self._visible_message(m)]
         self._recent_messages = recent
         self._recent_has_more_before = bool(state.get("hasMoreBefore"))
-        # A pending empty reply leaves the visible snapshot on failure. Remove
-        # its old thinking bubble before merging the new recent window.
+        # Remove entries reclassified as internal diagnostics before merging.
         hidden_ids = {str(m.get("id")) for m in status_messages if not self._visible_message(m)}
         self._messages = [m for m in self._messages if str(m.get("id")) not in hidden_ids]
         if not self._messages:
@@ -693,9 +692,10 @@ class ChatPage(QWidget):
     def _visible_message(message: dict) -> bool:
         if message.get("role") not in {"user", "assistant"}:
             return False
-        # Diagnostics belong to the debug panel, not an empty error bubble.
-        return bool(message.get("content") or message.get("images")) or message.get("status") in {
-            "pending", "streaming"}
+        return (bool(str(message.get("content") or "").strip() or message.get("images"))
+                or message.get("status") in {"pending", "streaming"}
+                or (message.get("role") == "assistant" and bool(message.get("replyToId"))
+                    and message.get("status") in {"failed", "interrupted", "stopped"}))
 
     def _reset_history(self) -> None:
         self._reset_search()
@@ -754,6 +754,7 @@ class ChatPage(QWidget):
             row = self._rows.get(mid)
             if row is None:
                 row = MessageRow(message, self.message_view)
+                row.retryRequested.connect(self._retry)
                 self._rows[mid] = row
             else:
                 row.update_message(message)
@@ -766,6 +767,7 @@ class ChatPage(QWidget):
                          or previous_time.date() != timestamp.date())
             row.set_time_label(timestamp.toString("MM月dd日 HH:mm") if show_time else "")
             row.set_available_width(self._row_width())
+            row.retry_button.setEnabled(self._can_retry())
             previous_time = timestamp
         self.empty_label.setVisible(not selected)
         if center_message_id in self._rows:
@@ -1134,9 +1136,13 @@ class ChatPage(QWidget):
         self._sync_controls()
 
     def _retry(self, message_id: str) -> None:
-        if self._client is not None and self._client.is_connected and not self._busy:
+        if self._can_retry():
             self.scroll_to_bottom()
             self._client.retry_message(message_id)
+
+    def _can_retry(self) -> bool:
+        return (self._client is not None and self._client.is_connected
+                and self._ai_enabled and not self._busy and not self._send_inflight)
 
     @staticmethod
     def _friendly_error(detail: str) -> str:
@@ -1214,6 +1220,8 @@ class ChatPage(QWidget):
             remove.setEnabled(not self._send_inflight)
         self.stop_button.setVisible(self._busy and connected)
         self.stop_button.setEnabled(connected)
+        for row in self._rows.values():
+            row.retry_button.setEnabled(self._can_retry())
         self._sync_task_card(connected)
         self._sync_search_controls()
 

@@ -89,6 +89,8 @@ class TestChatHistory : public QObject {
 private slots:
     void queryHistory_data();
     void queryHistory();
+    void queryHistory_terminalReplies_data();
+    void queryHistory_terminalReplies();
     void queryHistory_sqliteFullArchiveAndScope();
     void initTestCase();
     void cleanup();
@@ -571,6 +573,47 @@ void TestChatHistory::queryHistory() {
     auto unavailable = store.queryHistory({});
     QVERIFY(!unavailable);
     QCOMPARE(unavailable.error().code, QString("STORE_UNAVAILABLE"));
+}
+
+void TestChatHistory::queryHistory_terminalReplies_data() {
+    queryHistory_data();
+}
+
+void TestChatHistory::queryHistory_terminalReplies() {
+    QFETCH(bool, sqlite);
+    QTemporaryDir directory;
+    auto options = optionsFor(directory);
+    if (sqlite) options.runtimeDatabasePath = directory.filePath("runtime.sqlite");
+    QString error;
+    {
+        ProfileChatHistoryStore store;
+        QVERIFY(store.open(options, &error));
+        QVERIFY(store.appendFinal(entry("user", "user", "请介绍这张图片"), &error));
+        for (const auto status : {ChatMessageStatus::Failed, ChatMessageStatus::Interrupted, ChatMessageStatus::Stopped}) {
+            auto reply = entry(chatMessageStatusStorageName(status), "assistant", "", status);
+            reply.replyToId = "user";
+            reply.errorMessage = "Connection closed";
+            QVERIFY(store.appendFinal(reply, &error));
+        }
+    }
+    ProfileChatHistoryStore reopened;
+    QVERIFY(reopened.open(options, &error));
+    auto recent = reopened.queryHistory({{"limit", 2}});
+    QVERIFY(recent);
+    const auto page = recent.value()["messages"].toArray();
+    QCOMPARE(page.size(), 2);
+    QCOMPARE(page.first().toObject()["status"].toString(), QString("interrupted"));
+    QCOMPARE(page.last().toObject()["status"].toString(), QString("stopped"));
+    QVERIFY(recent.value()["hasMoreBefore"].toBool());
+    auto older = reopened.queryHistory({{"beforeMessageId", "interrupted"}, {"limit", 2}});
+    QVERIFY(older);
+    const auto failed = older.value()["messages"].toArray().last().toObject();
+    QCOMPARE(failed["id"].toString(), QString("failed"));
+    QCOMPARE(failed["replyToId"].toString(), QString("user"));
+    QVERIFY(failed["content"].toString().isEmpty());
+    auto located = reopened.queryHistory({{"aroundMessageId", "failed"}});
+    QVERIFY(located);
+    QCOMPARE(located.value()["messages"].toArray().size(), 4);
 }
 
 void TestChatHistory::queryHistory_sqliteFullArchiveAndScope() {

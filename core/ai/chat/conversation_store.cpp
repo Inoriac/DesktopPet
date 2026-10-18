@@ -414,7 +414,9 @@ ChatHistoryResult ConversationStore::queryLocalHistory(const QJsonObject& reques
         const QString around = query["aroundMessageId"].toString();
         const QString visible = " AND json_extract(payload_json,'$.role') IN ('user','assistant')"
             " AND (length(trim(json_extract(payload_json,'$.text')))>0"
-            " OR COALESCE(json_array_length(payload_json,'$.images'),0)>0 OR json_extract(payload_json,'$.status') IN ('pending','streaming'))";
+            " OR COALESCE(json_array_length(payload_json,'$.images'),0)>0 OR json_extract(payload_json,'$.status') IN ('pending','streaming')"
+            " OR (json_extract(payload_json,'$.role')='assistant' AND length(json_extract(payload_json,'$.replyToId'))>0"
+            " AND json_extract(payload_json,'$.status') IN ('failed','interrupted','stopped')))";
         const QString cursorId = around.isEmpty() ? before : around;
         qint64 cursor = std::numeric_limits<qint64>::max();
         if (!cursorId.isEmpty()) {

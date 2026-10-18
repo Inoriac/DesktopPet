@@ -10,7 +10,7 @@
 - 复用已有管道会话认证、operationFinished/operationFailed 与 request ID；新增 historyFailed(action,requestToken,detail) 关联查询失败，普通操作信号不变。查询为异步，不能阻塞 GUI 等磁盘；断线/切换角色后丢弃旧查询结果。
 - 页大小默认 40、上限 80；搜索默认 30、上限 50，query 去两端空白后 1–200 字符。空历史为成功空页；坏游标/无查询/存储错误显示可重试提示，不重置已有聊天或自动发消息。
 - 实时状态只发最近窗口；历史页按消息 ID 合并、去重，滚动锚点不因 prepend、流式更新或新消息丢失。阅读旧消息时新消息不抢滚动，显示返回最新入口。
-- 分页、搜索与最近窗口仅计 user/assistant 可见正文；内存最近窗口另保留 pending/streaming 消息。system/空错误占位不占页、不进入对话气泡，诊断通过独立 diagnosticMessages（最近最多20条）供折叠诊断区使用；原 load 行为不变。
+- 分页与最近窗口计入 user/assistant 正文、图片、pending/streaming，以及带 replyToId 的 failed/interrupted/stopped 回复；失败即使尚无正文也保留状态和重试入口。system 和不关联用户消息的空诊断仍通过独立 diagnosticMessages（最近最多20条）供折叠诊断区使用；关键词搜索匹配消息正文。此边界依据 2026-10-18 Windows 交互报告修订，详见 ../windows-interaction-fixes/修复与复验.md。
 - 不添加新第三方依赖或通用防御框架。截图使用合成消息，浅色/深色和窄窗口均可用；纯文本显示防止消息被当 HTML。
 
 ## 2 架构与改动

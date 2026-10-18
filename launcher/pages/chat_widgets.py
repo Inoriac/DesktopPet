@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QDateTime, Qt
+from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
-from qfluentwidgets import isDarkTheme
+from qfluentwidgets import PushButton, isDarkTheme
 
 from .chat_images import MessageImageGrid
 
@@ -14,6 +14,8 @@ def message_datetime(message: dict) -> QDateTime:
 
 
 class MessageRow(QWidget):
+    retryRequested = Signal(str)
+
     def __init__(self, message: dict, parent=None):
         super().__init__(parent)
         self.message = {}
@@ -50,6 +52,18 @@ class MessageRow(QWidget):
         layout.addWidget(self.text_label)
         self.image_grid = MessageImageGrid(self.bubble)
         layout.addWidget(self.image_grid)
+        self.status_bar = QWidget(self.bubble)
+        status_layout = QHBoxLayout(self.status_bar)
+        status_layout.setContentsMargins(0, 0, 0, 0)
+        status_layout.setSpacing(8)
+        self.status_label = QLabel(self.status_bar)
+        self.status_label.setTextFormat(Qt.PlainText)
+        status_layout.addWidget(self.status_label)
+        self.retry_button = PushButton("重试", self.status_bar)
+        self.retry_button.clicked.connect(lambda: self.retryRequested.emit(str(self.message["id"])))
+        status_layout.addWidget(self.retry_button)
+        status_layout.addStretch()
+        layout.addWidget(self.status_bar)
         if message.get("role") == "user":
             line.addStretch(1)
             line.addWidget(self.bubble, 0, Qt.AlignTop)
@@ -72,7 +86,16 @@ class MessageRow(QWidget):
         self.message = dict(message)
         images = [image for image in message.get("images", []) if isinstance(image, dict)]
         self.image_grid.set_images(images)
-        text = str(message.get("content") or "") or ("" if images else "正在思考…")
+        status = str(message.get("status") or "")
+        status_text = {"failed": "回复失败", "interrupted": "回复中断", "stopped": "已停止回复"}.get(status, "") \
+            if message.get("role") == "assistant" else ""
+        self.status_label.setText(status_text)
+        self.status_bar.setVisible(bool(status_text))
+        self.retry_button.setVisible(bool(status_text) and status in {"failed", "interrupted"}
+                                     and bool(message.get("replyToId")))
+        text = str(message.get("content") or "")
+        if not text and not images and status in {"pending", "streaming"}:
+            text = "正在思考…"
         self.text_label.setVisible(bool(text))
         # A status/timestamp change must not clear the user's text selection.
         if self.text_label.text() != text:
@@ -93,12 +116,15 @@ class MessageRow(QWidget):
                           for line in self.text_label.text().splitlines()), default=32)
         bubble_limit = max(60, min(620, int(width * 0.76), width - 54))
         image_width = (312 if len(self.image_grid.images) == 1 else 388) if self.image_grid.images else 0
-        bubble_width = min(bubble_limit, max(64, text_width + 34, image_width))
+        status_width = self.status_bar.sizeHint().width() + 28 if self.status_label.text() else 0
+        bubble_width = min(bubble_limit, max(64, text_width + 34, image_width, status_width))
         self.bubble.setFixedWidth(bubble_width)
         text_height = max(metrics.height(), self.text_label.heightForWidth(bubble_width - 32)) \
             if self.text_label.text() else 0
         image_height = self.image_grid.fit(bubble_width - 32)
-        height = text_height + image_height + (8 if text_height and image_height else 0) + 26
+        status_height = self.status_bar.sizeHint().height() if self.status_label.text() else 0
+        sections = [height for height in (text_height, image_height, status_height) if height]
+        height = sum(sections) + max(0, len(sections) - 1) * 8 + 26
         self.bubble.setFixedHeight(height)
         time_height = self.time_label.sizeHint().height() + 12 if self.time_label.text() else 0
         self.setFixedHeight(max(height, 34) + time_height)
