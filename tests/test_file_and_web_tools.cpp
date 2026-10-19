@@ -16,6 +16,7 @@
 #include "ai/tool_registry.h"
 #include "ai/tools/file_tools.h"
 #include "ai/tools/runtime/tool_runtime.h"
+#include "ai/tools/runtime/tool_result_sanitizer.h"
 #include "ai/tools/web_tools.h"
 #include "ai/tools/environment_tools.h"
 
@@ -55,6 +56,7 @@ private slots:
     void test_web_fetch_block_localhost();
     void test_web_search_validate_params();
     void test_network_security_validator();
+    void nativeTools_sharedBackend_sameResultAndFailure();
     void test_query_user_idle_seconds_platform_supported();
 };
 
@@ -610,6 +612,62 @@ void TestFileAndWebTools::test_web_search_validate_params() {
     ToolResult result1 = tool.execute(params1);
     QVERIFY(!result1.success);
     QVERIFY(result1.errorMessage.contains("关键词") || result1.errorMessage.contains("empty"));
+}
+
+void TestFileAndWebTools::nativeTools_sharedBackend_sameResultAndFailure() {
+    QTemporaryDir cache;
+    int requests = 0;
+    auto service = std::make_shared<WebContentService>(cache.path(), [&](const QUrl& url, int, qint64) {
+        ++requests;
+        if (url.path() == "/long") {
+            return WebHttpResponse{true, QString::fromUtf8("🙂\"\n").repeated(3000).toUtf8(), "text/plain", url, {}, {}, 200};
+        }
+        if (url.path() == "/search") {
+            return WebHttpResponse{true, "<rss><channel><item><title>Docs</title><link>https://example.com/docs</link></item></channel></rss>",
+                "text/xml", url, {}, {}, 200};
+        }
+        return WebHttpResponse{true, "<html><body><main><p>Readable text</p></main></body></html>", "text/html", url, {}, {}, 200};
+    });
+    WebSearchTool search(service);
+    const auto result = search.execute({{"query", "documentation"}, {"max_results", 1}});
+    QVERIFY2(result.success, qPrintable(result.errorMessage));
+    QCOMPARE(result.data["results"].toArray().size(), 1);
+    QVERIFY(!result.data.contains("entries")); // one array, no duplicated token cost
+    auto backend = service->search("documentation", 1);
+    auto expected = backend.data;
+    expected.insert("results", expected.take("entries"));
+    QCOMPARE(result.data, expected);
+    WebFetchTool fetch(service);
+    const auto read = fetch.execute({{"url", "https://example.com/docs"}});
+    QVERIFY2(read.success, qPrintable(read.errorMessage));
+    QCOMPARE(read.data["content"].toString(), "Readable text");
+    ToolResultSanitizer sanitizer;
+    QCOMPARE(QJsonDocument::fromJson(sanitizer.toPayload(result).toUtf8()).object(), result.toJson());
+    const auto longRead = fetch.execute({{"url", "https://example.com/long"}});
+    QVERIFY(longRead.success);
+    QVERIFY(!longRead.data["nextCursor"].toString().isEmpty());
+    QCOMPARE(QJsonDocument::fromJson(sanitizer.toPayload(longRead).toUtf8()).object(), longRead.toJson());
+    const auto continuation = fetch.execute({{"url", "https://example.com/long"}, {"cursor", longRead.data["nextCursor"]}});
+    QVERIFY(continuation.success);
+    QCOMPARE(QJsonDocument::fromJson(sanitizer.toPayload(continuation).toUtf8()).object(), continuation.toJson());
+    const int beforeInvalid = requests;
+    for (const auto& arguments : {QJsonObject{{"query", 3}}, QJsonObject{{"query", "q"}, {"max_results", "2"}},
+            QJsonObject{{"query", "q"}, {"max_results", 1.5}}, QJsonObject{{"query", "q"}, {"max_results", 6}}})
+        QVERIFY(!search.execute(arguments).success);
+    for (const auto& arguments : {QJsonObject{{"url", 3}}, QJsonObject{{"url", "https://example.com"}, {"cursor", false}},
+            QJsonObject{{"url", "https://example.com"}, {"timeout_ms", "1000"}}})
+        QVERIFY(!fetch.execute(arguments).success);
+    QCOMPARE(requests, beforeInvalid);
+    auto failedService = std::make_shared<WebContentService>(cache.path(), [](const QUrl&, int, qint64) {
+        return WebHttpResponse{false, {}, {}, {}, "TIMEOUT", "network timed out", 0};
+    });
+    WebSearchTool failedSearch(failedService);
+    const auto failed = failedSearch.execute({{"query", "query"}});
+    QVERIFY(!failed.success);
+    QCOMPARE(failed.data["error"].toObject()["code"].toString(), "TIMEOUT");
+    QVERIFY(failed.toJson()["error"].toString().startsWith("TIMEOUT:"));
+    WebFetchTool failedFetch(failedService);
+    QVERIFY(failedFetch.execute({{"url", "https://example.com"}}).errorMessage.startsWith("TIMEOUT:"));
 }
 
 void TestFileAndWebTools::test_network_security_validator() {

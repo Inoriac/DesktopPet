@@ -485,7 +485,14 @@ set(ALL_SOURCES
     ${MUSIC_SOURCES}
 )
 
+add_library(desktop_pet_web_content STATIC
+    core/ai/tools/web_content_service.h
+    core/ai/tools/web_content_service.cpp
+)
+target_link_libraries(desktop_pet_web_content PUBLIC Qt::Core Qt::Gui Qt::Network)
+
 add_executable(Desktop_Pet ${ALL_SOURCES})
+target_link_libraries(Desktop_Pet desktop_pet_web_content)
 
 # 设置包含目录
 target_include_directories(Desktop_Pet PRIVATE
@@ -552,6 +559,9 @@ function(add_desktop_pet_cpp_test target_name ctest_name)
     add_executable(${target_name} ${CPP_TEST_SOURCES})
     target_include_directories(${target_name} PRIVATE ${CPP_TEST_INCLUDE_DIRS})
     target_link_libraries(${target_name} ${CPP_TEST_LIBRARIES})
+    if("core/ai/tools/web_tools.cpp" IN_LIST CPP_TEST_SOURCES)
+        target_link_libraries(${target_name} desktop_pet_web_content)
+    endif()
 
     if(CPP_TEST_APPLE_CORE_GRAPHICS AND APPLE)
         target_link_libraries(${target_name} "-framework CoreGraphics")
@@ -1943,6 +1953,11 @@ add_desktop_pet_cpp_test(prompt_tests PromptRendererTests
 )
 
 # ---- 文件和网络工具测试 ----
+add_desktop_pet_cpp_test(web_content_tests WebContentTests
+    SOURCES tests/test_web_content.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
+    LIBRARIES desktop_pet_web_content Qt::Test
+)
 add_executable(command_test_fixture tests/fixtures/command_probe.cpp)
 set_target_properties(command_test_fixture PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests

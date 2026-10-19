@@ -13,10 +13,14 @@
 - 宿主清洗器：单字符串 2000 UTF-16、payload 6000 UTF-16。后端 data 使用 3800 UTF-16 总预算，文字分页单串上限 1800；保留完整 URL，不能截短地址。续读基于包外不可变快照。
 - 测试布局沿用 tests/test_*.cpp、tests/test_*.py、tests/fixtures；Qt 6.8.3，cmake/ctest=/Users/huang/.qt-build-env/bin，build/，QT_QPA_PLATFORM=offscreen，-j 4；同时仅一个构建进程。实际配置只用临时 UUID 角色。
 - 不接入 QQ、不控制浏览器或屏幕、不登录、不引入新定时器或记忆表；不修改真实用户角色配置。网页文字始终视为外部材料。
+- [真实 Qt 网络预检] 使用现有 IP pinning、Host 和 setPeerVerifyName 对 cn.bing.com/search?q=Python&format=rss 发起匿名请求：默认 HTTP/2 返回 400，显式 Http2AllowedAttribute=false 返回 200/10 条。共享安全 transport 固定 HTTP/1.1，保留 TLS 与 SSRF 校验。已回填 §3.1.5。
+- [公开搜索复核] 使用 percent encoding 的 Python 官方文档 query 返回 10 条相关来源；query 中 '+' 需编码 %2B，避免 C++ 被服务端当空格。HTML DuckDuckGo 入口遇验证码，不增加多套抓取 fallback。
+- [code-impl Task 1 sanity check] 已核实 NetworkSecurityValidator、QNetworkRequest::setPeerVerifyName/Http2AllowedAttribute、ToolResult::ok/fail/toJson、各 web_tools 编译入口及 sanitizer 2000/6000，与修订后 §3.1.5 一致。共享后端做静态库，由主程序和相关测试统一链接。
+- [Task 1 真实只读烟测] 使用 Qt 6.8.3 编译临时 probe，链接实际 WebContentService：搜索“Python 官方文档”返回 Python.org、W3Schools 与下载页；读取 https://www.python.org/ 得到 Welcome to Python.org，首段 1800 UTF-16、续读 569；私网地址拒绝。临时证据：/var/folders/nv/y0y4y9js4xq2czgb1mpjhgy40000gn/T/desktop-pet-web-smoke-hqsjfkey/result.json。未使用账号，未更改角色配置。
 
 ## 设计偏差
 
-无。
+- [Task 1 父级锚点复核] ToolResult::toJson 失败只输出 errorMessage，因此原生失败在该字段保留 CODE: message，已回填 §3.1.2。HTML 文字转换禁止 QTextDocument 资源加载，避免图片/CSS 意外读取或要求 GUI；已回填 §3.1.3，不改变对外业务范围。
 
 ## 待回溯设计的发现
 
