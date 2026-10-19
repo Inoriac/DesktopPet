@@ -41,7 +41,7 @@ class TranscriptionTests(unittest.TestCase):
         self.model = self.root / "model"
         self.model.mkdir()
         for name in ("model.bin", "config.json", "tokenizer.json"):
-            (self.model / name).write_text("{}")
+            (self.model / name).write_text("{}", encoding="utf-8")
         self.dependencies = install(self.root / "dependencies")
         self.environment = patch.dict(os.environ, {"PYTHONPATH": str(self.dependencies)})
         self.environment.start()
@@ -91,7 +91,7 @@ class TranscriptionTests(unittest.TestCase):
         self.assertFalse((self.state / "jobs").exists())
 
     def test_real_dependency_import_failure_has_no_job(self):
-        (self.dependencies / "faster_whisper" / "__init__.py").write_text("raise ImportError('not installed')")
+        (self.dependencies / "faster_whisper" / "__init__.py").write_text("raise ImportError('not installed')", encoding="utf-8")
         self.assert_error(self.start(), "DEPENDENCY_MISSING")
         self.assertFalse(self.state.exists())
 
@@ -185,21 +185,21 @@ class TranscriptionTests(unittest.TestCase):
     def test_account_change_prevents_publication_or_cross_account_status(self):
         self.state.mkdir()
         credential = self.state / "credential.json"
-        credential.write_text('{"SESSDATA":"old-secret"}')
+        credential.write_text('{"SESSDATA":"old-secret"}', encoding="utf-8")
         install(self.dependencies, sleep=0.4)
         job = self.start()["data"]["jobId"]
         deadline = time.monotonic() + 3
         while not (self.state / "jobs" / job / "work" / "audio.m4a").exists() and time.monotonic() < deadline:
             time.sleep(0.02)
-        credential.write_text('{"SESSDATA":"new-secret"}')
+        credential.write_text('{"SESSDATA":"new-secret"}', encoding="utf-8")
         self.assert_error(self.query(job), "JOB_NOT_FOUND")
         time.sleep(0.6)
-        credential.write_text('{"SESSDATA":"old-secret"}')
+        credential.write_text('{"SESSDATA":"old-secret"}', encoding="utf-8")
         done = self.wait(job)
         self.assertEqual(done["data"]["error"]["code"], "CREDENTIAL_CHANGED", done)
         self.assertFalse((self.state / "transcripts").exists())
         for path in (self.state / "jobs").rglob("*.json"):
-            self.assertNotIn("old-secret", path.read_text())
+            self.assertNotIn("old-secret", path.read_text(encoding="utf-8"))
 
     def test_invalid_unknown_and_abandoned_job_states(self):
         self.assert_error(self.query("../credential.json"), "INVALID_INPUT")
@@ -208,9 +208,9 @@ class TranscriptionTests(unittest.TestCase):
             job = self.start()["data"]["jobId"]
         self.assertEqual(self.query(job)["data"]["status"], "queued")
         path = self.state / "jobs" / job / "job.json"
-        record = json.loads(path.read_text())
+        record = json.loads(path.read_text(encoding="utf-8"))
         record["deadline"] = time.time() - 10
-        path.write_text(json.dumps(record))
+        path.write_text(json.dumps(record), encoding="utf-8")
         done = self.query(job)
         self.assertEqual(done["data"]["status"], "unknown", done)
         self.assertEqual(done["data"]["error"]["code"], "ASR_UNKNOWN")
@@ -222,13 +222,13 @@ class TranscriptionTests(unittest.TestCase):
         self.assert_error(result, "ASR_START_FAILED")
         records = list((self.state / "jobs").glob("*/job.json"))
         self.assertEqual(len(records), 1)
-        self.assertEqual(json.loads(records[0].read_text())["status"], "failed")
+        self.assertEqual(json.loads(records[0].read_text(encoding="utf-8"))["status"], "failed")
 
     def test_corrupt_job_is_unknown_not_running(self):
         with patch.object(transcription, "launch_worker"):
             job = self.start()["data"]["jobId"]
         path = self.state / "jobs" / job / "job.json"
-        path.write_text('{"status":"running","deadline":0}')
+        path.write_text('{"status":"running","deadline":0}', encoding="utf-8")
         self.assert_error(self.query(job), "ASR_UNKNOWN")
         self.assert_error(self.start(), "ASR_UNKNOWN")
 
@@ -240,7 +240,7 @@ class TranscriptionTests(unittest.TestCase):
         with patch.object(adapter, "credential_identity", side_effect=["old", "new"]):
             snapshot = adapter.save_transcript(settings, video, "local_asr",
                 [{"startMs":0,"endMs":1,"text":"one"}], expected_account="old")
-        value = json.loads((self.state / "transcripts" / (snapshot + ".json")).read_text())
+        value = json.loads((self.state / "transcripts" / (snapshot + ".json")).read_text(encoding="utf-8"))
         self.assertEqual(value["identity"], adapter.digest(["old",BV,2,"local_asr"]))
         with patch.object(adapter, "credential_identity", return_value="new"):
             with self.assertRaises(adapter.AdapterError) as caught:
@@ -258,7 +258,7 @@ class TranscriptionTests(unittest.TestCase):
         job = self.start()["data"]["jobId"]
         self.wait(job)
         settings = self.root / "settings.json"
-        settings.write_text(json.dumps(self.settings))
+        settings.write_text(json.dumps(self.settings), encoding="utf-8")
         result = subprocess.run([sys.executable,"-B",str(ROOT / "plugins/bilibili/adapter.py"),
                                  "--settings",str(settings),"--operation","transcription_status"],
                                 input=json.dumps({"job_id":job}), capture_output=True, text=True, timeout=5)

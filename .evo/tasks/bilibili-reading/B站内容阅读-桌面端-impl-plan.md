@@ -22,7 +22,7 @@
 
 ## Task 3：安装、角色配置与自主接入
 - 关联设计：§3.4
-- 状态：[ ]
+- 状态：[x]
 - Wave：1（实际严格依赖前两 Task 串行）
 - 依赖：Task 1、Task 2
 - 文件：plugins/bilibili/setup.py、login.py、configure.py、README.md；必要的 plugin/tool/skill/USAGE/SKILL/requirements 微调；tests/test_bilibili_setup.py、test_bilibili_configure.py、test_bilibili_plugin.cpp、tests/fixtures/bilibili_backend.py；tests/test_autonomous_chat.cpp、CMakeLists.txt、contracts/tools/README.md、现有工具契约适配验证.md；本 Task 验证记录。
@@ -30,10 +30,12 @@
 - 验证：Python、Qt 相关测试、父级 CR。
 
 ## Wave 验证
-- [ ] 串行文件冲突核查
-- [ ] 全项目构建与全量 CTest
-- [ ] 独立契约检查及包结构
-- [ ] 设计行为与测试覆盖映射
-- [ ] 测试位置/CMake、实现锚点与 context 留痕
-- [ ] 真实只读/转写可用条件验证及限制记录
-- [ ] 实现总结与最终提交
+- [x] 串行文件冲突核查
+- [x] 全项目构建与全量 CTest
+- [x] 独立契约检查及包结构
+- [x] 设计行为与测试覆盖映射
+- [x] 测试位置/CMake、实现锚点与 context 留痕
+- [x] 真实只读/转写可用条件验证及限制记录
+- [x] 实现总结与最终提交
+
+最终验证：全项目构建成功；71/71 CTest 组通过（36.12 秒）；原有契约 96/96，新包三份清单 3/3。详情见实现总结和审查记录。最终提交包含本计划更新与 Task 3 交付。

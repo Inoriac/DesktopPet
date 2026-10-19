@@ -619,6 +619,12 @@ if(Python3_Interpreter_FOUND)
         INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
         LIBRARIES Qt::Core Qt::Gui Qt::Test)
     target_compile_definitions(voice_synthesis_tests PRIVATE VOICE_TEST_PYTHON="${Python3_EXECUTABLE}")
+    foreach(bili_part Adapter Transcription Setup Configure)
+        string(TOLOWER "${bili_part}" bili_file)
+        add_test(NAME Bilibili${bili_part}Tests
+            COMMAND ${Python3_EXECUTABLE} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_bilibili_${bili_file}.py)
+        set_tests_properties(Bilibili${bili_part}Tests PROPERTIES WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
     add_test(NAME LxMusicConfigureTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_lx_music_configure.py)
     set_tests_properties(LxMusicConfigureTests PROPERTIES
@@ -2196,6 +2202,19 @@ add_desktop_pet_cpp_test(plugin_runtime_tests PluginRuntimeTests
 
 target_compile_definitions(plugin_runtime_tests PRIVATE PLUGIN_FIXTURE_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/plugin_probe.py")
 if(Python3_Interpreter_FOUND)
+    add_desktop_pet_cpp_test(bilibili_plugin_tests BilibiliPluginTests
+        SOURCES tests/test_bilibili_plugin.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+          core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+          core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+          core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+        LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
+    foreach(bili_target bilibili_plugin_tests autonomous_chat_tests)
+        target_compile_definitions(${bili_target} PRIVATE
+            BILIBILI_PYTHON="${Python3_EXECUTABLE}"
+            BILIBILI_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/bilibili"
+            BILIBILI_BACKEND="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/bilibili_backend.py")
+    endforeach()
     add_desktop_pet_cpp_test(lx_music_plugin_tests LxMusicPluginTests
         SOURCES tests/test_lx_music_plugin.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
           core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp

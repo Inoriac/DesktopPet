@@ -60,6 +60,9 @@ QList<ModelRoleConfig> roles() {
 }
 QJsonObject choice(QString decision, QString goal = {}, CapabilityRef ref = {},
                    QString id = {}) {
+  auto selected = ref.toJson();
+  // The selection response schema requires this field even for a Skill entry.
+  selected["operationId"] = ref.operationId;
   return {{"decision", decision},
           {"reason", "Use the current evidence and continue the activity"},
           {"evidenceRefs", QJsonArray{}},
@@ -67,7 +70,7 @@ QJsonObject choice(QString decision, QString goal = {}, CapabilityRef ref = {},
           {"stopWhen", "Actual intended result is verified"},
           {"reconsiderWhen", "A matching reply arrives"},
           {"capabilityRefs",
-           ref.pluginId.isEmpty() ? QJsonArray{} : QJsonArray{ref.toJson()}},
+           ref.pluginId.isEmpty() ? QJsonArray{} : QJsonArray{selected}},
           {"candidates", QJsonArray{}},
           {"activityId", id},
           {"nextConsiderAt", ""}};
@@ -154,6 +157,121 @@ CapabilityRef addReader(Fixture &f, bool renamed) {
 class AutonomousChatTests : public QObject {
   Q_OBJECT
 private slots:
+#ifdef BILIBILI_BACKEND
+  void bilibili_existing_autonomy_selects_reads_or_waits_data() {
+    QTest::addColumn<bool>("chooseReading");
+    QTest::addColumn<bool>("enabled");
+    QTest::newRow("choose-reading") << true << true;
+    QTest::newRow("choose-wait") << false << true;
+    QTest::newRow("global-autonomy-disabled") << true << false;
+  }
+  void bilibili_existing_autonomy_selects_reads_or_waits() {
+    QFETCH(bool, chooseReading);
+    QFETCH(bool, enabled);
+    QTemporaryDir directory;
+    const auto state = directory.filePath("state");
+    const auto profilePath = directory.filePath(profile);
+    QProcess prepare;
+    prepare.start(QString(BILIBILI_PYTHON), {"-B", QString(BILIBILI_BACKEND),
+                  "--prepare-profile", profilePath, "--state-dir", state});
+    QVERIFY(prepare.waitForFinished(10000));
+    QVERIFY2(prepare.exitCode() == 0, prepare.readAllStandardError().constData());
+    const auto configuration = readJson(profilePath + "/plugins.json");
+    QVERIFY(!configuration.isEmpty());
+    Client client;
+    AIBrain brain(&client, roles());
+    ToolRegistry registry;
+    CallbackRuntimeUiBridge bridge(RuntimeUiCallbacks{});
+    AgentRuntimeServices services;
+    RuntimeStartRequest start;
+    start.profile = {"ControlledPet", "model.gltf", profile};
+    start.profileMigration.profileId = profile;
+    start.profileMigration.registeredProfileIds = {profile};
+    start.profileMigration.appDataRoot = directory.filePath("agent");
+    start.profileMigration.legacyDatabasePath = directory.filePath("legacy.db");
+    start.profileMigration.legacyJsonPath = directory.filePath("legacy.json");
+    start.configHash = QString(64, 'a');
+    start.identityBaselineHash = QString(64, 'b');
+    start.aiBrain = &brain;
+    start.uiBridge = &bridge;
+    QVERIFY(AgentBootstrap::start(services, start));
+    brain.setEnabled(true);
+    brain.setToolRegistry(&registry);
+    QVERIFY(brain.pluginRuntime());
+    QVERIFY(brain.pluginRuntime()->setHostConfiguration(configuration));
+    const CapabilityRef skill{"desktop-pet.bilibili", "desktop-pet.bilibili.skill", "1.0.0", {}};
+    const CapabilityRef search{"desktop-pet.bilibili", "desktop-pet.bilibili.tools", "1.0.0", "search"};
+    const CapabilityRef transcript{"desktop-pet.bilibili", "desktop-pet.bilibili.tools", "1.0.0", "read_transcript"};
+    bool started = false, verified = false, offeredSkill = false, leakedBody = false;
+    int selections = 0;
+    client.answer = [&](QString system, QJsonObject input) -> std::optional<QJsonObject> {
+      if (system.startsWith("Choose a worthwhile autonomous")) {
+        ++selections;
+        const auto offered = input["capabilities"].toArray();
+        for (const auto &value : offered)
+          if (value.toObject()["id"] == skill.entryId) offeredSkill = true;
+        leakedBody |= QJsonDocument(offered).toJson().contains("instructions");
+        if (chooseReading && !started) {
+          started = true;
+          return choice("start", "Read about the universe", skill);
+        }
+        return choice("wait");
+      }
+      if (system.startsWith("You are the companion's subjective"))
+        return QJsonObject{{"decision", "accept"}, {"reason", "Interested in this video"}, {"message", "Continue"}};
+      auto steps = input["steps"].toArray();
+      if (system.startsWith("Plan one next step")) {
+        if (steps.size() == 0) return tool("load_capability", skill);
+        if (steps.size() == 1) return tool("load_capability", search);
+        if (steps.size() == 2) return tool("invoke_capability", search, {{"keyword", QString::fromUtf8("宇宙")}});
+        if (steps.size() == 3) return tool("load_capability", transcript);
+        if (steps.size() == 4) return tool("invoke_capability", transcript, {{"bvid", "BV1xx411c7mD"}, {"part", 2}});
+        auto p = plan();
+        p["candidate_answer"] = "Read one timestamped subtitle page; choose later whether to continue";
+        return p;
+      }
+      if (system.startsWith("Independently verify")) {
+        verified = true;
+        return verify(steps);
+      }
+      return QJsonObject{};
+    };
+    AutonomyConfig autonomy;
+    autonomy.enabled = enabled;
+    autonomy.minDecisionIntervalMs = 1;
+    autonomy.localTickMs = 25;
+    autonomy.noOpBackoffMs = 25;
+    autonomy.maxNoOpBackoffMs = 50;
+    autonomy.maxSelectionCallsPerHour = 100;
+    autonomy.maxTokensPerHour = 10000000;
+    autonomy.maxEstimatedCostMicrosPerHour = 100000000;
+    brain.setAutonomyConfig(autonomy);
+    brain.start();
+    if (enabled && chooseReading) {
+      QTRY_VERIFY2_WITH_TIMEOUT(verified, QJsonDocument(brain.taskSnapshot()).toJson().constData(), 15000);
+    } else if (enabled) {
+      QTRY_VERIFY_WITH_TIMEOUT(selections >= 2, 10000);
+    } else {
+      QTest::qWait(250);
+      QCOMPARE(selections, 0);
+    }
+    brain.stop();
+    if (enabled) QVERIFY(offeredSkill);
+    QVERIFY(!leakedBody);
+    QFile calls(state + "/backend-calls.jsonl");
+    if (enabled && chooseReading) {
+      QVERIFY(calls.open(QIODevice::ReadOnly));
+      const auto actual = calls.readAll();
+      QCOMPARE(actual.count('\n'), 2);
+      QVERIFY(actual.contains("search"));
+      QVERIFY(actual.contains("transcript"));
+      QDir cached(state + "/transcripts");
+      QVERIFY(!cached.entryList(QDir::Files).isEmpty());
+    } else {
+      QVERIFY(!calls.exists());
+    }
+  }
+#endif
   void autonomousSelection_rotatesAllAuthorizedSummaries() {
     QTemporaryDir dir;
     const auto root = dir.filePath("package");

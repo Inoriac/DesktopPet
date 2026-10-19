@@ -25,6 +25,10 @@
 - [真实网站限制] yt-dlp 匿名 extract_info(download=False) 对 BV1rpWjevEip?p=2 返回 HTTP 412；未下载平台媒体。真实账号字幕和平台音频下载仍需使用者在本机登录后验收，不增加绕过或自动重试。
 - [Task 3 安装登录预检] 已读取真实 QrCodeLogin WEB API：generate_qrcode/check_state 异步，SCAN/CONF/TIMEOUT/DONE 四状态；get_qrcode_picture().content 是图像字节。优先直接将 content 写入私有状态目录，避免 Picture.to_file 内部共享 /tmp/test.png。Credential.get_cookies 会包含额外内部属性，登录脚本明确选取 sessdata/bili_jct/buvid3/buvid4/dedeuserid/ac_time_value 字段即可。
 
+- [code-impl Task 3 sanity check] 实际 prepare/apply、PluginRuntime::executeGateway/loadCapability、AgentBootstrap::start、AIBrain 选择入口与 §3.4 一致，真实 QrCodeLogin/Picture/Credential 字段已核对。模型选择响应对 Skill 也要求显式空 operationId，已修正测试 helper；实际宿主完整列出七个操作，在调用阶段执行授权，测试按现有语义验证。
+- [父级配置烟测] 用真实开发 venv 在临时 UUID 角色执行预览、应用、重复应用、生成配置的 status：无预览写入、应用幂等、虚拟环境依赖 ready、显式本地模型可见。未安装第二套依赖或修改真实角色。
+- [最终 Wave 核查] 三 Task 串行、共享文件变更已顺序复核；新增测试均位于既有 tests/test_*.py/cpp、tests/fixtures 并由 CMake 注册。全项目构建退出 0，71/71 CTest 组通过（36.12 秒），原契约 96/96、新包清单 3/3；五个既有可选真实音乐/付费模型用例按条件跳过。无主体生产 C++ 或数据库变更。
+
 ## 设计偏差
 
 - [父级 CR 解释器路径] 实测临时 venv 的 sys.executable.resolve() 指向 uv 的基础 Python，丢失虚拟环境依赖。Task 2 将 asrPython 的绝对路径处理改为保留入口符号链接并覆盖回归；Task 3 的 setup/configure 同样保留 sys.executable。此要求已回填 §1.1，不改变业务契约。
