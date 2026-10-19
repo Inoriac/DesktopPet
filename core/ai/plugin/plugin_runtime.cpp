@@ -1,4 +1,5 @@
 #include "plugin_runtime.h"
+#include "capability_discovery.h"
 #include "ai/chat/delivery_receipt_archive.h"
 #include "learned_skill_adapter.h"
 #include "plugin_reply_bridge.h"
@@ -11,6 +12,7 @@
 #include <QSaveFile>
 #include <QSet>
 #include <QTimer>
+#include <QUuid>
 
 namespace {
 template<class T> Result<T,DomainError> fail(const QString& code,const QString& message) { return Result<T,DomainError>::failure(domainError(code,message)); }
@@ -23,7 +25,7 @@ QString canonicalPath(const QString& path) {
     return QDir::cleanPath(resolved);
 }
 }
-PluginRuntime::PluginRuntime(QString profile,QString settings,QObject* parent):QObject(parent),m_profileId(std::move(profile)),m_settingsPath(std::move(settings)) { m_worker.setMaxThreadCount(1); }
+PluginRuntime::PluginRuntime(QString profile,QString settings,QObject* parent):QObject(parent),m_profileId(std::move(profile)),m_settingsPath(std::move(settings)),m_discoveryInstanceId(QUuid::createUuid().toString(QUuid::WithoutBraces)) { m_worker.setMaxThreadCount(1); }
 PluginRuntime::~PluginRuntime() {
     { QMutexLocker lock(&m_state->mutex); m_state->stopping=true; }
     if (m_observationService)
@@ -178,23 +180,38 @@ CapabilityBinding PluginRuntime::bindingFor(const QJsonObject &configuration,
 }
 QJsonArray PluginRuntime::discoverCapabilities(const ContextSpec &context,
                                                bool autonomous) const {
-    std::shared_ptr<PluginCatalog> catalog; { QMutexLocker lock(&m_state->mutex); catalog=m_state->catalog; }
+    QMutexLocker lock(&m_state->mutex);
+    return discoverCapabilitiesLocked(context, autonomous);
+}
+QJsonArray PluginRuntime::discoverCapabilitiesLocked(const ContextSpec& context, bool autonomous) const {
+    const auto& catalog = m_state->catalog;
     QJsonArray result; if (context.profileId!=m_profileId) return result;
     for (const auto& value:catalog->discover()) {
         auto entry=value.toObject(); const auto ref=CapabilityRef{entry["pluginId"].toString(),entry["id"].toString(),entry["version"].toString(),{}};
         if ((!autonomous && context.originKind == OriginKind::LocalOwner) ||
-            grant(ref, context, {}, autonomous)) {
+            findGrant(m_profileId, m_state->config, ref, context, {}, autonomous)) {
             entry["catalogRevision"] = qint64(catalog->revision());
             result.append(entry);
         }
     }
+    for (const auto &skill : LearnedSkillAdapter::discover(
+             autonomous ? QList<SkillEntry>{} : m_state->learned, context))
+        result.append(skill);
+    return result;
+}
+Result<QJsonObject, DomainError> PluginRuntime::queryCapabilities(
+    const ContextSpec& context, bool autonomous, const QJsonObject& query) const {
+    QJsonArray entries;
+    QString snapshotKey;
     {
         QMutexLocker lock(&m_state->mutex);
-        for (const auto &skill : LearnedSkillAdapter::discover(
-                 autonomous ? QList<SkillEntry>{} : m_state->learned, context))
-            result.append(skill);
+        entries = discoverCapabilitiesLocked(context, autonomous);
+        snapshotKey = QString::fromUtf8(QJsonDocument(QJsonArray{
+            m_discoveryInstanceId,
+            qint64(m_state->catalog->revision()), qint64(m_state->learnedRevision),
+            context.cacheKey(), autonomous}).toJson(QJsonDocument::Compact));
     }
-    return result;
+    return queryCapabilityEntries(entries, query, snapshotKey);
 }
 Result<LoadedCapability, DomainError>
 PluginRuntime::loadCapability(const CapabilityRef &ref,

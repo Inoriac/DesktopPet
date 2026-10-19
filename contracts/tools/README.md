@@ -4,6 +4,8 @@
 
 开发请先阅读 [插件系统开发指导](./插件系统开发指导.md)，实现接入见[插件运行时接入](./插件运行时接入.md)。主体与插件的后续实施以[自主 Agent 设计](../agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)为主入口，按人物与记忆归属、活动运行机制、外部实践的依赖顺序推进。Tool 声明采用 JSON 清单＋Markdown 使用说明，支持脚本、CLI 和 MCP。Plugin、Skill 与 Tool 分别使用对应 Schema；通用运行时负责摘要发现、按需加载、宿主授权与异步执行。
 
+摘要发现支持中英文查询和稳定分页，默认每页 8 条，可用 nextCursor 继续浏览。自主候选按活动线索筛选并轮转探索；选中后才加载完整说明和操作 Schema。模型请求会去重公共说明并回收旧能力材料，完整调用记录仍保留，发现与加载不进入生活记忆。参数、错误和兼容约定见[摘要查询与按需加载](./插件运行时接入.md#摘要查询与按需加载)。
+
 | 文件 | 用途 |
 | --- | --- |
 | [插件系统开发指导](./插件系统开发指导.md) | 产品定位、Plugin/Skill/Tool 职责、开发顺序和最低验收要求 |
@@ -33,6 +35,8 @@ PYTHONPATH="$contract_deps" python3 contracts/tools/verify_contract.py
 ```
 
 需要 Python 3 和 Git。脚本输出逐项 JSON 结果；所有检查符合预期时退出码为 0，反例未被拒绝、正例未通过或执行异常均使验证失败。2026-10-17 增加观察源与受控聊天验证后结果为 **94/94**；原有 Tool/Plugin/Skill 验证保留。
+
+2026-10-19 复验当前脚本为 **96/96**，复用已有临时 jsonschema 环境，没有新增项目依赖。摘要分页、游标失效、候选轮转和旧插件兼容由 C++ PluginRuntimeTests、ActivitySelectorTests、AutonomousChatTests、LxMusicPluginTests 覆盖。
 
 Python 验证包括声明结构、示例中的简单引用、业务参数正反例、参考计数脚本、临时 Git 仓库以及已有歌单脚本的查询函数。歌单查询只读取验证脚本创建的临时 SQLite 数据。该脚本不连接 MCP、不启动 LX Music 或桌宠，也不读取实际用户数据库。加载器和真实 stdio MCP 流程另由 C++ PluginRuntimeTests 的临时插件与受控服务验证。
 

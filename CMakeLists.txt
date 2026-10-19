@@ -2172,6 +2172,8 @@ target_link_libraries(statistic_tests avatar_presentation)
 # Plugin catalogue and generic capability runtime.
 add_library(plugin_support STATIC
     core/ai/plugin/capability_types.cpp
+    core/ai/plugin/capability_discovery.cpp
+    core/ai/skill/skill_types.cpp
     core/ai/plugin/schema_validator.cpp
     core/ai/plugin/plugin_catalog.cpp
     core/ai/observation/observation_types.cpp

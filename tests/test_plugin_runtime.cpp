@@ -66,10 +66,213 @@ CapabilityCall makeCall(const LoadedCapability& loaded) {
     c.ref=loaded.ref; c.catalogRevision=loaded.catalogRevision; c.definitionDigest=loaded.definitionDigest; c.grantRef="test-grant"; return c;
 }
 
+QJsonObject makeDiscoveryDirectory(const QString& root) {
+    makeTool(root);
+    QFile file(root + "/tool.json");
+    if (!file.open(QIODevice::ReadOnly)) qFatal("Cannot read test tool");
+    const auto prototype = QJsonDocument::fromJson(file.readAll()).object();
+    file.close();
+    QJsonArray entries, grants;
+    for (int i = 0; i < 30; ++i) {
+        const auto id = QString("entry.%1").arg(i, 2, 10, QChar('0'));
+        const bool tool = i % 2 == 0;
+        const auto definition = id + ".json";
+        auto entry = tool ? prototype : QJsonObject{
+            {"formatVersion", "1"}, {"instructions", "USAGE.md"},
+            {"dependencies", QJsonArray{}}};
+        entry["id"] = id;
+        entry["name"] = i == 29 ? "MUSIC" : "Utility " + QString::number(i);
+        entry["summary"] = i == 28 ? QString(500, QChar(u'文')) + "视频剪辑"
+                           : i == 29 ? "音乐播放与歌单"
+                           : i == 0 ? "Inspect music metadata" : "General utility";
+        entry["version"] = "1";
+        writeJson(root + "/" + definition, entry);
+        entries.append(QJsonObject{{"kind", tool ? "tool" : "skill"}, {"id", id}, {"definition", definition}});
+        if (i != 0) // One visible local entry is deliberately not authorized for autonomy.
+            grants.append(QJsonObject{{"id", id}, {"profileId", "pet"},
+                {"pluginId", "example.plugin"}, {"entryId", id},
+                {"scope", "internal_activity"}, {"autonomous", true}});
+    }
+    writeJson(root + "/plugin.json", {{"formatVersion", "1"}, {"id", "example.plugin"},
+        {"name", "Mixed directory"}, {"summary", "Test directory"}, {"version", "1"}, {"entries", entries}});
+    QFile body(root + "/USAGE.md");
+    if (!body.open(QIODevice::WriteOnly)) qFatal("Cannot write test instructions");
+    body.write("PRIVATE_DISCOVERY_BODY");
+    return {{"plugins", QJsonArray{QJsonObject{{"rootPath", root}, {"enabled", true}}}}, {"grants", grants}};
+}
+
+ToolExecutionOutcome discoverGateway(PluginRuntime& plugin, const QJsonObject& query = {},
+                                     const ContextSpec& context = ContextSpec::localOwner("pet"),
+                                     bool autonomous = false) {
+    ToolRegistry registry;
+    plugin.attach(&registry);
+    ToolRuntime runtime;
+    runtime.setToolRegistry(&registry);
+    ToolExecutionRequest request;
+    request.requestId = "discovery-test";
+    request.toolName = "discover_capabilities";
+    request.context = context;
+    request.arguments = query;
+    request.autonomous = autonomous;
+    std::optional<ToolExecutionOutcome> outcome;
+    runtime.executeAsync(request, [&](auto value) { outcome = std::move(value); });
+    if (!QTest::qWaitFor([&] { return outcome.has_value(); }, 5000))
+        qFatal("Discovery gateway did not finish");
+    return *outcome;
+}
+
 }
 class PluginRuntimeTests : public QObject {
     Q_OBJECT
 private slots:
+  void discoveryGateway_pagesMixedDirectoryWithoutBodies() {
+      QTemporaryDir dir;
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      QVERIFY(runtime.setHostConfiguration(makeDiscoveryDirectory(dir.filePath("package"))));
+      QSet<QString> seen;
+      QJsonObject query;
+      int pages = 0;
+      do {
+          const auto outcome = discoverGateway(runtime, query);
+          QVERIFY2(outcome.result.success, qPrintable(outcome.result.errorMessage));
+          const auto page = outcome.result.data;
+          QCOMPARE(page["total"].toInt(), 30);
+          const auto entries = page["entries"].toArray();
+          QCOMPARE(entries.size(), pages < 3 ? 8 : 6);
+          const auto json = QJsonDocument(page).toJson();
+          QVERIFY(!json.contains("PRIVATE_DISCOVERY_BODY"));
+          QVERIFY(!json.contains("parameters"));
+          for (const auto& value : entries) {
+              const auto entry = value.toObject();
+              const auto id = entry["id"].toString();
+              QVERIFY(!seen.contains(id));
+              seen.insert(id);
+              QVERIFY(entry["summary"].toString().size() <= 384);
+              QVERIFY(runtime.loadCapability({entry["pluginId"].toString(), id, entry["version"].toString(), {}}, ContextSpec::localOwner("pet")));
+          }
+          ++pages;
+          QCOMPARE(page["hasMore"].toBool(), pages < 4);
+          if (!page["hasMore"].toBool()) {
+              QVERIFY(page["nextCursor"].toString().isEmpty());
+              break;
+          }
+          QVERIFY(!page["nextCursor"].toString().isEmpty());
+          query["cursor"] = page["nextCursor"];
+      } while (pages < 5);
+      QCOMPARE(pages, 4);
+      QCOMPARE(seen.size(), 30);
+  }
+  void discoveryGateway_unicodeQueriesRankAndBoundDisplayOnly() {
+      QTemporaryDir dir;
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      QVERIFY(runtime.setHostConfiguration(makeDiscoveryDirectory(dir.filePath("package"))));
+      const auto chinese = discoverGateway(runtime, {{"query", "视频剪辑"}});
+      QVERIFY(chinese.result.success);
+      QCOMPARE(chinese.result.data["total"].toInt(), 1);
+      const auto entry = chinese.result.data["entries"].toArray()[0].toObject();
+      QCOMPARE(entry["id"].toString(), "entry.28");
+      QVERIFY(entry["summary"].toString().endsWith(QChar(0x2026)));
+      const auto sentence = discoverGateway(runtime, {{"query", "现在想做视频剪辑"}});
+      QVERIFY(sentence.result.success);
+      QCOMPARE(sentence.result.data["total"].toInt(), 1);
+      const auto english = discoverGateway(runtime, {{"query", "mUsIc"}, {"limit", 1}});
+      QVERIFY(english.result.success);
+      QCOMPARE(english.result.data["total"].toInt(), 2);
+      QCOMPARE(english.result.data["entries"].toArray()[0].toObject()["id"].toString(), "entry.29");
+      QVERIFY(english.result.data["hasMore"].toBool());
+      const auto exact = discoverGateway(runtime, {{"query", "entry.28"}});
+      QCOMPARE(exact.result.data["entries"].toArray()[0].toObject()["id"].toString(), "entry.28");
+      const auto unmatched = discoverGateway(runtime, {{"query", "unmatched-purpose"}});
+      QVERIFY(unmatched.result.success);
+      QCOMPARE(unmatched.result.data["total"].toInt(), 0);
+      QVERIFY(unmatched.result.data["entries"].toArray().isEmpty());
+  }
+  void discoveryGateway_validatesInputsAndCursorScope() {
+      QTemporaryDir dir;
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      const auto config = makeDiscoveryDirectory(dir.filePath("package"));
+      QVERIFY(runtime.setHostConfiguration(config));
+      for (const QJsonObject query : {QJsonObject{{"limit", 0}}, {{"limit", 17}},
+               {{"limit", 1.5}}, {{"limit", "8"}}, {{"query", 1}},
+               {{"query", QString(201, 'a')}}, {{"cursor", false}}}) {
+          const auto invalid = discoverGateway(runtime, query);
+          QVERIFY(!invalid.result.success);
+          QCOMPARE(invalid.result.errorMessage, "INVALID_INPUT");
+          QVERIFY(!invalid.executed);
+      }
+      const auto first = discoverGateway(runtime);
+      const auto cursor = first.result.data["nextCursor"].toString();
+      QVERIFY(!cursor.isEmpty());
+      auto checkCursor = [&](const QJsonObject& query, ContextSpec context = ContextSpec::localOwner("pet"), bool autonomous = false) {
+          const auto outcome = discoverGateway(runtime, query, context, autonomous);
+          return !outcome.result.success && outcome.result.errorMessage.contains("CAPABILITY_CURSOR_INVALID");
+      };
+      QVERIFY(checkCursor({{"cursor", "not-a-cursor"}}));
+      QVERIFY(checkCursor({{"cursor", cursor + "!"}}));
+      auto payload = QJsonDocument::fromJson(QByteArray::fromBase64(cursor.toLatin1(), QByteArray::Base64UrlEncoding)).array();
+      for (const double offset : {-1.0, 0.0, 1.5, 30.0}) {
+          payload[1] = offset;
+          const auto outOfRange = QJsonDocument(payload).toJson(QJsonDocument::Compact)
+              .toBase64(QByteArray::Base64UrlEncoding | QByteArray::OmitTrailingEquals);
+          QVERIFY(checkCursor({{"cursor", QString::fromLatin1(outOfRange)}}));
+      }
+      QVERIFY(checkCursor({{"cursor", cursor}, {"query", "music"}}));
+      QVERIFY(checkCursor({{"cursor", cursor}}, ContextSpec::localOwner("other")));
+      QVERIFY(checkCursor({{"cursor", cursor}}, ContextSpec::localOwner("pet"), true));
+      auto internal = ContextSpec{};
+      internal.profileId = "pet";
+      QVERIFY(checkCursor({{"cursor", cursor}}, internal, true));
+      const auto granted = discoverGateway(runtime, {{"limit", 16}}, internal, true);
+      QVERIFY(granted.result.success);
+      QCOMPARE(granted.result.data["total"].toInt(), 29);
+      for (const auto& value : granted.result.data["entries"].toArray())
+          QVERIFY(value.toObject()["id"] != "entry.00");
+      QVERIFY(runtime.setPluginEnabled({"example.plugin", false, runtime.catalogRevision()}));
+      QVERIFY(checkCursor({{"cursor", cursor}}));
+      QVERIFY(runtime.setHostConfiguration(config));
+      QVERIFY(checkCursor({{"cursor", cursor}}));
+  }
+  void discoveryGateway_learnedSnapshotOnlyExpiresOnContentChange() {
+      QTemporaryDir dir;
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      SkillEntry first, second;
+      first.id = "a"; first.name = "First"; first.description = "Workflow";
+      second = first; second.id = "b";
+      runtime.setLearnedSkills({first, second});
+      const auto page = discoverGateway(runtime, {{"limit", 1}});
+      QVERIFY(page.result.success);
+      const auto cursor = page.result.data["nextCursor"].toString();
+      QVERIFY(!cursor.isEmpty());
+      runtime.setLearnedSkills({first, second});
+      QVERIFY(discoverGateway(runtime, {{"limit", 1}, {"cursor", cursor}}).result.success);
+      runtime.setLearnedSkills({second, first});
+      QVERIFY(discoverGateway(runtime, {{"limit", 1}, {"cursor", cursor}}).result.success);
+      second.steps.append({"Changed private instruction", {}, {}});
+      runtime.setLearnedSkills({first, second});
+      const auto stale = discoverGateway(runtime, {{"limit", 1}, {"cursor", cursor}});
+      QVERIFY(!stale.result.success);
+      QVERIFY(stale.result.errorMessage.contains("CAPABILITY_CURSOR_INVALID"));
+  }
+  void discoveryGateway_recreatedRuntimeRejectsOldCursor() {
+      QTemporaryDir dir;
+      const auto config = makeDiscoveryDirectory(dir.filePath("package"));
+      QString cursor;
+      quint64 previousRevision = 0;
+      {
+          PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+          QVERIFY(runtime.setHostConfiguration(config));
+          previousRevision = runtime.catalogRevision();
+          cursor = discoverGateway(runtime).result.data["nextCursor"].toString();
+          QVERIFY(!cursor.isEmpty());
+      }
+      PluginRuntime recreated("pet", dir.filePath("plugins.json"));
+      QVERIFY(recreated.initialize());
+      QCOMPARE(recreated.catalogRevision(), previousRevision);
+      const auto stale = discoverGateway(recreated, {{"cursor", cursor}});
+      QVERIFY(!stale.result.success);
+      QVERIFY(stale.result.errorMessage.contains("CAPABILITY_CURSOR_INVALID"));
+      QVERIFY(discoverGateway(recreated).result.success);
+  }
   void metadataGatewayPreservesCompleteDefinitions_data() {
       QTest::addColumn<int>("bodyLength");
       QTest::addColumn<bool>("expectedSuccess");

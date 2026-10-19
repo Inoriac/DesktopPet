@@ -6,6 +6,7 @@
 #include <QJsonDocument>
 #include <QUuid>
 #include <QCoreApplication>
+#include <algorithm>
 namespace {
 bool insertArgument(QJsonObject& root,const QString& pointer,const QJsonValue& value) {
     if (!pointer.startsWith('/') || pointer.size()<2) return false;
@@ -25,9 +26,14 @@ bool insertArgument(QJsonObject& root,const QString& pointer,const QJsonValue& v
 QStringList gatewayNames() { return {"discover_capabilities","load_capability","invoke_capability"}; }
 class GatewayTool final : public AITool {
 public:
-    explicit GatewayTool(const QString& name):AITool(name,name=="discover_capabilities"?"Discover installed skills and tools by summary. Load a selected entry before use.":name=="load_capability"?"Load only the selected skill instructions or tool operation schema. Use a reference from discovery.":"Invoke an operation whose full definition is present in the current model request. Reload released definitions with load_capability first. Host permissions are checked.") {}
+    explicit GatewayTool(const QString& name):AITool(name,name=="discover_capabilities"?"Search installed skills and tools by summary, or browse using nextCursor. Load a selected entry before use.":name=="load_capability"?"Load only the selected skill instructions or tool operation schema. Use a reference from discovery.":"Invoke an operation whose full definition is present in the current model request. Reload released definitions with load_capability first. Host permissions are checked.") {}
     QJsonObject parameterSchema() const override {
         QJsonObject properties; QJsonArray required;
+        if (name()=="discover_capabilities") {
+            properties["query"] = QJsonObject{{"type", "string"}, {"maxLength", 200}, {"description", "Match capability id, name or summary; omit to browse."}};
+            properties["limit"] = QJsonObject{{"type", "integer"}, {"minimum", 1}, {"maximum", 16}, {"default", 8}};
+            properties["cursor"] = QJsonObject{{"type", "string"}, {"description", "Use nextCursor with the same query and context. Restart without cursor if it expires."}};
+        }
         if (name()!="discover_capabilities") {
             properties["ref"]=QJsonObject{{"type","object"},{"properties",QJsonObject{{"pluginId",QJsonObject{{"type","string"}}},{"entryId",QJsonObject{{"type","string"}}},{"entryVersion",QJsonObject{{"type","string"}}},{"operationId",QJsonObject{{"type","string"}}}}},{"required",QJsonArray{"pluginId","entryId","entryVersion"}},{"additionalProperties",false}};
             required.append("ref");
@@ -39,7 +45,11 @@ public:
 };
 }
 void PluginRuntime::setLearnedSkills(QList<SkillEntry> snapshot) {
+    std::sort(snapshot.begin(), snapshot.end(), [](const auto& a, const auto& b) { return a.id < b.id; });
     QMutexLocker lock(&m_state->mutex);
+    if (snapshot.size() == m_state->learned.size() &&
+        std::equal(snapshot.cbegin(), snapshot.cend(), m_state->learned.cbegin(),
+            [](const auto& a, const auto& b) { return a.toJson() == b.toJson(); })) return;
     m_state->learned = std::move(snapshot);
     ++m_state->learnedRevision;
 }
@@ -106,10 +116,14 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
         ToolResult result;
         bool cancelled=false; { QMutexLocker lock(&m_state->mutex); cancelled=m_state->stopping || (request.dispatchToken && !request.dispatchToken->allowed()); }
         if (cancelled) { finish(ToolResult::fail("CANCELLED")); return; }
-        if (request.toolName == "discover_capabilities")
-            result = ToolResult::ok(
-                {{"entries",
-                  discoverCapabilities(request.context, request.autonomous)}});
+        if (request.toolName == "discover_capabilities") {
+            const auto page = queryCapabilities(request.context, request.autonomous, request.arguments);
+            if (!page) {
+                finish(ToolResult::fail(page.error().code + ": " + page.error().message));
+                return;
+            }
+            result = ToolResult::ok(page.value());
+        }
         else {
             auto loaded = loadForDispatch(
                 CapabilityRef::fromJson(request.arguments["ref"].toObject()),

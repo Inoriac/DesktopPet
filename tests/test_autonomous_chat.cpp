@@ -154,6 +154,79 @@ CapabilityRef addReader(Fixture &f, bool renamed) {
 class AutonomousChatTests : public QObject {
   Q_OBJECT
 private slots:
+  void autonomousSelection_rotatesAllAuthorizedSummaries() {
+    QTemporaryDir dir;
+    const auto root = dir.filePath("package");
+    QVERIFY(QDir().mkpath(root));
+    QFile body(root + "/SKILL.md");
+    QVERIFY(body.open(QIODevice::WriteOnly));
+    body.write("PRIVATE_SELECTION_BODY");
+    body.close();
+    QJsonArray entries, grants;
+    for (int i = 0; i < 31; ++i) {
+      const auto id = QString("entry.%1").arg(i, 2, 10, QChar('0'));
+      QVERIFY(writeJson(root + "/" + id + ".json",
+                        {{"formatVersion", "1"}, {"id", id}, {"name", id},
+                         {"version", "1"}, {"summary", "Available method"},
+                         {"instructions", "SKILL.md"}, {"dependencies", QJsonArray{}}}));
+      entries.append(QJsonObject{{"kind", "skill"}, {"id", id}, {"definition", id + ".json"}});
+      if (i < 30)
+        grants.append(QJsonObject{{"id", id}, {"profileId", profile},
+            {"pluginId", "test.discovery"}, {"entryId", id},
+            {"scope", "internal_activity"}, {"autonomous", true}});
+    }
+    QVERIFY(writeJson(root + "/plugin.json", {{"formatVersion", "1"}, {"id", "test.discovery"},
+        {"name", "Discovery"}, {"version", "1"}, {"summary", "Many methods"}, {"entries", entries}}));
+    Client client;
+    AIBrain brain(&client, roles());
+    ToolRegistry registry;
+    CallbackRuntimeUiBridge bridge(RuntimeUiCallbacks{});
+    AgentRuntimeServices services;
+    RuntimeStartRequest start;
+    start.profile = {"ControlledPet", "model.gltf", profile};
+    start.profileMigration.profileId = profile;
+    start.profileMigration.registeredProfileIds = {profile};
+    start.profileMigration.appDataRoot = dir.filePath("agent");
+    start.profileMigration.legacyDatabasePath = dir.filePath("legacy.db");
+    start.profileMigration.legacyJsonPath = dir.filePath("legacy.json");
+    start.configHash = QString(64, 'a');
+    start.identityBaselineHash = QString(64, 'b');
+    start.aiBrain = &brain;
+    start.uiBridge = &bridge;
+    QVERIFY(AgentBootstrap::start(services, start));
+    brain.setEnabled(true);
+    brain.setToolRegistry(&registry);
+    QVERIFY(brain.pluginRuntime());
+    QVERIFY(brain.pluginRuntime()->setHostConfiguration({
+        {"plugins", QJsonArray{QJsonObject{{"rootPath", root}, {"enabled", true}}}}, {"grants", grants}}));
+    QList<QJsonArray> offered;
+    client.answer = [&](QString, QJsonObject input) -> std::optional<QJsonObject> {
+      offered.append(input["capabilities"].toArray());
+      return choice("wait");
+    };
+    AutonomyConfig autonomy;
+    autonomy.enabled = true;
+    autonomy.minDecisionIntervalMs = 1;
+    autonomy.localTickMs = 25;
+    autonomy.noOpBackoffMs = 25;
+    autonomy.maxNoOpBackoffMs = 50;
+    autonomy.maxSelectionCallsPerHour = 100;
+    brain.setAutonomyConfig(autonomy);
+    brain.start();
+    QTRY_VERIFY_WITH_TIMEOUT(offered.size() >= 5, 10000);
+    brain.stop();
+    QSet<QString> seen;
+    for (const auto& page : offered) {
+      QCOMPARE(page.size(), 16);
+      QVERIFY(!QJsonDocument(page).toJson().contains("PRIVATE_SELECTION_BODY"));
+      for (const auto& value : page) {
+        const auto id = value.toObject()["id"].toString();
+        QVERIFY(id != "entry.30");
+        seen.insert(id);
+      }
+    }
+    QCOMPARE(seen.size(), 30);
+  }
   void
   externalCue_busyPauseRestartAndInternalTick_preservesPendingConversationAndEvents() {
     Fixture f;

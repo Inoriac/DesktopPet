@@ -14,16 +14,17 @@
 
 ## Task 2：摘要查询、分页与自主候选
 - 关联设计：§3.3
-- 状态：[ ]
+- 状态：[x]
 - Wave：1
 - 依赖：Task 1
-- 文件：capability_discovery、plugin_runtime、plugin_gateway、ai_brain_autonomy、ai_brain.h、tests/test_plugin_runtime.cpp、tests/test_activity_selector.cpp（必要）、CMake、公共 contracts/tools 文档。
+- 文件：capability_discovery、plugin_runtime、plugin_gateway、ai_brain_autonomy、ai_brain.h、tests/test_plugin_runtime.cpp、tests/test_activity_selector.cpp（必要）、tests/test_autonomous_chat.cpp（真实候选轮转）、CMake、公共 contracts/tools 文档。
 - 测试：30 条多页；中英查询；过期/范围/坏 cursor；learned 快照版本；后排相关条目；自主轮转覆盖；真实旧插件 gateway 回归。
 - 验证：相关 QtTest，父级 review；Wave 全项目 build / CTest、契约脚本和适配器校验；提交由主 agent 执行。
+- 证据：[Task2-验证记录](./Task2-验证记录.md)；父级 CR 通过，4/4 相关 C++ CTest 组及音乐 Python 24/24 通过。
 
 ## Wave 验证
-- [ ] 串行文件冲突核查
-- [ ] 完整构建与全量 CTest
-- [ ] 设计行为覆盖映射
-- [ ] tests/test_*.cpp 位置及 CMake
-- [ ] 实现锚点与 context sanity 留痕
+- [x] 串行文件冲突核查
+- [x] 完整构建与全量 CTest：全项目构建成功，66/66 组通过（146.77 秒）；独立契约校验 96/96 通过，详见[实现总结](./插件按需上下文-桌面端-impl-summary.md)。
+- [x] 设计行为覆盖映射
+- [x] tests/test_*.cpp 位置及 CMake
+- [x] 实现锚点与 context sanity 留痕

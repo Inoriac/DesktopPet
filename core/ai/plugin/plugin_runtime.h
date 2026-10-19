@@ -40,6 +40,8 @@ public:
     Result<void,DomainError> setPluginEnabled(const PluginStateChange& change);
     QJsonArray discoverCapabilities(const ContextSpec &context,
                                     bool autonomous = false) const;
+    Result<QJsonObject, DomainError> queryCapabilities(
+        const ContextSpec& context, bool autonomous, const QJsonObject& query) const;
     quint64 catalogRevision() const;
     void attach(ToolRegistry* registry);
     void retire();
@@ -60,6 +62,7 @@ signals:
   void capabilityFinished(const QJsonObject &outcome);
   void capabilityDispatching(const QString &callId);
 private:
+    QJsonArray discoverCapabilitiesLocked(const ContextSpec& context, bool autonomous) const;
     struct Pending { CapabilityCompletion completion; std::optional<CapabilityOutcome> outcome; bool settled=false; };
     struct State {
         QMutex mutex;
@@ -97,6 +100,7 @@ private:
     QJsonValue publicValue(const QJsonValue& value,const LoadedCapability& loaded) const;
     void settle(const std::shared_ptr<Pending>& pending);
     QString m_profileId,m_settingsPath;
+    const QString m_discoveryInstanceId;
     std::unique_ptr<ObservationService> m_observationService;
     std::shared_ptr<State> m_state=std::make_shared<State>();
     QThreadPool m_worker;

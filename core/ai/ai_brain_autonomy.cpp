@@ -2,6 +2,7 @@
 #include "activity/activity_runtime.h"
 #include "activity/activity_selector.h"
 #include "plugin/plugin_runtime.h"
+#include "plugin/capability_discovery.h"
 #include "reflection/inner_thought_service.h"
 #include "runtime/agent_runtime_services.h"
 #include <QPointer>
@@ -25,6 +26,7 @@ void AIBrain::publishAutonomyStatus(const QString &state,
 void AIBrain::configureAutonomyConsumer() {
     const auto generation = ++m_autonomyConfigurationGeneration;
     m_autonomyConfigured = false;
+    m_capabilityBrowseOffset = 0;
     if (!m_activityRuntime) {
         publishAutonomyStatus("failure", "RUNTIME_UNAVAILABLE");
         return;
@@ -131,17 +133,13 @@ void AIBrain::beginActivitySelection(OpportunityTicket ticket) {
                 if (self->m_pluginRuntime) {
                     request.catalogRevision =
                         self->m_pluginRuntime->catalogRevision();
-                    request.capabilities =
-                        self->m_pluginRuntime->discoverCapabilities(
-                            request.context, true);
-                    while (request.capabilities.size() > 16)
-                        request.capabilities.removeLast();
-                    for (int i = 0; i < request.capabilities.size(); ++i) {
-                        auto cap = request.capabilities[i].toObject();
-                        cap["summary"] = cap["summary"].toString().left(384);
-                        cap["name"] = cap["name"].toString().left(128);
-                        request.capabilities[i] = cap;
-                    }
+                    QStringList cues;
+                    for (const auto& cue : request.cues) cues.append(cue.text.left(128));
+                    request.capabilities = selectCapabilityCandidates(
+                        self->m_pluginRuntime->discoverCapabilities(request.context, true),
+                        cues.join(' ').left(1024), self->m_capabilityBrowseOffset);
+                    // Reserve up to eight related entries; never skip over the exploration window.
+                    self->m_capabilityBrowseOffset += qMax(1, int(request.capabilities.size()) - 8);
                 }
                 self->publishAutonomyStatus("selecting");
                 self->m_activitySelector->selectActivity(

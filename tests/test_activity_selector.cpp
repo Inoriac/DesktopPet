@@ -12,6 +12,7 @@
 #include "ai/event/event_outbox.h"
 #include "ai/task/task_orchestrator.h"
 #include "ai/task/task_store.h"
+#include "ai/plugin/capability_discovery.h"
 #include <QSignalSpy>
 
 namespace {
@@ -143,6 +144,44 @@ QList<ModelRoleConfig> selectionRoles() {
 class ActivitySelectorTests : public QObject {
     Q_OBJECT
   private slots:
+    void capabilityCandidates_relatedTailAndExplorationCoverEveryEntry() {
+        QJsonArray entries;
+        for (int i = 0; i < 40; ++i)
+            entries.append(QJsonObject{{"pluginId", "package"},
+                {"id", QString("entry.%1").arg(i, 2, 10, QChar('0'))},
+                {"name", i >= 28 ? "音乐播放器" : QString(200, 'x')},
+                {"summary", i >= 28 ? "MUSIC playlists" : QString(500, 'x')},
+                {"version", "1"}, {"readiness", "ready"}});
+        auto disabled = entries[0].toObject();
+        disabled["id"] = "disabled";
+        disabled["readiness"] = "disabled";
+        entries.append(disabled);
+        for (const auto& query : {QString("music"), QString("现在想听点音乐"), QString("no match")}) {
+            QSet<QString> seen;
+            for (quint64 offset = 0; offset < 40; offset += 8) {
+                const auto selected = selectCapabilityCandidates(entries, query, offset);
+                QCOMPARE(selected.size(), 16);
+                QSet<QString> page;
+                for (int i = 0; i < selected.size(); ++i) {
+                    const auto entry = selected[i].toObject();
+                    const auto id = entry["id"].toString();
+                    QVERIFY(id != "disabled");
+                    QVERIFY(!page.contains(id));
+                    page.insert(id);
+                    seen.insert(id);
+                    QVERIFY(entry["name"].toString().size() <= 128);
+                    QVERIFY(entry["summary"].toString().size() <= 384);
+                    if (query != "no match" && i < 8)
+                        QVERIFY(id >= "entry.28");
+                }
+            }
+            QCOMPARE(seen.size(), 40);
+        }
+        const auto before = entries;
+        QCOMPARE(selectCapabilityCandidates(entries, "music", 0, 3).size(), 3);
+        QVERIFY(selectCapabilityCandidates({}, {}, 0).isEmpty());
+        QCOMPARE(entries, before);
+    }
     void selectionMaterials_explicitMemoryAccessHonorsBoundConversation() {
         SelectionFixture f;
         ConversationStore conversations(profile, f.path);

@@ -205,6 +205,7 @@ private:
     std::unique_ptr<ActivitySelector> m_activitySelector;
     bool m_autonomyConfigured = false;
     quint64 m_autonomyConfigurationGeneration = 0;
+    quint64 m_capabilityBrowseOffset = 0;
     QString m_autonomyState = "disabled", m_autonomyError;
     IdleDecision m_autonomyIdleDecision;
     std::unique_ptr<ActivityRuntime> m_activityRuntime;
