@@ -1,4 +1,5 @@
 #include "memory_extractor.h"
+#include "memory_statement.h"
 
 #include <QCryptographicHash>
 #include <QDateTime>
@@ -173,6 +174,10 @@ QList<MemoryCandidate> MemoryExtractor::extractFromUserInput(const QString& inpu
             type = MemoryType::Core;
             scope = QStringLiteral("core");
         }
+        // Keep the original correction as evidence, but never index its explicitly
+        // invalidated value as part of the new current fact.
+        if (const auto correction = MemoryStatement::correction(text))
+            captured = correction->statement;
         candidates.append(makeWriteCandidate(type, scope, captured, text, triggerTag, true));
     }
 

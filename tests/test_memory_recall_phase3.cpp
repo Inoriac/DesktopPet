@@ -28,6 +28,7 @@ private:
     QString m_dbPath;
 
 private slots:
+    void lexicalFactsSurviveSemanticDistractors();
     void initTestCase();
     void cleanupTestCase();
 
@@ -1105,6 +1106,36 @@ void TestMemoryRecallPhase3::testHippocampusScoresSurviveSeedPruning() {
     int strong = 0;
     for (const auto& hit : hits) if (hit.entry.id.startsWith("z-strong")) ++strong;
     QCOMPARE(strong, 8);
+}
+
+
+void TestMemoryRecallPhase3::lexicalFactsSurviveSemanticDistractors() {
+    MemoryStore store;
+    class DistractorIndex final : public EmbeddingIndex {
+    public:
+        QList<EmbeddingSearchResult> hits;
+        bool upsert(const QString&, const QString&) override { return false; }
+        bool remove(const QString&) override { return false; }
+        QList<EmbeddingSearchResult> search(const QString&, int limit) override { return hits.mid(0, limit); }
+    } index;
+    for (int i=0; i<500; ++i) {
+        MemoryEntry e; e.id=QString("noise-%1").arg(i); e.type=MemoryType::Semantic;
+        e.summary=QStringLiteral("验收样本植物编号%1放在展厅").arg(i);
+        e.importance=0.8; e.strength=0.8;
+        store.addEntry(e); index.hits.append({e.id,0.75});
+    }
+    for (const auto& text : {QStringLiteral("用户喜欢茉莉茶"), QStringLiteral("用户不希望茉莉茶")}) {
+        MemoryEntry e; e.id=text; e.type=MemoryType::Preference; e.summary=text;
+        e.importance=0.6; e.strength=0.6; store.addEntry(e);
+    }
+    MemoryKeywordIndex keywords; keywords.rebuild(store.all());
+    ActivationChannels channels; channels.keywordIndex=&keywords; channels.embeddingIndex=&index;
+    MemoryQuery q; q.text=QStringLiteral("只根据保存的记忆回答：我现在喜欢茉莉茶吗？如果记录有冲突，请说明哪条是最新记录。");
+    const auto hits=MemoryRetriever().retrieveWithGraphPropagation(store,q,channels,nullptr,true);
+    QStringList summaries; for(const auto& hit:hits) summaries.append(hit.entry.summary);
+    QVERIFY(summaries.contains(QStringLiteral("用户喜欢茉莉茶")));
+    QVERIFY(summaries.contains(QStringLiteral("用户不希望茉莉茶")));
+    QVERIFY(hits.size()<=8);
 }
 
 QTEST_MAIN(TestMemoryRecallPhase3)

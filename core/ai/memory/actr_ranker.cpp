@@ -99,10 +99,29 @@ QList<CandidateMemory> ACTRRanker::select(const QList<CandidateMemory>& candidat
     const auto exploration = std::find_if(ranked.cbegin(), ranked.cend(),
         [](const CandidateMemory& candidate) { return candidate.isExploratory; });
     const int stableSlots = limit - (exploration != ranked.cend() ? 1 : 0);
-    for (const auto& candidate : ranked) {
-        if (selected.size() >= stableSlots) break;
-        if (!candidate.isExploratory) selected.append(candidate);
+    // Preserve at most two independently matched lexical facts in a normal
+    // eight-item context. Keep most slots, and their order, under ACT-R scoring.
+    QList<CandidateMemory> lexical;
+    for (const auto& candidate : ranked)
+        if (!candidate.isExploratory && candidate.lexicalCue > 0.0
+            && candidate.sourceChannels.contains(QStringLiteral("keyword"))) lexical.append(candidate);
+    std::sort(lexical.begin(), lexical.end(), [](const auto& a, const auto& b) {
+        if (a.lexicalCue != b.lexicalCue) return a.lexicalCue > b.lexicalCue;
+        return a.entry.id < b.entry.id;
+    });
+    QSet<QString> reserved;
+    const int lexicalSlots = std::min(2, stableSlots / 2);
+    for (const auto& candidate : lexical) {
+        if (reserved.size() >= lexicalSlots || candidate.lexicalCue < lexical.first().lexicalCue * 0.5) break;
+        reserved.insert(candidate.entry.id);
     }
+    QSet<QString> chosen = reserved;
+    for (const auto& candidate : ranked) {
+        if (chosen.size() >= stableSlots) break;
+        if (!candidate.isExploratory) chosen.insert(candidate.entry.id);
+    }
+    for (const auto& candidate : ranked)
+        if (chosen.contains(candidate.entry.id)) selected.append(candidate);
     if (exploration != ranked.cend()) selected.append(*exploration);
     return selected;
 }

@@ -86,9 +86,20 @@ QStringList MemoryRetriever::formatForContext(const QList<RetrievedMemory>& memo
             labels.append(entry.scope.trimmed());
         }
 
-        lines.append(QStringLiteral("%1. [%2] %3")
+        QString chronology;
+        if (entry.type != MemoryType::Working) {
+            // updatedAt/lastAccessedAt may advance merely because we recalled
+            // the fact. They must not make an older preference appear newer.
+            if (entry.lastMentionedAt.isValid())
+                chronology = QStringLiteral(" (最近提及时间=%1)")
+                    .arg(entry.lastMentionedAt.toUTC().toString(Qt::ISODate));
+            else if (entry.createdAt.isValid())
+                chronology = QStringLiteral(" (记忆创建时间=%1)")
+                    .arg(entry.createdAt.toUTC().toString(Qt::ISODate));
+        }
+        lines.append(QStringLiteral("%1. [%2] %3%4")
                          .arg(index++)
-                         .arg(labels.join(QStringLiteral("/")), summary));
+                         .arg(labels.join(QStringLiteral("/")), summary, chronology));
     }
     return lines;
 }
@@ -312,7 +323,26 @@ QList<RetrievedMemory> MemoryRetriever::retrieveWithGraphPropagation(
         if (evidenceCount(a) != evidenceCount(b)) return evidenceCount(a) > evidenceCount(b);
         return a < b;
     });
-    const QSet<QString> retained(validSeeds.cbegin(), validSeeds.cbegin() + qMin(kSeedBudget, int(validSeeds.size())));
+    // A long question has low lexical coverage even for an exact entity match.
+    // Cosine similarities are not calibrated against that coverage: reserve a
+    // small lexical budget so a full embedding page cannot evict every fact.
+    QList<QString> lexicalSeeds;
+    for (const auto& id : validSeeds)
+        if (seedChannels.value(id).contains(QStringLiteral("keyword")) && seedTextCue.value(id) > 0.0)
+            lexicalSeeds.append(id);
+    std::sort(lexicalSeeds.begin(), lexicalSeeds.end(), [&](const QString& a, const QString& b) {
+        if (seedTextCue.value(a) != seedTextCue.value(b)) return seedTextCue.value(a) > seedTextCue.value(b);
+        return a < b;
+    });
+    QSet<QString> retained;
+    for (const auto& id : lexicalSeeds) {
+        if (retained.size() == 4 || seedTextCue.value(id) < seedTextCue.value(lexicalSeeds.first()) * 0.5) break;
+        retained.insert(id);
+    }
+    for (const auto& id : validSeeds) {
+        if (retained.size() >= kSeedBudget) break;
+        retained.insert(id);
+    }
     for (auto it = seedChannels.begin(); it != seedChannels.end();) {
         if (!retained.contains(it.key())) it = seedChannels.erase(it);
         else ++it;

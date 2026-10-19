@@ -3,6 +3,8 @@
 #include "memory/memory_attribution_service.h"
 #include "memory/memory_keyword_index.h"
 #include "memory/memory_metadata.h"
+#include "memory/memory_extractor.h"
+#include "memory/memory_policy.h"
 #include <QSqlQuery>
 #include <QTemporaryDir>
 #include <QTest>
@@ -10,6 +12,8 @@
 class MemoryAttributionTests : public QObject {
     Q_OBJECT
 private slots:
+    void explicitOwnFactsMergeAcrossRequests();
+    void explicitCorrectionSupersedesOnlyCompleteSameSubjectFact();
     void sameSummaryDifferentFactsRemainSeparate();
     void reportedSubjectAndParticipantsSurviveConsolidation();
     void privateGraphBridgeAndWorkingMemoryAreInvisible();
@@ -760,6 +764,90 @@ void MemoryAttributionTests::describedPeopleNeedCommittedReferences() {
     QVERIFY(!result);
     QCOMPARE(result.error().code, QString("UNKNOWN_REFERENCE"));
     QVERIFY(store.all().isEmpty());
+}
+
+
+void MemoryAttributionTests::explicitOwnFactsMergeAcrossRequests() {
+    QTemporaryDir directory;
+    MemoryStore store; store.setProfileId("p");
+    store.setDatabasePath(directory.filePath("memory.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    QHash<QString, MemoryOriginSource> originals;
+    MemoryAttributionService service("p", &store,
+        [&](const QString&, const QString& id) { return SourceResult::success(originals[id]); },
+        [](const QString&, const QString&) { return Result<bool, DomainError>::success(true); });
+    const QString text = QStringLiteral("补充一条请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水。");
+    for (int n = 0; n < 2; ++n) {
+        auto request = input("owner", QString::number(n));
+        request.entry = MemoryExtractor().extractFromUserInput(text, "user_request").first().entry;
+        request.explicitRequest = true;
+        request.attribution.claimKind = MemoryClaimKind::Reported;
+        request.attribution.inferSelfStatementClaim = true;
+        auto original = source(request); original.text = text;
+        originals[request.attribution.originId] = original;
+        QVERIFY(service.ingestMemory(request));
+    }
+    QCOMPARE(store.all().size(), 1);
+    QCOMPARE(store.all().first().mentionCount, 2);
+    QCOMPARE(store.all().first().attribution.subjects(), QStringList{"owner"});
+    QCOMPARE(store.all().first().attribution.origins.size(), 2);
+    for (const QString& text : {QStringLiteral("请长期记住：我的朋友小明喜欢猫"),
+             QStringLiteral("请长期记住：我的盆栽的主人喜欢猫"),
+             QStringLiteral("请长期记住：我的盆栽叫紫砂星，小明喜欢猫"),
+             QStringLiteral("请长期记住：他说我的盆栽叫紫砂星"),
+             QStringLiteral("请长期记住：我的盆栽叫紫砂星，但这只是朋友说的"),
+             QStringLiteral("请长期记住：\"我的盆栽叫紫砂星\"")}) {
+        auto request = input("owner", "ambiguous");
+        request.entry.content = request.entry.summary = text;
+        originals["ambiguous"] = source(request);
+        auto attributed = service.attribute(request);
+        QVERIFY(attributed);
+        QVERIFY2(!attributed.value().attribution.resolved, qPrintable(text));
+    }
+}
+
+void MemoryAttributionTests::explicitCorrectionSupersedesOnlyCompleteSameSubjectFact() {
+    QTemporaryDir directory;
+    MemoryStore store; store.setProfileId("p");
+    store.setDatabasePath(directory.filePath("memory.db")); QVERIFY(store.loadDatabaseOnly());
+    auto old = input("owner", "old");
+    old.entry = MemoryExtractor().extractFromUserInput(
+        QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水。"), "user_request").first().entry;
+    // Exercise policy independently of the natural-language attribution test.
+    old.entry.attribution.profileId = "p"; old.entry.attribution.resolved = true;
+    old.entry.attribution.people = {{"owner", MemoryPersonRole::Subject}};
+    old.entry.attribution.claimKind = MemoryClaimKind::Fact;
+    const auto saved = store.addEntry(old.entry);
+    auto other = old.entry; other.id.clear(); other.attribution.people = {{"bob", MemoryPersonRole::Subject}};
+    const auto otherPerson = store.addEntry(other);
+    auto otherObject = old.entry; otherObject.id.clear();
+    otherObject.summary.replace(QStringLiteral("紫砂星"), QStringLiteral("青玉环"));
+    otherObject.content = otherObject.summary;
+    const auto otherPlant = store.addEntry(otherObject);
+    auto correction = MemoryExtractor().extractFromUserInput(QStringLiteral(
+        "请长期记住：我的盆栽紫砂星现在改为每周五浇水，原来的每周三已经作废，位置仍是东侧窗台。"), "user_request").first();
+    correction.entry.attribution = old.entry.attribution;
+    QVERIFY(MemoryPolicy().applyCandidates({correction}, &store).written == 1);
+    QCOMPARE(store.readForRecall(saved.id)->status, MemoryStatus::Superseded);
+    QCOMPARE(store.readForRecall(otherPerson.id)->status, MemoryStatus::Active);
+    QCOMPARE(store.readForRecall(otherPlant.id)->status, MemoryStatus::Active);
+    QVERIFY(store.refreshDatabaseOnly());
+    QCOMPARE(store.readForRecall(saved.id)->status, MemoryStatus::Superseded);
+    QVERIFY(!store.readForRecall(saved.id)->payload.value("superseded_by").toString().isEmpty());
+    const auto replacementId = store.readForRecall(saved.id)->payload.value("superseded_by").toString();
+    QVERIFY(!store.readForRecall(replacementId)->content.contains(QStringLiteral("每周三")));
+    auto again = MemoryExtractor().extractFromUserInput(QStringLiteral(
+        "请长期记住：我的盆栽紫砂星现在改为每周一浇水，原来的每周五已经作废，位置仍是东侧窗台。"), "user_request").first();
+    again.entry.attribution = old.entry.attribution;
+    QCOMPARE(MemoryPolicy().applyCandidates({again}, &store).written, 1);
+    QCOMPARE(store.readForRecall(replacementId)->status, MemoryStatus::Superseded);
+    const auto latestId = store.readForRecall(replacementId)->payload.value("superseded_by").toString();
+    // Omitting the unrelated location is not permission to retire that fact.
+    auto incomplete = MemoryExtractor().extractFromUserInput(QStringLiteral(
+        "请长期记住：我的盆栽紫砂星现在改为每周二浇水，原来的每周一已经作废。"), "user_request").first();
+    incomplete.entry.attribution = old.entry.attribution;
+    QCOMPARE(MemoryPolicy().applyCandidates({incomplete}, &store).written, 1);
+    QCOMPARE(store.readForRecall(latestId)->status, MemoryStatus::Active);
 }
 
 QTEST_GUILESS_MAIN(MemoryAttributionTests)

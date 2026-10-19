@@ -93,6 +93,7 @@ private slots:
     void testRetrieverRanksMatchingKeyword();
     void testRetrieverFiltersSensitiveByDefault();
     void testRetrieverFormatsContextLines();
+    void testContextUsesMentionTimeNotAccessTime();
     void testPolicyCreatesSupersedes();
     void testPolicyCreatesConflictsWith_data();
     void testPolicyCreatesConflictsWith();
@@ -4649,6 +4650,24 @@ void TestMemoryStrategy::testOnnxEmbeddingProviderLoadsAndEmbeds() {
     QVERIFY(simSimilar > simUnrelated);
 }
 #endif
+
+
+void TestMemoryStrategy::testContextUsesMentionTimeNotAccessTime() {
+    RetrievedMemory memory;
+    memory.entry.type = MemoryType::Preference;
+    memory.entry.summary = QStringLiteral("用户喜欢茉莉茶");
+    memory.entry.createdAt = QDateTime::fromString("2020-01-01T00:00:00Z", Qt::ISODate);
+    memory.entry.lastMentionedAt = QDateTime::fromString("2020-01-02T00:00:00Z", Qt::ISODate);
+    memory.entry.updatedAt = memory.entry.lastAccessedAt =
+        QDateTime::fromString("2050-01-01T00:00:00Z", Qt::ISODate);
+    const auto text = MemoryRetriever().formatForContext({memory}).join('\n');
+    QVERIFY(text.contains(QStringLiteral("最近提及时间=2020-01-02T00:00:00Z")));
+    QVERIFY(!text.contains("2050"));
+    memory.entry.lastMentionedAt = {};
+    const auto fallback = MemoryRetriever().formatForContext({memory}).join('\n');
+    QVERIFY(fallback.contains(QStringLiteral("记忆创建时间=2020-01-01T00:00:00Z")));
+    QVERIFY(!fallback.contains(QStringLiteral("最近提及时间")));
+}
 
 QTEST_MAIN(TestMemoryStrategy)
 #include "test_memory_strategy.moc"

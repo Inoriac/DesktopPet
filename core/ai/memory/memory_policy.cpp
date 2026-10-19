@@ -7,6 +7,7 @@
 
 #include "memory_metadata.h"
 #include "memory_store.h"
+#include "memory_statement.h"
 
 namespace {
 
@@ -288,8 +289,17 @@ void MemoryPolicy::discoverRelations(const MemoryEntry& newEntry,
         if (!attributionCanMerge(existing.attribution, newEntry.attribution))
             continue;
 
-        // Supersedes: same type + same key
-        if (existing.type == newEntry.type && existing.key == newEntry.key) {
+        bool explicitReplacement = false;
+        if (existing.type == MemoryType::Semantic && newEntry.type == MemoryType::Semantic
+            && newEntry.source == QLatin1String("user_explicit")
+            && newEntry.payload.value("extractor").toString() == QLatin1String("rule_v1")
+            && newEntry.evidence.size() == 1) {
+            if (const auto update = MemoryStatement::correction(newEntry.evidence.first()))
+                explicitReplacement = MemoryStatement::replacesCompleteFact(existing.content, *update);
+        }
+        // A verified, complete explicit correction may change the content-derived
+        // key. The same-person and same-audience guard above still applies.
+        if (existing.type == newEntry.type && (existing.key == newEntry.key || explicitReplacement)) {
             mutations->relations.append(stagedRelation(
                 newEntry, existing, MemoryRelationType::Supersedes, 1.0));
             ++report->relationsCreated;

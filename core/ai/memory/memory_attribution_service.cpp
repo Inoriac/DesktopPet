@@ -4,6 +4,7 @@
 #include "memory_keyword_index.h"
 #include "memory_metadata.h"
 #include "memory_policy.h"
+#include "memory_statement.h"
 #include <QRegularExpression>
 #include <QSqlError>
 #include <QSqlQuery>
@@ -13,10 +14,13 @@ DomainError unavailable() {
     return domainError("STORE_UNAVAILABLE", "Memory attribution store is unavailable");
 }
 bool selfStatement(const QString& text) {
+    const auto statement = MemoryStatement::body(text);
+    if (MemoryStatement::reportedOrUncertain(statement)) return false;
+    if (MemoryStatement::ownObject(statement)) return true;
     static const QRegularExpression pattern(
         QStringLiteral("^(?:请)?(?:帮我)?(?:记住[：:，, "
                        "]*)?我(?:喜欢|不喜欢|讨厌|希望|不希望|想要|不想要|叫)[^\\r\\n]*$"));
-    const auto trimmed = text.trimmed();
+    const auto trimmed = statement.trimmed();
     if (pattern.match(trimmed).hasMatch())
         return true;
     // Only recognizable own activities establish a first-person subject. A temporal
