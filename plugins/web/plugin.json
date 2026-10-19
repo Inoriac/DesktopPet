@@ -1,0 +1,11 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.web",
+  "name": "网页搜索与阅读",
+  "version": "1.0.0",
+  "summary": "搜索公开网页，分段阅读正文和来源；按当前目标与兴趣自主使用",
+  "entries": [
+    {"kind": "tool", "id": "desktop-pet.web.tools", "definition": "tool.json"},
+    {"kind": "skill", "id": "desktop-pet.web.skill", "definition": "skill.json"}
+  ]
+}

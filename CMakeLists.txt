@@ -491,6 +491,13 @@ add_library(desktop_pet_web_content STATIC
 )
 target_link_libraries(desktop_pet_web_content PUBLIC Qt::Core Qt::Gui Qt::Network)
 
+add_library(desktop_pet_web_command STATIC plugins/web/web_command.h plugins/web/web_command.cpp)
+target_include_directories(desktop_pet_web_command PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_link_libraries(desktop_pet_web_command PUBLIC desktop_pet_web_content)
+qt_add_executable(desktop_pet_web plugins/web/main.cpp)
+set_target_properties(desktop_pet_web PROPERTIES WIN32_EXECUTABLE TRUE)
+target_link_libraries(desktop_pet_web PRIVATE desktop_pet_web_command)
+
 add_executable(Desktop_Pet ${ALL_SOURCES})
 target_link_libraries(Desktop_Pet desktop_pet_web_content)
 
@@ -1958,6 +1965,18 @@ add_desktop_pet_cpp_test(web_content_tests WebContentTests
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}
     LIBRARIES desktop_pet_web_content Qt::Test
 )
+add_executable(web_command_fixture tests/fixtures/web_command_fixture.cpp)
+target_link_libraries(web_command_fixture PRIVATE desktop_pet_web_command)
+add_desktop_pet_cpp_test(web_command_tests WebCommandTests
+    SOURCES tests/test_web_command.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES plugin_support Qt::Core Qt::Test
+)
+add_dependencies(web_command_tests desktop_pet_web web_command_fixture)
+target_compile_definitions(web_command_tests PRIVATE
+    WEB_COMMAND_PROGRAM="$<TARGET_FILE:desktop_pet_web>"
+    WEB_COMMAND_FIXTURE="$<TARGET_FILE:web_command_fixture>"
+    WEB_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/web")
 add_executable(command_test_fixture tests/fixtures/command_probe.cpp)
 set_target_properties(command_test_fixture PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
 add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
@@ -2052,6 +2071,12 @@ if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
 
     # ---- 调用 windeployqt 自动部署 ----
     if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
+        add_custom_command(TARGET desktop_pet_web POST_BUILD
+                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
+                --no-translations
+                --no-system-d3d-compiler
+                "$<TARGET_FILE:desktop_pet_web>"
+                COMMENT "Deploying Qt Core/Gui/Network and TLS plugins for desktop_pet_web...")
         add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
                 COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
                 --no-translations

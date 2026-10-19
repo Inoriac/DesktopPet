@@ -1,0 +1,108 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.web.tools",
+  "name": "网页搜索与正文工具",
+  "version": "1.0.0",
+  "summary": "通过 Bing 搜索少量公开网页，提取 HTML 或文本正文并按游标续读",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {
+        "id": "web-command",
+        "description": "本项目编译的 desktop_pet_web 及对应 Qt 运行库",
+        "setup": "构建并部署命令程序，配置 program 绝对路径及包外 state_dir；不需要搜索 API 密钥"
+      }
+    ],
+    "configuration": [
+      {"key": "program", "description": "可信 desktop_pet_web 可执行文件的绝对路径", "kind": "executable", "required": true},
+      {"key": "state_dir", "description": "插件包外的网页快照缓存绝对目录", "kind": "path", "required": true}
+    ],
+    "operations": [
+      {
+        "id": "status",
+        "description": "检查本地路径配置与支持范围；不联网，不表示搜索服务可用",
+        "parameters": {
+          "source": "inline",
+          "schema": {"type": "object", "properties": {}, "required": [], "additionalProperties": false}
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {"setting": "program"},
+          "arguments": ["--state-dir", {"setting": "state_dir"}, "--operation", "status"],
+          "stdin": "json"
+        },
+        "effects": {"kind": "read", "description": "仅检查本地配置，不联网或创建缓存"},
+        "result": {
+          "format": "json",
+          "description": "envelope.data 返回 provider、cacheDirConfigured、operations、limitations",
+          "successMeaning": "本地路径参数配置有效，不表示在线请求可用或缓存已经写入",
+          "failureMeaning": "输入或本地路径配置无效，data.error 提供 code 和 message",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "search",
+        "description": "按关键词搜索少量网页标题、完整来源链接和摘要；需自行判断相关性",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "query": {"type": "string", "minLength": 1, "maxLength": 200, "pattern": "\\S"},
+              "limit": {"type": "integer", "minimum": 1, "maximum": 5}
+            },
+            "required": ["query"],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {"setting": "program"},
+          "arguments": ["--state-dir", {"setting": "state_dir"}, "--operation", "search"],
+          "stdin": "json"
+        },
+        "effects": {"kind": "read", "description": "匿名查询公开搜索结果，不操作桌面或账号"},
+        "result": {
+          "format": "json",
+          "description": "envelope.data 返回 query、provider、entries[{title,url,snippet}] 与 limited",
+          "successMeaning": "取得有效搜索结果；合法空列表与请求失败分开表示，摘要不是正文",
+          "failureMeaning": "未取得有效结果；data.error 区分参数、网络、HTTP、超时或无效 RSS",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "read_page",
+        "description": "读取公开网页正文；用同一输入 URL 和 nextCursor 继续读取缓存的后续段落",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "url": {"type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^https?://\\S+"},
+              "cursor": {"type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[a-f0-9]{32}:[1-9][0-9]{0,6}(?![\\s\\S])"}
+            },
+            "required": ["url"],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {"setting": "program"},
+          "arguments": ["--state-dir", {"setting": "state_dir"}, "--operation", "read_page"],
+          "stdin": "json"
+        },
+        "effects": {"kind": "read", "description": "匿名读取公开网页；首次读取把正文写入包外快照缓存，续读只访问该快照"},
+        "result": {
+          "format": "json",
+          "description": "envelope.data 返回 title、url、content、size、contentType、nextCursor、hasMore",
+          "successMeaning": "取得正文当前段；hasMore=true 时尚未读完，url 是最终来源",
+          "failureMeaning": "未取得正文；data.error 区分网络、内容类型、编码、游标与缓存错误",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      }
+    ]
+  }
+}
