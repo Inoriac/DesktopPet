@@ -1968,7 +1968,11 @@ add_desktop_pet_cpp_test(web_content_tests WebContentTests
 add_executable(web_command_fixture tests/fixtures/web_command_fixture.cpp)
 target_link_libraries(web_command_fixture PRIVATE desktop_pet_web_command)
 add_desktop_pet_cpp_test(web_command_tests WebCommandTests
-    SOURCES tests/test_web_command.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+    SOURCES tests/test_web_command.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+        core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+        core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+        core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp
+        core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
     LIBRARIES plugin_support Qt::Core Qt::Test
 )

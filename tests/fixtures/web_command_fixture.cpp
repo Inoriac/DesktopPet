@@ -1,5 +1,5 @@
 #include "plugins/web/web_command.h"
-#include <QCoreApplication>
+#include <QGuiApplication>
 #include <QDir>
 #include <QFile>
 #include <QJsonDocument>
@@ -7,7 +7,8 @@
 #include <cstdio>
 
 int main(int argc, char** argv) {
-    QCoreApplication application(argc, argv);
+    QCoreApplication::setAttribute(Qt::AA_PluginApplication);
+    QGuiApplication application(argc, argv);
     const auto arguments = application.arguments().mid(1);
     const int stateIndex = arguments.indexOf("--state-dir");
     const QString stateDir = stateIndex >= 0 ? arguments.value(stateIndex + 1) : QString();
@@ -33,6 +34,9 @@ int main(int argc, char** argv) {
             return WebHttpResponse{true, ("<rss version=\"2.0\"><channel>" + items + "</channel></rss>").toUtf8(),
                                    "application/rss+xml", url, {}, {}, 200};
         }
+        if (url.path() == "/code") return WebHttpResponse{true,
+            "<main><h1>Tutorial</h1><p>Use <code>print()</code> now.</p><pre>print('hello')</pre></main>",
+            "text/html", url, {}, {}, 200};
         if (url.path() == "/empty") return WebHttpResponse{true, "<script>app()</script>", "text/html", url, {}, {}, 200};
         const QString content = QString::fromUtf8("网页🙂 \"\\\n").repeated(900);
         return WebHttpResponse{true, content.toUtf8(), "text/plain; charset=utf-8", url, {}, {}, 200};

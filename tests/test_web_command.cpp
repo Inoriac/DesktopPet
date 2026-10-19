@@ -1,4 +1,5 @@
 #include "ai/plugin/plugin_catalog.h"
+#include "ai/plugin/plugin_runtime.h"
 #include "ai/plugin/schema_validator.h"
 #include "ai/tools/runtime/tool_result_sanitizer.h"
 #include <QDir>
@@ -6,6 +7,7 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QProcess>
+#include <QPointer>
 #include <QTemporaryDir>
 #include <QtTest>
 
@@ -54,6 +56,63 @@ QJsonObject readJson(const QString& name) {
 class WebCommandTests : public QObject {
     Q_OBJECT
 private slots:
+    void gateway_readFailureAndPermissionBoundaries() {
+        Fixture fixture;
+        const QString profile = "12345678-1234-4234-8234-123456789abc";
+        const QString plugin = "desktop-pet.web", entry = plugin + ".tools";
+        const CapabilityRef ref{plugin, entry, "1.0.0", "read_page"};
+        const auto context = ContextSpec::localOwner(profile);
+        PluginRuntime runtime(profile, fixture.directory.filePath("plugins.json"));
+        QJsonObject configuration{
+            {"plugins", QJsonArray{QJsonObject{{"pluginId", plugin}, {"rootPath", QString(WEB_PACKAGE)}, {"enabled", true}}}},
+            {"configuration", QJsonObject{{entry, QJsonObject{{"program", QString(WEB_COMMAND_FIXTURE)}, {"state_dir", fixture.stateDir()}}}}},
+            {"grants", QJsonArray{QJsonObject{{"id", "web.local.read"}, {"profileId", profile}, {"pluginId", plugin},
+                {"entryId", entry}, {"operationId", "read_page"}, {"conversationId", "local_owner"},
+                {"effects", QJsonArray{"read"}}, {"executor", QString(WEB_COMMAND_FIXTURE)}, {"autonomous", false}}}},
+            {"resultAdapters", QJsonObject{{entry + "/read_page", QJsonObject{{"dataPointer", "/data"}, {"statePointer", "/state"},
+                {"stateMap", QJsonObject{{"completed", "completed"}, {"failed", "failed"}}}}}}}};
+        QVERIFY(runtime.setHostConfiguration(configuration));
+        auto gateway = [&](QString name, QJsonObject arguments, ContextSpec ctx) {
+            QEventLoop loop;
+            QTimer timer;
+            timer.setSingleShot(true);
+            connect(&timer, &QTimer::timeout, &loop, &QEventLoop::quit);
+            auto output = std::make_shared<std::optional<ToolExecutionOutcome>>();
+            ToolExecutionRequest request;
+            request.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
+            request.activityId = "web-check"; request.context = ctx;
+            request.toolName = name; request.arguments = arguments; request.timeoutMs = 5000;
+            QPointer<QEventLoop> guard(&loop);
+            runtime.executeGateway(request, [output, guard](ToolExecutionOutcome result) {
+                if (guard) QMetaObject::invokeMethod(guard, [output, guard, result = std::move(result)]() mutable {
+                    *output = std::move(result); if (guard) guard->quit();
+                }, Qt::QueuedConnection);
+            });
+            timer.start(10000); loop.exec();
+            ToolExecutionOutcome failed; failed.result = ToolResult::fail("Gateway timed out");
+            return *output ? **output : failed;
+        };
+        auto invoke = [&](QJsonObject args) {
+            return gateway("invoke_capability", {{"ref", ref.toJson()}, {"arguments", args}}, context);
+        };
+        QVERIFY(!invoke({{"url", "https://example.com/code"}}).result.success);
+        QVERIFY(gateway("load_capability", {{"ref", ref.toJson()}}, context).result.success);
+        QCOMPARE(fixture.calls(), 0);
+        const auto page = invoke({{"url", "https://example.com/code"}});
+        QVERIFY2(page.result.success, qPrintable(page.result.errorMessage));
+        QVERIFY(page.result.data["data"].toObject()["content"].toString().contains("print('hello')"));
+        const auto failure = invoke({{"url", "https://example.com/network-failure"}});
+        QVERIFY(!failure.result.success);
+        ToolResultSanitizer sanitizer;
+        const auto payload = QJsonDocument::fromJson(sanitizer.toPayload(failure.result).toUtf8()).object();
+        QCOMPARE(payload["data"].toObject()["data"].toObject()["error"].toObject()["code"].toString(), "NETWORK_ERROR");
+        ContextSpec external = context; external.originKind = OriginKind::External; external.conversationId = "external";
+        QVERIFY(!gateway("load_capability", {{"ref", ref.toJson()}}, external).result.success);
+        QVERIFY(runtime.setPluginEnabled({plugin, false, runtime.catalogRevision()}));
+        QVERIFY(!invoke({{"url", "https://example.com/code"}}).result.success);
+        QCOMPARE(fixture.calls(), 2);
+    }
+
     void command_status_localSuccess() {
         Fixture fixture;
         for (bool production : {false, true}) {
@@ -152,6 +211,49 @@ private slots:
         const auto cursor = page.envelope["data"].toObject()["nextCursor"].toString();
         QVERIFY(!cursor.isEmpty());
         QCOMPARE(fixture.invoke("read_page", {{"url", "https://example.com/article"}, {"cursor", cursor}}).envelope["state"].toString(), "completed");
+    }
+
+    void command_codeMarkup_hasReadableText() {
+        Fixture fixture;
+        const auto result = fixture.invoke("read_page", {{"url", "https://example.com/code"}});
+        QVERIFY2(result.error.isEmpty(), qPrintable(result.error));
+        QCOMPARE(result.envelope["state"].toString(), "completed");
+        const auto content = result.envelope["data"].toObject()["content"].toString();
+        QVERIFY(content.contains("Use print() now."));
+        QVERIFY(content.contains("print('hello')"));
+    }
+
+    void package_readPageAcceptsRealArguments() {
+        PluginCatalog catalog;
+        QVERIFY(catalog.registerPlugin({QString(WEB_PACKAGE)}));
+        const auto loaded = catalog.loadCapability({"desktop-pet.web", "desktop-pet.web.tools", "1.0.0", "read_page"});
+        QVERIFY(loaded);
+        const auto valid = SchemaValidator::validate(loaded.value().parameterSchema,
+            QJsonObject{{"url", "https://docs.python.org/3/tutorial/"}});
+        QVERIFY2(valid, qPrintable(valid ? QString() : valid.error().message));
+    }
+
+    void failedPayload_preservesDetailsAndRedactsSecrets() {
+        ToolResultSanitizer sanitizer;
+        auto failure = ToolResult::fail("ACTION_FAILED");
+        failure.data = {{"stage", "failed"}, {"data", QJsonObject{
+            {"error", QJsonObject{{"code", "NETWORK_ERROR"}, {"message", "Connection failed"}}},
+            {"api_key", "fake-key"}, {"nested", QJsonArray{QJsonObject{
+                {"token", "fake-token"}, {"password", "fake-password"}}}}}}};
+        const auto payload = QJsonDocument::fromJson(sanitizer.toPayload(failure).toUtf8()).object();
+        QVERIFY(!payload["success"].toBool());
+        QCOMPARE(payload["error"].toString(), "ACTION_FAILED");
+        const auto data = payload["data"].toObject()["data"].toObject();
+        QCOMPARE(data["error"].toObject()["code"].toString(), "NETWORK_ERROR");
+        QCOMPARE(data["error"].toObject()["message"].toString(), "Connection failed");
+        QCOMPARE(data["api_key"].toString(), "[REDACTED]");
+        const auto nested = data["nested"].toArray()[0].toObject();
+        QCOMPARE(nested["token"].toString(), "[REDACTED]");
+        QCOMPARE(nested["password"].toString(), "[REDACTED]");
+        const auto plain = QJsonDocument::fromJson(sanitizer.toPayload(ToolResult::fail("plain error")).toUtf8()).object();
+        QCOMPARE(plain.size(), 2);
+        QVERIFY(!plain.contains("data"));
+        QCOMPARE(plain["error"].toString(), "plain error");
     }
 
     void package_validSchemasAndDependencies() {
