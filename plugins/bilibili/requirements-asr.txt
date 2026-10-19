@@ -1,0 +1,5 @@
+# Installed only by explicit ASR setup, never by a tool invocation.
+faster-whisper==1.2.1
+yt-dlp>=2026.8.19,<2027
+# Hugging Face model preparation supports users with SOCKS proxies.
+socksio>=1,<2

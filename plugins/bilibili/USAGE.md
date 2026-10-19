@@ -13,6 +13,8 @@ Tool：`desktop-pet.bilibili.tools`，版本 `1.0.0`。通过后台接口取得�
 | comments | `{"bvid":"查询得到的BV号","page":1,"limit":3}` | 返回这页的评论样本；默认按热度排列 |
 | read_transcript | `{"bvid":"查询得到的BV号","part":2}` | 返回这段视频的一页带时间戳字幕 |
 | read_transcript | `{"bvid":"相同BV号","part":2,"source":"platform_subtitle","cursor":"上次的nextCursor"}` | 读取相同快照下一页，不重新下载全文 |
+| start_transcription | `{"bvid":"查询得到的BV号","part":2}` | 可选：创建本地语音转写任务，返回真实 jobId、receipt、tracking |
+| transcription_status | `{"job_id":"受理返回的jobId"}` | 查询任务进展，不重启工作 |
 
 `page`、`part` 从 1 开始，默认 1。search 默认 limit=5，comments 默认 limit=3，均允许 1–5。
 搜索排序可选 totalrank（综合）、click（播放量）、pubdate（时间）、dm（弹幕量）。
@@ -27,10 +29,26 @@ Tool：`desktop-pet.bilibili.tools`，版本 `1.0.0`。通过后台接口取得�
 `availability=unavailable` 仍是一次完成的查询：`no_subtitle` 表示没有平台字幕，`transcription_not_ready` 表示没有可读本地转写，`no_speech` 表示转写完成但无语音。
 这与接口失败不同。只取得字幕或语音文字时，可以描述听到的内容，不能声称看到了视频画面。
 
+## 可选语音转写
+
+平台没有字幕且确实需要正文时，可以在已获授权、已准备本地模型的情况下调用 start_transcription。
+这项操作需要额外 write 授权，仅在包外下载目标音频、记录任务和运行本地计算，不在 B 站发表内容。
+未启用、解释器/模型/依赖缺失、目标分 P 超长时立即失败；不在调用中安装依赖或下载模型。
+
+`state=accepted` 表示后台任务受理成功，保留 receipt.jobId 或 tracking.arguments.job_id。
+之后由主体原有活动节奏决定何时调用 transcription_status，不要在同一轮紧循环查询。
+查询本身 `state=completed` 时仍需检查 `data.status`：queued/running 表示尚未完成，completed 才能用原 BV/part 与 `source=local_asr` 读取分页，failed/unknown 需保留失败含义。
+已经受理的任务在主体暂停后可计算至自己的期限，但不会自行唤醒主体或发送报告。
+
+同视频/分 P/账号/模型的运行任务返回原回执，可复用已有完成结果。已知失败后再次明确调用 start_transcription 可新建任务；查询不会重试。
+unknown 表示记录损坏或期限已过却没有可信终态，需要检查后台状态，不自动再开一个可能重复的任务。
+下载和转写有总期限；任务结束清理自己的临时音频，保留状态与分页文字。转写只使用 CPU/int8 与本地 faster-whisper 模型，不依赖外置 FFmpeg 转码。
+
 ## 结果和错误
 
-CLI 输出 `{"state":"completed|failed","data":{...}}`，业务失败仍退出 0，错误位于 `data.error.code/message`。
+CLI 输出 `{"state":"completed|failed|accepted","data":{...},"receipt":...,"tracking":...}`，后两项仅受理时存在；业务失败仍退出 0，错误位于 `data.error.code/message`。
 宿主每个 reported 操作需要 `dataPointer=/data`、`statePointer=/state`、`stateMap={"completed":"completed","failed":"failed"}`。
+仅 start_transcription 的 stateMap 额外加入 `"accepted":"accepted"`，并同时配置 `receiptPointer=/receipt`、`trackingPointer=/tracking`；基础读取操作不添加 accepted 映射。
 完成代表本次查询取得结果，不代表整个视频已经读完或理解完成。
 
 - `AUTH_REQUIRED`：登录缺失或过期，由使用者运行人工登录工具处理。
@@ -41,6 +59,10 @@ CLI 输出 `{"state":"completed|failed","data":{...}}`，业务失败仍退出 0
 - `INVALID_CURSOR`：快照失效、账号/来源变化或游标有误，明确需要时重新读第一页。
 - `CREDENTIAL_CHANGED`：读取过程中切换了账号，本次结果没有发布到新账号缓存；需要时重新读取。
 - `STATE_UNAVAILABLE`：包外缓存无法写入，需要检查状态目录。
+- `ASR_DISABLED` / `ASR_NOT_READY`：转写未启用或解释器/本地模型尚未准备。
+- `ASR_TOO_LONG`：目标分 P 超过配置的时长上限，可选择较短内容。
+- `ASR_START_FAILED` / `ASR_DOWNLOAD_FAILED` / `ASR_ENGINE_FAILED` / `ASR_TIMEOUT`：受理、音频下载、推理或期限失败；不返回 Cookie 或签名下载地址。
+- `JOB_NOT_FOUND`：回执不存在或属于另一个账号；`ASR_UNKNOWN`：没有可信终态；`ASR_BUSY`：另一次受理正在更新状态，稍后再考虑。
 
 ## 宿主管理的配置
 

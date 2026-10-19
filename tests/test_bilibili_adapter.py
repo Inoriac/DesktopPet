@@ -260,7 +260,7 @@ class AdapterTests(unittest.TestCase):
             cursor = result["data"]["nextCursor"]
         self.assertEqual(text, "\x01" * 900)
 
-    def test_manifest_has_only_read_commands_and_matching_skill_dependencies(self):
+    def test_manifest_has_no_platform_writes_and_optional_asr_dependencies(self):
         package = ROOT / "plugins" / "bilibili"
         tool = json.loads((package / "tool.json").read_text(encoding="utf-8"))
         skill = json.loads((package / "skill.json").read_text(encoding="utf-8"))
@@ -268,11 +268,16 @@ class AdapterTests(unittest.TestCase):
         self.assertTrue(adapter.OPERATIONS.issubset({item["id"] for item in operations}))
         declared_dependencies = {operation for dependency in skill["dependencies"] for operation in dependency["operations"]}
         self.assertTrue(READ_OPERATIONS.issubset(declared_dependencies))
+        optional = {operation for dependency in skill["dependencies"] if not dependency["required"] for operation in dependency["operations"]}
+        self.assertEqual(optional, {"start_transcription", "transcription_status"})
+        self.assertEqual({item["id"] for item in operations}, adapter.OPERATIONS)
         for item in operations:
             self.assertEqual(item["invocation"]["arguments"][0], "-B")
             self.assertFalse(item["parameters"]["schema"]["additionalProperties"])
             if item["id"] in READ_OPERATIONS:
                 self.assertEqual(item["effects"]["kind"], "read")
+            if item["id"] == "start_transcription":
+                self.assertEqual(item["effects"]["kind"], "write")
 
     def test_same_content_reuses_snapshot_and_does_not_store_credentials(self):
         Path(self.temp.name, "credential.json").write_text('{"SESSDATA":"private-value"}', encoding="utf-8")

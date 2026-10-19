@@ -31,7 +31,8 @@ MAX_DATA_UNITS = 3800
 MAX_SEGMENT_CHARS = 800
 MAX_PAGE_SEGMENTS = 12
 BVID_PATTERN = re.compile(r"BV[1-9A-HJ-NP-Za-km-z]{10}\Z")
-OPERATIONS = frozenset({"status", "search", "video_info", "comments", "read_transcript"})
+OPERATIONS = frozenset({"status", "search", "video_info", "comments", "read_transcript",
+                        "start_transcription", "transcription_status"})
 SOURCES = frozenset({"platform_subtitle", "local_asr"})
 
 
@@ -47,12 +48,14 @@ def digest(value):
     return hashlib.sha256(json_text(value).encode("utf-8")).hexdigest()
 
 
-def absolute_path(value, label, optional=False):
+def absolute_path(value, label, optional=False, preserve_symlinks=False):
     if value is None and optional:
         return None
     if not isinstance(value, str) or not value or "\x00" in value or not Path(value).is_absolute():
         raise AdapterError("INVALID_SETTINGS", label + " must be an absolute path")
-    return str(Path(value).resolve())
+    # Resolving a venv's python symlink selects its base interpreter and loses
+    # the installed environment. Directory identities may still be resolved.
+    return os.path.abspath(value) if preserve_symlinks else str(Path(value).resolve())
 
 
 def validate_settings(value):
@@ -65,7 +68,7 @@ def validate_settings(value):
         raise AdapterError("INVALID_SETTINGS", "stateDir must be outside the plugin package")
     result = {"stateDir": state,
               "credentialPath": absolute_path(value.get("credentialPath", str(Path(state) / "credential.json")), "credentialPath"),
-              "asrPython": absolute_path(value.get("asrPython"), "asrPython", optional=True),
+              "asrPython": absolute_path(value.get("asrPython"), "asrPython", optional=True, preserve_symlinks=True),
               "asrModelPath": absolute_path(value.get("asrModelPath"), "asrModelPath", optional=True)}
     for key, default, low, high in (("requestTimeoutSeconds", 15, 1, 25),
                                   ("asrMaxDurationSeconds", 1800, 1, 14400),
@@ -96,13 +99,17 @@ def load_settings(path):
 def validate_arguments(operation, arguments):
     allowed = {"status": set(), "search": {"keyword", "page", "limit", "order"},
                "video_info": {"bvid", "part"}, "comments": {"bvid", "page", "limit"},
-               "read_transcript": {"bvid", "part", "cursor", "source"}}
+               "read_transcript": {"bvid", "part", "cursor", "source"},
+               "start_transcription": {"bvid", "part"}, "transcription_status": {"job_id"}}
     if operation not in OPERATIONS:
         raise AdapterError("UNKNOWN_OPERATION", "Unknown Bilibili operation")
-    required = set() if operation == "status" else {"keyword" if operation == "search" else "bvid"}
+    required = set() if operation == "status" else {"keyword" if operation == "search" else
+                                                    "job_id" if operation == "transcription_status" else "bvid"}
     if not isinstance(arguments, dict) or set(arguments) - allowed[operation] or required - set(arguments):
         raise AdapterError("INVALID_INPUT", "Missing or unexpected operation parameters")
     result = dict(arguments)
+    if "job_id" in result and (not isinstance(result["job_id"], str) or not re.fullmatch(r"[a-f0-9]{32}", result["job_id"])):
+        raise AdapterError("INVALID_INPUT", "job_id must come from a real transcription receipt")
     if "bvid" in result and (not isinstance(result["bvid"], str) or not BVID_PATTERN.fullmatch(result["bvid"])):
         raise AdapterError("INVALID_INPUT", "bvid must be a BV video identifier from a real result")
     if "keyword" in result:
@@ -225,16 +232,19 @@ def normalize_segments(segments):
     return result
 
 
-def save_transcript(settings, video, source, segments, language="", reason=""):
+def save_transcript(settings, video, source, segments, language="", reason="", expected_account=None):
     """Publish timed text and its latest pointer. Returns immutable snapshot ID.
 
-    Used by the later ASR worker too; call only after the complete result exists.
+    Shared with the ASR worker; call only after the complete result exists.
     An empty local_asr result is a completed no_speech observation.
     """
     if source not in SOURCES:
         raise AdapterError("INVALID_INPUT", "Unknown transcript source")
     normalized = normalize_segments(segments)
-    identity = transcript_identity(settings, video["bvid"], video["part"], source)
+    account = credential_identity(settings)
+    if expected_account is not None and account != expected_account:
+        raise AdapterError("CREDENTIAL_CHANGED", "The login changed before the transcript could be published")
+    identity = digest([account, video["bvid"], video["part"], source])
     value = {"identity": identity, "bvid": video["bvid"], "part": video["part"], "cid": video["cid"],
              "title": clipped_text(video.get("title", ""), 180)[0], "source": source,
              "language": clipped_text(language, 80)[0], "segments": normalized,
@@ -332,10 +342,9 @@ async def _execute(operation, arguments, settings, backend):
         if not cursor and source == "platform_subtitle":
             account = credential_identity(settings)
             value = await backend.transcript(bvid, part)
-            if credential_identity(settings) != account:
-                raise AdapterError("CREDENTIAL_CHANGED", "The login changed during this request; read again under the current account")
             save_transcript(settings, value["video"], source, value["segments"],
-                            language=value.get("language", ""), reason=value.get("reason", ""))
+                            language=value.get("language", ""), reason=value.get("reason", ""),
+                            expected_account=account)
         data = read_transcript_page(settings, bvid, part, source, cursor)
         if data is None:
             return {"bvid": bvid, "part": part, "source": source, "url": video_url(bvid, part),
@@ -360,6 +369,14 @@ def run(operation, arguments, settings, backend=None):
     try:
         settings = validate_settings(settings)
         arguments = validate_arguments(operation, arguments)
+        if operation in ("start_transcription", "transcription_status"):
+            if __package__:
+                from .transcription import start_transcription, transcription_status
+            else:
+                from transcription import start_transcription, transcription_status
+            if operation == "start_transcription":
+                return start_transcription(arguments, settings, backend)
+            return transcription_status(arguments, settings)
         if operation == "status":
             data = status(settings)
         else:

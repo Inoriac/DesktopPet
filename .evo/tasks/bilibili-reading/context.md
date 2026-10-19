@@ -20,7 +20,14 @@
 - [code-impl Task 1 sanity check] 已复核实际后端使用的 Video.get_info/get_subtitle、search.search_by_type、comment.get_comments、request_settings 签名与 §3.2 锚点一致；父级运行 29 项 Python 行为测试通过。真实 adapter CLI 的 search/video_info(part=2)/comments 均 completed，匿名字幕读取明确 AUTH_REQUIRED，四次进程退出 0 且 stderr 为空；结果分别 623/576/710/133 UTF-16 单元。
 - [真实本地转写预检] 仅在临时开发目录显式下载 tiny 模型，faster-whisper 1.2.1 以 CPU/int8、local_files_only=True 转写本机合成的 5.8 秒英文音频，返回正确语义和 0–5.8 秒时间段，耗时 1.15 秒。未准备实际用户模型或修改其角色配置。该预检只证明引擎可用，插件任务链由 Task 2 继续验证。此机模型下载经过 SOCKS 代理，需要 httpx 的 socksio 支持；setup 应包含该环境兼容依赖。
 
+- [code-impl Task 2 sanity check] 父级复核实际 yt-dlp BiliBiliIE._real_extract：显式 ?p=N 选择对应分 P，id 通常是 BV..._pN；playlist/interactive 等非单视频结果明确拒绝。WhisperModel(cpu,int8,local_files_only=True) 与 transcribe(vad_filter=True) 实测可用。
+- [真实后台引擎验证] 用测试下载器复制本地合成音频，保留真实解释器、固定 supervisor/engine、faster-whisper tiny、状态查询及字幕缓存：accepted→completed→read_transcript 全链通过，返回 0–5800ms 英文文字，耗时 1.88 秒，工作目录已清理。临时证据 /private/tmp/desktop-pet-bilibili-dev-2rnhj2vq/real-worker-smoke.json。仅下载器是替身，不代表真实平台音频已成功下载。
+- [真实网站限制] yt-dlp 匿名 extract_info(download=False) 对 BV1rpWjevEip?p=2 返回 HTTP 412；未下载平台媒体。真实账号字幕和平台音频下载仍需使用者在本机登录后验收，不增加绕过或自动重试。
+- [Task 3 安装登录预检] 已读取真实 QrCodeLogin WEB API：generate_qrcode/check_state 异步，SCAN/CONF/TIMEOUT/DONE 四状态；get_qrcode_picture().content 是图像字节。优先直接将 content 写入私有状态目录，避免 Picture.to_file 内部共享 /tmp/test.png。Credential.get_cookies 会包含额外内部属性，登录脚本明确选取 sessdata/bili_jct/buvid3/buvid4/dedeuserid/ac_time_value 字段即可。
+
 ## 设计偏差
+
+- [父级 CR 解释器路径] 实测临时 venv 的 sys.executable.resolve() 指向 uv 的基础 Python，丢失虚拟环境依赖。Task 2 将 asrPython 的绝对路径处理改为保留入口符号链接并覆盖回归；Task 3 的 setup/configure 同样保留 sys.executable。此要求已回填 §1.1，不改变业务契约。
 
 - [2026-10-19 Task 1 并行预检] PluginCatalog::digestPackage 包含 __pycache__；补入解释器 -B / 入口禁止字节码写入要求，防止首次调用后插件摘要改变，已通知执行 agent 并回填 §1.1。
 

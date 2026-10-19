@@ -13,7 +13,7 @@
 
 ## Task 2：可选本地语音转写
 - 关联设计：§3.3
-- 状态：[ ]
+- 状态：[x]
 - Wave：1（实际严格依赖 Task 1 串行）
 - 依赖：Task 1
 - 文件：plugins/bilibili/transcription.py、asr_worker.py、requirements-asr.txt、adapter.py、tool.json、skill.json、USAGE.md、SKILL.md；tests/test_bilibili_transcription.py、tests/fixtures/bilibili_asr_engine.py（必要）；本 Task 验证记录。

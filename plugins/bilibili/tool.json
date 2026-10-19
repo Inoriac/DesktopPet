@@ -3,7 +3,7 @@
   "id": "desktop-pet.bilibili.tools",
   "name": "B站内容阅读工具",
   "version": "1.0.0",
-  "summary": "搜索视频、查询指定分P、读取评论及带时间戳的字幕；后台接口读取，不控制桌面",
+  "summary": "搜索视频、查询分P、分段阅读字幕与评论；可选本地语音转写，不控制桌面",
   "definition": {
     "instructions": "USAGE.md",
     "requirements": [
@@ -16,6 +16,11 @@
         "id": "bilibili-login",
         "description": "字幕接口通常需要B站登录；公开信息可能无需登录",
         "setup": "由使用者登录并保管包外 credential.json；主体不处理扫码或Cookie"
+      },
+      {
+        "id": "local-asr",
+        "description": "可选转写依赖 requirements-asr.txt、本地 faster-whisper 模型及显式 ASR 配置",
+        "setup": "使用者显式准备模型和依赖；普通调用不会下载模型或安装软件"
       }
     ],
     "configuration": [
@@ -339,6 +344,113 @@
           "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
           "completion": "reported",
           "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "start_transcription",
+        "description": "可选：受理指定分P的后台语音转写，只使用已准备的本地模型",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bvid": {
+                "type": "string",
+                "pattern": "^BV[1-9A-HJ-NP-Za-km-z]{10}(?![\\s\\S])"
+              },
+              "part": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            },
+            "required": [
+              "bvid"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "start_transcription"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "仅创建包外转写任务、下载目标音频并运行本地计算；不会执行平台写操作"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "accepted 仅表示后台任务已受理；通过真实回执查询完成后再读 local_asr",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed/failed/accepted；accepted 必须映射 /receipt 与 /tracking"
+        }
+      },
+      {
+        "id": "transcription_status",
+        "description": "查询真实转写回执的状态，不启动或重试任务",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "job_id": {
+                "type": "string",
+                "pattern": "^[a-f0-9]{32}(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "job_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "transcription_status"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "只读取本地转写状态，不触发下载或计算"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "完成本次状态查询，data.status 区分 queued/running/completed/failed/unknown",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；任务执行状态在 data.status"
         }
       }
     ]

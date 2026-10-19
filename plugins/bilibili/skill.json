@@ -18,6 +18,16 @@
         "read_transcript"
       ],
       "required": true
+    },
+    {
+      "kind": "tool",
+      "id": "desktop-pet.bilibili.tools",
+      "version": "1.0.0",
+      "operations": [
+        "start_transcription",
+        "transcription_status"
+      ],
+      "required": false
     }
   ]
 }
