@@ -20,6 +20,7 @@
 | [受控聊天示例](./examples/controlled-chat/README.md) | 可运行的本地聊天日志、宿主配置生成与可选监听 |
 | [LX Music 通用插件](../../plugins/lx-music/README.md) | 现有音乐工具＋Skill 的可执行接入样板、角色配置、macOS 验证与 Windows 实测步骤 |
 | [B 站内容阅读插件](../../plugins/bilibili/README.md) | 搜索、评论与字幕分页、可选本地转写、人工登录和单角色授权；通过已有自主活动选择使用 |
+| [通用网页搜索与阅读插件](../../plugins/web/README.md) | 共享原生网页后端的 command 包，搜索与正文分页、单角色授权、自主选择阅读或等待；待验收项目见[验证备注](../../plugins/web/验证备注.md) |
 | [准入检查规则与示例核对](./准入检查规则与示例核对.md) | 区分结构检查、语义核对和当前运行条件 |
 | [现有工具契约适配验证](./现有工具契约适配验证.md) | 当前内部工具、外部插件、兼容边界和验证覆盖 |
 | [examples](./examples) | 脚本、通用 CLI、MCP 及受控聊天作者示例 |
@@ -38,6 +39,8 @@ PYTHONPATH="$contract_deps" python3 contracts/tools/verify_contract.py
 需要 Python 3 和 Git。脚本输出逐项 JSON 结果；所有检查符合预期时退出码为 0，反例未被拒绝、正例未通过或执行异常均使验证失败。2026-10-17 增加观察源与受控聊天验证后结果为 **94/94**；原有 Tool/Plugin/Skill 验证保留。
 
 2026-10-19 复验当前脚本为 **96/96**，复用已有临时 jsonschema 环境，没有新增项目依赖。摘要分页、游标失效、候选轮转和旧插件兼容由 C++ PluginRuntimeTests、ActivitySelectorTests、AutonomousChatTests、LxMusicPluginTests 覆盖。
+
+通用网页后端阶段另已通过 macOS 72/72 CTest 和真实公开搜索/正文/续读烟测；后续按用户要求延后插件验收。`WebCommandTests` 已编译，最终命令、清单、角色配置、实际网关、自主使用及 Windows 验证尚待执行，详见[网页验证备注](../../plugins/web/验证备注.md)。上述历史结果不代表新插件端到端已经通过。
 
 Python 验证包括声明结构、示例中的简单引用、业务参数正反例、参考计数脚本、临时 Git 仓库以及已有歌单脚本的查询函数。歌单查询只读取验证脚本创建的临时 SQLite 数据。该脚本不连接 MCP、不启动 LX Music 或桌宠，也不读取实际用户数据库。加载器和真实 stdio MCP 流程另由 C++ PluginRuntimeTests 的临时插件与受控服务验证。
 

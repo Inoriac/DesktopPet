@@ -20,11 +20,13 @@
 - [code-impl Task 1 sanity check] 已核实 NetworkSecurityValidator、QNetworkRequest::setPeerVerifyName/Http2AllowedAttribute、ToolResult::ok/fail/toJson、各 web_tools 编译入口及 sanitizer 2000/6000，与修订后 §3.1.5 一致。共享后端做静态库，由主程序和相关测试统一链接。
 - [Task 1 真实只读烟测] 使用 Qt 6.8.3 编译临时 probe，链接实际 WebContentService：搜索“Python 官方文档”返回 Python.org、W3Schools 与下载页；读取 https://www.python.org/ 得到 Welcome to Python.org，首段 1800 UTF-16、续读 569；私网地址拒绝。临时证据：/var/folders/nv/y0y4y9js4xq2czgb1mpjhgy40000gn/T/desktop-pet-web-smoke-hqsjfkey/result.json。未使用账号，未更改角色配置。
 - [code-impl Task 2 sanity check] 共享 search/readPage、清单格式、CapabilityExecutor 固定 argv/stdin/resultAdapter 与 CMake 部署锚点均匹配 §3.2.5。qt_add_executable + WIN32_EXECUTABLE 声明后台 helper；Windows 管道与运行库部署未实测，列入验收。
+- [code-impl Task 3 sanity check] 已复核 program/state_dir 配置、三个只读操作、/data 与 /state 映射、local_owner/internal_activity grants；配置只需原子替换 plugins.json。ToolResult::toJson 保留非空失败 data 后仍经现有 sanitizer 脱敏和预算限制。实际网关/自主测试按用户要求转为验证备注，不改生产调度。
 
 ## 设计偏差
 
 - [Task 1 父级锚点复核] ToolResult::toJson 失败只输出 errorMessage，因此原生失败在该字段保留 CODE: message，已回填 §3.1.2。HTML 文字转换禁止 QTextDocument 资源加载，避免图片/CSS 意外读取或要求 GUI；已回填 §3.1.3，不改变对外业务范围。
 - [Task 2 父级网关复核] PluginRuntime::executeGateway 已把失败 CapabilityOutcome 放入 ToolResult.data，但普通对话的 toPayload 丢弃它，只看到 ACTION_FAILED；自主 Task 的 step.output 则原本保留。§3.3 增加 ToolResult::toJson 的非空失败 data 序列化与实际 sanitizer 回归，使两条路径都可诊断具体错误。仅修复结果丢失，不改变权限、工具终态或调度。
+- [用户测试延期] 后续未增加专用网页配置/网关/自主自动化用例，也未运行最终 WebCommandTests、schema 或外网烟测；将完整操作、预期与已有测试命令写入 plugins/web/验证备注.md。已更新 §7 与 impl-plan，不把必要编译或其他插件历史通过结果当成本包验收通过。
 
 ## 待回溯设计的发现
 

@@ -41,9 +41,10 @@ struct ToolResult {
     QJsonObject toJson() const {
         QJsonObject obj;
         obj["success"] = success;
-        if (success) {
+        if (success || !data.isEmpty()) {
             obj["data"] = data;
-        } else {
+        }
+        if (!success) {
             obj["error"] = errorMessage;
         }
         return obj;
