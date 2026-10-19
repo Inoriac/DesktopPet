@@ -1,0 +1,19 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.bilibili",
+  "name": "B站内容阅读",
+  "version": "1.0.0",
+  "summary": "搜索B站视频，分段阅读字幕和评论；按兴趣使用，不安排固定刷站任务",
+  "entries": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.bilibili.tools",
+      "definition": "tool.json"
+    },
+    {
+      "kind": "skill",
+      "id": "desktop-pet.bilibili.skill",
+      "definition": "skill.json"
+    }
+  ]
+}

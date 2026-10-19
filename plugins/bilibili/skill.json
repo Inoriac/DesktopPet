@@ -1,0 +1,23 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.bilibili.skill",
+  "name": "按兴趣阅读B站视频内容",
+  "version": "1.0.0",
+  "summary": "按当前兴趣查找视频，分段读字幕、了解评论，自行决定继续、换视频或结束；文字理解不等于看到画面",
+  "instructions": "SKILL.md",
+  "dependencies": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.bilibili.tools",
+      "version": "1.0.0",
+      "operations": [
+        "status",
+        "search",
+        "video_info",
+        "comments",
+        "read_transcript"
+      ],
+      "required": true
+    }
+  ]
+}

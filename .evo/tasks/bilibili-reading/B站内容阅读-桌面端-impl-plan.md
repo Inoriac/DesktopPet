@@ -4,7 +4,7 @@
 
 ## Task 1：B 站查询与字幕阅读
 - 关联设计：§3.2
-- 状态：[ ]
+- 状态：[x]
 - Wave：1
 - 依赖：无
 - 文件：plugins/bilibili 的 plugin/tool/skill 清单、USAGE.md、SKILL.md、adapter.py、backend.py、requirements.txt、THIRD_PARTY_NOTICES.md、licenses/*；tests/test_bilibili_adapter.py；本 Task 验证记录。

@@ -10,6 +10,7 @@
 
 - 插件目录 `plugins/bilibili`，Plugin/Tool/Skill ID 分别为 `desktop-pet.bilibili`、`desktop-pet.bilibili.tools`、`desktop-pet.bilibili.skill`，版本 1.0.0，所有清单格式保持 1。
 - 使用固定 Python command + JSON stdin/stdout；插件自行调用 bilibili-api-python，不再包一层 MCP。真实路径、账号和 ASR 设置来自角色的 settings JSON，不是模型参数。
+- 宿主散列包内全部文件。所有 Python command 使用 `-B`，可直接运行的入口在导入同包模块前禁用字节码写入，避免生成 __pycache__ 使已加载能力失效；worker 与 setup/login/configure 同样遵守。
 - 保留既有 discover/load/invoke、授权、活动预算和记忆边界。插件不另建主体、定时器或自主选择器，不写主体数据库。主系统 C++ 生产代码预期不变。
 - 普通读取允许本地内容缓存，effects=read 并解释缓存影响；创建转写任务 effects=write，仅写插件状态目录和进行本地计算，没有平台写操作。
 - 用户暂停主体会停止新的工具调用；已经受理的转写任务可继续本地计算至结束或自己的超时，不自动触发回复/新活动。状态查询与继续阅读由主体原调度决定。

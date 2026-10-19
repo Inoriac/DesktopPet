@@ -1,0 +1,346 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.bilibili.tools",
+  "name": "B站内容阅读工具",
+  "version": "1.0.0",
+  "summary": "搜索视频、查询指定分P、读取评论及带时间戳的字幕；后台接口读取，不控制桌面",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {
+        "id": "python",
+        "description": "真实接口使用 Python 3.10+ 与 requirements.txt 中的依赖",
+        "setup": "在包外虚拟环境安装依赖并配置固定解释器，普通调用不会安装或下载模型"
+      },
+      {
+        "id": "bilibili-login",
+        "description": "字幕接口通常需要B站登录；公开信息可能无需登录",
+        "setup": "由使用者登录并保管包外 credential.json；主体不处理扫码或Cookie"
+      }
+    ],
+    "configuration": [
+      {
+        "key": "program",
+        "description": "可信 Python 3.10+ 解释器绝对路径",
+        "kind": "executable",
+        "required": true
+      },
+      {
+        "key": "script",
+        "description": "本包 adapter.py 的绝对路径",
+        "kind": "path",
+        "required": true
+      },
+      {
+        "key": "settings",
+        "description": "宿主管理的插件配置 JSON 绝对路径",
+        "kind": "path",
+        "required": true
+      }
+    ],
+    "operations": [
+      {
+        "id": "status",
+        "description": "检查本地依赖与登录文件是否存在；不验证在线登录",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "status"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取平台内容或本地状态；字幕可写入包外内容缓存，不在平台发评论、点赞或私信"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "检查完成，不表示网络或登录已可用",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "search",
+        "description": "按关键词搜索视频摘要",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "keyword": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 100,
+                "pattern": "\\S"
+              },
+              "page": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              },
+              "order": {
+                "type": "string",
+                "enum": [
+                  "totalrank",
+                  "click",
+                  "pubdate",
+                  "dm"
+                ]
+              }
+            },
+            "required": [
+              "keyword"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "search"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取平台内容或本地状态；字幕可写入包外内容缓存，不在平台发评论、点赞或私信"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "取得指定结果页，返回真实BV号与来源链接",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "video_info",
+        "description": "读取指定分P的视频信息和时长",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bvid": {
+                "type": "string",
+                "pattern": "^BV[1-9A-HJ-NP-Za-km-z]{10}(?![\\s\\S])"
+              },
+              "part": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              }
+            },
+            "required": [
+              "bvid"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "video_info"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取平台内容或本地状态；字幕可写入包外内容缓存，不在平台发评论、点赞或私信"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "核实指定分P并取得CID和简介，truncated标明摘要裁剪",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "comments",
+        "description": "读取指定视频的一页评论样本",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bvid": {
+                "type": "string",
+                "pattern": "^BV[1-9A-HJ-NP-Za-km-z]{10}(?![\\s\\S])"
+              },
+              "page": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 5
+              }
+            },
+            "required": [
+              "bvid"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "comments"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取平台内容或本地状态；字幕可写入包外内容缓存，不在平台发评论、点赞或私信"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "取得评论样本，空评论与请求失败分开表示",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      },
+      {
+        "id": "read_transcript",
+        "description": "按页读取带时间戳的字幕或已完成的本地转写",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "bvid": {
+                "type": "string",
+                "pattern": "^BV[1-9A-HJ-NP-Za-km-z]{10}(?![\\s\\S])"
+              },
+              "part": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "source": {
+                "type": "string",
+                "enum": [
+                  "platform_subtitle",
+                  "local_asr"
+                ]
+              },
+              "cursor": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 256,
+                "pattern": "^[A-Za-z0-9_-]+(?![\\s\\S])"
+              }
+            },
+            "required": [
+              "bvid"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "read_transcript"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取平台内容或本地状态；字幕可写入包外内容缓存，不在平台发评论、点赞或私信"
+        },
+        "result": {
+          "format": "json",
+          "description": "envelope.data 中的有界材料、来源与可选错误",
+          "successMeaning": "取得当前文本页或明确内容不可用；不代表已经理解整段视频",
+          "failureMeaning": "未取得请求材料；错误码区分登录、限流、网络与输入问题",
+          "completion": "reported",
+          "stateDescription": "envelope.state 为 completed 或 failed；宿主配置 /state 和 /data 映射"
+        }
+      }
+    ]
+  }
+}
