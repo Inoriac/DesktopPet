@@ -3,6 +3,7 @@
 //
 
 #include "ai_brain.h"
+#include "plugin/capability_context.h"
 #include "memory/memory_metadata.h"
 
 #include "chat/chat_preparation_types.h"
@@ -336,6 +337,18 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
     runtimeEvent["origin_event_id"] = originId;
     appendRuntimeEvent(QStringLiteral("ToolExecutionCompleted"), sessionId,
                        runtimeEvent);
+
+    // Capability instructions are request material, not personal experience.
+    if (CapabilityContext::isMetadataTool(toolName)) {
+        enqueueCallLog(ChatSideEffectType::ResponseLog, outcome.requestId,
+                       sessionId, m_requestGeneration,
+                       {{"type", "capability_metadata"}, {"request_id", outcome.requestId},
+                        {"session_id", sessionId}, {"tool_name", toolName},
+                        {"executed", outcome.executed},
+                        {"timestamp", QDateTime::currentDateTimeUtc().toString(Qt::ISODateWithMs)},
+                        {"result", outcome.result.toJson()}});
+        return;
+    }
 
     QJsonObject event;
     event["tool_name"] = toolName;

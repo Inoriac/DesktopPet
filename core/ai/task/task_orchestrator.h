@@ -68,6 +68,7 @@ private:
   TaskStore *m_store = nullptr;
   TaskDependencies m_dependencies;
   TaskRecord m_task;
+  QJsonArray m_modelCapabilitySteps;
   bool m_active = false;
   bool m_pendingTool = false;
   QString m_pendingId;

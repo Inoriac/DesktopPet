@@ -13,6 +13,15 @@ void ToolResultSanitizer::setMaxPayloadLength(int length) {
 }
 
 ToolResult ToolResultSanitizer::sanitize(const ToolResult& result) const {
+    if (result.capabilityMetadata) {
+        constexpr int maxMetadataBytes = 32 * 1024;
+        if (QJsonDocument(result.toJson()).toJson(QJsonDocument::Compact).size() > maxMetadataBytes) {
+            auto failure = ToolResult::fail("CAPABILITY_METADATA_TOO_LARGE: capability metadata exceeds 32 KiB; shorten instructions or split the definition before loading.");
+            failure.capabilityMetadata = true;
+            return failure;
+        }
+        return result;
+    }
     ToolResult sanitized = result;
     sanitized.data = sanitizeObject(result.data);
     if (!sanitized.errorMessage.isEmpty()) {
@@ -24,7 +33,7 @@ ToolResult ToolResultSanitizer::sanitize(const ToolResult& result) const {
 QString ToolResultSanitizer::toPayload(const ToolResult& result) const {
     const ToolResult sanitized = sanitize(result);
     const QString payload = QString::fromUtf8(QJsonDocument(sanitized.toJson()).toJson(QJsonDocument::Compact));
-    return trimPayload(payload, sanitized.success);
+    return sanitized.capabilityMetadata ? payload : trimPayload(payload, sanitized.success);
 }
 
 QJsonObject ToolResultSanitizer::sanitizeObject(const QJsonObject& object) const {

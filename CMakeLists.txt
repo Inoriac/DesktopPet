@@ -214,6 +214,7 @@ set(ACTIVITY_SOURCES
 )
 
 set(TASK_ORCHESTRATION_SOURCES
+    core/ai/plugin/capability_context.cpp
     ${ACTIVITY_SOURCES}
     core/ai/task/task_types.h
     core/ai/task/task_types.cpp
@@ -2231,3 +2232,8 @@ if(Python3_EXECUTABLE)
     set_tests_properties(AutonomousChatTests PluginRuntimeTests ExternalObservationTests ModuleConnectivityTests
         PROPERTIES ENVIRONMENT "DESKTOP_PET_TEST_PYTHON=${Python3_EXECUTABLE}")
 endif()
+
+add_desktop_pet_cpp_test(capability_context_tests CapabilityContextTests
+    SOURCES tests/test_capability_context.cpp core/ai/plugin/capability_context.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
+    LIBRARIES Qt::Core Qt::Test)

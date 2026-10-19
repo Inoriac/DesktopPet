@@ -70,6 +70,72 @@ CapabilityCall makeCall(const LoadedCapability& loaded) {
 class PluginRuntimeTests : public QObject {
     Q_OBJECT
 private slots:
+  void metadataGatewayPreservesCompleteDefinitions_data() {
+      QTest::addColumn<int>("bodyLength");
+      QTest::addColumn<bool>("expectedSuccess");
+      QTest::addColumn<QString>("bodyCharacter");
+      QTest::newRow("long-complete-schema") << 9000 << true << QString("x");
+      QTest::newRow("oversized-definition") << 34000 << false << QString("x");
+      QTest::newRow("utf8-budget") << 12000 << false << QStringLiteral("读");
+  }
+  void metadataGatewayPreservesCompleteDefinitions() {
+      QFETCH(int, bodyLength);
+      QFETCH(bool, expectedSuccess);
+      QFETCH(QString, bodyCharacter);
+      QTemporaryDir dir;
+      const auto root = dir.filePath("package");
+      makeTool(root);
+      const QString body = QString(bodyLength, bodyCharacter[0]) + "CONSTRAINT_END";
+      QFile usage(root + "/USAGE.md");
+      QVERIFY(usage.open(QIODevice::WriteOnly));
+      usage.write(body.toUtf8());
+      usage.close();
+      editTool(root, [](QJsonObject& object) {
+          auto definition = object["definition"].toObject();
+          auto operations = definition["operations"].toArray();
+          auto operation = operations[0].toObject();
+          operation["parameters"] = QJsonObject{{"source", "inline"}, {"schema", QJsonObject{
+              {"type", "object"}, {"properties", QJsonObject{
+                  {"token", QJsonObject{{"type", "string"}, {"description", "Public schema field"}}},
+                  {"password", QJsonObject{{"type", "string"}}}}},
+              {"required", QJsonArray{"token"}}, {"additionalProperties", false}}}};
+          operations[0] = operation;
+          definition["operations"] = operations;
+          object["definition"] = definition;
+      });
+      PluginRuntime plugin("pet", dir.filePath("plugins.json"));
+      QVERIFY(plugin.setHostConfiguration(hostConfig(root)));
+      ToolRegistry registry;
+      plugin.attach(&registry);
+      ToolRuntime runtime;
+      runtime.setToolRegistry(&registry);
+      ToolExecutionRequest request;
+      request.requestId = "metadata-test";
+      request.toolName = "load_capability";
+      request.context = ContextSpec::localOwner("pet");
+      request.arguments = {{"ref", CapabilityRef{"example.plugin", "example.tool", "1", "probe"}.toJson()}};
+      std::optional<ToolExecutionOutcome> outcome;
+      runtime.executeAsync(request, [&](auto value) { outcome = value; });
+      QTRY_VERIFY(outcome.has_value());
+      QCOMPARE(outcome->result.success, expectedSuccess);
+      if (!expectedSuccess) {
+          QVERIFY(outcome->result.errorMessage.contains("CAPABILITY_METADATA_TOO_LARGE"));
+          QVERIFY(outcome->result.data.isEmpty());
+          // Direct host gateway callers receive the same bounded result.
+          outcome.reset();
+          plugin.executeGateway(request, [&](auto value) { outcome = value; });
+          QTRY_VERIFY(outcome.has_value());
+          QVERIFY(!outcome->result.success);
+          return;
+      }
+      QCOMPARE(outcome->result.data["instructions"].toString(), body);
+      const auto payload = QJsonDocument::fromJson(runtime.sanitizer()->toPayload(outcome->result).toUtf8()).object();
+      QCOMPARE(payload["data"].toObject()["instructions"].toString(), body);
+      const auto properties = payload["data"].toObject()["parameters"].toObject()["properties"].toObject();
+      QCOMPARE(properties["token"].toObject()["type"].toString(), "string");
+      QCOMPARE(properties["password"].toObject()["type"].toString(), "string");
+      QVERIFY(!payload.contains("capabilityMetadata"));
+  }
   void
   internalActivity_explicitAutonomousGrant_propagatesThroughActualToolExecution() {
       QTemporaryDir dir;

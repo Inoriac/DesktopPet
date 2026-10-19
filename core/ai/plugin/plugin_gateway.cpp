@@ -1,6 +1,7 @@
 #include "plugin_runtime.h"
 #include "schema_validator.h"
 #include "ai/tool_registry.h"
+#include "ai/tools/runtime/tool_result_sanitizer.h"
 #include <QPointer>
 #include <QJsonDocument>
 #include <QUuid>
@@ -24,7 +25,7 @@ bool insertArgument(QJsonObject& root,const QString& pointer,const QJsonValue& v
 QStringList gatewayNames() { return {"discover_capabilities","load_capability","invoke_capability"}; }
 class GatewayTool final : public AITool {
 public:
-    explicit GatewayTool(const QString& name):AITool(name,name=="discover_capabilities"?"Discover installed skills and tools by summary. Load a selected entry before use.":name=="load_capability"?"Load only the selected skill instructions or tool operation schema. Use a reference from discovery.":"Invoke a previously loaded operation using its exact arguments. Host permissions are checked.") {}
+    explicit GatewayTool(const QString& name):AITool(name,name=="discover_capabilities"?"Discover installed skills and tools by summary. Load a selected entry before use.":name=="load_capability"?"Load only the selected skill instructions or tool operation schema. Use a reference from discovery.":"Invoke an operation whose full definition is present in the current model request. Reload released definitions with load_capability first. Host permissions are checked.") {}
     QJsonObject parameterSchema() const override {
         QJsonObject properties; QJsonArray required;
         if (name()!="discover_capabilities") {
@@ -70,6 +71,10 @@ bool PluginRuntime::gatewayReadOnly(const QString& name,const QJsonObject& argum
 }
 void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRuntime::Completion completion) {
     auto finish=[request,completion=std::move(completion)](ToolResult result,bool executed=false) mutable {
+        if (request.toolName == "discover_capabilities" || request.toolName == "load_capability") {
+            result.capabilityMetadata = true;
+            result = ToolResultSanitizer{}.sanitize(result);
+        }
         ToolExecutionOutcome outcome; outcome.requestId=request.requestId; outcome.toolName=request.toolName; outcome.result=std::move(result); outcome.executed=executed;
         outcome.policyDecision=ToolPolicyDecision::allow(ToolRiskLevel::L0SafeRead,"Host capability grant checked"); completion(std::move(outcome));
     };

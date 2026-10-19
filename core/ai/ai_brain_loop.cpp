@@ -9,6 +9,7 @@
 
 #include "ai_brain.h"
 #include "plugin/plugin_runtime.h"
+#include "plugin/capability_context.h"
 
 #include <QJsonArray>
 #include <QJsonDocument>
@@ -66,7 +67,7 @@ void AIBrain::thinkInternal(const QString& reason,
 
     ModelRequest modelRequest;
     modelRequest.role = ModelRole::Dialogue;
-    modelRequest.messages = workingMessages;
+    modelRequest.messages = CapabilityContext::projectMessages(workingMessages);
     if (proactive) {
         ChatMessage guidance;
         guidance.role = QStringLiteral("system");
@@ -134,7 +135,8 @@ void AIBrain::thinkInternal(const QString& reason,
         },
         [this, guard, isCurrent, requestGeneration, requestId, requestedAtMs,
          reason, triggerTag, sessionId, toolRound, workingMessages,
-         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive, tools]
+         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive, tools,
+         projectedMessages = modelRequest.messages]
         (Result<ModelCompletion, DomainError> modelResult) mutable {
             if (completionHandled->exchange(true, std::memory_order_acq_rel)) return;
             if (guard) m_pendingResponseLogs.remove(requestId);
@@ -256,7 +258,7 @@ void AIBrain::thinkInternal(const QString& reason,
             const auto calls=response.toolCalls;
             const ContextSpec context=currentToolContext();
             auto next=std::make_shared<std::function<void(int)>>();
-            *next=[this,guard,isCurrent,next,messages,calls,tools,context,reason,triggerTag,sessionId,toolRound](int index) {
+            *next=[this,guard,isCurrent,next,messages,calls,tools,context,reason,triggerTag,sessionId,toolRound,projectedMessages](int index) {
                 if (!isCurrent() || suppressMutedAutomaticResponse()) { *next={}; return; }
                 if (index>=calls.size()) {
                     auto completed=*messages; *next={}; publishActiveStage(ChatActivityStage::Finalizing);
@@ -278,6 +280,15 @@ void AIBrain::thinkInternal(const QString& reason,
                 for (const auto& schema:tools) if (schema.toObject()["function"].toObject()["name"]==call.name) exposed=true;
                 if (!exposed || !isToolCallAllowed(triggerTag,call,denial)) {
                     ToolExecutionOutcome outcome; outcome.toolName=call.name; outcome.result=ToolResult::fail(denial.isEmpty()?"Tool is not authorized in this context":denial); append(outcome); return;
+                }
+                if (call.name == "invoke_capability" && !CapabilityContext::hasOperation(
+                        projectedMessages, call.arguments["ref"].toObject())) {
+                    ToolExecutionOutcome outcome;
+                    outcome.requestId = call.id;
+                    outcome.toolName = call.name;
+                    outcome.result = ToolResult::fail("CAPABILITY_CONTEXT_REQUIRED: call load_capability for this operation and read its definition in the next model request before invoking it.");
+                    append(outcome);
+                    return;
                 }
                 ToolExecutionRequest execution; execution.requestId=call.id.isEmpty()?QUuid::createUuid().toString(QUuid::WithoutBraces):call.id;
                 execution.toolName=call.name; execution.arguments=call.arguments; execution.context=context;

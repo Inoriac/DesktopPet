@@ -417,7 +417,7 @@ private:
     };
     std::optional<ActiveDialogueResponse> m_activeDialogueResponse;
 
-    int m_maxToolRounds = 3;
+    int m_maxToolRounds = 8;
     int m_maxMemoryMessages = 20;
 
     QList<ChatMessage> m_memory;

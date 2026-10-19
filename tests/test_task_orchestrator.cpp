@@ -1,5 +1,7 @@
 #include "ai/chat/conversation_store.h"
 #include "ai/task/task_orchestrator.h"
+#include "ai/plugin/capability_context.h"
+#include <QJsonDocument>
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
@@ -45,7 +47,7 @@ struct Harness {
         };
         dependencies.cancelModel = dependencies.cancelTool = [this](const QString& id) { cancelled.append(id); };
         dependencies.toolMetadata = [](const QString& name) {
-            if (name=="web_search") return HostToolMetadata::safeRead();
+            if (name=="web_search" || name=="load_capability" || name=="discover_capabilities" || name=="invoke_capability") return HostToolMetadata::safeRead();
             if (name=="schedule_create") return HostToolMetadata::localAction();
             return HostToolMetadata{};
         };
@@ -100,6 +102,8 @@ QJsonObject verification(bool complete, const QString& reference = "user_input")
 class TestTaskOrchestrator : public QObject {
     Q_OBJECT
 private slots:
+  void capabilityDefinitionsProjectAtEachRequestAndRecoverFromFullSteps();
+  void missingCapabilityContextReplansBeforePreparationOrDispatch();
   void ordinaryObservedMessageDoesNotMatchAnExternalWait();
   void taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground();
   void invalidWaitProposalCannotInventHostAnchors_data();
@@ -132,6 +136,94 @@ private slots:
   void lateReceiptStorageFailureDoesNotPauseReplacementActivity();
   void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
 };
+
+namespace {
+QJsonObject taskCapabilityRef(const QString& operation) {
+    return {{"pluginId", "test.plugin"}, {"entryId", "video"}, {"entryVersion", "1"}, {"operationId", operation}};
+}
+QJsonObject taskCapability(const QString& operation) {
+    return {{"ref", taskCapabilityRef(operation)}, {"kind", "tool"}, {"catalogRevision", 1}, {"definitionDigest", "one"},
+        {"instructions", "TASK_CAPABILITY_BODY " + QString(2500, QLatin1Char('x'))},
+        {"parameters", QJsonObject{{"type", "object"}}}, {"effects", QJsonObject{{"kind", "read"}}},
+        {"result", QJsonObject{{"successMeaning", "Actual response"}}}};
+}
+}
+void TestTaskOrchestrator::capabilityDefinitionsProjectAtEachRequestAndRecoverFromFullSteps() {
+    Harness h;
+    h.schemas = {QJsonObject{{"name", "load_capability"}}, QJsonObject{{"name", "invoke_capability"}}};
+    QVERIFY(h.start());
+    h.reply(decision());
+    for (const auto& operation : {"open", "read"}) {
+        h.reply(nextTool("load_capability", {{"ref", taskCapabilityRef(operation)}}));
+        QVERIFY(!h.tools.isEmpty());
+        auto done = h.tools.takeFirst();
+        TaskToolReply result;
+        result.success = true;
+        result.businessEvidence = false;
+        result.output = taskCapability(operation);
+        done(result);
+        QCoreApplication::processEvents();
+    }
+    const auto raw = h.runner->currentTask().steps;
+    QCOMPARE(QJsonDocument(raw).toJson().count("TASK_CAPABILITY_BODY"), 2);
+    auto projected = h.modelRequests.last().context["steps"].toArray();
+    QCOMPARE(QJsonDocument(projected).toJson().count("TASK_CAPABILITY_BODY"), 1);
+    QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("open")));
+    QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("read")));
+    h.reply(candidate());
+    QCOMPARE(h.modelRequests.last().phase, "verify");
+    QCOMPARE(QJsonDocument(h.modelRequests.last().context).toJson().count("TASK_CAPABILITY_BODY"), 1);
+    h.runner->pause();
+    const auto id = h.runner->currentTask().id;
+    QCOMPARE(h.store.find(id)->steps, raw);
+    const auto count = h.toolRequests.size();
+    h.resetRunner();
+    QVERIFY(h.runner->recover(id));
+    QCOMPARE(h.toolRequests.size(), count);
+    QCOMPARE(h.runner->currentTask().steps, raw);
+    QVERIFY(h.runner->resume());
+    if (h.modelRequests.last().phase == "checkpoint") h.reply(decision("continue"));
+    projected = h.modelRequests.last().context["steps"].toArray();
+    QCOMPARE(QJsonDocument(projected).toJson().count("TASK_CAPABILITY_BODY"), 1);
+    QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("read")));
+    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    QCOMPARE(h.toolRequests.size(), count + 1);
+    QCOMPARE(h.toolRequests.last().name, "invoke_capability");
+}
+void TestTaskOrchestrator::missingCapabilityContextReplansBeforePreparationOrDispatch() {
+    Harness h;
+    h.schemas = {QJsonObject{{"name", "load_capability"}}, QJsonObject{{"name", "invoke_capability"}}};
+    h.delayToolPreparation = true;
+    h.resetRunner();
+    QVERIFY(h.start());
+    h.reply(decision());
+    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    QVERIFY(h.permissions.isEmpty());
+    QVERIFY(h.toolRequests.isEmpty());
+    QCOMPARE(h.runner->currentTask().toolCalls, 0);
+    QCOMPARE(h.runner->currentTask().replans, 1);
+    QVERIFY(h.runner->isActive());
+    const auto failure = h.runner->currentTask().steps.last().toObject();
+    QCOMPARE(failure["status"].toString(), "failed");
+    QCOMPARE(failure["error"].toString(), "CAPABILITY_CONTEXT_REQUIRED");
+    QVERIFY(!failure["business_evidence"].toBool(true));
+    QVERIFY(h.modelRequests.last().context["reason"].toString().contains("load_capability"));
+    h.reply(nextTool("load_capability", {{"ref", taskCapabilityRef("read")}}));
+    QCOMPARE(h.permissions.size(), 1);
+    auto prepared = h.permissions.takeFirst();
+    prepared({true, true});
+    QCoreApplication::processEvents();
+    QCOMPARE(h.toolRequests.size(), 1);
+    auto done = h.tools.takeFirst();
+    TaskToolReply loaded;
+    loaded.success = true;
+    loaded.businessEvidence = false;
+    loaded.output = taskCapability("read");
+    done(loaded);
+    QCoreApplication::processEvents();
+    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    QCOMPARE(h.permissions.size(), 1);
+}
 
 void TestTaskOrchestrator::ordinaryObservedMessageDoesNotMatchAnExternalWait() {
   Harness h;

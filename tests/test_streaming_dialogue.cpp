@@ -12,6 +12,7 @@
 #include <limits>
 
 #include "ai/ai_brain.h"
+#include "ai/plugin/capability_context.h"
 #include "ai/chat/profile_chat_history_store.h"
 #include "ai/chat/chat_image_store.h"
 #include "ai/chat/conversation_store.h"
@@ -197,6 +198,36 @@ private:
     int* m_executions = nullptr;
 };
 
+QJsonObject dialogueCapabilityRef(const QString& operation) {
+    return {{"pluginId", "test.plugin"}, {"entryId", "video"}, {"entryVersion", "1"}, {"operationId", operation}};
+}
+class MetadataFixtureTool final : public AITool {
+public:
+    explicit MetadataFixtureTool(const QString& name, int* invocations)
+        : AITool(name, "Test capability metadata"), calls(invocations) {
+        setHostMetadata(HostToolMetadata::safeRead());
+    }
+    QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
+    ToolResult execute(const QJsonObject& args) override {
+        ++*calls;
+        QJsonObject data;
+        if (name() == "load_capability")
+            data = {{"ref", args["ref"]}, {"kind", "tool"}, {"catalogRevision", 1}, {"definitionDigest", "test-digest"},
+                {"instructions", "DIALOGUE_CAPABILITY_BODY " + QString(2500, QLatin1Char('x'))},
+                {"parameters", QJsonObject{{"type", "object"}}}, {"effects", QJsonObject{{"kind", "read"}}},
+                {"result", QJsonObject{{"successMeaning", "Response returned"}}}};
+        else if (name() == "discover_capabilities")
+            data = {{"entries", QJsonArray{QJsonObject{{"summary", "DISCOVERY_SUMMARY_SENTINEL"}}}}};
+        else data = {{"value", "BUSINESS_OBSERVATION_SENTINEL"}};
+        if (name() == "load_capability" && args["ref"].toObject()["operationId"].toString().isEmpty())
+            data["operations"] = QJsonArray{QJsonObject{{"id", "open"}}, QJsonObject{{"id", "read"}}};
+        auto result = ToolResult::ok(data);
+        result.capabilityMetadata = name() != "invoke_capability";
+        return result;
+    }
+    int* calls;
+};
+
 bool initializeBrain(AIBrain& brain, QTemporaryDir& directory) {
     return directory.isValid()
         && brain.initializeStorage({directory.filePath(QStringLiteral("memory.db")),
@@ -277,6 +308,9 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void capabilityMetadataIsProjectedAndExcludedFromNextChatMemory();
+    void capabilityInvocationRequiresDefinitionInPrecedingRequest();
+    void repeatedToolRequestsStopAtEightRounds();
     void imageMessage_usesVisionAndRetainsOriginalRuntimeInput_data();
     void imageMessage_usesVisionAndRetainsOriginalRuntimeInput();
     void imageMessage_stopIgnoresLateVisionAndAllowsNextText();
@@ -872,6 +906,144 @@ void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySo
         }
     }
     QCOMPARE(matchingImpressions, 1);
+}
+
+void StreamingDialogueTests::capabilityMetadataIsProjectedAndExcludedFromNextChatMemory() {
+    const QString logPath = QDir::current().filePath("log/ai_calls.jsonl");
+    const qint64 logOffset = QFileInfo(logPath).size();
+    FakeStreamingClient client;
+    LlmResponse first, overview, second, third, fourth;
+    first.toolCalls = {{"discover", "function", "discover_capabilities", {}}};
+    overview.toolCalls = {{"overview", "function", "load_capability", {{"ref", dialogueCapabilityRef({})}}}};
+    second.toolCalls = {{"open", "function", "load_capability", {{"ref", dialogueCapabilityRef("open")}}}};
+    first.transportBlocks = {QJsonObject{{"type", "thinking"}, {"signature", "signature-kept"}}};
+    third.toolCalls = {{"read", "function", "load_capability", {{"ref", dialogueCapabilityRef("read")}}}};
+    fourth.toolCalls = {{"invoke", "function", "invoke_capability", {{"ref", dialogueCapabilityRef("read")}, {"arguments", QJsonObject{}}}}};
+    client.attempts = {{{}, true, first}, {{}, true, overview}, {{}, true, second}, {{}, true, third}, {{}, true, fourth}, {{}, true, textResponse("完成读取。")},
+                       {{}, true, textResponse("可以继续。")}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    int loads = 0, discovers = 0, invokes = 0;
+    ToolRegistry tools;
+    brain.setToolRegistry(&tools);
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    for (const auto& name : {"load_capability", "discover_capabilities", "invoke_capability"})
+        tools.unregisterTool(name);
+    QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("load_capability", &loads)));
+    QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("discover_capabilities", &discovers)));
+    QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("invoke_capability", &invokes)));
+    QSignalSpy outcomes(&brain, &AIBrain::toolExecuted);
+    brain.triggerThink("请读取视频资料", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 6);
+    QTRY_VERIFY(!brain.isBusy());
+    QCOMPARE(loads, 3);
+    QCOMPARE(invokes, 1);
+    QCOMPARE(discovers, 1);
+    const auto projected = client.messageBatches[4];
+    int bodies = 0;
+    bool signatureKept = false;
+    for (const auto& message : projected) {
+        bodies += message.content.count("DIALOGUE_CAPABILITY_BODY");
+        if (message.transportBlocks == first.transportBlocks) signatureKept = true;
+    }
+    QCOMPARE(bodies, 1);
+    QVERIFY(signatureKept);
+    QVERIFY(CapabilityContext::hasOperation(projected, dialogueCapabilityRef("open")));
+    QVERIFY(CapabilityContext::hasOperation(projected, dialogueCapabilityRef("read")));
+    QCOMPARE(outcomes.size(), 5);
+    const auto authorization = services.authorizationFor("identity");
+    QVERIFY(authorization);
+    const EventFilter filter{{"ToolExecutionCompleted"}, {}, authorization.value()};
+    QTRY_COMPARE(services.eventLedger()->readAfter(0, filter, 20).value().size(), 5);
+    QTRY_VERIFY(([&] {
+        const auto memories = persistedMemories(brain.memoryStore()->databasePath());
+        return std::any_of(memories.cbegin(), memories.cend(), [](const auto& memory) {
+            return memory.key == "tool_execution" && memory.tags.contains("invoke_capability");
+        });
+    }()));
+    for (const auto& memory : persistedMemories(brain.memoryStore()->databasePath())) {
+        if (memory.key != "tool_execution") continue;
+        QVERIFY(!memory.tags.contains("load_capability"));
+        QVERIFY(!memory.tags.contains("discover_capabilities"));
+    }
+    const auto sessionId = services.eventLedger()->readAfter(0, filter, 20).value().first().sessionId;
+    const auto loadedRecords = [&] {
+        QJsonArray records;
+        QFile file(logPath);
+        if (!file.open(QIODevice::ReadOnly) || !file.seek(logOffset)) return records;
+        while (!file.atEnd()) {
+            const auto record = QJsonDocument::fromJson(file.readLine()).object();
+            if (record["type"] == "capability_metadata" && record["tool_name"] == "load_capability"
+                && record["session_id"] == sessionId)
+                records.append(record);
+        }
+        return records;
+    };
+    QTRY_COMPARE(loadedRecords().size(), 3);
+    for (const auto& value : loadedRecords()) {
+        const auto record = value.toObject();
+        QVERIFY(!record["session_id"].toString().isEmpty());
+        QVERIFY(!record["request_id"].toString().isEmpty());
+        const auto definition = record["result"].toObject()["data"].toObject();
+        QCOMPARE(definition["instructions"].toString().size(), 2525);
+        QVERIFY(!definition.contains("instructionsRef"));
+    }
+    brain.triggerThink("刚才读到了什么内容？", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 7);
+    QString nextRequest;
+    for (const auto& message : client.messageBatches.last()) nextRequest += message.content;
+    QVERIFY(!nextRequest.contains("DIALOGUE_CAPABILITY_BODY"));
+    QVERIFY(!nextRequest.contains("DISCOVERY_SUMMARY_SENTINEL"));
+    QVERIFY(nextRequest.contains("BUSINESS_OBSERVATION_SENTINEL"));
+}
+void StreamingDialogueTests::capabilityInvocationRequiresDefinitionInPrecedingRequest() {
+    FakeStreamingClient client;
+    LlmResponse first, second;
+    first.toolCalls = {{"load", "function", "load_capability", {{"ref", dialogueCapabilityRef("read")}}},
+                      {"premature", "function", "invoke_capability", {{"ref", dialogueCapabilityRef("read")}, {"arguments", QJsonObject{}}}}};
+    second.toolCalls = {{"allowed", "function", "invoke_capability", {{"ref", dialogueCapabilityRef("read")}, {"arguments", QJsonObject{}}}}};
+    client.attempts = {{{}, true, first}, {{}, true, second}, {{}, true, textResponse("完成。")}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QVERIFY(initializeBrain(brain, directory));
+    int loads = 0, invokes = 0;
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<MetadataFixtureTool>("load_capability", &loads));
+    tools.registerTool(std::make_unique<MetadataFixtureTool>("invoke_capability", &invokes));
+    brain.setToolRegistry(&tools);
+    brain.triggerThink("请读取视频内容", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 3);
+    QCOMPARE(loads, 1);
+    QCOMPARE(invokes, 1);
+    const auto denied = client.messageBatches[1].last();
+    QCOMPARE(denied.toolCallId, "premature");
+    QVERIFY(denied.content.contains("CAPABILITY_CONTEXT_REQUIRED"));
+}
+
+void StreamingDialogueTests::repeatedToolRequestsStopAtEightRounds() {
+    FakeStreamingClient client;
+    for (int i = 0; i < 9; ++i) {
+        LlmResponse response;
+        response.toolCalls = {{QString::number(i), "function", "echo_value", {}}};
+        client.attempts.append({{}, true, response});
+    }
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QVERIFY(initializeBrain(brain, directory));
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    brain.setToolRegistry(&tools);
+    QSignalSpy executed(&brain, &AIBrain::toolExecuted);
+    QSignalSpy finished(&brain, &AIBrain::assistantResponseFinished);
+    brain.triggerThink("请继续读取工具信息", "user_request");
+    QTRY_VERIFY(!brain.isBusy());
+    QCOMPARE(client.messageBatches.size(), 9);
+    QCOMPARE(executed.size(), 8);
+    QCOMPARE(finished.size(), 1);
+    QCOMPARE(qvariant_cast<ChatMessageStatus>(finished.first()[1]), ChatMessageStatus::Failed);
+    QVERIFY(finished.first()[2].toString().contains("Maximum tool rounds"));
 }
 
 void StreamingDialogueTests::toolResult_shouldBeAvailableToNextTurn() {

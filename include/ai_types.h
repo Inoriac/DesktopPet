@@ -25,6 +25,8 @@ struct ToolResult {
     bool success = false;
     QJsonObject data;
     QString errorMessage;
+    // Host-only: capability metadata has already had configured secrets removed.
+    bool capabilityMetadata = false;
 
     // 快捷构造：成功
     static ToolResult ok(const QJsonObject& resultData = {}) {
