@@ -11,8 +11,8 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 
-AiCallLogger::AiCallLogger(const QString& logFilePath)
-    : m_logFilePath(logFilePath) {}
+AiCallLogger::AiCallLogger(const QString& logFilePath, qint64 maxFileBytes, int maxBackups)
+    : m_logFilePath(logFilePath), m_maxFileBytes(maxFileBytes), m_maxBackups(maxBackups) {}
 
 void AiCallLogger::setLogFilePath(const QString& path) {
     m_logFilePath = path;
@@ -97,30 +97,46 @@ QJsonObject AiCallLogger::responseRecord(const QString& requestId,
     obj["reasoning_content"] = response.reasoningContent;
     obj["tool_calls"] = toolCallsArr;
     obj["usage"] = usageObj;
+    obj["usage_reported"] = response.usage.hasReportedUsage();
 
     return obj;
 }
 
 bool AiCallLogger::appendRecord(const QJsonObject& lineObject) const {
-    if (m_logFilePath.isEmpty()) {
+    if (m_logFilePath.isEmpty() || m_maxFileBytes <= 0 || m_maxBackups < 0) {
         return false;
     }
 
-    QFileInfo fi(m_logFilePath);
-    QDir dir = fi.dir();
-    if (!dir.exists()) {
-        dir.mkpath(".");
+    QByteArray line = QJsonDocument(lineObject).toJson(QJsonDocument::Compact) + '\n';
+    if (line.size() > m_maxFileBytes) {
+        QJsonObject omitted{{"omitted", true}, {"omitted_reason", "record_exceeds_size_limit"},
+                            {"original_bytes", static_cast<qint64>(line.size())}};
+        for (const auto* key : {"type", "request_id", "timestamp", "pet_name", "success"}) {
+            if (lineObject.contains(key)) omitted.insert(key, lineObject.value(key));
+        }
+        line = QJsonDocument(omitted).toJson(QJsonDocument::Compact) + '\n';
+        if (line.size() > m_maxFileBytes) return false;
     }
+
+    const QFileInfo info(m_logFilePath);
+    if (!info.dir().mkpath(".")) return false;
+    if (info.exists() && info.size() + line.size() > m_maxFileBytes && !rotateFiles()) return false;
 
     QFile file(m_logFilePath);
-    if (!file.open(QIODevice::WriteOnly | QIODevice::Append | QIODevice::Text)) {
-        return false;
-    }
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) return false;
+    return file.write(line) == line.size() && file.flush();
+}
 
-    const QByteArray line = QJsonDocument(lineObject).toJson(QJsonDocument::Compact);
-    file.write(line);
-    file.write("\n");
-    file.close();
+bool AiCallLogger::rotateFiles() const {
+    if (m_maxBackups == 0) return QFile::remove(m_logFilePath);
+    for (int backup = m_maxBackups; backup > 0; --backup) {
+        const QString destination = m_logFilePath + '.' + QString::number(backup);
+        const QString source = backup == 1 ? m_logFilePath
+            : m_logFilePath + '.' + QString::number(backup - 1);
+        if (!QFileInfo::exists(source)) continue;
+        if (QFileInfo::exists(destination) && !QFile::remove(destination)) return false;
+        if (!QFile::rename(source, destination)) return false;
+    }
     return true;
 }
 

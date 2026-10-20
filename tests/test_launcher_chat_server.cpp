@@ -51,7 +51,79 @@ private slots:
     void authenticatedQueriesAreAsyncAndDoNotChangeStateRevision();
     void invalidQueriesAndAuthenticationNeverReachStore();
     void lateCompletionAfterDisconnectOrDestructionIsIgnored();
+    void authenticatedOverviewDoesNotReadHistoryOrChangeRevision();
+    void overviewRequiresAuthenticationAndCallback();
 };
+
+void TestLauncherChatServer::authenticatedOverviewDoesNotReadHistoryOrChangeRevision() {
+    auto cb = callbacks();
+    int historyReads = 0;
+    int overviewReads = 0;
+    cb.snapshot = [&] {
+        ++historyReads;
+        return QJsonObject{{"messages", QJsonArray{"private conversation"}}};
+    };
+    cb.runtimeOverview = [&] {
+        ++overviewReads;
+        return QJsonObject{{"schemaVersion", 1}, {"profileId", "callback-profile"},
+            {"petName", "测试角色"}, {"runtime", QJsonObject{{"busy", true}}},
+            {"emotion", QJsonObject{{"enabled", false}, {"available", false}}},
+            {"statistics", QJsonObject{{"allTime", QJsonObject{{"totalTokens", 123}}}}}};
+    };
+    const QString profileId = "11111111-1111-4111-8111-111111111111";
+    LauncherChatServer server(profileId, cb);
+    QLocalSocket socket;
+    const QString token = authenticate(socket, server, "dp-overview-" + QUuid::createUuid().toString(QUuid::Id128).left(12));
+    QVERIFY(!token.isEmpty());
+    const auto req = request("get_runtime_overview", {{"sessionToken", token}, {"profileId", "other-profile"}});
+    const auto response = exchange(socket, req);
+    QVERIFY(response["ok"].toBool());
+    QCOMPARE(response["requestId"], req["requestId"]);
+    const auto data = response["data"].toObject();
+    QCOMPARE(data["profileId"].toString(), profileId);
+    QCOMPARE(data["statistics"].toObject()["allTime"].toObject()["totalTokens"].toInt(), 123);
+    QVERIFY(data["runtime"].toObject()["busy"].toBool());
+    QVERIFY(!data.contains("messages"));
+    QVERIFY(!data.contains("sessionToken"));
+    QVERIFY(!data.contains("revision"));
+    QCOMPARE(overviewReads, 1);
+    QCOMPARE(historyReads, 0);
+
+    const auto state = exchange(socket, request("get_chat_state", {{"sessionToken", token}, {"afterRevision", 1}}));
+    QVERIFY(state["data"].toObject()["unchanged"].toBool());
+    QCOMPARE(state["data"].toObject()["openRequestId"].toInt(), 0);
+    QCOMPARE(historyReads, 0);
+}
+
+void TestLauncherChatServer::overviewRequiresAuthenticationAndCallback() {
+    auto cb = callbacks();
+    int overviewReads = 0;
+    cb.runtimeOverview = [&] { ++overviewReads; return QJsonObject{}; };
+    LauncherChatServer server("11111111-1111-4111-8111-111111111111", cb);
+    const auto name = "dp-overview-" + QUuid::createUuid().toString(QUuid::Id128).left(12);
+    QVERIFY(server.listen(name, QByteArray(32, 't'), 1024 * 1024, 300));
+    QLocalSocket socket;
+    socket.connectToServer(name);
+    QVERIFY(socket.waitForConnected(1000));
+    const auto denied = exchange(socket, request("get_runtime_overview", {}));
+    QCOMPARE(denied["error"].toObject()["code"].toString(), QString("CHAT_AUTH_FAILED"));
+    QCOMPARE(overviewReads, 0);
+    const auto hello = exchange(socket, request("hello", {{"capabilityToken", ownerDiaryTokenToBase64Url(QByteArray(32, 't'))}}));
+    const QString token = hello["data"].toObject()["sessionToken"].toString();
+    QVERIFY(!token.isEmpty());
+    const auto forged = exchange(socket, request("get_runtime_overview", {{"sessionToken", "forged"}}));
+    QCOMPARE(forged["error"].toObject()["code"].toString(), QString("CHAT_AUTH_FAILED"));
+    QCOMPARE(overviewReads, 0);
+    QVERIFY(exchange(socket, request("get_runtime_overview", {{"sessionToken", token}}))["ok"].toBool());
+    QCOMPARE(overviewReads, 1);
+
+    LauncherChatServer oldServer("11111111-1111-4111-8111-111111111111", callbacks());
+    QLocalSocket oldSocket;
+    const auto oldToken = authenticate(oldSocket, oldServer, "dp-old-" + QUuid::createUuid().toString(QUuid::Id128).left(12));
+    QVERIFY(!oldToken.isEmpty());
+    const auto unsupported = exchange(oldSocket, request("get_runtime_overview", {{"sessionToken", oldToken}}));
+    QCOMPARE(unsupported["error"].toObject()["code"].toString(), QString("ACTION_UNSUPPORTED"));
+}
 
 void TestLauncherChatServer::authenticatedQueriesAreAsyncAndDoNotChangeStateRevision() {
     auto cb = callbacks();

@@ -194,6 +194,8 @@ Result<void, DomainError> AIBrain::startChatSideEffectQueue() {
     environment.runtimeDatabasePath =
         m_chatPreparationRuntimeMetadata.runtimeDatabasePath;
     environment.memoryDatabasePath = m_memoryStore.databasePath();
+    m_callLogger.setLogFilePath(QFileInfo(environment.runtimeDatabasePath).dir().filePath(
+        QStringLiteral("logs/ai_calls.jsonl")));
     environment.aiCallLogPath = m_callLogger.logFilePath();
     return m_chatSideEffectQueue->start(environment);
 }

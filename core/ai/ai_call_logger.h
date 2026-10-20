@@ -14,7 +14,9 @@
 
 class AiCallLogger {
 public:
-    explicit AiCallLogger(const QString& logFilePath = "log/ai_calls.jsonl");
+    explicit AiCallLogger(const QString& logFilePath = "log/ai_calls.jsonl",
+                          qint64 maxFileBytes = 8 * 1024 * 1024,
+                          int maxBackups = 3);
 
     void setLogFilePath(const QString& path);
     const QString& logFilePath() const { return m_logFilePath; }
@@ -49,7 +51,10 @@ public:
 
 private:
     QString m_logFilePath;
+    qint64 m_maxFileBytes;
+    int m_maxBackups;
 
+    bool rotateFiles() const;
     static QJsonObject messageToJson(const ChatMessage& msg);
     static QJsonObject toolCallToJson(const LlmToolCall& call);
 };

@@ -12,7 +12,7 @@
 
 ## Task 2：认证运行快照与日志维护
 - 关联设计：§3.2
-- 状态：[ ]
+- 状态：[x]
 - Wave：2
 - 依赖：Task 1
 - 文件：core/ai/chat/launcher_chat_server.*、core/ai/runtime/runtime_overview.*、ui/petwindow.{cpp,h}、core/ai/ai_brain.{cpp,h}、core/ai/ai_call_logger.*；tests/test_launcher_chat_server.cpp、tests/test_runtime_overview.cpp、tests/test_ai_call_logger.cpp；CMakeLists.txt。

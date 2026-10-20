@@ -18,6 +18,7 @@ class QLocalSocket;
 
 struct LauncherChatCallbacks {
     std::function<QJsonObject()> snapshot;
+    std::function<QJsonObject()> runtimeOverview;
     std::function<void(const QString&, const QJsonObject&, ChatHistoryCompletion)> queryHistory;
     std::function<void(const QString&, const QJsonArray&, ChatHistoryCompletion)> sendMessage;
     std::function<Result<QJsonObject, DomainError>(const QString&)> retryMessage;

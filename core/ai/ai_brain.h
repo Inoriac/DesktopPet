@@ -111,6 +111,7 @@ public:
     void setThinkIntervalMs(int ms);
 
     bool isBusy() const { return m_busy; }
+    bool isDaydreamRunning() const { return m_daydreamRunning; }
     bool canStartProactiveChat() const;
     bool autonomyEnabled() const {
         return m_autonomyConfig.enabled;

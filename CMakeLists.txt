@@ -122,6 +122,8 @@ set(CONVERSATION_SOURCES
 set(AGENT_RUNTIME_SOURCES
     ${CONVERSATION_SOURCES}
     core/ai/runtime/runtime_types.h
+    core/ai/runtime/runtime_overview.h
+    core/ai/runtime/runtime_overview.cpp
     core/ai/runtime/runtime_ui_bridge.h
     core/ai/runtime/runtime_ui_bridge.cpp
     core/ai/runtime/agent_runtime_services.h
@@ -1220,6 +1222,18 @@ add_desktop_pet_cpp_test(launcher_chat_server_tests LauncherChatServerTests
         ${CMAKE_CURRENT_SOURCE_DIR}/include
         ${CMAKE_CURRENT_SOURCE_DIR}/core
     LIBRARIES Qt::Core Qt::Network Qt::Test
+)
+
+add_desktop_pet_cpp_test(runtime_overview_tests RuntimeOverviewTests
+    SOURCES tests/test_runtime_overview.cpp core/ai/runtime/runtime_overview.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES Qt::Core Qt::Test
+)
+
+add_desktop_pet_cpp_test(ai_call_logger_tests AiCallLoggerTests
+    SOURCES tests/test_ai_call_logger.cpp core/ai/ai_call_logger.cpp
+    INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+    LIBRARIES Qt::Core Qt::Test
 )
 
 # ---- Profile-scoped chat persistence tests (no ONNX dependency) ----

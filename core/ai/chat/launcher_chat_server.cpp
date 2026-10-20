@@ -245,6 +245,15 @@ QJsonObject LauncherChatServer::handleRequest(
             QStringLiteral("Launcher chat request rate exceeded"), true);
     }
 
+    if (action == QLatin1String("get_runtime_overview")) {
+        if (!m_callbacks.runtimeOverview) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("ACTION_UNSUPPORTED"),
+                QStringLiteral("当前版本不支持运行概览，请升级核心。"));
+        }
+        QJsonObject data = m_callbacks.runtimeOverview();
+        data.insert(QStringLiteral("profileId"), m_profileId);
+        return ownerDiarySuccessResponse(requestId, data);
+    }
     if (action == QLatin1String("get_chat_state")) {
         QJsonObject data{
             {QStringLiteral("revision"), static_cast<qint64>(m_revision)},

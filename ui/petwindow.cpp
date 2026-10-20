@@ -62,6 +62,8 @@
 #include "ai/integration/emotion_state_provider.h"
 #include "ai/runtime/agent_runtime_services.h"
 #include "ai/runtime/runtime_ui_bridge.h"
+#include "ai/runtime/runtime_overview.h"
+#include "ai/reflection/sleep_cycle_coordinator.h"
 #include "ai/chat/launcher_chat_server.h"
 #include "ai/owner/owner_diary_protocol.h"
 #include "statistic_manager.h"
@@ -398,6 +400,27 @@ void PetWindow::setupLauncherChatBridge() {
         for (auto it = runtime.constBegin(); it != runtime.constEnd(); ++it)
             snapshot.insert(it.key(), it.value());
         return snapshot;
+    };
+    callbacks.runtimeOverview = [this]() {
+        RuntimeOverviewInput input;
+        input.profileId = profileMigration.profileId;
+        input.petName = modelName;
+        input.capturedAt = QDateTime::currentDateTimeUtc();
+        if (aiBrain) {
+            input.aiEnabled = aiBrain->isEnabled();
+            input.storageReady = aiBrain->isStorageInitialized();
+            input.busy = aiBrain->isBusy();
+            input.pendingMessageCount = aiBrain->pendingUserMessageCount();
+            input.autonomy = aiBrain->autonomyStatus();
+            input.taskStatus = aiBrain->taskSnapshot().value("status").toString();
+            input.daydreamRunning = aiBrain->isDaydreamRunning();
+        }
+        input.sleeping = runtimeServices && runtimeServices->sleepCycleCoordinator()
+            && runtimeServices->sleepCycleCoordinator()->isActive();
+        input.emotionEnabled = emotionEngine && emotionEngine->isEnabled();
+        if (input.emotionEnabled) input.emotion = emotionEngine->snapshot(input.capturedAt);
+        input.statistics = StatisticManager::getInstance().overview(input.capturedAt);
+        return runtimeOverviewJson(input);
     };
     callbacks.queryHistory = [this](const QString& action, const QJsonObject& request,
                                     ChatHistoryCompletion completion) {
