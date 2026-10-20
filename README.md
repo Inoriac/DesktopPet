@@ -1,7 +1,7 @@
 # 🐾 Desktop Pet (3D 桌宠)
 
 一个基于 C++20 / Qt 6 的高性能桌面宠物，并在其上构建一套有安全边界的 Agent 框架。
-目标是构建具有持续身份、人物关系和记忆，能够自主选择活动并通过插件获得新能力的 Agent；桌宠是它的表现与交互形式。现有实现包含 3D 表现、本地意图路由、工具运行时、LLM 对话循环与记忆系统，自主活动及完整插件加载仍按设计推进。
+目标是构建具有持续身份、人物关系和记忆，能够自主选择活动并通过插件获得新能力的 Agent；桌宠是它的表现与交互形式。现有实现包含 3D 表现、本地意图路由、工具运行时、LLM 对话循环、记忆系统、自主活动与通用插件运行时。
 
 > **⚠️ 本项目基于 MateEngine 部分核心逻辑与资源开发，遵循 MateEngine Pro License (v2.1)，严禁商用，仅供学习与研究。**
 
@@ -38,7 +38,7 @@
 
 ## 🚧 未完成 / 开发中
 
-* **真实 Embedding 生产接入**：`OnnxEmbeddingProvider`、WordPiece tokenizer、`SqliteEmbeddingIndex` 与模型下载器已经实现，但桌宠生产组装和模型分发尚未完成；未注入 Provider 时检索会降级为 Noop。
+* **Embedding 模型分发**：`OnnxEmbeddingProvider`、WordPiece tokenizer、`SqliteEmbeddingIndex` 与生产组装已经实现；模型文件仍需单独准备，缺失或加载失败时语义检索会降级为关键词路径。
 * **RRF 三通道融合检索**：向量 / 关键词 / 图谱三路召回 + 排名融合（计划阶段）。
 * **图谱检索融合**：关系类型图和标签共现图已落库，尚未作为完整召回通道接入 RRF。
 * **成长体验完善**：人格成长已接入模型反思与本地证据门槛；长期真实体验校准、完整情绪历史轨迹、自适应阈值、成长历史 UI 与可视化编辑仍待完善。
@@ -50,9 +50,9 @@
 
 ## 📋 未来计划
 
-* 按[自主 Agent 设计与实施顺序](contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)推进人物识别与记忆归属、会话上下文、插件执行、自主活动与外部实践；当前下一步为人物识别，设计中的目标能力尚未实现。
+* 按[自主 Agent 设计与实施顺序](contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)继续校准人物识别、记忆归属、会话上下文、插件执行、自主活动与外部实践的长期真实表现。
 * 在受支持的 Windows 环境完成启动、对话、工具、记忆恢复、睡眠整理和私人日记的端到端验证。
-* 将 ONNX embedding 注入生产检索链路，随后落地向量 / 关键词 / 图谱三路 RRF 融合。
+* 完善 ONNX embedding 模型分发与真实数据校准，随后落地向量 / 关键词 / 图谱三路 RRF 融合。
 * 继续完善 `Trigger + Policy + Action` 调度策略，利用现有天气、节假日、电量、网络状态和用户空闲能力提供克制的主动陪伴。
 * 记忆质量评估（retrieval_hit_rate / utility_score）与按 DesktopPet 自身指标微调遗忘参数。
 * Cross-Encoder 重排序、记忆 ID 语义化、SQLite 连接池等工程优化。
@@ -105,23 +105,263 @@
 
 ---
 
-## 🚀 快速开始
+## 🚀 安装与使用
 
-**当前主要目标环境**：Windows 10 / 11、C++20 编译器（MSVC 2019+ 或 MinGW 11+）、Qt 6.x、CMake 3.20+、Python 3（launcher 与语音）。macOS 已纳入构建和自动化回归；Windows 桌面集成、真实播放器与音频设备仍需对应环境实测。
+以下流程以 Windows 10 / 11 为主。当前已实机验证的组合是 Qt 6.5.3 MinGW 64-bit、MinGW 11.2、CMake/Ninja 和 Python 3.12；MSVC 2019+ 也受构建脚本支持，但 Qt 套件必须与编译器 ABI 匹配，不能混用 MinGW Qt 与 MSVC。
+
+### 1. 运行前置
+
+* Git、CMake 3.20+、Ninja 或 Visual Studio 生成器，以及支持 C++20 的编译器。
+* Qt 6，包含 Core、Gui、Widgets、Network、OpenGL、OpenGLWidgets、Sql 和 Test 模块。
+* Python 3.10+。核心 launcher 与 QQ 插件最低要求较低，但 3.10+ 同时满足当前各可选插件。
+* 支持 OpenGL 3.3 Core 的显卡和驱动。
+* 可选：libsodium 与 Qt6Keychain 同时存在时启用加密内心活动和私人日记；缺失时普通桌宠仍可构建，但不会降级保存明文私密内容。
+
+角色模型、语音模型和平台凭据不随 Git 提供。默认角色记录会指向 `assets/models/milltina/model/milltina.gltf`；首次启动前须放入自己有权使用的模型，或修改本地 `pets.json` 的 `modelPath`。目录约定见 [模型资产说明](assets/models/README.md)。
+
+### 2. 构建 C++ 核心
+
+克隆仓库后，在 PowerShell 中进入仓库根目录。下面是 MinGW/Ninja 示例；按实际 Qt 安装位置修改三个变量：
 
 ```powershell
-git clone <repo>
-cd Desktop-Pet
-cmake -S . -B build -DCMAKE_PREFIX_PATH="path/to/your/Qt/6.x"
-cmake --build build --config Release
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
-.\.venv\Scripts\python.exe launcher\main.py
+git clone https://github.com/Inoriac/DesktopPet.git
+Set-Location DesktopPet
+
+$qtRoot = 'C:\Qt\6.5.3\mingw_64'
+$mingwBin = 'C:\Qt\Tools\mingw1120_64\bin'
+$ninjaBin = 'C:\Qt\Tools\Ninja'
+$env:PATH = "$mingwBin;$qtRoot\bin;$ninjaBin;$env:PATH"
+
+cmake -S . -B build -G Ninja `
+  -DCMAKE_BUILD_TYPE=Release `
+  "-DCMAKE_PREFIX_PATH=$qtRoot" `
+  "-DCMAKE_C_COMPILER=$mingwBin\gcc.exe" `
+  "-DCMAKE_CXX_COMPILER=$mingwBin\g++.exe"
+cmake --build build --parallel
 ```
 
-启动请通过 Python launcher 拉起桌宠（负责角色注册、配置与进程编排）。launcher 会识别 `build` 下的单配置和 MSVC 多配置产物；也可用 `DESKTOP_PET_EXECUTABLE` 指定主体路径。模型文件与第三方运行时按需置于 `assets/models/` 与 `third_party/`。
+使用 Visual Studio 2022 和匹配的 Qt/MSVC 套件时，可改用：
 
-> 配置示例见 `config/default_common_config.example.json`；API 密钥等敏感信息请放在本地配置，勿提交仓库。
+```powershell
+cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_PREFIX_PATH='C:\Qt\6.7.3\msvc2022_64'
+cmake --build build --config Release --parallel
+```
+
+每次拉取包含 `CMakeLists.txt` 或测试注册变化的代码后，先重新执行 `cmake -S . -B build ...`。Windows 构建会为正式程序运行 `windeployqt`；开发期测试若报 `0xc0000135`，请确认 Qt 与编译器的 `bin` 仍在当前终端 `PATH` 中。
+
+### 3. 安装并启动 launcher
+
+项目正式入口是 Python launcher，不建议直接双击 `Desktop_Pet.exe`。launcher 负责稳定角色 UUID、配置导出、进程日志，以及聊天和私人日记所需的一次性本地 IPC 凭据。
+
+```powershell
+$basePython = (Get-Command python.exe -ErrorAction Stop).Source
+& $basePython --version
+& $basePython -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install --upgrade pip
+& .\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
+& .\.venv\Scripts\python.exe launcher\main.py
+```
+
+launcher 会查找 `build\Desktop_Pet.exe`、`build\Release\Desktop_Pet.exe` 及仓库内常用 CLion 构建目录。自定义输出目录时，先指定绝对路径：
+
+```powershell
+$env:DESKTOP_PET_EXECUTABLE = 'C:\absolute\path\Desktop_Pet.exe'
+& .\.venv\Scripts\python.exe launcher\main.py
+```
+
+### 4. 首次配置
+
+1. 首次打开 launcher 会创建默认角色 `Milltina` 和稳定的随机 `profileId`。当前界面可以选择已有角色，尚不提供新增角色流程。
+2. 在“AI”页开启 AI，在“连接档案”中选择 `openai-compatible` 或 `anthropic-messages`，填写服务 URL、API Key 和服务端实际支持的模型 ID。
+3. 点击“测试连接”。这会用当前编辑值发出一次真实的最小 `ping` 模型请求，不只是检查格式。OpenAI-compatible 地址会补 `/chat/completions`，Anthropic 地址会补 `/v1/messages`。
+4. 为对话、视觉、快速提取、记忆整理、日记、Daydream、任务受理、任务执行和人格反思选择连接档案与模型。视觉角色应使用实际支持图片输入的模型。
+5. 点击“保存配置”，回到“宠物”页选择角色并点击“启动桌宠”。启动操作也会保存当前配置。AI、自主活动、暂停自主活动和自动屏幕聊天是独立开关；默认不会自动开启自主活动。
+
+API Key 会保存在本机 `%APPDATA%\Desktop Pet Team\Desktop Pet\launch_config.json`，并非系统凭据库。请按敏感文件保护，不要提交或粘贴到问题报告中。
+
+### 5. 日常使用
+
+* 在 launcher 的“聊天”页与当前角色对话；Enter 发送，Shift+Enter 换行，Ctrl+F 搜索历史。图片可选择、粘贴或拖入，视觉识别取决于视觉模型配置。
+* `/task 目标` 可显式创建复杂任务；任务卡片提供继续、暂停、停止、增加预算和结果不明确认。
+* launcher 的“运行概览”显示当前角色状态、模型调用和 token 统计；详细调用元数据位于角色日志。
+* 桌宠托盘菜单的“隐藏形象”会隐藏窗口并停止持续渲染，后台聊天和 Agent 运行时可继续；点击托盘图标或选择“显示形象”恢复。选择“退出”才会结束核心进程。
+* 配置插件前先退出目标角色，应用配置后重新启动。每个插件的设置、凭据、缓存和日志都应放在仓库外，并按角色隔离。
+
+Windows 用户数据目录：
+
+```text
+%APPDATA%\Desktop Pet Team\Desktop Pet\
+├── launch_config.json          # launcher 配置，包含本地模型连接凭据
+├── pets.json                   # 角色名、模型路径与稳定 profileId
+└── profiles\<profileId>\       # 该角色的记忆、会话、统计、日志与插件绑定
+    ├── agent_runtime.sqlite
+    ├── memory.db
+    ├── private_psyche.sqlite
+    ├── chat_history.jsonl
+    ├── chat\images\
+    ├── statistics.json
+    ├── logs\ai_calls.jsonl
+    └── plugins.json
+```
+
+launcher 拉起的核心进程日志另存于仓库的 `log\launcher\`。不要通过删除 SQLite 文件来解决身份、游标或记忆问题；排查前先保留整个角色目录。
+
+### 6. 可选能力
+
+| 能力 | 额外前置 | 接入说明 |
+| --- | --- | --- |
+| 网页搜索与阅读 | 构建 `desktop_pet_web`；无需搜索 API Key | [Web 插件](plugins/web/README.md) |
+| B 站内容阅读 | Python 3.10+；字幕通常需要人工扫码登录；本地 ASR 另备模型 | [Bilibili 插件](plugins/bilibili/README.md) |
+| QQ 会话 | NapCat 或 SnowLuma、已登录 QQ、OneBot v11 正向 WS | [下方 QQ 指南](#qq-后台插件可选) |
+| LX Music | Windows LX Music、本地开放 API；部分操作需要真实数据库和程序路径 | [LX Music 插件](plugins/lx-music/README.md) |
+| 语音合成 | GENIE / `genie-tts` 环境、角色模型与参考音频 | [语音运行时](runtime/voice/README.md) |
+
+插件安装不会替用户打开宿主自主活动总开关。先退出目标角色，预览配置，确认路径和授权后再应用，随后重启角色。模型是否自主使用某个能力还取决于插件授权、全局开关、上下文和预算。
+
+### 7. 基础验证
+
+```powershell
+# Ninja 单配置构建
+ctest --test-dir build --output-on-failure -j 4
+
+# Visual Studio 多配置构建使用：
+# ctest --test-dir build -C Release --output-on-failure -j 4
+
+& .\.venv\Scripts\python.exe -m unittest discover -s tests -p 'test_launcher_*.py'
+```
+
+测试出现 `Skipped` 时先确认是否缺少该能力的 Python 包、Qt DLL、真实播放器或平台后端；跳过不能记作该集成已经通过。完整 launcher 说明见 [launcher/README.md](launcher/README.md)，配置结构见 [config/default_common_config.example.json](config/default_common_config.example.json)。
+
+## QQ 后台插件（可选）
+
+QQ 插件通过 OneBot v11 **正向 WebSocket** 连接 NapCat 或 SnowLuma。NapCat/SnowLuma 在已经登录 QQ 的环境中提供 WebSocket 服务端，Desktop Pet 是客户端；插件不安装后端、不负责扫码登录，也不控制 QQ 窗口。
+
+当前支持授权私聊/群聊的文本读取、文本或引用发送、发送回执，以及可选的后台消息观察。图片、语音、视频等媒体只保留占位，不支持理解或发送；断线期间的历史能否补齐取决于后端。
+
+### 1. QQ 前置
+
+* 已登录测试 QQ 的 NapCat 或 SnowLuma，并开启 OneBot v11 **正向 WS 服务端**。
+* 后端类型、WS 地址、登录 QQ 号 `selfId`、稳定的 `connectionKey`。
+* 明确允许的测试群 `group:<群号>`、测试私聊 `private:<对方QQ号>`，以及用于确认拒绝行为的未授权会话。
+* 后端启用鉴权时准备非空的可打印 ASCII token。token 单独放在仓库外的文本文件中，不写入 URL、Git 或验收日志。
+* 已通过 launcher 启动过一次目标角色，使 `%APPDATA%\Desktop Pet Team\Desktop Pet\profiles\<profileId>` 存在。
+
+NapCat 与 SnowLuma 的历史接口和发送证据不同，需要分别验收，不能用其中一个的结果代替另一个。
+
+### 2. 创建 QQ 独立环境和设置
+
+在仓库根目录执行。先从角色清单取得真实 UUID，不要使用角色显示名或自行编造 UUID：
+
+```powershell
+$petDataDir = Join-Path $env:APPDATA 'Desktop Pet Team\Desktop Pet'
+$pets = Get-Content -LiteralPath (Join-Path $petDataDir 'pets.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$pets | Select-Object name, profileId
+
+$profileId = '替换为上面目标角色的小写UUID'
+$profileDir = Join-Path $petDataDir "profiles\$profileId"
+$qqState = Join-Path $env:LOCALAPPDATA "DesktopPet\qq\$profileId"
+
+& .\.venv\Scripts\python.exe -B plugins\qq\setup.py --state-dir $qqState
+if ($LASTEXITCODE -ne 0) { throw 'QQ 插件环境创建失败，请查看上方输出' }
+
+$qqPython = Join-Path $qqState 'venv\Scripts\python.exe'
+$qqSettings = Join-Path $qqState 'settings.json'
+$qqToken = Join-Path $qqState 'token.txt'
+$utf8NoBom = New-Object System.Text.UTF8Encoding($false)
+
+$settings = [ordered]@{
+  backend = 'napcat' # 或 snowluma
+  wsUrl = 'ws://127.0.0.1:3001'
+  selfId = '999999999'
+  connectionKey = 'pet-qq-account'
+  stateDir = $qqState
+  tokenFile = $qqToken
+  allowedConversations = @('group:123456789', 'private:234567890')
+  requestTimeoutSeconds = 10
+}
+[System.IO.File]::WriteAllText(
+  $qqSettings, ($settings | ConvertTo-Json -Depth 5), $utf8NoBom)
+```
+
+用编辑器把后端 token 写入 `$qqToken`，保存为 UTF-8 无 BOM。后端明确未启用 token 时，执行 `$settings.Remove('tokenFile')` 后重新写入 `settings.json`，不要留下指向空 token 文件的配置。
+
+每个角色和 QQ 账号使用独立 `stateDir`。更换登录账号时同时更换 `connectionKey` 和 `stateDir`，不要复用旧消息日志。`selfId` 必须等于后端实际登录账号；插件连接后会先核对，不匹配时拒绝继续读取或发送。
+
+### 3. 预览并接入角色
+
+先退出目标桌宠。首次建议关闭 source 和自主授权，只验证显式只读调用：
+
+```powershell
+& $qqPython -B plugins\qq\configure.py --profile-dir $profileDir --settings $qqSettings --source off --autonomous off
+& $qqPython -B plugins\qq\configure.py --profile-dir $profileDir --settings $qqSettings --source off --autonomous off --apply
+```
+
+第一条命令只输出预览；第二条才更新该角色的 `plugins.json`，并在 `qq-backups` 下保存备份。重复应用相同配置不会重复写入。配置变化后重启该角色。
+
+权限边界如下：
+
+* 本地主人始终只能使用 Skill、`status/list/read/receipt`，没有 `send`。
+* `--autonomous on` 才给内部自主活动只读权限，并给每个精确外部 QQ 会话启用 `read/send/receipt` 自主调用；内部活动不能任意选择联系人主动开聊。
+* 外部会话没有 `list`，也不能读取或发送到另一个会话。
+* `--source on|off` 只控制后台接收；`--autonomous on|off` 只控制本插件授权；launcher 的“自主活动”和“暂停自主活动”仍是独立总开关。
+
+### 4. 先做只读连通验证
+
+PowerShell 5 需显式使用 UTF-8。用对象生成 JSON，避免手写转义：
+
+```powershell
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+
+@{} | ConvertTo-Json -Compress |
+  & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation status
+@{} | ConvertTo-Json -Compress |
+  & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation list
+@{ chat_id = 'group:123456789'; limit = 10 } | ConvertTo-Json -Compress |
+  & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation read
+```
+
+先确认账号、白名单、群聊/私聊分流、中文、emoji、引用和分页。随后可重新配置为 `--source on --autonomous off --apply`，从允许会话发送测试消息，确认只归档、不自主回复。最后确有需要时再配置 `--source on --autonomous on --apply`，并在 launcher 中开启且取消暂停自主活动。
+
+宿主验收看实际 `discover/load/invoke` 调用、观察归档、QQ 客户端收到的消息和发送回执，不以模型口头说“已经发送”作为成功依据。主体可以选择等待，并非每条消息都必须回复。
+
+### 5. 发送与回执验收
+
+适配器直调会绕过宿主的上下文授权，只能用于自己有权操作的测试群或测试私聊。每项先发一条，查看实际 QQ 客户端，再用返回的 `receipt_id` 查询：
+
+```powershell
+@{
+  chat_id = 'group:123456789'
+  text = 'QQ插件验收文本'
+  reply_to = ''
+} | ConvertTo-Json -Compress |
+  & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation send
+
+@{
+  chat_id = 'group:123456789'
+  receipt_id = '替换为上一步返回的receipt_id'
+} | ConvertTo-Json -Compress |
+  & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation receipt
+```
+
+`send` 返回 `unknown` 时，消息可能已经到达。此时只能查看客户端并使用原 `receipt_id` 查询，绝不能再次发送同一消息。完成真实验收时还要覆盖私聊、群聊、引用、字面 `[CQ:at,qq=all]`、错误 token、账号不匹配、断线恢复和未授权会话。
+
+### 6. 无真实 QQ 的受控回归
+
+```powershell
+& $qqPython -B tests\test_qq_adapter.py
+& $qqPython -B tests\test_qq_delivery.py
+& $qqPython -B tests\test_qq_configure.py
+
+cmake -S . -B build "-DQQ_TEST_PYTHON=$qqPython"
+cmake --build build --target qq_plugin_tests --parallel
+ctest --test-dir build -R '^QQ' --output-on-failure
+```
+
+Visual Studio 多配置构建给后两条命令加 `--config Release` 和 `-C Release`。运行 `QQPluginTests` 前应让 Qt 与编译器的 `bin` 位于 `PATH`；否则 Windows 可能报 `0xc0000135`。缺少 `websockets` 时部分 QQ 测试会标为跳过，不能算通过。
+
+受控回归只证明插件协议、单次派发、回执、权限和宿主链路，不代表真实 QQ 已通过。完整配置、运行边界与回滚见 [QQ 插件文档](plugins/qq/README.md)，NapCat/SnowLuma 的 A1-A11、H1-H11 实机表见 [QQ 验收交接](plugins/qq/验收交接.md)。
 
 ---
 
@@ -138,9 +378,10 @@ Desktop-Pet/
 ├── assets/        # 模型、动画、配置、图标
 ├── config/        # 默认配置与状态机定义
 ├── contracts/     # Agent 演进设计、插件开发指导与能力准入契约
+├── plugins/       # Web、B 站、QQ、LX Music 等可选能力包
+├── runtime/       # 可选语音运行时说明；本地生成内容不入库
 ├── tests/         # Qt Test 单元测试
-├── third_party/   # 第三方库（TinyGLTF 等）
-└── models/        # 推理模型文件（按需下载，不入库）
+└── third_party/   # TinyGLTF、ONNX Runtime 等第三方依赖
 ```
 
 ---
@@ -162,6 +403,11 @@ Desktop-Pet/
 * [自主 Agent：身份、记忆与活动运行时设计](contracts/agent/自主Agent-身份记忆与活动运行时-桌面端系分.md)：后续实施主入口，含空闲定义、数据迁移、切片顺序与验收门槛
 * [插件系统开发指导](contracts/tools/插件系统开发指导.md)：Plugin、Skill、Tool 的定位、按需加载与验收要求
 * [插件运行时接入](contracts/tools/插件运行时接入.md)：当前配置、权限和调用方式
+* [Web 插件](plugins/web/README.md)：匿名网页搜索、正文分页、缓存与 SSRF 边界
+* [Bilibili 插件](plugins/bilibili/README.md)：视频材料、字幕、登录与可选本地 ASR
+* [QQ 插件](plugins/qq/README.md)：OneBot 前置、角色接入、权限、回执与回滚
+* [QQ Windows 验收交接](plugins/qq/验收交接.md)：NapCat / SnowLuma 的真实平台验收表
 * [LX Music 插件](plugins/lx-music/README.md)：可运行的音乐工具与 Skill 接入、Windows 实测步骤
+* [可选语音运行时](runtime/voice/README.md)：GENIE 数据、角色模型与环境准备
 * [启动器说明](launcher/README.md)：配置、运行与主题共享
 * [情绪系统设计](emotion_system_plan.md)：情绪状态与已实施阶段

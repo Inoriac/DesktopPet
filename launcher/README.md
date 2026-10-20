@@ -8,9 +8,11 @@ PySide6 + PySide6-Fluent-Widgets 实现的 Fluent Design 启动器。
 ## 运行
 
 ```powershell
-py -3 -m venv .venv
-.\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
-.\.venv\Scripts\python.exe launcher\main.py
+$basePython = (Get-Command python.exe -ErrorAction Stop).Source
+& $basePython --version
+& $basePython -m venv .venv
+& .\.venv\Scripts\python.exe -m pip install -r launcher\requirements.txt
+& .\.venv\Scripts\python.exe launcher\main.py
 ```
 
 > 本项目未使用 PySide6-Addons（WebEngine/3D），只装 Essentials 即可，省 ~300MB 下载。

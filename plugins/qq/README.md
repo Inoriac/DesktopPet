@@ -25,7 +25,7 @@
 
 1. 安装 Python 3.9+。由使用者准备已登录目标 QQ 账号的 NapCat 或 SnowLuma，并开启 **OneBot 正向 WebSocket 服务端**；本插件是连接该服务的客户端，不是反向 WS 接收端。记录后端、QQ 客户端与协议配置版本。
 2. 给该角色分配独立的包外 stateDir。setup 只创建 venv 并安装 `websockets==15.0.1`，不安装 MaiBot、QQ 客户端或 OneBot 后端。
-3. 创建包外 UTF-8 **无 BOM** 的 settings.json；需要鉴权时将 token 单独写入包外文本文件。插件通过 `Authorization: Bearer ...` 发送 token，wsUrl 中不要加用户名、密码或 `access_token` 查询参数。
+3. 创建包外 UTF-8 **无 BOM** 的 settings.json；需要鉴权时将非空的可打印 ASCII token 单独写入包外文本文件。插件通过 `Authorization: Bearer ...` 发送 token，wsUrl 中不要加用户名、密码或 `access_token` 查询参数。
 
 macOS / Linux，在仓库根目录执行（替换账号、会话与路径）：
 
@@ -39,7 +39,14 @@ Windows PowerShell，在仓库根目录执行：
 
 ```powershell
 $qqState = Join-Path $env:LOCALAPPDATA 'DesktopPet\qq\角色UUID'
-py -3 plugins/qq/setup.py --state-dir $qqState
+$pyLauncher = Get-Command py.exe -ErrorAction SilentlyContinue
+if ($pyLauncher) {
+  & $pyLauncher.Source -3 -B plugins/qq/setup.py --state-dir $qqState
+} else {
+  $basePython = (Get-Command python.exe -ErrorAction Stop).Source
+  & $basePython -B plugins/qq/setup.py --state-dir $qqState
+}
+if ($LASTEXITCODE -ne 0) { throw 'QQ 插件环境创建失败，请查看上方输出' }
 $qqPython = Join-Path $qqState 'venv\Scripts\python.exe'
 $qqSettings = Join-Path $qqState 'settings.json'
 $qqToken = Join-Path $qqState 'token.txt'
@@ -124,3 +131,10 @@ ctest --test-dir build -R '^QQ' --output-on-failure
 ```
 
 Windows 用 `& $qqPython` 执行 Python；多配置生成器构建加 `--config Debug`，CTest 加 `-C Debug`。Qt 查找路径沿用项目构建环境。QQ_TEST_PYTHON 只选择 QQ 测试解释器，不替换项目全局 Python；没装 websockets 时适配器、发送和 C++ 集成测试明确 skip，配置测试仍可运行。实际平台验收请使用[验收交接](验收交接.md)，不要将假服务命令指向私人账号。
+
+Windows 运行 `QQPluginTests` 前应把匹配的 Qt 和编译器 `bin` 放进当前终端的 `PATH`；缺少运行时 DLL 时常见退出码为 `0xc0000135`。如果 setup 因用户配置的 pip 镜像提示找不到 `websockets==15.0.1`，可只为本次终端临时指定官方索引后重跑，已有 stateDir 会保留：
+
+```powershell
+$env:PIP_INDEX_URL = 'https://pypi.org/simple'
+# 重新执行上面的 setup 命令；成功后可关闭终端或恢复原环境变量。
+```
