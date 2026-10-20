@@ -36,6 +36,7 @@ struct OpenAiStreamState {
     QPointer<QNetworkReply> reply;
     LlmStreamObserver observer;
     LlmCompletionHandler completion;
+    LlmResponse receivedMetadata;
     std::atomic_bool cancelled{false};
     std::atomic_bool terminal{false};
 
@@ -66,7 +67,7 @@ struct OpenAiStreamState {
         if (reply) {
             reply->abort();
         }
-        complete(false, {}, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
+        complete(false, receivedMetadata, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
     }
 };
 
@@ -144,8 +145,11 @@ std::shared_ptr<LlmRequestHandle> OpenAICompatibleClient::sendChatCompletionStre
             if (state->terminal.load()) {
                 return;
             }
+            state->receivedMetadata.id = response.id;
+            state->receivedMetadata.model = response.model;
+            state->receivedMetadata.usage = response.usage;
             if (state->cancelled.load()) {
-                state->complete(false, {}, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
+                state->complete(false, state->receivedMetadata, QStringLiteral("LLM_REQUEST_CANCELLED: request cancelled"));
                 return;
             }
             if (ok && !response.content.isEmpty()) {
@@ -356,9 +360,16 @@ bool OpenAICompatibleClient::parseResponseBody(const QByteArray& body,
     outResponse.created = root.value("created").toVariant().toLongLong();
 
     const QJsonObject usageObj = root.value("usage").toObject();
+    outResponse.usage = {};
+    outResponse.usage.reported = usageObj.value("prompt_tokens").isDouble()
+        || usageObj.value("completion_tokens").isDouble() || usageObj.value("total_tokens").isDouble()
+        || usageObj.value("prompt_cache_hit_tokens").isDouble()
+        || usageObj.value("prompt_cache_miss_tokens").isDouble();
     outResponse.usage.promptTokens = usageObj.value("prompt_tokens").toVariant().toLongLong();
     outResponse.usage.completionTokens = usageObj.value("completion_tokens").toVariant().toLongLong();
-    outResponse.usage.totalTokens = usageObj.value("total_tokens").toVariant().toLongLong();
+    outResponse.usage.totalTokens = usageObj.value("total_tokens").isDouble()
+        ? usageObj.value("total_tokens").toInteger()
+        : outResponse.usage.promptTokens + outResponse.usage.completionTokens;
     outResponse.usage.promptCacheHitTokens = usageObj.value("prompt_cache_hit_tokens").toVariant().toLongLong();
     outResponse.usage.promptCacheMissTokens = usageObj.value("prompt_cache_miss_tokens").toVariant().toLongLong();
 

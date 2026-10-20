@@ -81,6 +81,12 @@ struct AnthropicRequestState {
         if (terminal.exchange(true)) {
             return;
         }
+        if (!ok) {
+            value = {};
+            value.id = response.id;
+            value.model = response.model;
+            value.usage = response.usage;
+        }
         auto callback = std::move(completion);
         observer = {};
         if (callback) {
@@ -367,19 +373,26 @@ bool convertTools(const QJsonArray& tools, QJsonArray& output, QString& error) {
 }
 
 void mergeUsage(const QJsonObject& usage, LlmUsage& output) {
-    if (usage.contains(QStringLiteral("input_tokens"))) {
-        output.promptTokens = usage.value(QStringLiteral("input_tokens")).toVariant().toLongLong();
+    // Anthropic reports cumulative values; input_tokens excludes both cache categories.
+    qint64 uncachedInput = output.promptTokens - output.promptCacheHitTokens - output.promptCacheMissTokens;
+    if (usage.value(QStringLiteral("input_tokens")).isDouble()) {
+        uncachedInput = usage.value(QStringLiteral("input_tokens")).toInteger();
+        output.reported = true;
     }
-    if (usage.contains(QStringLiteral("output_tokens"))) {
-        output.completionTokens = usage.value(QStringLiteral("output_tokens")).toVariant().toLongLong();
+    if (usage.value(QStringLiteral("output_tokens")).isDouble()) {
+        output.completionTokens = usage.value(QStringLiteral("output_tokens")).toInteger();
+        output.reported = true;
     }
-    if (usage.contains(QStringLiteral("cache_creation_input_tokens"))) {
-        output.promptCacheMissTokens = usage.value(QStringLiteral("cache_creation_input_tokens")).toVariant().toLongLong();
+    if (usage.value(QStringLiteral("cache_creation_input_tokens")).isDouble()) {
+        output.promptCacheMissTokens = usage.value(QStringLiteral("cache_creation_input_tokens")).toInteger();
+        output.reported = true;
     }
-    if (usage.contains(QStringLiteral("cache_read_input_tokens"))) {
-        output.promptCacheHitTokens = usage.value(QStringLiteral("cache_read_input_tokens")).toVariant().toLongLong();
+    if (usage.value(QStringLiteral("cache_read_input_tokens")).isDouble()) {
+        output.promptCacheHitTokens = usage.value(QStringLiteral("cache_read_input_tokens")).toInteger();
         output.cachedTokens = output.promptCacheHitTokens;
+        output.reported = true;
     }
+    output.promptTokens = uncachedInput + output.promptCacheHitTokens + output.promptCacheMissTokens;
     output.totalTokens = output.promptTokens + output.completionTokens;
 }
 

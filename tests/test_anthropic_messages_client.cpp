@@ -222,6 +222,11 @@ private slots:
     void cancel_from_stream_observer();
     void completion_can_release_client_data();
     void completion_can_release_client();
+    void usageCumulativeDeltasDoNotDoubleCountCache();
+    void failedStreamPreservesUsageWithoutPartialContent_data();
+    void failedStreamPreservesUsageWithoutPartialContent();
+    void openAiMissingVsReportedZeroUsage_data();
+    void openAiMissingVsReportedZeroUsage();
 };
 
 void TestAnthropicMessagesClient::disconnected_request_finishes_once_and_next_request_recovers_data() {
@@ -283,7 +288,7 @@ void TestAnthropicMessagesClient::cancel_from_stream_observer() {
     QFETCH(bool, anthropic);
     LocalHttpServer server;
     server.enqueue({200, anthropic ? "text/event-stream" : "application/json",
-        anthropic ? textResponse() : QByteArray(R"({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}]})"), false});
+        anthropic ? textResponse() : QByteArray(R"({"choices":[{"message":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}})"), false});
     std::unique_ptr<LlmClient> client;
     if (anthropic) client = std::make_unique<AnthropicMessagesClient>();
     else client = std::make_unique<OpenAICompatibleClient>();
@@ -291,13 +296,15 @@ void TestAnthropicMessagesClient::cancel_from_stream_observer() {
     int completions = 0, deltas = 0;
     bool success = true;
     QString failure;
+    LlmResponse result;
     std::shared_ptr<LlmRequestHandle> handle;
     handle = client->sendChatCompletionStreamAsync(config, {{"user", "hi", {}, {}, {}}}, {},
         [&](const LlmStreamEvent &event) {
             if (event.type == LlmStreamEventType::StageChanged) handle->cancel();
             if (event.type == LlmStreamEventType::TextDelta) ++deltas;
         },
-        [&](bool ok, LlmResponse, QString error) {
+        [&](bool ok, LlmResponse value, QString error) {
+            result = value;
             success = ok;
             failure = error;
             ++completions;
@@ -306,6 +313,9 @@ void TestAnthropicMessagesClient::cancel_from_stream_observer() {
     QVERIFY(!success);
     QVERIFY(failure.contains("CANCELLED"));
     QCOMPARE(deltas, 0);
+    QVERIFY(result.usage.reported);
+    QCOMPARE(result.usage.totalTokens, anthropic ? 12 : 5);
+    QVERIFY(result.content.isEmpty());
     handle->cancel();
     QCOMPARE(completions, 1);
 }
@@ -437,9 +447,9 @@ void TestAnthropicMessagesClient::sendChatCompletionStreamAsync_whenTextStreamCo
     QCOMPARE(response.id, QStringLiteral("msg_test"));
     QCOMPARE(response.model, QStringLiteral("claude-test"));
     QCOMPARE(response.finishReason, QStringLiteral("end_turn"));
-    QCOMPARE(response.usage.promptTokens, 7);
+    QCOMPARE(response.usage.promptTokens, 12);
     QCOMPARE(response.usage.completionTokens, 5);
-    QCOMPARE(response.usage.totalTokens, 12);
+    QCOMPARE(response.usage.totalTokens, 17);
     QCOMPARE(response.usage.promptCacheMissTokens, 2);
     QCOMPARE(response.usage.promptCacheHitTokens, 3);
     QCOMPARE(response.usage.cachedTokens, 3);
@@ -1011,6 +1021,96 @@ void TestAnthropicMessagesClient::cancel_whenLegacyAdapterFinishes_shouldRemainO
     QVERIFY(handle->isCancelled());
     client.finish();
     QVERIFY(handle->isCancelled());
+}
+
+
+void TestAnthropicMessagesClient::usageCumulativeDeltasDoNotDoubleCountCache() {
+    LocalHttpServer server;
+    auto body = textResponse();
+    const auto extra = sseEvent("message_delta", {{"type", "message_delta"},
+        {"delta", QJsonObject{}}, {"usage", QJsonObject{{"input_tokens", 7},
+        {"cache_creation_input_tokens", 2}, {"cache_read_input_tokens", 3}, {"output_tokens", 5}}}});
+    body.insert(body.indexOf("event: message_stop"), extra + extra);
+    server.enqueue({200, "text/event-stream", body});
+    AnthropicMessagesClient client;
+    bool done = false;
+    LlmResponse result;
+    client.sendChatCompletionStreamAsync(anthropicConfig(server), {{"user", "hi"}}, {}, {},
+        [&](bool ok, LlmResponse value, QString error) {
+            QVERIFY2(ok, qPrintable(error));
+            result = value;
+            done = true;
+        });
+    QTRY_VERIFY_WITH_TIMEOUT(done, 2000);
+    QVERIFY(result.usage.reported);
+    QCOMPARE(result.usage.promptTokens, 12);
+    QCOMPARE(result.usage.completionTokens, 5);
+    QCOMPARE(result.usage.totalTokens, 17);
+}
+
+void TestAnthropicMessagesClient::failedStreamPreservesUsageWithoutPartialContent_data() {
+    QTest::addColumn<bool>("cancel");
+    QTest::newRow("cancel") << true;
+    QTest::newRow("protocol-error") << false;
+}
+
+void TestAnthropicMessagesClient::failedStreamPreservesUsageWithoutPartialContent() {
+    QFETCH(bool, cancel);
+    LocalHttpServer server;
+    auto body = textResponse("partial answer");
+    body.truncate(body.indexOf("event: content_block_stop"));
+    server.enqueue({200, "text/event-stream", body, cancel});
+    AnthropicMessagesClient client;
+    bool done = false;
+    QString visible;
+    LlmResponse result;
+    auto handle = client.sendChatCompletionStreamAsync(anthropicConfig(server), {{"user", "hi"}}, {},
+        [&](const auto& event) { if (event.type == LlmStreamEventType::TextDelta) visible += event.textDelta; },
+        [&](bool ok, LlmResponse value, QString) { QVERIFY(!ok); result = value; done = true; });
+    QTRY_VERIFY_WITH_TIMEOUT(!visible.isEmpty(), 2000);
+    if (cancel) handle->cancel();
+    QTRY_VERIFY_WITH_TIMEOUT(done, 2000);
+    QVERIFY(result.usage.reported);
+    QCOMPARE(result.usage.promptTokens, 12);
+    QCOMPARE(result.usage.totalTokens, 12);
+    QCOMPARE(result.model, QString("claude-test"));
+    QVERIFY(result.content.isEmpty());
+    QVERIFY(result.toolCalls.isEmpty());
+}
+
+void TestAnthropicMessagesClient::openAiMissingVsReportedZeroUsage_data() {
+    QTest::addColumn<QJsonObject>("usage");
+    QTest::addColumn<bool>("reported");
+    QTest::addColumn<qint64>("total");
+    QTest::newRow("missing") << QJsonObject{} << false << qint64(0);
+    QTest::newRow("reported-zero") << QJsonObject{{"prompt_tokens", 0}, {"completion_tokens", 0}, {"total_tokens", 0}} << true << qint64(0);
+    QTest::newRow("missing-total") << QJsonObject{{"prompt_tokens", 2}, {"completion_tokens", 3}} << true << qint64(5);
+    QTest::newRow("provider-total") << QJsonObject{{"prompt_tokens", 2}, {"completion_tokens", 3}, {"total_tokens", 8}} << true << qint64(8);
+}
+
+void TestAnthropicMessagesClient::openAiMissingVsReportedZeroUsage() {
+    QFETCH(QJsonObject, usage);
+    QFETCH(bool, reported);
+    QFETCH(qint64, total);
+    LocalHttpServer server;
+    QJsonObject response{{"id", "usage-test"}, {"model", "test"},
+        {"choices", QJsonArray{QJsonObject{{"message", QJsonObject{{"content", "ok"}}}, {"finish_reason", "stop"}}}}};
+    if (!usage.isEmpty()) response["usage"] = usage;
+    server.enqueue({200, "application/json", QJsonDocument(response).toJson(QJsonDocument::Compact)});
+    OpenAICompatibleClient client;
+    auto config = anthropicConfig(server);
+    config.provider = "openai-compatible";
+    bool done = false;
+    LlmResponse result;
+    client.sendChatCompletionAsync(config, {{"user", "hi"}}, {},
+        [&](bool ok, LlmResponse value, QString error) {
+            QVERIFY2(ok, qPrintable(error));
+            result = value;
+            done = true;
+        });
+    QTRY_VERIFY_WITH_TIMEOUT(done, 2000);
+    QCOMPARE(result.usage.reported, reported);
+    QCOMPARE(result.usage.totalTokens, total);
 }
 
 QTEST_MAIN(TestAnthropicMessagesClient)

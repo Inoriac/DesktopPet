@@ -60,6 +60,9 @@ public:
         ModelCompletionHandler completion);
     Result<ModelRouteConfig, DomainError> resolve(
         ModelRole role, const ModelConstraints& constraints) const;
+    void setAttemptObserver(std::function<void(const ModelAttemptReport&)> observer) {
+        m_attemptObserver = std::move(observer);
+    }
 
 private:
     struct CompletionState;
@@ -85,6 +88,7 @@ private:
     std::shared_ptr<bool> m_alive = std::make_shared<bool>(true);
     struct CallbackGate;
     std::shared_ptr<CallbackGate> m_callbackGate;
+    std::function<void(const ModelAttemptReport&)> m_attemptObserver;
 };
 
 #endif // DESKTOP_PET_MODEL_ROUTER_H

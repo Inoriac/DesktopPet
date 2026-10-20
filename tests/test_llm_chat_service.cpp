@@ -60,6 +60,8 @@ private slots:
     void testRetryThenSuccess();
     void testTerminalFailureUpdatesStatistics();
     void testRequestReleasesCapturedState();
+    void duplicateCompletionsAndDisabledStreamNotCounted();
+    void cancellationDoesNotRetry();
     void testDaydreamConfigLoadsAndClamps();
     void testEmotionConfigLoadsFromActiveProfile();
     void testEmotionContextIsReadOnlyAndSafetyBounded();
@@ -111,7 +113,10 @@ void TestLlmChatService::testRetryThenSuccess() {
     successResp.usage.totalTokens = 33;
     successResp.usage.reasoningTokens = 9;
 
-    fakeClient->planned.append({false, "first failed", {}});
+    LlmResponse failedResp;
+    failedResp.usage.promptTokens = 2;
+    failedResp.usage.totalTokens = 2;
+    fakeClient->planned.append({false, "first failed", failedResp});
     fakeClient->planned.append({true, "", successResp});
 
     LlmChatService service(fakeClient);
@@ -140,12 +145,12 @@ void TestLlmChatService::testRetryThenSuccess() {
 
     const std::optional<PetStatistics> stats = StatisticManager::getInstance().getPetStatistics("AI_GLOBAL");
     QVERIFY(stats.has_value());
-    QCOMPARE(stats->llmCallCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmCallCount, static_cast<qint64>(2));
     QCOMPARE(stats->llmSuccessCount, static_cast<qint64>(1));
-    QCOMPARE(stats->llmFailureCount, static_cast<qint64>(0));
-    QCOMPARE(stats->llmPromptTokens, static_cast<qint64>(11));
+    QCOMPARE(stats->llmFailureCount, static_cast<qint64>(1));
+    QCOMPARE(stats->llmPromptTokens, static_cast<qint64>(13));
     QCOMPARE(stats->llmCompletionTokens, static_cast<qint64>(22));
-    QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(33));
+    QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(35));
     QCOMPARE(stats->llmReasoningTokens, static_cast<qint64>(9));
 }
 
@@ -321,6 +326,76 @@ void TestLlmChatService::testEmotionContextIsReadOnlyAndSafetyBounded() {
     const QString systemPrompt = builder.buildSystemPrompt(QStringLiteral("TestPet"));
     QVERIFY(systemPrompt.contains(QStringLiteral("不得降低命令成功率")));
     QVERIFY(systemPrompt.contains(QStringLiteral("不得用悲伤、生气、内疚")));
+}
+
+
+void TestLlmChatService::duplicateCompletionsAndDisabledStreamNotCounted() {
+    class DuplicateClient : public LlmClient {
+    public:
+        int calls = 0;
+        void sendChatCompletionAsync(const LlmConfig&, const QList<ChatMessage>&, const QJsonArray&,
+                                     LlmCompletionHandler callback) override {
+            ++calls;
+            callback(true, {}, {});
+            callback(true, {}, {});
+        }
+    };
+    auto client = std::make_shared<DuplicateClient>();
+    LlmChatService service(client);
+    auto& statistics = StatisticManager::getInstance();
+    statistics.initialize("", 0);
+    LlmConfig config;
+    config.enabled = true;
+    config.retryCount = 1;
+    int completed = 0;
+    service.requestAsyncWithConfig(config, {}, {}, [&](bool ok, LlmResponse, QString) {
+        QVERIFY(ok);
+        ++completed;
+    }, "Pet");
+    QCOMPARE(completed, 1);
+    QCOMPARE(statistics.getPetStatistics("Pet")->llmCallCount, 1);
+    service.requestStreamAsyncWithConfig(config, {}, {}, {}, [&](bool ok, LlmResponse, QString) {
+        QVERIFY(ok);
+        ++completed;
+    }, "Pet");
+    QCOMPARE(completed, 2);
+    QCOMPARE(statistics.getPetStatistics("Pet")->llmCallCount, 2);
+    config.enabled = false;
+    service.requestStreamAsyncWithConfig(config, {}, {}, {}, [&](bool ok, LlmResponse, QString) {
+        QVERIFY(!ok);
+        ++completed;
+    }, "Pet");
+    QCOMPARE(completed, 3);
+    QCOMPARE(client->calls, 2);
+    QCOMPARE(statistics.getPetStatistics("Pet")->llmCallCount, 2);
+}
+
+void TestLlmChatService::cancellationDoesNotRetry() {
+    auto client = std::make_shared<FakeAsyncLlmClient>();
+    LlmResponse response;
+    response.usage.reported = true;
+    response.usage.promptTokens = 9;
+    response.usage.totalTokens = 9;
+    client->planned.append({false, "LLM_REQUEST_CANCELLED: request cancelled", response});
+    auto& statistics = StatisticManager::getInstance();
+    statistics.initialize("", 0);
+    LlmChatService service(client);
+    LlmConfig config;
+    config.enabled = true;
+    config.retryCount = 2;
+    bool completed = false;
+    service.requestAsyncWithConfig(config, {}, {}, [&](bool ok, LlmResponse value, QString) {
+        QVERIFY(!ok);
+        QCOMPARE(value.usage.totalTokens, 9);
+        completed = true;
+    }, "Pet");
+    QTRY_VERIFY(completed);
+    QCOMPARE(client->callCount, 1);
+    const auto all = statistics.overview()["allTime"].toObject();
+    QCOMPARE(all["callCount"].toInteger(), 1);
+    QCOMPARE(all["cancelledCount"].toInteger(), 1);
+    QCOMPARE(all["failureCount"].toInteger(), 0);
+    QCOMPARE(all["totalTokens"].toInteger(), 9);
 }
 
 QTEST_MAIN(TestLlmChatService)

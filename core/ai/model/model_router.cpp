@@ -2,6 +2,7 @@
 #include "ai/plugin/schema_validator.h"
 
 #include <QDateTime>
+#include <QElapsedTimer>
 #include <QJsonDocument>
 #include <QJsonValue>
 #include <QPointer>
@@ -15,6 +16,21 @@
 #include <algorithm>
 
 namespace {
+
+QString usageRole(ModelRole role) {
+    switch (role) {
+    case ModelRole::Dialogue: return QStringLiteral("dialogue");
+    case ModelRole::FastExtract: return QStringLiteral("fastExtract");
+    case ModelRole::Consolidation: return QStringLiteral("consolidation");
+    case ModelRole::Diary: return QStringLiteral("diary");
+    case ModelRole::Vision: return QStringLiteral("vision");
+    case ModelRole::Daydream: return QStringLiteral("daydream");
+    case ModelRole::AgencyDecision: return QStringLiteral("agencyDecision");
+    case ModelRole::TaskExecution: return QStringLiteral("taskExecution");
+    case ModelRole::PersonalityEvolution: return QStringLiteral("personalityEvolution");
+    }
+    return QStringLiteral("unclassified");
+}
 
 QString circuitKey(ModelRole role, const QString& routeId) {
     return QString::number(static_cast<int>(role)) + QLatin1Char(':') + routeId;
@@ -581,7 +597,19 @@ void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
                 return;
             }
             auto completionReceived = std::make_shared<std::atomic_bool>(false);
+            ModelAttemptReport report;
+            report.attemptId = attemptId;
+            report.profileId = state->request.profileId;
+            report.petName = state->request.petName;
+            report.role = usageRole(state->request.role);
+            report.provider = route.llm.provider;
+            report.model = route.llm.model;
+            report.routeId = route.routeId;
+            QElapsedTimer elapsed;
+            elapsed.start();
             auto done = [hooks, attemptId, alive, returnToOwner, error, completionReceived,
+                         report, elapsed, attemptObserver = m_attemptObserver,
+                         requestHandle = state->requestHandle,
                          completion = std::move(completion)](bool ok, LlmResponse response,
                                                              QString message) mutable {
                 if (completionReceived->exchange(true)) {
@@ -591,6 +619,14 @@ void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
                         hooks->settle(attemptId, response.usage, [](Result<void, DomainError>) {});
                     return;
                 }
+                report.success = ok;
+                report.cancelled = (requestHandle && requestHandle->isCancelled())
+                    || message.startsWith(QStringLiteral("LLM_REQUEST_CANCELLED"));
+                report.durationMs = elapsed.elapsed();
+                report.completedAt = QDateTime::currentDateTimeUtc();
+                report.usage = response.usage;
+                if (!response.model.isEmpty()) report.model = response.model;
+                if (attemptObserver) attemptObserver(report);
                 // Settlement has no dependency on router/UI lifetime.
                 const auto usage = response.usage;
                 auto settled = [alive, returnToOwner, error, completion = std::move(completion), ok,

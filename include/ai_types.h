@@ -279,6 +279,28 @@ struct LlmUsage {
     qint64 cachedTokens = 0;
     qint64 promptCacheHitTokens = 0;
     qint64 promptCacheMissTokens = 0;
+    bool reported = false;
+
+    bool hasReportedUsage() const {
+        return reported || promptTokens != 0 || completionTokens != 0 || totalTokens != 0
+            || reasoningTokens != 0 || cachedTokens != 0 || promptCacheHitTokens != 0
+            || promptCacheMissTokens != 0;
+    }
+};
+
+struct ModelAttemptReport {
+    QString attemptId;
+    QString profileId;
+    QString petName;
+    QString role = QStringLiteral("unclassified");
+    QString provider;
+    QString model;
+    QString routeId;
+    bool success = false;
+    bool cancelled = false;
+    qint64 durationMs = 0;
+    LlmUsage usage;
+    QDateTime completedAt;
 };
 
 // 单次 completion 解析结果

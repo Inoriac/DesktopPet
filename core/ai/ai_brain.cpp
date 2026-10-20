@@ -27,6 +27,7 @@
 #include <utility>
 
 #include "configLoader/config_manager.h"
+#include "statistic_manager.h"
 #include "chat/chat_preparation_executor.h"
 #include "runtime/agent_runtime_services.h"
 #include "tools/companion_tools.h"
@@ -75,6 +76,9 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     , m_modelRoleRegistry(std::move(modelRoles))
     , m_modelRouter(&m_modelRoleRegistry,
                     modelClient ? modelClient : &m_modelClient) {
+    m_modelRouter.setAttemptObserver([](const ModelAttemptReport& report) {
+        StatisticManager::getInstance().recordLlmAttempt(report);
+    });
     m_imageReadPool.setMaxThreadCount(1);
     // AIBrain is the trusted desktop entry point even before runtime services attach.
     // Generic preparation DTOs remain Internal unless the host projects a context.

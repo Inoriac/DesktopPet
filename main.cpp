@@ -128,7 +128,9 @@ int main(int argc, char *argv[])
     if (!configPath.isEmpty()) {
         ConfigManager::instance().loadConfig(configPath);
     }
-    StatisticManager::getInstance().initialize();
+    StatisticManager::getInstance().initializeForProfile(
+        profileMigration.appDataRoot, profile.profileId, petName,
+        QStringLiteral("log/statistics.json"), registeredProfileIds.size() == 1);
 
     // 配置全由 ConfigManager 提供（launcher 写入 launch_config.json 后经 loadConfig 载入），
     // 不再依赖任何 UI 控件读取——等价于原 MainWindow::OnStartPet 的核心逻辑。

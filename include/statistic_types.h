@@ -50,6 +50,8 @@ struct PetStatistics {
     qint64 llmCallCount = 0;
     qint64 llmSuccessCount = 0;
     qint64 llmFailureCount = 0;
+    qint64 llmCancelledCount = 0;
+    qint64 llmUnknownUsageCount = 0;
     qint64 llmPromptTokens = 0;
     qint64 llmCompletionTokens = 0;
     qint64 llmTotalTokens = 0;
@@ -60,6 +62,21 @@ struct PetStatistics {
 
     PetStatistics() = default;
     explicit PetStatistics(const QString& name) : petName(name) {}
+};
+
+struct LlmStatistics {
+    qint64 callCount = 0;
+    qint64 successCount = 0;
+    qint64 failureCount = 0;
+    qint64 cancelledCount = 0;
+    qint64 unknownUsageCount = 0;
+    qint64 promptTokens = 0;
+    qint64 completionTokens = 0;
+    qint64 totalTokens = 0;
+    qint64 reasoningTokens = 0;
+    qint64 cachedTokens = 0;
+    qint64 promptCacheHitTokens = 0;
+    qint64 promptCacheMissTokens = 0;
 };
 
 #endif //DESKTOP_PET_STATISTIC_TYPES_H

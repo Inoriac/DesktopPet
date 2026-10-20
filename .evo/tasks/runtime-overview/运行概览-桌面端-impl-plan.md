@@ -4,10 +4,10 @@
 
 ## Task 1：角色用量与运行统计
 - 关联设计：§3.1
-- 状态：[ ]
+- 状态：[x]
 - Wave：1
 - 依赖：无
-- 文件：include/{ai_types,statistic_types}.h、statistic/statistic_manager.*、core/ai/model/model_router.*、core/ai/llm/{llm_chat_service,llm_chat_model_client,openai_compatible_client,anthropic_messages_client}.*、core/ai/ai_brain.cpp、main.cpp；tests/test_{statistic_manager,model_router,llm_chat_service,anthropic_messages_client,llm}.cpp；必要的 CMakeLists.txt 测试注册。
+- 文件：include/{ai_types,statistic_types}.h、statistic/statistic_manager.*、core/ai/model/model_router.*、core/ai/llm/{llm_chat_service,llm_chat_model_client,openai_compatible_client,anthropic_messages_client}.*、core/ai/ai_brain.cpp、main.cpp；tests/test_{statistic_manager,model_router,llm_chat_service,anthropic_messages_client}.cpp；必要的 CMakeLists.txt 测试注册。
 - 测试：attempt_rollups_consistent、fallback_and_repair_count_once、duplicate_completion_dedupes、reservation_denial_not_counted、cancelled_attempt、missing_vs_reported_zero_usage、anthropic_cache_total、profile_restart_rename_isolation、legacy_import_without_fake_details、runtime_checkpoint_not_double_counted、initialization_clears_previous_data、bounded_recent_history、persistence_failure_visible。
 
 ## Task 2：认证运行快照与日志维护

@@ -8,6 +8,9 @@
 #include <QSignalSpy>
 #include <QFile>
 #include <QDir>
+#include <QTemporaryDir>
+#include <QLockFile>
+#include <QUuid>
 #include <thread>
 #include <vector>
 
@@ -48,6 +51,15 @@ private slots:
 
     // 边界条件测试
     void testConcurrentAccess();
+    void attemptRollupsConsistent();
+    void missingVsReportedZeroUsage();
+    void profileRestartRenameIsolation();
+    void legacyImportWithoutFakeDetails();
+    void runtimeCheckpointNotDoubleCounted();
+    void initializationClearsPreviousData();
+    void boundedRecentHistory();
+    void persistenceFailureVisible();
+    void lockedProfileUsesMemoryOnly();
 
 private:
     QString testFilePath = "/config/pet_info.json";
@@ -321,6 +333,227 @@ void TestStatisticManager::testConcurrentAccess()
     QVERIFY(stats.has_value());
     QCOMPARE(stats->llmCallCount, static_cast<qint64>(threadCount * callsPerThread));
     QCOMPARE(stats->llmTotalTokens, static_cast<qint64>(threadCount * callsPerThread));
+}
+
+
+namespace {
+const QString profileA = QStringLiteral("aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa");
+const QString profileB = QStringLiteral("bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb");
+
+ModelAttemptReport attempt(const QString& id, const QDateTime& at) {
+    ModelAttemptReport report;
+    report.attemptId = id;
+    report.profileId = profileA;
+    report.petName = QStringLiteral("diary_fragment");
+    report.role = QStringLiteral("diary");
+    report.provider = QStringLiteral("test-provider");
+    report.model = QStringLiteral("test-model");
+    report.routeId = QStringLiteral("primary");
+    report.success = true;
+    report.durationMs = 25;
+    report.completedAt = at;
+    report.usage.promptTokens = 10;
+    report.usage.completionTokens = 3;
+    report.usage.totalTokens = 13;
+    return report;
+}
+
+qint64 count(const QJsonObject& object, const QString& key) {
+    return object.value(key).toInteger();
+}
+}
+
+void TestStatisticManager::attemptRollupsConsistent() {
+    QTemporaryDir dir;
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    const auto now = QDateTime::currentDateTimeUtc();
+    auto success = attempt("success", now);
+    manager->recordLlmAttempt(success);
+    auto failure = attempt("failure", now);
+    failure.success = false;
+    failure.usage = {};
+    manager->recordLlmAttempt(failure);
+    auto cancelled = attempt("cancelled", now);
+    cancelled.success = false;
+    cancelled.cancelled = true;
+    cancelled.usage = {};
+    manager->recordLlmAttempt(cancelled);
+    const auto view = manager->overview(now);
+    const auto all = view["allTime"].toObject();
+    QCOMPARE(count(all, "callCount"), 3);
+    QCOMPARE(count(all, "successCount"), 1);
+    QCOMPARE(count(all, "failureCount"), 1);
+    QCOMPARE(count(all, "cancelledCount"), 1);
+    QCOMPARE(count(all, "unknownUsageCount"), 2);
+    QCOMPARE(count(all, "totalTokens"), 13);
+    QCOMPARE(view["today"].toObject(), all);
+    QCOMPARE(view["session"].toObject(), all);
+    QCOMPARE(view["byModel"].toArray().size(), 1);
+    QCOMPARE(count(view["byModel"].toArray().first().toObject(), "callCount"), 3);
+    QCOMPARE(view["recentCalls"].toArray().size(), 3);
+    const auto recent = view["recentCalls"].toArray().first().toObject();
+    QCOMPARE(recent["result"].toString(), QString("cancelled"));
+    QVERIFY(!recent.contains("prompt"));
+    const auto compatibility = manager->getPetStatistics("Pet");
+    QVERIFY(compatibility);
+    QCOMPARE(compatibility->llmCallCount, 3);
+    QCOMPARE(compatibility->llmTotalTokens, 13);
+    QCOMPARE(manager->getAllPetStatistics().size(), 1);
+    auto other = attempt("other-profile", now);
+    other.profileId = profileB;
+    manager->recordLlmAttempt(other);
+    QCOMPARE(count(manager->overview(now)["allTime"].toObject(), "callCount"), 3);
+    QVERIFY(!manager->persistenceWarning().isEmpty());
+}
+
+void TestStatisticManager::missingVsReportedZeroUsage() {
+    QTemporaryDir dir;
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    const auto now = QDateTime::currentDateTimeUtc();
+    auto missing = attempt("missing", now);
+    missing.usage = {};
+    manager->recordLlmAttempt(missing);
+    auto zero = missing;
+    zero.attemptId = "zero";
+    zero.usage.reported = true;
+    manager->recordLlmAttempt(zero);
+    const auto view = manager->overview(now);
+    QCOMPARE(count(view["allTime"].toObject(), "unknownUsageCount"), 1);
+    QCOMPARE(count(view["allTime"].toObject(), "totalTokens"), 0);
+    QVERIFY(view["recentCalls"].toArray().first().toObject()["usageReported"].toBool());
+    QVERIFY(!view["recentCalls"].toArray().last().toObject()["usageReported"].toBool());
+}
+
+void TestStatisticManager::profileRestartRenameIsolation() {
+    QTemporaryDir dir;
+    manager->initializeForProfile(dir.path(), profileA, "OldName", {}, false);
+    manager->recordLlmAttempt(attempt("first", QDateTime::currentDateTimeUtc()));
+    manager->saveStatistics();
+    manager->initializeForProfile(dir.path(), profileA, "NewName", {}, false);
+    QCOMPARE(count(manager->overview()["allTime"].toObject(), "callCount"), 1);
+    QCOMPARE(count(manager->overview()["session"].toObject(), "callCount"), 0);
+    QVERIFY(manager->getPetStatistics("NewName"));
+    QVERIFY(!manager->getPetStatistics("OldName"));
+    manager->recordLlmCall("", true, LlmUsage{});
+    QCOMPARE(manager->getPetStatistics("NewName")->llmCallCount, 2);
+    manager->initializeForProfile(dir.path(), profileB, "NewName", {}, false);
+    QCOMPARE(count(manager->overview()["allTime"].toObject(), "callCount"), 0);
+}
+
+void TestStatisticManager::legacyImportWithoutFakeDetails() {
+    QTemporaryDir dir;
+    const QString legacy = dir.filePath("legacy.json");
+    manager->initialize(legacy, 0);
+    LlmUsage usage;
+    usage.totalTokens = 55;
+    manager->recordLlmCall("Pet", true, usage);
+    manager->saveStatistics();
+    QFile old(legacy);
+    QVERIFY(old.open(QIODevice::ReadOnly));
+    const auto before = old.readAll();
+    old.close();
+    manager->initializeForProfile(dir.path(), profileA, "Pet", legacy, true);
+    auto view = manager->overview();
+    QVERIFY(view["legacyImported"].toBool());
+    QCOMPARE(count(view["allTime"].toObject(), "totalTokens"), 55);
+    QCOMPARE(count(view["today"].toObject(), "callCount"), 0);
+    QVERIFY(view["byModel"].toArray().isEmpty());
+    QVERIFY(view["recentCalls"].toArray().isEmpty());
+    manager->saveStatistics();
+    QVERIFY(old.open(QIODevice::ReadOnly));
+    QCOMPARE(old.readAll(), before);
+    manager->initializeForProfile(dir.path(), profileB, "Pet", legacy, false);
+    QVERIFY(!manager->overview()["legacyImported"].toBool());
+    QCOMPARE(count(manager->overview()["allTime"].toObject(), "callCount"), 0);
+}
+
+void TestStatisticManager::runtimeCheckpointNotDoubleCounted() {
+    QTemporaryDir dir;
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    manager->recordPetStart("Pet");
+    QTest::qWait(30);
+    manager->saveStatistics();
+    QTest::qWait(20);
+    manager->saveStatistics();
+    QFile saved(dir.filePath("profiles/" + profileA + "/statistics.json"));
+    QVERIFY(saved.open(QIODevice::ReadOnly));
+    const auto root = QJsonDocument::fromJson(saved.readAll()).object();
+    const auto total = count(root["statistics"].toObject()["uptime"].toObject(), "totalMs");
+    QVERIFY(total >= 50);
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    QCOMPARE(count(manager->overview()["uptime"].toObject(), "totalMs"), total);
+    QCOMPARE(count(manager->overview()["uptime"].toObject(), "sessionMs"), 0);
+    manager->recordPetStart("Pet");
+    QTest::qWait(20);
+    manager->recordPetStop("Pet");
+    const auto stopped = manager->overview()["uptime"].toObject();
+    QCOMPARE(count(stopped, "totalMs"), total + count(stopped, "sessionMs"));
+    manager->saveStatistics();
+    manager->loadStatistics();
+    QCOMPARE(count(manager->overview()["uptime"].toObject(), "totalMs"), count(stopped, "totalMs"));
+}
+
+void TestStatisticManager::initializationClearsPreviousData() {
+    QTemporaryDir dir;
+    manager->recordLlmCall("stale", true, LlmUsage{});
+    manager->initialize(dir.filePath("missing.json"), 0);
+    QVERIFY(manager->getAllPetStatistics().isEmpty());
+    manager->recordPetStart("fresh");
+    QVERIFY(!manager->getPetStatistics("stale"));
+}
+
+void TestStatisticManager::boundedRecentHistory() {
+    QTemporaryDir dir;
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    const auto now = QDateTime::currentDateTimeUtc();
+    for (int i = 0; i < 220; ++i)
+        manager->recordLlmAttempt(attempt(QString::number(i), now.addDays(-219 + i)));
+    const auto view = manager->overview(now);
+    QCOMPARE(count(view["allTime"].toObject(), "callCount"), 220);
+    QCOMPARE(view["recentCalls"].toArray().size(), 200);
+    QCOMPARE(view["recentCalls"].toArray().first().toObject()["attemptId"].toString(), QString("219"));
+    QCOMPARE(view["daily"].toArray().size(), 90);
+    QCOMPARE(count(view["today"].toObject(), "callCount"), 1);
+}
+
+void TestStatisticManager::persistenceFailureVisible() {
+    QTemporaryDir dir;
+    const QString folder = dir.filePath("profiles/" + profileA);
+    QVERIFY(QDir().mkpath(folder));
+    const QString path = folder + "/statistics.json";
+    for (const QByteArray bad : {QByteArray("not json"), QByteArray(R"({"version":2,"profileId":"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","statistics":null})")}) {
+        QFile broken(path);
+        QVERIFY(broken.open(QIODevice::WriteOnly | QIODevice::Truncate));
+        broken.write(bad);
+        broken.close();
+        manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+        QVERIFY(!manager->persistenceWarning().isEmpty());
+        manager->recordLlmAttempt(attempt("memory-only", QDateTime::currentDateTimeUtc()));
+        manager->saveStatistics();
+        QCOMPARE(count(manager->overview()["allTime"].toObject(), "callCount"), 1);
+        QVERIFY(broken.open(QIODevice::ReadOnly));
+        QCOMPARE(broken.readAll(), bad);
+        manager->initialize("", 0);
+    }
+    manager->initialize(dir.path(), 0);
+    manager->recordLlmCall("Pet", true, {});
+    manager->saveStatistics();
+    QVERIFY(!manager->persistenceWarning().isEmpty());
+}
+
+void TestStatisticManager::lockedProfileUsesMemoryOnly() {
+    QTemporaryDir dir;
+    const QString folder = dir.filePath("profiles/" + profileA);
+    QVERIFY(QDir().mkpath(folder));
+    QLockFile lock(folder + "/statistics.json.lock");
+    QVERIFY(lock.tryLock());
+    manager->initializeForProfile(dir.path(), profileA, "Pet", {}, false);
+    QVERIFY(!manager->persistenceWarning().isEmpty());
+    manager->recordLlmAttempt(attempt("memory-only", QDateTime::currentDateTimeUtc()));
+    manager->saveStatistics();
+    QCOMPARE(count(manager->overview()["allTime"].toObject(), "callCount"), 1);
+    QVERIFY(!QFile::exists(folder + "/statistics.json"));
+    manager->initialize("", 0);
 }
 
 QTEST_MAIN(TestStatisticManager)

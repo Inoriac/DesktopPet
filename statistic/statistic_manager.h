@@ -12,6 +12,9 @@
 #include <QJsonObject>
 #include <QJsonDocument>
 #include <QMutex>
+#include <QMap>
+#include <QElapsedTimer>
+#include <QLockFile>
 #include <functional>
 #include <optional>
 
@@ -31,6 +34,9 @@ public:
     // 保存路径与自动保存间隔(秒)
     void initialize(const QString& savePath = "log/statistics.json",
                     int autoSaveInterval= 300);
+    void initializeForProfile(const QString& appDataRoot, const QString& profileId,
+                              const QString& petName, const QString& legacyPath,
+                              bool allowLegacyImport);
 
     // 注册统计事件槽函数
     template<typename Func>
@@ -44,6 +50,9 @@ public:
     void recordTouchInteraction(const QString& petName, const QString& areaName);
     void recordLlmCall(const QString& petName, bool success, const LlmUsage& usage);
     void recordLlmUsage(const QString& petName, const LlmUsage& usage);
+    void recordLlmAttempt(const ModelAttemptReport& report);
+    QJsonObject overview(const QDateTime& now = QDateTime::currentDateTime()) const;
+    QString persistenceWarning() const;
     // void recordAnimationPlay(const QString& petName, const QString& animationName, qint64 durationMs = 0);
 
     // 数据查询接口
@@ -78,17 +87,43 @@ private:
 
     // 内部方法
     void ensurePetStatistics(const QString& petName);   // 检测是否存在
-    QString eventTypeToString(StatisticEventType type); // 类型转换
+    QString statisticsKey(const QString& petName) const;
+    void configure(const QString& savePath, int interval, const QString& profileId,
+                   const QString& petName);
+    PetStatistics snapshot(const QString& petName) const;
+    QJsonObject overviewLocked(const QString& petName, const QDateTime& now) const;
 
     // 持久化
     void saveToFile();
     void loadFromFile();
     QJsonObject statisticsToJson();
     void jsonToStatistics(const QJsonObject& json);
+    void importLegacy(const QString& path);
+
+    struct ModelUsage {
+        QString role;
+        QString provider;
+        QString model;
+        LlmStatistics counters;
+    };
+    struct UsageHistory {
+        LlmStatistics session;
+        QMap<QString, LlmStatistics> daily;
+        QMap<QString, ModelUsage> byModel;
+        QJsonArray recentCalls;
+        bool legacyImported = false;
+    };
 
 private:
     QHash<QString, PetStatistics> petStatisticsMap;  // 桌宠统计数据
-    QHash<StatisticEventType, QList<QMetaObject::Connection>> eventConnections; // 事件连接
+    QHash<QString, UsageHistory> usageHistories;
+    QHash<QString, QElapsedTimer> runningTimers;
+    QString activeProfileId;
+    QString activePetName;
+    QString storageWarning;
+    QString identityWarning;
+    bool persistenceBlocked = false;
+    std::unique_ptr<QLockFile> writerLock;
 
     QString filePath;                                // 存储文件路径
     QTimer* autoSaveTimer{};                           // 自动保存定时器
@@ -97,7 +132,7 @@ private:
     bool autoSaveEnabled = true;                     // 是否启用自动保存
     int autoSaveInterval = 300;                      // 自动保存间隔(秒)
 
-    QMutex dataMutex;                                // 数据访问互斥锁
+    mutable QMutex dataMutex;                                // 数据访问互斥锁
 
     // 事件槽函数存储
     QHash<StatisticEventType, QList<std::function<void(const StatisticEvent&)>>> eventSlots;

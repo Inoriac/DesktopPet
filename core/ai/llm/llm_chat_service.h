@@ -30,7 +30,8 @@ public:
                                 const QList<ChatMessage>& messages,
                                 const QJsonArray& tools,
                                 LlmCompletionHandler callback,
-                                const QString& petName = "AI_GLOBAL");
+                                const QString& petName = "AI_GLOBAL",
+                                bool recordStatistics = true);
 
     std::shared_ptr<LlmRequestHandle> requestStreamAsync(
         const QList<ChatMessage>& messages,
@@ -45,7 +46,8 @@ public:
         const QJsonArray& tools,
         LlmStreamObserver observer,
         LlmCompletionHandler completion,
-        const QString& petName = "AI_GLOBAL");
+        const QString& petName = "AI_GLOBAL",
+        bool recordStatistics = true);
 
 private:
     std::shared_ptr<LlmClient> clientForConfig(const LlmConfig& cfg) const;

@@ -13,6 +13,7 @@
 #include "ai/model/model_role_registry.h"
 #include "ai/model/model_router.h"
 #include "configLoader/config_manager.h"
+#include "statistic_manager.h"
 
 namespace {
 
@@ -205,6 +206,10 @@ private slots:
     void getModelRoleConfig_whenLegacyDaydreamFieldsExist_shouldSynthesizeCompatibleRoute();
     void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
     void completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries();
+    void attemptsCountFallbackRepairAndNoLowLevelDuplicates();
+    void attemptObserverDedupesAndOutlivesRouter();
+    void reservationDenialNotCounted();
+    void cancelledAttemptIsReported();
 };
 
 void ModelRouterTests::structuredOutput_acceptsWholeObjectFormats_data() {
@@ -1147,6 +1152,100 @@ void ModelRouterTests::context_scopeFiltersExternalAndMissingProjections() {
     ContextProjection wrong=allowed;wrong.scope->profileId="profile-b";wrong.messages[0].content="wrong profile";
     request.projections={missing,owner,allowed,wrong};const auto result=assembler.assemble(ModelRole::Dialogue,request);
     QVERIFY(result);QCOMPARE(result.value().size(),1);QCOMPARE(result.value().first().content,QString("allowed"));
+}
+
+
+void ModelRouterTests::attemptsCountFallbackRepairAndNoLowLevelDuplicates() {
+    ModelRoleRegistry registry({roleConfig(ModelRole::Dialogue, {route("a", "first"), route("b", "fallback")})});
+    FakeModelCompletionClient fake;
+    fake.replies = {{false, {}, "network timeout"}, {true, responseWithContent("invalid"), {}},
+                    {true, responseWithContent(R"({"answer":"ok"})"), {}}};
+    ModelRouter router(&registry, &fake);
+    QList<ModelAttemptReport> reports;
+    router.setAttemptObserver([&](const auto& report) { reports.append(report); });
+    ModelRequest request;
+    request.profileId = "profile";
+    request.petName = "Pet";
+    request.responseSchema = objectSchema();
+    bool completed = false;
+    router.completeAsync(request, [&](const auto& result) { QVERIFY(result); completed = true; });
+    QVERIFY(completed);
+    QCOMPARE(reports.size(), 3);
+    QVERIFY(!reports[0].success);
+    QVERIFY(reports[1].success); // A successful client return can still need schema repair.
+    QVERIFY(reports[2].success);
+    QCOMPARE(reports[1].routeId, QString("b"));
+    QCOMPARE(reports[2].role, QString("dialogue"));
+    QCOMPARE(reports[0].profileId, QString("profile"));
+    QVERIFY(reports[1].attemptId != reports[2].attemptId);
+    QVERIFY(reports[0].completedAt.isValid());
+    QVERIFY(reports[0].durationMs >= 0);
+
+    auto& statistics = StatisticManager::getInstance();
+    statistics.initialize("", 0);
+    auto client = std::make_shared<CapturingLlmClient>();
+    LlmChatService service(client);
+    LlmChatModelClient adapter(&service);
+    ModelRouter realRouter(&registry, &adapter);
+    realRouter.setAttemptObserver([&](const auto& report) { statistics.recordLlmAttempt(report); });
+    request.responseSchema = {};
+    realRouter.completeAsync(request, [](const auto& result) { QVERIFY(result); });
+    QCOMPARE(statistics.getPetStatistics("Pet")->llmCallCount, 1);
+    QVERIFY(!statistics.getPetStatistics("AI_GLOBAL"));
+}
+
+void ModelRouterTests::attemptObserverDedupesAndOutlivesRouter() {
+    class DeferredClient : public ModelCompletionClient {
+    public:
+        LlmCompletionHandler done;
+        void completeOnce(const ModelRouteConfig&, const QList<ChatMessage>&, const QJsonArray&,
+                          LlmCompletionHandler callback, const QString&) override { done = std::move(callback); }
+    } fake;
+    ModelRoleRegistry registry({roleConfig(ModelRole::Dialogue, {route("a", "first")})});
+    QList<ModelAttemptReport> reports;
+    {
+        ModelRouter router(&registry, &fake);
+        router.setAttemptObserver([&](const auto& report) { reports.append(report); });
+        router.completeAsync(ModelRequest{}, [](const auto&) {});
+    }
+    auto response = responseWithContent("ok");
+    response.model = "actual-model";
+    fake.done(true, response, {});
+    fake.done(true, response, {});
+    QCOMPARE(reports.size(), 1);
+    QCOMPARE(reports[0].model, QString("actual-model"));
+}
+
+void ModelRouterTests::reservationDenialNotCounted() {
+    ModelRoleRegistry registry({roleConfig(ModelRole::Dialogue, {route("a", "first")})});
+    FakeModelCompletionClient fake;
+    ModelRouter router(&registry, &fake);
+    int reports = 0;
+    router.setAttemptObserver([&](const auto&) { ++reports; });
+    ModelRequest request;
+    request.attemptHooks = std::make_shared<ModelAttemptHooks>();
+    request.attemptHooks->reserve = [](const auto&, auto done) {
+        done(Result<void, DomainError>::failure(domainError("BUDGET_DENIED", "test")));
+    };
+    request.attemptHooks->settle = [](const auto&, const auto&, auto done) { done(Result<void, DomainError>::success()); };
+    bool completed = false;
+    router.completeAsync(request, [&](const auto& result) { QVERIFY(!result); completed = true; });
+    QVERIFY(completed);
+    QCOMPARE(reports, 0);
+    QVERIFY(fake.routeIds.isEmpty());
+}
+
+void ModelRouterTests::cancelledAttemptIsReported() {
+    ModelRoleRegistry registry({roleConfig(ModelRole::Dialogue, {route("a", "first")})});
+    FakeModelCompletionClient fake;
+    fake.replies = {{false, {}, "LLM_REQUEST_CANCELLED: cancelled"}};
+    ModelRouter router(&registry, &fake);
+    QList<ModelAttemptReport> reports;
+    router.setAttemptObserver([&](const auto& report) { reports.append(report); });
+    router.completeAsync(ModelRequest{}, [](const auto& result) { QVERIFY(!result); });
+    QCOMPARE(reports.size(), 1);
+    QVERIFY(reports[0].cancelled);
+    QVERIFY(!reports[0].success);
 }
 
 QTEST_MAIN(ModelRouterTests)

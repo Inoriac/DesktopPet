@@ -20,7 +20,7 @@ void LlmChatModelClient::completeOnce(const ModelRouteConfig& route,
     LlmConfig config = route.llm;
     config.retryCount = 0;
     m_service->requestAsyncWithConfig(
-        config, messages, tools, std::move(callback), petName);
+        config, messages, tools, std::move(callback), petName, false);
 }
 
 std::shared_ptr<LlmRequestHandle> LlmChatModelClient::completeOnceStream(
@@ -38,5 +38,5 @@ std::shared_ptr<LlmRequestHandle> LlmChatModelClient::completeOnceStream(
     LlmConfig config = route.llm;
     config.retryCount = 0;
     return m_service->requestStreamAsyncWithConfig(
-        config, messages, tools, std::move(observer), std::move(completion), petName);
+        config, messages, tools, std::move(observer), std::move(completion), petName, false);
 }
