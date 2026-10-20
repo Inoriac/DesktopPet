@@ -20,6 +20,7 @@
 - 文件：core/ai/plugin/capability_context.{h,cpp}；core/ai/ai_brain_loop.cpp；core/ai/task/task_orchestrator.{h,cpp}；core/ai/ai_brain_tasks.cpp（若宿主覆盖投影需调整）；tests/test_capability_context.cpp；tests/test_task_orchestrator.cpp；现有聊天/插件集成回归；相关 CMake 源文件组
 - 回归：加载前无业务 schema；加载后 url 必填且游标可选；两操作独立参数；释放/旧版本不再可用；模型别名映射到网关并保留调用 ID；聊天/任务均走原权限和参数拒绝；原按需预算通过；同 ref 重载后旧投影绑定仍被拒绝。
 - 版本绑定补充范围：ToolExecutionRequest 与 core/ai/task/task_types.h、core/ai/plugin/plugin_gateway.cpp、tests/test_plugin_runtime.cpp（若在原网关测试加入回归）。
+- 联动补验范围：tests/test_module_connectivity.cpp 的实际自主 runner 回归；模拟规划器也应读取本轮 available_tools，加载前不声明隐藏的 invoke_capability，加载后使用具体操作投影。
 - 完成证据：CapabilityContext 8/8、TaskOrchestrator 38/38、PluginRuntime 30/30；StreamingDialogue/AutonomousChat 全目标通过。WebCommand 编译成功，QProcess 启动 QtGui helper 被 macOS AMFI 拦截，详见审查记录；逻辑边界由实际 Python command 网关补验。
 
 ## Task 3 跨轮工具上下文

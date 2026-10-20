@@ -31,3 +31,4 @@
 - [resolved] Task 2 审查发现 loaded 缓存更新可能使旧投影调用采用新版定义，§3.2/§4 已补充宿主内部版本绑定；插件包和业务参数契约不变。
 - [resolved] Task 4 预审确认 ActivitySelector::schema 要求 operationId，提示却允许省略；CapabilityRef::toJson 本身也会省略空值。§3.4 改为可选，与条目选择的原业务约定一致。Windows 四次失败是否由此触发仍需真实服务复验。
 - [resolved] Task 3 主审发现 conversationRevision 在 acceptMessage 和回复入库时均递增，是正常消息水位；§3.3 修订为不要求该字段相等，仍比较人物修订、参与者及授权。补 submitUserMessage 连续真实宿主轮次回归，避免只有 triggerThink 测试漏掉生产路径。
+- [resolved] 最终综合回归发现 ModuleConnectivity 的自主 runner 模拟规划器加载后仍调用隐藏的 invoke_capability，实际步骤正确拒绝为 CAPABILITY_CONTEXT_REQUIRED / executed:false；模拟器又把步骤数当成执行成功，最终因缺少证据暂停。首步 required_source_tools 并非实际阻断点。Task 2 补充该既有联动回归，让模拟响应依据实际 available_tools，并检查成功业务证据。生产约束不放宽。

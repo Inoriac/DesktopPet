@@ -868,10 +868,14 @@ void TestModuleConnectivity::
     };
     const QString entry = package + ".reader";
     CapabilityRef ref{package, entry, "1", operation};
+    const QJsonObject parameters{{"type", "object"}, {"properties", QJsonObject{
+        {"page", QJsonObject{{"type", "integer"}, {"minimum", 1}}}}},
+        {"required", QJsonArray{"page"}}, {"additionalProperties", false}};
+    const QJsonObject businessArguments{{"page", 1}};
     write("USAGE.md", "Inspect available reading material.");
     write("read.py", "import "
-                     "json,sys\njson.load(sys.stdin)\nprint(json.dumps({'empty'"
-                     ":True,'items':[]}))\n");
+                     "json,sys\nargs=json.load(sys.stdin)\nprint(json.dumps({'empty'"
+                     ":True,'items':[],'page':args['page']}))\n");
     json("plugin.json",
          {{"formatVersion", "1"},
           {"id", package},
@@ -906,7 +910,7 @@ void TestModuleConnectivity::
                     {"description", "Inspect material"},
                     {"parameters",
                      QJsonObject{{"source", "inline"},
-                                 {"schema", QJsonObject{{"type", "object"}}}}},
+                                 {"schema", parameters}}},
                     {"invocation",
                      QJsonObject{
                          {"kind", "command"},
@@ -940,6 +944,9 @@ void TestModuleConnectivity::
     r.brain.refreshTaskDependencies();
     int selections = 0, plans = 0;
     bool invocationSeen = false;
+    bool genericInvocationExposed = false, operationExposedBeforeLoad = false;
+    bool concreteParametersSeen = false;
+    QString invokedAlias;
     r.client.responder = [&](const QList<ChatMessage> &messages) {
         auto input =
             QJsonDocument::fromJson(messages.last().content.toUtf8()).object();
@@ -964,22 +971,38 @@ void TestModuleConnectivity::
         else if (system.startsWith("Plan one next step")) {
             ++plans;
             auto steps = input["steps"].toArray();
+            QString operationName;
+            for (const auto& value : input["available_tools"].toArray()) {
+                const auto function = value.toObject()["function"].toObject();
+                const auto name = function["name"].toString();
+                genericInvocationExposed |= name == "invoke_capability";
+                if (name.startsWith("cap_" + operation + "_")) {
+                    operationName = name;
+                    concreteParametersSeen |= function["parameters"].toObject() == parameters;
+                }
+            }
             output = {
-                {"required_source_tools", QJsonArray{"invoke_capability"}},
+                {"required_source_tools", QJsonArray{}},
                 {"plan", "Inspect"},
                 {"completion_criteria", "Actual query completed"}};
-            if (steps.isEmpty())
+            if (steps.isEmpty()) {
+                operationExposedBeforeLoad |= !operationName.isEmpty();
                 output["tool"] = QJsonObject{
                     {"name", "load_capability"},
                     {"arguments", QJsonObject{{"ref", ref.toJson()}}}};
-            else if (steps.size() == 1)
+            } else if (steps.size() == 1 && steps.last().toObject()["status"] == "succeeded") {
+                invokedAlias = operationName;
+                output["required_source_tools"] = QJsonArray{operationName};
                 output["tool"] = QJsonObject{
-                    {"name", "invoke_capability"},
-                    {"arguments", QJsonObject{{"ref", ref.toJson()},
-                                              {"arguments", QJsonObject{}}}}};
-            else {
+                    {"name", operationName}, {"arguments", businessArguments}};
+            } else if (steps.last().toObject()["name"] == "invoke_capability"
+                       && steps.last().toObject()["status"] == "succeeded"
+                       && steps.last().toObject()["business_evidence"].toBool()) {
                 invocationSeen = true;
                 output["candidate_answer"] = "Query returned no material";
+            } else {
+                output["needs_user"] = true;
+                output["question"] = "The controlled query did not succeed";
             }
         } else if (system.startsWith("Independently verify")) {
             auto steps = input["steps"].toArray();
@@ -1000,8 +1023,12 @@ void TestModuleConnectivity::
     autonomy.maxEstimatedCostMicrosPerHour = 10000000;
     r.brain.setAutonomyConfig(autonomy);
     r.brain.start();
-    QTRY_VERIFY_WITH_TIMEOUT(r.brain.taskSnapshot()["status"] == "Completed",
-                             10000);
+    QTRY_VERIFY_WITH_TIMEOUT(r.brain.taskSnapshot()["status"] == "Completed"
+        || r.brain.taskSnapshot()["status"] == "Paused", 10000);
+    const auto completed = r.brain.taskSnapshot();
+    QVERIFY2(completed["status"] == "Completed", qPrintable(QString::fromUtf8(
+        QJsonDocument(QJsonObject{{"status", completed["status"]},
+            {"steps", completed["steps"]}, {"reason", completed["reason"]}}).toJson(QJsonDocument::Compact))));
     ActivityStore inspect(
         profileId,
         r.services.chatPreparationRuntimeMetadata().runtimeDatabasePath);
@@ -1015,6 +1042,22 @@ void TestModuleConnectivity::
     QCOMPARE(selections, 1);
     QVERIFY(plans >= 3);
     QVERIFY(invocationSeen);
+    QVERIFY(!genericInvocationExposed);
+    QVERIFY(!operationExposedBeforeLoad);
+    QVERIFY(concreteParametersSeen);
+    QVERIFY(!invokedAlias.isEmpty());
+    const auto steps = completed["steps"].toArray();
+    QCOMPARE(steps.size(), 2);
+    QCOMPARE(steps.first().toObject()["name"].toString(), "load_capability");
+    const auto invocation = steps.last().toObject();
+    QCOMPARE(invocation["name"].toString(), "invoke_capability");
+    QCOMPARE(invocation["status"].toString(), "succeeded");
+    QVERIFY(invocation["business_evidence"].toBool());
+    QCOMPARE(invocation["arguments"].toObject()["ref"].toObject(), ref.toJson());
+    QCOMPARE(invocation["arguments"].toObject()["arguments"].toObject(), businessArguments);
+    QCOMPARE(invocation["output"].toObject()["data"].toObject()["page"].toInt(), 1);
+    QVERIFY(completed["evidence"].toArray().contains(invocation["id"]));
+    QCOMPARE(completed["required_source_tools"].toArray(), QJsonArray{"invoke_capability"});
     QVERIFY(r.brain.taskSnapshot()["autonomous"].toBool());
     QCOMPARE(
         r.brain.taskSnapshot()["context"].toObject()["originKind"].toString(),
