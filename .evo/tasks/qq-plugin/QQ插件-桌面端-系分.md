@@ -47,7 +47,7 @@ Tool command 每次使用短连接，source 使用独立长连接；共享 journ
 | event/historical | 系统推导（来源: WS 实时事件 / 显式历史查询） |
 | stdin start/ack/stop | 调用方传入（宿主观察源协议） |
 
-命令 status/list/read。status 实际连接并验证账号；list 只列配置允许会话并附本地最近消息摘要（160 UTF-16）。read 首次页在线调用 `get_group_msg_history(group_id,count=50)` / `get_friend_msg_history(user_id,count=50)`；分页游标只读本地。返回 `{state,data:{items,next_cursor,freshness,warning?}}`，每个 item 包含 event_id,sequence,cursor,chat_id,message_id,speaker_id,display_name,text,reply_to,historical，可选 occurred_at。source 从同一行构造标准 observation。
+命令 status/list/read。status 实际连接并验证账号；list(cursor='',limit=10) 只列配置允许会话并附本地最近消息摘要（160 UTF-16），返回 conversations 与 next_cursor；其游标绑定有序 allowlist 摘要，改变列表后必须重新查询。list/read 的 limit 为 1–20 上限，实际页还受约 3500 UTF-16 序列化字符预算约束，以保留宿主 6000 字符结果空间。read 首次页在线调用 `get_group_msg_history(group_id,count=50)` / `get_friend_msg_history(user_id,count=50)`；分页游标只读本地。返回 `{state,data:{items,next_cursor,freshness,warning?}}`，每个 item 包含 event_id,sequence,cursor,chat_id,message_id,speaker_id,display_name,text,reply_to,historical，可选 occurred_at。source 从同一行构造标准 observation。单条长消息独占一页，给观察入口的原始正文不变；宿主可能把模型可见字符串缩到 2000 字符，本版不提供单条正文内部翻页，不能宣称模型完整读到了所有超长正文。
 
 #### 3.1.3 流程
 校验配置 → 打开绑定账号的 journal → 连接验证 self → 按操作处理。历史响应按时间排序后入库；必须包含平台 message_id（允许 OneBot 有符号整数 ID）。private 由 message_type 判断，即使包含 group_id 仍为私聊。不把未知 actor 伪装为已知身份。结构化 text、at、face、reply 转换，其他类型明确占位；CQ 字符串安全解析为可读文本，正文中的控制串出站始终作为纯文本段。NapCat 的私聊历史中 user_id 是发送者，自己的历史消息可由本次可信查询的 chat_id 确定目标；若实时自己的私聊没有目标字段，则跳过，不能猜目标。历史返回有明确其他目标字段时不得覆盖为当前请求目标。
@@ -69,7 +69,7 @@ source：读取 start → 重放日志 → 建立验证连接 → 接收允许�
 未授权 chat：failed/PERMISSION_DENIED（不连网）。账号不符：failed/ACCOUNT_MISMATCH，source 终止，不能更改身份。history 不支持：completed、freshness=local_only、固定 warning。网络失联：命令 failed，source 退避，遵循 §1.5。外库 cursor/数据库失败：明确 failed/退出，不能重建丢失水位。诊断遵循 §1.7。
 
 #### 3.1.7 关键行为
-允许私聊和群聊能查询/归档，kind 相同数字隔离；临时私聊有 group_id 仍正确；回复引用、中文 emoji、缺时间、媒体占位转换正确。重启/source+query 去重保持完全相同 ID/正文，query 不 ACK。source 控制真实子进程完成 start/replay/ack/stop，64 条背压和 EOF 有效。错账号不入库；未授权群、自身推送不触发新对话（自身消息可归档）；超过体积受控。历史不支持保留明确 local_only，断线重连不重复分配 seq。
+允许私聊和群聊能查询/归档，kind 相同数字隔离；临时私聊有 group_id 仍正确；回复引用、中文 emoji、缺时间、媒体占位转换正确。list/read 多页保持完整集合和游标，普通长消息页经过真实宿主 sanitizer 后仍保留消息和 next_cursor；allowlist 变化使 list 旧游标失效。重启/source+query 去重保持完全相同 ID/正文，query 不 ACK。source 控制真实子进程完成 start/replay/ack/stop，64 条背压和 EOF 有效。错账号不入库；未授权群、自身推送不触发新对话（自身消息可归档）；超过体积受控。历史不支持保留明确 local_only，断线重连不重复分配 seq。
 
 ### 3.2 文本发送与可追踪回执
 
@@ -165,7 +165,7 @@ CREATE TABLE attempts (receipt_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, text 
 
 ## 6 非功能性
 
-不启动第三方 bot 大脑；一个 source 连接加工具短连接。history 50、read 1–20、WS 报文 1MiB、source pending64，降低上下文占用。无模型调用测试。长期 journal 增长需用户保管；不凭 TTL 丢掉未确认消息。source 仅记录真实收到的推送，断线历史补齐能力取决于后端。
+不启动第三方 bot 大脑；一个 source 连接加工具短连接。history 50、list/read 1–20 且有页字符预算、WS 报文 1MiB、source pending64，降低上下文占用。无模型调用测试。长期 journal 增长需用户保管；不凭 TTL 丢掉未确认消息。source 仅记录真实收到的推送，断线历史补齐能力取决于后端。内部活动可自主浏览，发送需已有目标外部会话活动；本版没有主动切换受众/任意选人开聊的宿主入口，不能通过插件伪造上下文或消息来触发。
 
 ## 7 测试与交付
 

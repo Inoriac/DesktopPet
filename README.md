@@ -32,6 +32,7 @@
 * **Python 启动器**：原 Qt 控制面板已由 Python launcher 取代，统管角色注册、配置与进程编排；包含只读私人日记页，通过一次性凭据和本地 IPC 分页读取、按篇解密，不直接访问 SQLite 或 Keychain。
 * **个性化与界面**：动画表现 / 业务逻辑分离；Dashboard 风格设置界面；Light / Dark 主题整窗平滑过渡；自绘控件（开关、圆形滑块、动画下拉框、胶囊滚动条）；部分配置热加载。
 * **可选语音合成**：Python + GENIE / `genie-tts`（GPT-SoVITS 轻量推理），默认关闭，支持中 / 日 / 英预设与自定义角色。
+* **QQ 后台插件**：[安装与契约说明](plugins/qq/README.md)。通过 OneBot 读取授权会话、发送文本与核对回执，接入既有人物与自主活动；受控验证已提供，真实 QQ 和 Windows 测试见[验收交接](plugins/qq/验收交接.md)。
 
 ---
 

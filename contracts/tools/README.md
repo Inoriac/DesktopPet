@@ -18,6 +18,7 @@
 | [观察源与聊天插件接入](./观察源与聊天插件接入.md) | 主动查询、可选 JSONL source、账号身份、监听游标及真实回执 |
 | [source.schema.json](./source.schema.json) | agent-observation-1 来源进程声明 |
 | [受控聊天示例](./examples/controlled-chat/README.md) | 可运行的本地聊天日志、宿主配置生成与可选监听 |
+| [QQ 后台会话插件](../../plugins/qq/README.md) | OneBot 正向 WS、授权私聊/群聊读取、文本发送、回执和可选观察源；实际平台与 Windows 测试见[验收交接](../../plugins/qq/验收交接.md) |
 | [LX Music 通用插件](../../plugins/lx-music/README.md) | 现有音乐工具＋Skill 的可执行接入样板、角色配置、macOS 验证与 Windows 实测步骤 |
 | [B 站内容阅读插件](../../plugins/bilibili/README.md) | 搜索、评论与字幕分页、可选本地转写、人工登录和单角色授权；通过已有自主活动选择使用 |
 | [通用网页搜索与阅读插件](../../plugins/web/README.md) | 共享原生网页后端的 command 包，搜索与正文分页、单角色授权、自主选择阅读或等待；待验收项目见[验证备注](../../plugins/web/验证备注.md) |

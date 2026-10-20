@@ -92,9 +92,19 @@ class Journal:
             raise AdapterError("INVALID_INPUT", "limit must be an integer from 1 to 20")
         before = self.cursor_number(cursor, chat_id) if cursor else 9223372036854775807
         rows = self.db.execute("SELECT seq,payload FROM messages WHERE chat_id=? AND seq<? ORDER BY seq DESC LIMIT ?", (chat_id, before, limit + 1)).fetchall()
-        selected = rows[:limit]
-        return {"items": [self.item(row) for row in reversed(selected)],
-                "next_cursor": self.cursor(selected[-1][0]) if len(rows) > limit else ""}
+        selected, units = [], 0
+        for row in rows[:limit]:
+            item = self.item(row)
+            size = len(json_text(item).encode("utf-16-le")) // 2
+            if selected and units + size > 3500:
+                break
+            selected.append(item)
+            units += size
+        # Keep a single long message intact for observation ingestion. The
+        # host may shorten its model-visible string, but won't lose the page
+        # cursor together with an oversized multi-message payload.
+        return {"items": list(reversed(selected)),
+                "next_cursor": selected[-1]["cursor"] if len(rows) > len(selected) else ""}
 
     def after(self, cursor, limit=64):
         seq = self.cursor_number(cursor)

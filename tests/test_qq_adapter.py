@@ -103,6 +103,51 @@ class QQAdapterTests(unittest.TestCase):
         self.assertEqual(item["chat_id"], "private:456")
         self.assertEqual(item["speaker_id"], "456")
 
+    def test_read_pages_fit_host_budget_without_losing_messages(self):
+        history = [message(str(i), text="聊天正文" * 300, timestamp=1770000000 + i) for i in range(12)]
+        with FakeOneBot(history={"group:123": history}) as backend:
+            self.settings["wsUrl"] = backend.url
+            arguments = {"chat_id": "group:123", "limit": 20}
+            seen = []
+            while True:
+                page = self.op("read", arguments)
+                self.assertEqual(page["state"], "completed")
+                self.assertLess(len(json.dumps(page, ensure_ascii=False).encode("utf-16-le")) // 2, 4500)
+                items = page["data"]["items"]
+                self.assertTrue(items)
+                self.assertTrue(all(item["text"] == "聊天正文" * 300 for item in items))
+                seen.extend(item["message_id"] for item in items)
+                cursor = page["data"]["next_cursor"]
+                if not cursor:
+                    break
+                arguments["cursor"] = cursor
+                self.assertLess(len(seen), 13)
+            self.assertEqual(sorted(seen, key=int), [str(i) for i in range(12)])
+            self.assertEqual([c["action"] for c in backend.calls].count("get_group_msg_history"), 1)
+
+    def test_list_pages_cover_allowlist_and_reject_stale_cursor(self):
+        self.settings["allowedConversations"] = ["group:" + str(i) for i in range(1, 31)]
+        journal = self.journal()
+        for chat in self.settings["allowedConversations"]:
+            journal.ingest(message(chat, chat, text="摘要" * 200))
+        arguments, seen, first_cursor = {"limit": 5}, [], None
+        while True:
+            page = self.op("list", arguments)
+            self.assertEqual(page["state"], "completed")
+            self.assertLess(len(json.dumps(page, ensure_ascii=False).encode("utf-16-le")) // 2, 4500)
+            rooms = page["data"]["conversations"]
+            self.assertTrue(0 < len(rooms) <= 5)
+            seen.extend(room["chat_id"] for room in rooms)
+            cursor = page["data"]["next_cursor"]
+            first_cursor = first_cursor or cursor
+            if not cursor:
+                break
+            arguments["cursor"] = cursor
+            self.assertLess(len(seen), 31)
+        self.assertEqual(seen, self.settings["allowedConversations"])
+        self.settings["allowedConversations"].reverse()
+        self.assertEqual(self.op("list", {"cursor": first_cursor})["data"]["error"]["code"], "INVALID_CURSOR")
+
     def test_history_self_private_without_target_and_negative_message_id(self):
         incoming = message(-123, "private:456", actor="999")
         del incoming["target_id"]

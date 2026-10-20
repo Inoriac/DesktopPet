@@ -20,7 +20,7 @@
 
 ## Task 3: 插件打包、角色配置与宿主验收
 - 关联设计：§3.3
-- 状态：[ ]
+- 状态：[x]
 - Wave：3
 - 依赖：Task 1、Task 2
 - 文件：plugins/qq 剩余 manifest/tool/source/skill/setup/configure 与文档；tests/test_qq_configure.py、tests/test_qq_plugin.cpp、tests/run_qq_tests.py（可选依赖检测）、tests/fixtures/qq_backend.py；CMakeLists.txt；contracts/tools 文档索引。
@@ -28,3 +28,5 @@
 
 ## Wave 检查
 每 Wave：文件冲突；新旧相关测试；上述行为覆盖；tests/ 命名/布局一致；设计锚点与 context 留痕。最终执行全量可用回归，记录真实后端待验收范围。
+
+2026-10-20：三个 Wave 均完成；全项目构建通过，本地 CTest 76/76 目标通过（排除此前受 macOS AMFI/XProtect 阻塞的 WebCommandTests）。契约校验 96/96 通过。真实 QQ 与 Windows 实机验收按用户要求交接，见 [验收交接](../../../plugins/qq/验收交接.md)；实现和验证范围见 [实现总结](QQ插件-桌面端-impl-summary.md)。

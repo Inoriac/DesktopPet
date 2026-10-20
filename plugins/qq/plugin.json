@@ -1,0 +1,26 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.qq",
+  "name": "QQ 会话",
+  "version": "1.0.0",
+  "summary": "后台查看授权 QQ 会话、按需要交流；使用现有自主活动决定阅读、等待与回复",
+  "entries": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.qq.tools",
+      "definition": "tool.json"
+    },
+    {
+      "kind": "skill",
+      "id": "desktop-pet.qq.skill",
+      "definition": "skill.json"
+    }
+  ],
+  "sources": [
+    {
+      "id": "desktop-pet.qq.events",
+      "summary": "可选的 QQ 实时消息观察源；只接收归档，不自行回复",
+      "definition": "source.json"
+    }
+  ]
+}

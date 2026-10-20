@@ -626,6 +626,16 @@ if(WIN32
         CACHE FILEPATH "Python interpreter used by Desktop Pet tests" FORCE)
 endif()
 find_package(Python3 COMPONENTS Interpreter QUIET)
+set(QQ_TEST_PYTHON "${Python3_EXECUTABLE}" CACHE FILEPATH "Optional QQ tests Python interpreter with plugins/qq/requirements.txt installed")
+if(QQ_TEST_PYTHON)
+    foreach(qq_part Adapter Delivery Configure)
+        string(TOLOWER "${qq_part}" qq_file)
+        add_test(NAME QQ${qq_part}Tests
+            COMMAND ${QQ_TEST_PYTHON} -B ${CMAKE_CURRENT_SOURCE_DIR}/tests/run_qq_tests.py ${qq_file})
+        set_tests_properties(QQ${qq_part}Tests PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR} SKIP_RETURN_CODE 77)
+    endforeach()
+endif()
 add_desktop_pet_cpp_test(native_music_tests NativeMusicTests
     SOURCES tests/test_native_music.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -2272,6 +2282,20 @@ if(Python3_Interpreter_FOUND)
         LX_MUSIC_PYTHON="${Python3_EXECUTABLE}"
         LX_MUSIC_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/lx-music"
         LX_MUSIC_BACKEND="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/lx_music_backend.py")
+endif()
+if(QQ_TEST_PYTHON)
+    add_desktop_pet_cpp_test(qq_plugin_tests QQPluginTests
+        SOURCES tests/test_qq_plugin.cpp ${CONVERSATION_SOURCES} ${EVENT_LEDGER_SOURCES}
+          core/ai/identity/person_directory.cpp core/ai/identity/sqlite_identity_repository.cpp
+          core/ai/identity/identity_types.cpp core/ai/identity/identity_baseline.cpp
+          core/ai/tool_registry.cpp core/ai/tools/runtime/tool_runtime.cpp core/ai/tools/runtime/tool_policy.cpp core/ai/tools/runtime/tool_result_sanitizer.cpp
+        INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/core
+        LIBRARIES plugin_support Qt::Core Qt::Sql Qt::Test)
+    target_compile_definitions(qq_plugin_tests PRIVATE
+        QQ_TEST_PYTHON="${QQ_TEST_PYTHON}"
+        QQ_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/qq"
+        QQ_BACKEND="${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/qq_backend.py")
+    set_tests_properties(QQPluginTests PROPERTIES SKIP_REGULAR_EXPRESSION "QQ_TEST_DEPENDENCY_MISSING")
 endif()
 get_property(desktop_pet_targets DIRECTORY PROPERTY BUILDSYSTEM_TARGETS)
 foreach(desktop_pet_target IN LISTS desktop_pet_targets)

@@ -1,0 +1,312 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.qq.tools",
+  "name": "QQ 后台会话工具",
+  "version": "1.0.0",
+  "summary": "读取授权 QQ 私聊/群聊、发送文本及查询回执；后台连接，不控制桌面",
+  "definition": {
+    "instructions": "USAGE.md",
+    "requirements": [
+      {
+        "id": "onebot-connection",
+        "description": "Python 3.9+、websockets 15.0.1，以及已登录指定 QQ 账号的 NapCat 或 SnowLuma 正向 WebSocket 服务",
+        "setup": "使用者在包外安装依赖，设置服务地址、token 文件、账号与会话白名单；普通操作不会登录或安装服务"
+      }
+    ],
+    "configuration": [
+      {
+        "key": "program",
+        "kind": "executable",
+        "required": true,
+        "description": "包外虚拟环境的 Python 3.9+ 绝对路径"
+      },
+      {
+        "key": "script",
+        "kind": "path",
+        "required": true,
+        "description": "本包固定脚本绝对路径"
+      },
+      {
+        "key": "settings",
+        "kind": "path",
+        "required": true,
+        "description": "包外 QQ 连接配置 JSON 绝对路径"
+      }
+    ],
+    "operations": [
+      {
+        "id": "status",
+        "description": "连接后核对当前 QQ 账号身份",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "status"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取 QQ 或包外日志；缓存与发送确认保存在包外"
+        },
+        "result": {
+          "format": "json",
+          "completion": "reported",
+          "description": "state 与 data 指明实际结果；unknown 不能重发",
+          "successMeaning": "请求成功完成，历史范围以 freshness 为准",
+          "failureMeaning": "操作被拒绝或未能完成；已派发但无法确认时返回 unknown",
+          "stateDescription": "state=completed/failed/unknown；receipt 查询完成不等于原消息已送达，原发送状态见 data.delivery"
+        }
+      },
+      {
+        "id": "list",
+        "description": "分页列出已授权会话及本地最近消息摘要；不联网发现新会话",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "cursor": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "list"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取 QQ 或包外日志；缓存与发送确认保存在包外"
+        },
+        "result": {
+          "format": "json",
+          "completion": "reported",
+          "description": "state 与 data 指明实际结果；unknown 不能重发",
+          "successMeaning": "请求成功完成，历史范围以 freshness 为准",
+          "failureMeaning": "操作被拒绝或未能完成；已派发但无法确认时返回 unknown",
+          "stateDescription": "state=completed/failed/unknown；receipt 查询完成不等于原消息已送达，原发送状态见 data.delivery"
+        }
+      },
+      {
+        "id": "read",
+        "description": "读取一个授权会话最近消息；返回游标可向前翻阅本地归档",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "chat_id": {
+                "type": "string",
+                "pattern": "^(group|private):[1-9][0-9]{0,19}$"
+              },
+              "cursor": {
+                "type": "string"
+              },
+              "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 20
+              }
+            },
+            "required": [
+              "chat_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "read"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取 QQ 或包外日志；缓存与发送确认保存在包外"
+        },
+        "result": {
+          "format": "json",
+          "completion": "reported",
+          "description": "state 与 data 指明实际结果；unknown 不能重发",
+          "successMeaning": "请求成功完成，历史范围以 freshness 为准",
+          "failureMeaning": "操作被拒绝或未能完成；已派发但无法确认时返回 unknown",
+          "stateDescription": "state=completed/failed/unknown；receipt 查询完成不等于原消息已送达，原发送状态见 data.delivery"
+        }
+      },
+      {
+        "id": "send",
+        "description": "向当前外部会话发送一次文本，返回可验证回执或 unknown",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "chat_id": {
+                "type": "string",
+                "pattern": "^(group|private):[1-9][0-9]{0,19}$"
+              },
+              "text": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 8000
+              },
+              "reply_to": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "chat_id",
+              "text",
+              "reply_to"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "send"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "write",
+          "description": "向受授权的 QQ 会话发出一次文本消息"
+        },
+        "result": {
+          "format": "json",
+          "completion": "reported",
+          "description": "state 与 data 指明实际结果；unknown 不能重发",
+          "successMeaning": "远端消息 ID、目标、发送者、实际正文与原始时间均已核对",
+          "failureMeaning": "操作被拒绝或未能完成；已派发但无法确认时返回 unknown",
+          "stateDescription": "state=completed/failed/unknown；receipt 查询完成不等于原消息已送达，原发送状态见 data.delivery"
+        }
+      },
+      {
+        "id": "receipt",
+        "description": "查询本插件已有发送凭证；只核对原发送，不重新发送",
+        "parameters": {
+          "source": "inline",
+          "schema": {
+            "type": "object",
+            "properties": {
+              "chat_id": {
+                "type": "string",
+                "pattern": "^(group|private):[1-9][0-9]{0,19}$"
+              },
+              "receipt_id": {
+                "type": "string",
+                "minLength": 1
+              }
+            },
+            "required": [
+              "chat_id",
+              "receipt_id"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "invocation": {
+          "kind": "command",
+          "program": {
+            "setting": "program"
+          },
+          "arguments": [
+            "-B",
+            {
+              "setting": "script"
+            },
+            "--settings",
+            {
+              "setting": "settings"
+            },
+            "--operation",
+            "receipt"
+          ],
+          "stdin": "json"
+        },
+        "effects": {
+          "kind": "read",
+          "description": "读取 QQ 或包外日志；缓存与发送确认保存在包外"
+        },
+        "result": {
+          "format": "json",
+          "completion": "reported",
+          "description": "state 与 data 指明实际结果；unknown 不能重发",
+          "successMeaning": "查询完成，原消息是否成功由 data.delivery 表示",
+          "failureMeaning": "操作被拒绝或未能完成；已派发但无法确认时返回 unknown",
+          "stateDescription": "state=completed/failed/unknown；receipt 查询完成不等于原消息已送达，原发送状态见 data.delivery"
+        }
+      }
+    ]
+  }
+}

@@ -1,0 +1,48 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.qq.events",
+  "protocol": "agent-observation-1",
+  "requirements": [
+    {
+      "id": "onebot-connection",
+      "description": "Python 3.9+、websockets 15.0.1，以及已登录指定 QQ 账号的 NapCat 或 SnowLuma 正向 WebSocket 服务",
+      "setup": "使用者在包外安装依赖，设置服务地址、token 文件、账号与会话白名单；普通操作不会登录或安装服务"
+    }
+  ],
+  "configuration": [
+    {
+      "key": "program",
+      "kind": "executable",
+      "required": true,
+      "description": "包外虚拟环境的 Python 3.9+ 绝对路径"
+    },
+    {
+      "key": "script",
+      "kind": "path",
+      "required": true,
+      "description": "本包固定脚本绝对路径"
+    },
+    {
+      "key": "settings",
+      "kind": "path",
+      "required": true,
+      "description": "包外 QQ 连接配置 JSON 绝对路径"
+    }
+  ],
+  "invocation": {
+    "kind": "command",
+    "program": {
+      "setting": "program"
+    },
+    "arguments": [
+      "-B",
+      {
+        "setting": "script"
+      },
+      "--settings",
+      {
+        "setting": "settings"
+      }
+    ]
+  }
+}

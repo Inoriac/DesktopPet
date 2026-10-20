@@ -1,0 +1,31 @@
+{
+  "formatVersion": "1",
+  "id": "desktop-pet.qq.skill",
+  "name": "自主参与 QQ 会话",
+  "version": "1.0.0",
+  "summary": "了解授权会话上下文，自行决定阅读、等待、回应或离开；尊重不同会话的信息边界",
+  "instructions": "SKILL.md",
+  "dependencies": [
+    {
+      "kind": "tool",
+      "id": "desktop-pet.qq.tools",
+      "version": "1.0.0",
+      "operations": [
+        "read",
+        "receipt"
+      ],
+      "required": true
+    },
+    {
+      "kind": "tool",
+      "id": "desktop-pet.qq.tools",
+      "version": "1.0.0",
+      "operations": [
+        "list",
+        "status",
+        "send"
+      ],
+      "required": false
+    }
+  ]
+}

@@ -16,3 +16,13 @@
 - RED：新增发送/回执场景因 UNKNOWN_OPERATION/缺 attempts API 失败。子代理发现 transport 将 async/畸形状态误认明确拒绝，主代理另以 6 个歧义变体复现后修复并回写 §1.5。
 - GREEN：QQDelivery 24/24，QQAdapter 18/18；主代理复跑通过。涵盖实际 command 与 fake 服务子进程，未访问真实 QQ。
 - Wave 核查：仅 Task 2 文件及已明确回溯的 transport/对应回归；各设计场景有行为测试，目录/锚点一致，git diff --check 通过。按用户授权进入打包与交接。
+
+## Task 3 — 打包、配置与宿主集成
+
+- 核对四份清单、按需加载文档、配置预览/备份/原子合并与包外安装。配置只处理指定角色；source 与自主工具授权分别控制，不更改宿主自主总开关。
+- 本地主人/内部活动仅授只读操作与 Skill；外部会话的 read/send/receipt 绑定精确 chat_id，不授 list。账号身份、来源和返回值适配复用既有契约，没有新增 QQ 专属宿主分支。
+- 修复主审发现的大页结果超宿主预算问题：read 按体积分页、list 增加绑定白名单的游标；C++ 集成通过真实 ToolResultSanitizer 验证页面与游标可见，原文仍供归档。
+- 测试覆盖真实 command 子进程与宿主网关：私聊/群聊读取归档、完成回执、跨会话拒绝、插件禁用、未知结果保留与不重发，以及 source 重放去重。测试夹具临时 QJsonObject 的 QJsonValueRef 生命周期错误已修复；生产代码未涉及该问题。
+- GREEN：QQAdapter 20/20、QQDelivery 24/24、QQConfigure 9/9；QQPlugin QtTest 8 项通过、0 失败、0 跳过。没有 websockets 的环境明确 skip 相关测试，不将缺依赖记作通过。
+- 最终验证：全项目构建通过；本地 CTest 76/76 目标通过；公共契约校验 96/96，QQ 四份 JSON 清单 schema 校验通过。WebCommandTests 因既有 macOS Qt 6.8.3 QProcess/QtGui 辅助进程被 AMFI/XProtect 终止的问题排除，不计作通过。
+- Wave 核查：串行工作无文件冲突，测试布局/设计锚点/context 一致。真实 QQ 与 Windows 测试未执行；README 与验收交接包含部署步骤、验收用例、失败证据与问题报告模板。
