@@ -1,5 +1,6 @@
 #include "ai/plugin/capability_context.h"
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QtTest>
 
 namespace {
@@ -41,11 +42,96 @@ QByteArray serialized(const QList<ChatMessage>& messages) {
             {"content", value.content}, {"tool_calls", value.toolCalls}, {"transportBlocks", value.transportBlocks}});
     return QJsonDocument(values).toJson(QJsonDocument::Compact);
 }
+QJsonArray gatewayTools() {
+    return {QJsonObject{{"type", "function"}, {"function", QJsonObject{{"name", "discover_capabilities"}}}},
+            QJsonObject{{"type", "function"}, {"function", QJsonObject{{"name", "load_capability"}}}},
+            QJsonObject{{"type", "function"}, {"function", QJsonObject{{"name", "invoke_capability"}}}}};
+}
 }
 
 class CapabilityContextTests : public QObject {
     Q_OBJECT
 private slots:
+    void concreteToolsAreRequestScopedAndPreserveBusinessParameters() {
+        const QJsonObject native{{"type", "function"}, {"function", QJsonObject{
+            {"name", "web_search"}, {"parameters", QJsonObject{{"type", "object"}}}}}};
+        auto base = gatewayTools();
+        base.append(native);
+        const auto empty = CapabilityContext::projectTools(base, QList<ChatMessage>{});
+        QCOMPARE(empty.tools.size(), 3);
+        QVERIFY(empty.operationRefs.isEmpty());
+        auto read = loaded("browser", "read_page");
+        read["parameters"] = QJsonObject{{"type", "object"}, {"properties", QJsonObject{
+            {"url", QJsonObject{{"type", "string"}}}, {"cursor", QJsonObject{{"type", "string"}}}}},
+            {"required", QJsonArray{"url"}}, {"additionalProperties", false}};
+        auto search = loaded("browser", "search");
+        search["parameters"] = QJsonObject{{"type", "object"}, {"properties", QJsonObject{
+            {"query", QJsonObject{{"type", "string"}}}}}, {"required", QJsonArray{"query"}}};
+        const auto messages = CapabilityContext::projectMessages({message("load_capability", search, "search"),
+                                                                  message("load_capability", read, "read")});
+        const auto projected = CapabilityContext::projectTools(base, messages);
+        QCOMPARE(projected.operationRefs.size(), 2);
+        QCOMPARE(projected.tools.size(), 5);
+        QVERIFY(projected.tools.contains(native));
+        const QString name = projected.operationRefs.key(ref("browser", "read_page"));
+        QVERIFY(!name.isEmpty());
+        for (const auto& item : projected.tools) {
+            const auto function = item.toObject()["function"].toObject();
+            QVERIFY(function["name"] != "invoke_capability");
+            if (!projected.operationRefs.contains(function["name"].toString())) continue;
+            QVERIFY(function["name"].toString().size() <= 64);
+            QVERIFY(QRegularExpression("^[A-Za-z0-9_-]+$").match(function["name"].toString()).hasMatch());
+            QVERIFY(!function["description"].toString().contains("COMMON_BODY_SENTINEL"));
+            QCOMPARE(function["parameters"], function["name"] == name ? read["parameters"] : search["parameters"]);
+        }
+        LlmToolCall call{"call-id", "function", name, {{"url", "https://example.org"}, {"cursor", "opaque"}}};
+        const auto business = call.arguments;
+        QJsonObject binding;
+        QVERIFY(projected.normalizeCall(call, &binding));
+        QCOMPARE(binding["catalogRevision"], read["catalogRevision"]);
+        QCOMPARE(binding["definitionDigest"], read["definitionDigest"]);
+        QCOMPARE(call.id, "call-id");
+        QCOMPARE(call.name, "invoke_capability");
+        QCOMPARE(call.arguments["ref"].toObject(), ref("browser", "read_page"));
+        QCOMPARE(call.arguments["arguments"].toObject(), business);
+        LlmToolCall nativeCall{"native-id", "function", "web_search", {{"query", "same input"}}};
+        QVERIFY(projected.normalizeCall(nativeCall, &binding));
+        QVERIFY(binding.isEmpty());
+        QCOMPARE(nativeCall.name, "web_search");
+        QCOMPARE(nativeCall.arguments["query"].toString(), "same input");
+        const auto task = CapabilityContext::projectTools(base, CapabilityContext::projectSteps({
+            step("load_capability", search, "search"), step("load_capability", read, "read")}));
+        QCOMPARE(task.tools, projected.tools);
+        QCOMPARE(task.operationRefs, projected.operationRefs);
+    }
+    void releasedStaleAndForgedAliasesCannotNormalize() {
+        const auto base = gatewayTools();
+        QList<ChatMessage> records{message("load_capability", loaded("video", "read"), "one")};
+        const auto before = CapabilityContext::projectTools(base, CapabilityContext::projectMessages(records));
+        const auto oldName = before.operationRefs.key(ref("video", "read"));
+        QVERIFY(!oldName.isEmpty());
+        LlmToolCall call{"id", "function", oldName, {}};
+        QVERIFY(!CapabilityContext::projectTools(base, QList<ChatMessage>{}).normalizeCall(call));
+        records.append(message("load_capability", loaded("browser", "search"), "two"));
+        QVERIFY(!CapabilityContext::projectTools(base, CapabilityContext::projectMessages(records)).normalizeCall(call));
+        auto revision = loaded("video", "read");
+        revision["catalogRevision"] = 2;
+        revision["definitionDigest"] = "revised";
+        records.append(message("load_capability", revision, "three"));
+        const auto current = CapabilityContext::projectTools(base, CapabilityContext::projectMessages(records));
+        QVERIFY(!current.normalizeCall(call));
+        QVERIFY(current.operationRefs.key(ref("video", "read")) != oldName);
+        call.name = "cap_forged";
+        QVERIFY(!current.normalizeCall(call));
+        call.name = "invoke_capability";
+        QVERIFY(!current.normalizeCall(call));
+        const auto noGateway = CapabilityContext::projectTools({}, CapabilityContext::projectMessages(records));
+        QVERIFY(noGateway.operationRefs.isEmpty());
+        revision.remove("instructions");
+        revision["instructionsRef"] = "missing-body";
+        QVERIFY(CapabilityContext::projectTools(base, QList<ChatMessage>{message("load_capability", revision, "orphan")})
+                    .operationRefs.isEmpty());
+    }
     void sharedInstructionsAppearOnceAndProtocolIsUntouched() {
         ChatMessage assistant;
         assistant.role = "assistant";

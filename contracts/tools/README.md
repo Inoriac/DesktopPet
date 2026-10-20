@@ -40,7 +40,7 @@ PYTHONPATH="$contract_deps" python3 contracts/tools/verify_contract.py
 
 2026-10-19 复验当前脚本为 **96/96**，复用已有临时 jsonschema 环境，没有新增项目依赖。摘要分页、游标失效、候选轮转和旧插件兼容由 C++ PluginRuntimeTests、ActivitySelectorTests、AutonomousChatTests、LxMusicPluginTests 覆盖。
 
-通用网页后端阶段另已通过 macOS 72/72 CTest 和真实公开搜索/正文/续读烟测；后续按用户要求延后插件验收。`WebCommandTests` 已编译，最终命令、清单、角色配置、实际网关、自主使用及 Windows 验证尚待执行，详见[网页验证备注](../../plugins/web/验证备注.md)。上述历史结果不代表新插件端到端已经通过。
+通用网页后端阶段另已通过 macOS 72/72 CTest 和真实公开搜索/正文/续读烟测；2026-10-20 Windows 已完成命令、角色配置、受控网关及独立部署验证，并记录全量 73/73 CTest。真实模型参数填写、跨轮续读与自主选择仍需宿主修复后复验，详见[Windows 验收报告](../../WINDOWS_PLUGIN_ACCEPTANCE_2026-10-20.md)及[网页验证备注](../../plugins/web/验证备注.md)。上述结果不代表真实模型端到端已经通过。
 
 Python 验证包括声明结构、示例中的简单引用、业务参数正反例、参考计数脚本、临时 Git 仓库以及已有歌单脚本的查询函数。歌单查询只读取验证脚本创建的临时 SQLite 数据。该脚本不连接 MCP、不启动 LX Music 或桌宠，也不读取实际用户数据库。加载器和真实 stdio MCP 流程另由 C++ PluginRuntimeTests 的临时插件与受控服务验证。
 

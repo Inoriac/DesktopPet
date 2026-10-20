@@ -3,6 +3,7 @@
 #include "ai_brain.h"
 #include "configLoader/config_manager.h"
 #include "plugin/plugin_runtime.h"
+#include "plugin/capability_context.h"
 #include "runtime/agent_runtime_services.h"
 #include "task/task_experience_adapter.h"
 #include "task/task_orchestrator.h"
@@ -232,12 +233,15 @@ void AIBrain::refreshTaskDependencies() {
             if (input.autonomous)
                 request.attemptHooks = runtime->modelBudgetHooks(input.activityId);
             auto context = input.context;
-            if (input.scope.originKind != OriginKind::LocalOwner)
-                context["available_tools"] =
+            if (input.scope.originKind != OriginKind::LocalOwner) {
+                const auto gateways =
                     guard->m_pluginRuntime
                         ? guard->m_pluginRuntime->gatewaySchemas(
                               input.scope, input.autonomous)
                         : QJsonArray{};
+                context["available_tools"] = CapabilityContext::projectTools(
+                    gateways, context["steps"].toArray()).tools;
+            }
             context["memory_material"] =
                 guard->m_memoryStore.summaryForContext(input.scope, 8)
                     .join('\n')
@@ -373,6 +377,7 @@ void AIBrain::refreshTaskDependencies() {
                 request.requestId = call.id;
                 request.toolName = call.name;
                 request.arguments = call.arguments;
+                request.capabilityDefinition = call.capabilityDefinition;
                 request.timeoutMs = call.timeoutMs;
                 request.context = call.context;
                 request.activityId = call.activityId;

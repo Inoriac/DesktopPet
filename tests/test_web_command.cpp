@@ -1,5 +1,6 @@
 #include "ai/plugin/plugin_catalog.h"
 #include "ai/plugin/plugin_runtime.h"
+#include "ai/plugin/capability_context.h"
 #include "ai/plugin/schema_validator.h"
 #include "ai/tools/runtime/tool_result_sanitizer.h"
 #include <QDir>
@@ -72,7 +73,8 @@ private slots:
             {"resultAdapters", QJsonObject{{entry + "/read_page", QJsonObject{{"dataPointer", "/data"}, {"statePointer", "/state"},
                 {"stateMap", QJsonObject{{"completed", "completed"}, {"failed", "failed"}}}}}}}};
         QVERIFY(runtime.setHostConfiguration(configuration));
-        auto gateway = [&](QString name, QJsonObject arguments, ContextSpec ctx) {
+        auto gateway = [&](QString name, QJsonObject arguments, ContextSpec ctx,
+                           QJsonObject definitionBinding = QJsonObject{}) {
             QEventLoop loop;
             QTimer timer;
             timer.setSingleShot(true);
@@ -82,6 +84,7 @@ private slots:
             request.requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
             request.activityId = "web-check"; request.context = ctx;
             request.toolName = name; request.arguments = arguments; request.timeoutMs = 5000;
+            request.capabilityDefinition = definitionBinding;
             QPointer<QEventLoop> guard(&loop);
             runtime.executeGateway(request, [output, guard](ToolExecutionOutcome result) {
                 if (guard) QMetaObject::invokeMethod(guard, [output, guard, result = std::move(result)]() mutable {
@@ -92,24 +95,52 @@ private slots:
             ToolExecutionOutcome failed; failed.result = ToolResult::fail("Gateway timed out");
             return *output ? **output : failed;
         };
-        auto invoke = [&](QJsonObject args) {
-            return gateway("invoke_capability", {{"ref", ref.toJson()}, {"arguments", args}}, context);
+        QVERIFY(!gateway("invoke_capability", {{"ref", ref.toJson()},
+            {"arguments", QJsonObject{{"url", "https://example.com/code"}}}}, context).result.success);
+        const auto loaded = gateway("load_capability", {{"ref", ref.toJson()}}, context);
+        QVERIFY(loaded.result.success);
+        const auto projection = CapabilityContext::projectTools(runtime.gatewaySchemas(context),
+            CapabilityContext::projectSteps({QJsonObject{{"name", "load_capability"},
+                {"status", "succeeded"}, {"output", loaded.result.data}}}));
+        const auto alias = projection.operationRefs.key(ref.toJson());
+        QVERIFY(!alias.isEmpty());
+        auto invoke = [&](QJsonObject args, ContextSpec ctx) {
+            LlmToolCall call{"model-call", "function", alias, args};
+            QJsonObject definitionBinding;
+            if (!projection.normalizeCall(call, &definitionBinding)) {
+                ToolExecutionOutcome failed;
+                failed.result = ToolResult::fail("Alias unavailable");
+                return failed;
+            }
+            return gateway(call.name, call.arguments, ctx, definitionBinding);
         };
-        QVERIFY(!invoke({{"url", "https://example.com/code"}}).result.success);
-        QVERIFY(gateway("load_capability", {{"ref", ref.toJson()}}, context).result.success);
         QCOMPARE(fixture.calls(), 0);
-        const auto page = invoke({{"url", "https://example.com/code"}});
+        const auto invalid = invoke({}, context);
+        QVERIFY(!invalid.result.success);
+        QVERIFY(!invalid.result.data["executed"].toBool());
+        QCOMPARE(fixture.calls(), 0);
+        const auto page = invoke({{"url", "https://example.com/code"}}, context);
         QVERIFY2(page.result.success, qPrintable(page.result.errorMessage));
         QVERIFY(page.result.data["data"].toObject()["content"].toString().contains("print('hello')"));
-        const auto failure = invoke({{"url", "https://example.com/network-failure"}});
+        const auto failure = invoke({{"url", "https://example.com/network-failure"}}, context);
         QVERIFY(!failure.result.success);
         ToolResultSanitizer sanitizer;
         const auto payload = QJsonDocument::fromJson(sanitizer.toPayload(failure.result).toUtf8()).object();
         QCOMPARE(payload["data"].toObject()["data"].toObject()["error"].toObject()["code"].toString(), "NETWORK_ERROR");
         ContextSpec external = context; external.originKind = OriginKind::External; external.conversationId = "external";
         QVERIFY(!gateway("load_capability", {{"ref", ref.toJson()}}, external).result.success);
+        QVERIFY(!invoke({{"url", "https://example.com/code"}}, external).result.success);
         QVERIFY(runtime.setPluginEnabled({plugin, false, runtime.catalogRevision()}));
-        QVERIFY(!invoke({{"url", "https://example.com/code"}}).result.success);
+        QVERIFY(!invoke({{"url", "https://example.com/code"}}, context).result.success);
+        QVERIFY(runtime.setPluginEnabled({plugin, true, runtime.catalogRevision()}));
+        const auto stale = invoke({{"url", "https://example.com/code"}}, context);
+        QVERIFY(!stale.result.success);
+        QCOMPARE(stale.result.errorMessage, "STALE_REVISION");
+        const auto reloaded = gateway("load_capability", {{"ref", ref.toJson()}}, context);
+        QVERIFY(reloaded.result.success);
+        QVERIFY(reloaded.result.data["catalogRevision"] != loaded.result.data["catalogRevision"]);
+        // A fresh host cache must not upgrade an already-issued model request.
+        QCOMPARE(invoke({{"url", "https://example.com/code"}}, context).result.errorMessage, "STALE_REVISION");
         QCOMPARE(fixture.calls(), 2);
     }
 

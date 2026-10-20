@@ -99,6 +99,13 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
             finish(ToolResult::fail(permission.error().code));
             return;
         }
+        const auto& expected = request.capabilityDefinition;
+        if (!expected.isEmpty()
+            && (expected["catalogRevision"].toInteger() != loaded.catalogRevision
+                || expected["definitionDigest"].toString() != loaded.definitionDigest)) {
+            finish(ToolResult::fail("STALE_REVISION"));
+            return;
+        }
         CapabilityCall call; call.callId=request.requestId; call.activityId=request.activityId; call.context=request.context; call.ref=ref;
         call.arguments=request.arguments["arguments"].toObject(); call.catalogRevision=loaded.catalogRevision; call.definitionDigest=loaded.definitionDigest;
         call.grantRef = permission.value()["id"].toString();

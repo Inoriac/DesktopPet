@@ -6,6 +6,7 @@
 #include "ai/plugin/plugin_catalog.h"
 #include "ai/plugin/schema_validator.h"
 #include "ai/plugin/plugin_runtime.h"
+#include "ai/plugin/capability_context.h"
 #include <QDir>
 #include <QSignalSpy>
 
@@ -125,6 +126,75 @@ ToolExecutionOutcome discoverGateway(PluginRuntime& plugin, const QJsonObject& q
 class PluginRuntimeTests : public QObject {
     Q_OBJECT
 private slots:
+  void projectedInvocation_keepsSchemaScopeAndIssuedDefinition() {
+      QTemporaryDir dir;
+      const auto root = dir.filePath("package");
+      makeTool(root);
+      editTool(root, [](QJsonObject& tool) {
+          auto definition = tool["definition"].toObject();
+          auto operations = definition["operations"].toArray();
+          auto operation = operations.first().toObject();
+          operation["parameters"] = QJsonObject{{"source", "inline"}, {"schema", QJsonObject{
+              {"type", "object"}, {"properties", QJsonObject{{"url", QJsonObject{{"type", "string"}}}}},
+              {"required", QJsonArray{"url"}}, {"additionalProperties", false}}}};
+          operations[0] = operation;
+          definition["operations"] = operations;
+          tool["definition"] = definition;
+      });
+      PluginRuntime runtime("pet", dir.filePath("plugins.json"));
+      QVERIFY(runtime.setHostConfiguration(hostConfig(root)));
+      const auto context = ContextSpec::localOwner("pet");
+      const CapabilityRef reference{"example.plugin", "example.tool", "1", "probe"};
+      const auto loaded = runtime.loadCapability(reference, context);
+      QVERIFY(loaded);
+      const auto projected = CapabilityContext::projectTools(runtime.gatewaySchemas(context),
+          CapabilityContext::projectSteps({QJsonObject{{"name", "load_capability"},
+              {"status", "succeeded"}, {"output", loaded.value().toPublicJson()}}}));
+      const auto alias = projected.operationRefs.key(reference.toJson());
+      QVERIFY(!alias.isEmpty());
+      auto invoke = [&](const QJsonObject& arguments, const ContextSpec& scope) {
+          LlmToolCall call{"model-call", "function", alias, arguments};
+          ToolExecutionRequest request;
+          if (!projected.normalizeCall(call, &request.capabilityDefinition)) qFatal("Projection failed");
+          request.requestId = call.id;
+          request.toolName = call.name;
+          request.arguments = call.arguments;
+          request.context = scope;
+          request.activityId = "projection-check";
+          std::optional<ToolExecutionOutcome> output;
+          runtime.executeGateway(request, [this, &output](ToolExecutionOutcome result) {
+              QMetaObject::invokeMethod(this, [&output, result = std::move(result)] {
+                  output = result;
+              }, Qt::QueuedConnection);
+          });
+          if (!QTest::qWaitFor([&] { return output.has_value(); }, 5000)) qFatal("Gateway timed out");
+          return *output;
+      };
+      const auto invalid = invoke({}, context);
+      QVERIFY(!invalid.executed);
+      QCOMPARE(invalid.result.errorMessage, "INVALID_INPUT");
+      const auto valid = invoke({{"url", "https://example.org"}}, context);
+      QVERIFY2(valid.result.success, qPrintable(valid.result.errorMessage));
+      QVERIFY(valid.executed);
+      QCOMPARE(valid.requestId, "model-call");
+      QCOMPARE(valid.toolName, "invoke_capability");
+      QCOMPARE(valid.result.data["data"].toObject()["echo"].toObject()["url"].toString(), "https://example.org");
+      auto external = context;
+      external.originKind = OriginKind::External;
+      external.conversationId = "ungranted";
+      const auto denied = invoke({{"url", "https://example.org"}}, external);
+      QVERIFY(!denied.result.success);
+      QVERIFY(!denied.executed);
+      QVERIFY(runtime.setPluginEnabled({"example.plugin", false, runtime.catalogRevision()}));
+      QVERIFY(!invoke({{"url", "https://example.org"}}, context).result.success);
+      QVERIFY(runtime.setPluginEnabled({"example.plugin", true, runtime.catalogRevision()}));
+      const auto reloaded = runtime.loadCapability(reference, context);
+      QVERIFY(reloaded);
+      QVERIFY(reloaded.value().catalogRevision != loaded.value().catalogRevision);
+      const auto stale = invoke({{"url", "https://example.org"}}, context);
+      QVERIFY(!stale.executed);
+      QCOMPARE(stale.result.errorMessage, "STALE_REVISION");
+  }
   void discoveryGateway_pagesMixedDirectoryWithoutBodies() {
       QTemporaryDir dir;
       PluginRuntime runtime("pet", dir.filePath("plugins.json"));

@@ -27,6 +27,8 @@ struct ToolExecutionRequest {
     bool autonomous = false;
     std::shared_ptr<ToolDispatchToken> dispatchToken;
     std::optional<RoutedResponse> preparedResponse;
+    // Set by host projection, never accepted from model arguments.
+    QJsonObject capabilityDefinition;
 };
 
 struct ToolExecutionOutcome {

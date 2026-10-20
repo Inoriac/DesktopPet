@@ -1,5 +1,6 @@
 #pragma once
 #include "task_store.h"
+#include "ai/plugin/capability_context.h"
 #include <QObject>
 #include <QElapsedTimer>
 #include <QTimer>
@@ -69,6 +70,7 @@ private:
   TaskDependencies m_dependencies;
   TaskRecord m_task;
   QJsonArray m_modelCapabilitySteps;
+  CapabilityToolProjection m_modelTools;
   bool m_active = false;
   bool m_pendingTool = false;
   QString m_pendingId;

@@ -2,6 +2,7 @@
 
 #include <QCryptographicHash>
 #include <QJsonDocument>
+#include <QRegularExpression>
 #include <QSet>
 
 namespace {
@@ -128,6 +129,67 @@ bool containsOperation(const QList<Material>& materials, const QJsonObject& refe
     }
     return false;
 }
+QString schemaName(const QJsonObject& schema) {
+    return schema.value("name").toString(schema["function"].toObject()["name"].toString());
+}
+CapabilityToolProjection projectToolSchemas(const QJsonArray& baseTools,
+                                           const QList<Material>& materials) {
+    CapabilityToolProjection result;
+    bool gatewayAvailable = false;
+    QSet<QString> names;
+    for (const auto& item : baseTools) {
+        const auto name = schemaName(item.toObject());
+        if (name == "invoke_capability") {
+            gatewayAvailable = true;
+        } else {
+            result.tools.append(item);
+            names.insert(name);
+        }
+    }
+    if (!gatewayAvailable) return result;
+    for (const auto& material : materials) {
+        const auto& definition = material.data;
+        const auto reference = definition["ref"].toObject();
+        if (!material.success || material.name != "load_capability"
+            || !completeDefinition(definition) || definition["kind"] != "tool"
+            || !containsOperation(materials, reference)) continue;
+        auto identity = reference;
+        identity["catalogRevision"] = definition["catalogRevision"];
+        identity["definitionDigest"] = definition["definitionDigest"];
+        QString operation = reference["operationId"].toString();
+        operation.replace(QRegularExpression("[^A-Za-z0-9_-]"), "_");
+        const auto digest = QCryptographicHash::hash(
+            QJsonDocument(identity).toJson(QJsonDocument::Compact), QCryptographicHash::Sha256).toHex();
+        const QString name = "cap_" + operation.left(32) + "_" + QString::fromLatin1(digest.left(20));
+        if (names.contains(name)) continue;
+        names.insert(name);
+        result.operationRefs.insert(name, reference);
+        result.definitionBindings.insert(name, {{"catalogRevision", definition["catalogRevision"]},
+                                                {"definitionDigest", definition["definitionDigest"]}});
+        result.tools.append(QJsonObject{{"type", "function"}, {"function", QJsonObject{
+            {"name", name},
+            {"description", QString("Execute loaded %1/%2 operation %3 using this function instead of invoke_capability. Pass business arguments directly; host permissions apply.")
+                .arg(reference["pluginId"].toString().left(80), reference["entryId"].toString().left(80),
+                     reference["operationId"].toString().left(80))},
+            {"parameters", definition["parameters"]}}}});
+    }
+    return result;
+}
+}
+
+bool CapabilityToolProjection::normalizeCall(LlmToolCall& call, QJsonObject* definitionBinding) const {
+    if (definitionBinding) *definitionBinding = {};
+    bool exposed = false;
+    for (const auto& tool : tools)
+        if (schemaName(tool.toObject()) == call.name) { exposed = true; break; }
+    if (!exposed) return false;
+    const auto reference = operationRefs.constFind(call.name);
+    if (reference != operationRefs.constEnd()) {
+        if (definitionBinding) *definitionBinding = definitionBindings.value(call.name);
+        call.name = "invoke_capability";
+        call.arguments = {{"ref", *reference}, {"arguments", call.arguments}};
+    }
+    return true;
 }
 
 bool CapabilityContext::isMetadataTool(const QString& name) {
@@ -162,4 +224,12 @@ bool CapabilityContext::hasOperation(const QList<ChatMessage>& projected, const 
 }
 bool CapabilityContext::hasOperation(const QJsonArray& projectedSteps, const QJsonObject& reference) {
     return containsOperation(stepsToMaterials(projectedSteps), reference);
+}
+CapabilityToolProjection CapabilityContext::projectTools(const QJsonArray& baseTools,
+                                                         const QList<ChatMessage>& projected) {
+    return projectToolSchemas(baseTools, messagesToMaterials(projected));
+}
+CapabilityToolProjection CapabilityContext::projectTools(const QJsonArray& baseTools,
+                                                         const QJsonArray& projectedSteps) {
+    return projectToolSchemas(baseTools, stepsToMaterials(projectedSteps));
 }

@@ -55,7 +55,7 @@ void AIBrain::thinkInternal(const QString& reason,
     if (suppressMutedAutomaticResponse()) return;
     const bool proactive = triggerTag == QLatin1String("proactive_chat");
     if (m_pluginRuntime) m_pluginRuntime->setLearnedSkills(m_skillStore.all());
-    const QJsonArray tools = proactive ? QJsonArray{} : triggerTag==QLatin1String("external_message")
+    const QJsonArray baseTools = proactive ? QJsonArray{} : triggerTag==QLatin1String("external_message")
         ? (m_pluginRuntime?m_pluginRuntime->gatewaySchemas(currentToolContext()):QJsonArray{})
         : (m_toolRegistry?m_toolRegistry->allToolSchemas():QJsonArray{});
     const QString requestId = QUuid::createUuid().toString(QUuid::WithoutBraces);
@@ -68,6 +68,8 @@ void AIBrain::thinkInternal(const QString& reason,
     ModelRequest modelRequest;
     modelRequest.role = ModelRole::Dialogue;
     modelRequest.messages = CapabilityContext::projectMessages(workingMessages);
+    const auto toolProjection = CapabilityContext::projectTools(baseTools, modelRequest.messages);
+    const auto tools = toolProjection.tools;
     if (proactive) {
         ChatMessage guidance;
         guidance.role = QStringLiteral("system");
@@ -135,7 +137,7 @@ void AIBrain::thinkInternal(const QString& reason,
         },
         [this, guard, isCurrent, requestGeneration, requestId, requestedAtMs,
          reason, triggerTag, sessionId, toolRound, workingMessages,
-         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive, tools,
+         roundVisibleContent, completionHandled, activeMessageId, loggedPetName, proactive, toolProjection,
          projectedMessages = modelRequest.messages]
         (Result<ModelCompletion, DomainError> modelResult) mutable {
             if (completionHandled->exchange(true, std::memory_order_acq_rel)) return;
@@ -258,31 +260,35 @@ void AIBrain::thinkInternal(const QString& reason,
             const auto calls=response.toolCalls;
             const ContextSpec context=currentToolContext();
             auto next=std::make_shared<std::function<void(int)>>();
-            *next=[this,guard,isCurrent,next,messages,calls,tools,context,reason,triggerTag,sessionId,toolRound,projectedMessages](int index) {
+            *next=[this,guard,isCurrent,next,messages,calls,toolProjection,context,reason,triggerTag,sessionId,toolRound,projectedMessages](int index) {
                 if (!isCurrent() || suppressMutedAutomaticResponse()) { *next={}; return; }
                 if (index>=calls.size()) {
                     auto completed=*messages; *next={}; publishActiveStage(ChatActivityStage::Finalizing);
                     thinkInternal(reason,triggerTag,sessionId,toolRound+1,completed); return;
                 }
                 const auto call=calls[index];
-                auto append=[this,guard,isCurrent,next,messages,call,index,triggerTag,sessionId](ToolExecutionOutcome outcome) mutable {
+                auto executionCall = call;
+                QJsonObject definitionBinding;
+                const bool exposed = toolProjection.normalizeCall(executionCall, &definitionBinding);
+                auto append=[this,guard,isCurrent,next,messages,call,executionCall,index,triggerTag,sessionId](ToolExecutionOutcome outcome) mutable {
                     if (!guard) { *next={}; return; }
                     // Runtime settles actual results independently; only the matching chat advances.
                     if (!isCurrent()) { *next={}; return; }
                     const auto payload=m_toolRuntime.sanitizer()->toPayload(outcome.result);
-                    rememberToolOutcome(call.name,triggerTag,true,outcome,sessionId);
+                    rememberToolOutcome(executionCall.name,triggerTag,true,outcome,sessionId);
                     ChatMessage message; message.role="tool"; message.name=call.name; message.toolCallId=call.id; message.content=payload;
                     messages->append(message); emit toolExecuted(call.name,outcome.result.success,payload);
                     if (!outcome.result.success) scheduleIdleRetryIfBusyFailure(call.name,payload);
                     auto advance=*next; if (advance) advance(index+1);
                 };
-                QString denial; bool exposed=false;
-                for (const auto& schema:tools) if (schema.toObject()["function"].toObject()["name"]==call.name) exposed=true;
-                if (!exposed || !isToolCallAllowed(triggerTag,call,denial)) {
+                QString denial;
+                if (!exposed && (call.name == "invoke_capability" || call.name.startsWith("cap_")))
+                    denial = "CAPABILITY_CONTEXT_REQUIRED: load this operation and use its currently exposed tool name.";
+                if (!exposed || !isToolCallAllowed(triggerTag,executionCall,denial)) {
                     ToolExecutionOutcome outcome; outcome.toolName=call.name; outcome.result=ToolResult::fail(denial.isEmpty()?"Tool is not authorized in this context":denial); append(outcome); return;
                 }
-                if (call.name == "invoke_capability" && !CapabilityContext::hasOperation(
-                        projectedMessages, call.arguments["ref"].toObject())) {
+                if (executionCall.name == "invoke_capability" && !CapabilityContext::hasOperation(
+                        projectedMessages, executionCall.arguments["ref"].toObject())) {
                     ToolExecutionOutcome outcome;
                     outcome.requestId = call.id;
                     outcome.toolName = call.name;
@@ -291,12 +297,13 @@ void AIBrain::thinkInternal(const QString& reason,
                     return;
                 }
                 ToolExecutionRequest execution; execution.requestId=call.id.isEmpty()?QUuid::createUuid().toString(QUuid::WithoutBraces):call.id;
-                execution.toolName=call.name; execution.arguments=call.arguments; execution.context=context;
+                execution.toolName=executionCall.name; execution.arguments=executionCall.arguments; execution.context=context;
+                execution.capabilityDefinition = definitionBinding;
                 execution.activityId=context.activityId.isEmpty()?sessionId:context.activityId;
                 execution.policyContext=buildToolPolicyContext(triggerTag,reason,true);
                 execution.autonomous=triggerTag!="manual" && triggerTag!="user_request" && triggerTag!="external_message";
                 publishActiveStage(ChatActivityStage::RunningTool);
-                m_toolRuntime.executeAsync(execution,[this,guard,isCurrent,next,call,append=std::move(append)](ToolExecutionOutcome outcome) mutable {
+                m_toolRuntime.executeAsync(execution,[this,guard,isCurrent,next,executionCall,append=std::move(append)](ToolExecutionOutcome outcome) mutable {
                     if (!guard || !isCurrent()) { *next={}; return; }
                     if (outcome.policyDecision.needsConfirmation()) {
                         const auto id=outcome.requestId;
@@ -304,7 +311,7 @@ void AIBrain::thinkInternal(const QString& reason,
                             if (!guard || !isCurrent()) { *next={}; return; }
                             m_toolRuntime.resolveConfirmationAsync(id,approved,std::move(append));
                         });
-                        emit toolConfirmationRequired(id,call.name,outcome.policyDecision.reason,call.arguments); return;
+                        emit toolConfirmationRequired(id,executionCall.name,outcome.policyDecision.reason,executionCall.arguments); return;
                     }
                     append(std::move(outcome));
                 });

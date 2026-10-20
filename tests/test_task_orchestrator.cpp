@@ -16,6 +16,7 @@ struct Harness {
     QList<TaskModelRequest> modelRequests;
     QList<TaskDependencies::ModelCompletion> models;
     QList<TaskToolCall> toolRequests;
+    QList<TaskToolCall> preparationRequests;
     QList<TaskDependencies::ToolCompletion> tools;
     QList<std::function<void(TaskToolPermission)>> permissions;
     bool delayToolPreparation = false;
@@ -53,7 +54,8 @@ struct Harness {
         };
         dependencies.toolAllowed = [](const QString&, const QJsonObject&) { return true; };
         if (delayToolPreparation) {
-            dependencies.prepareTool = [this](const TaskToolCall &, auto done) {
+            dependencies.prepareTool = [this](const TaskToolCall &call, auto done) {
+                preparationRequests.append(call);
                 permissions.append(std::move(done));
             };
         }
@@ -142,10 +144,22 @@ QJsonObject taskCapabilityRef(const QString& operation) {
     return {{"pluginId", "test.plugin"}, {"entryId", "video"}, {"entryVersion", "1"}, {"operationId", operation}};
 }
 QJsonObject taskCapability(const QString& operation) {
+    const QString argument = operation == "read" ? "url" : "query";
     return {{"ref", taskCapabilityRef(operation)}, {"kind", "tool"}, {"catalogRevision", 1}, {"definitionDigest", "one"},
         {"instructions", "TASK_CAPABILITY_BODY " + QString(2500, QLatin1Char('x'))},
-        {"parameters", QJsonObject{{"type", "object"}}}, {"effects", QJsonObject{{"kind", "read"}}},
+        {"parameters", QJsonObject{{"type", "object"}, {"properties", QJsonObject{
+            {argument, QJsonObject{{"type", "string"}}}, {"cursor", QJsonObject{{"type", "string"}}}}},
+            {"required", QJsonArray{argument}}, {"additionalProperties", false}}},
+        {"effects", QJsonObject{{"kind", "read"}}},
         {"result", QJsonObject{{"successMeaning", "Actual response"}}}};
+}
+QString taskOperationName(const TaskModelRequest& request, const QString& argument = "url") {
+    for (const auto& value : request.context["available_tools"].toArray()) {
+        const auto function = value.toObject()["function"].toObject();
+        if (function["parameters"].toObject()["required"].toArray().contains(argument))
+            return function["name"].toString();
+    }
+    return {};
 }
 }
 void TestTaskOrchestrator::capabilityDefinitionsProjectAtEachRequestAndRecoverFromFullSteps() {
@@ -170,6 +184,16 @@ void TestTaskOrchestrator::capabilityDefinitionsProjectAtEachRequestAndRecoverFr
     QCOMPARE(QJsonDocument(projected).toJson().count("TASK_CAPABILITY_BODY"), 1);
     QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("open")));
     QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("read")));
+    bool concreteRead = false;
+    for (const auto& value : h.modelRequests.last().context["available_tools"].toArray()) {
+        const auto schema = value.toObject();
+        const auto function = schema["function"].toObject();
+        QVERIFY(schema["name"] != "invoke_capability");
+        QVERIFY(function["name"] != "invoke_capability");
+        if (function["parameters"].toObject()["required"].toArray().contains("url"))
+            concreteRead = true;
+    }
+    QVERIFY(concreteRead);
     h.reply(candidate());
     QCOMPARE(h.modelRequests.last().phase, "verify");
     QCOMPARE(QJsonDocument(h.modelRequests.last().context).toJson().count("TASK_CAPABILITY_BODY"), 1);
@@ -186,9 +210,27 @@ void TestTaskOrchestrator::capabilityDefinitionsProjectAtEachRequestAndRecoverFr
     projected = h.modelRequests.last().context["steps"].toArray();
     QCOMPARE(QJsonDocument(projected).toJson().count("TASK_CAPABILITY_BODY"), 1);
     QVERIFY(CapabilityContext::hasOperation(projected, taskCapabilityRef("read")));
-    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    const auto alias = taskOperationName(h.modelRequests.last());
+    QVERIFY(!alias.isEmpty());
+    auto invoke = nextTool(alias, {{"url", "https://example.org"}});
+    auto proposal = invoke["tool"].toObject();
+    proposal["capability_definition"] = QJsonObject{{"catalogRevision", 999}, {"definitionDigest", "forged"}};
+    invoke["tool"] = proposal;
+    invoke["required_source_tools"] = QJsonArray{alias};
+    h.reply(invoke);
     QCOMPARE(h.toolRequests.size(), count + 1);
     QCOMPARE(h.toolRequests.last().name, "invoke_capability");
+    QCOMPARE(h.toolRequests.last().arguments["ref"].toObject(), taskCapabilityRef("read"));
+    QCOMPARE(h.toolRequests.last().arguments["arguments"].toObject()["url"].toString(), "https://example.org");
+    QCOMPARE(h.toolRequests.last().capabilityDefinition["catalogRevision"].toInt(), 1);
+    QCOMPARE(h.toolRequests.last().capabilityDefinition["definitionDigest"].toString(), "one");
+    QCOMPARE(h.runner->currentTask().requiredSourceTools, QStringList{"invoke_capability"});
+    QCOMPARE(h.runner->currentTask().steps.last().toObject()["name"].toString(), "invoke_capability");
+    h.tool();
+    const auto evidence = h.runner->currentTask().steps.last().toObject()["id"].toString();
+    h.reply(candidate());
+    h.reply(verification(true, evidence));
+    QCOMPARE(h.runner->currentTask().status, "Completed");
 }
 void TestTaskOrchestrator::missingCapabilityContextReplansBeforePreparationOrDispatch() {
     Harness h;
@@ -197,7 +239,7 @@ void TestTaskOrchestrator::missingCapabilityContextReplansBeforePreparationOrDis
     h.resetRunner();
     QVERIFY(h.start());
     h.reply(decision());
-    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    h.reply(nextTool("cap_forged", {{"url", "https://example.org"}}));
     QVERIFY(h.permissions.isEmpty());
     QVERIFY(h.toolRequests.isEmpty());
     QCOMPARE(h.runner->currentTask().toolCalls, 0);
@@ -221,8 +263,18 @@ void TestTaskOrchestrator::missingCapabilityContextReplansBeforePreparationOrDis
     loaded.output = taskCapability("read");
     done(loaded);
     QCoreApplication::processEvents();
-    h.reply(nextTool("invoke_capability", {{"ref", taskCapabilityRef("read")}, {"arguments", QJsonObject{}}}));
+    const auto alias = taskOperationName(h.modelRequests.last());
+    QVERIFY(!alias.isEmpty());
+    h.reply(nextTool(alias, {{"url", "https://example.org"}}));
     QCOMPARE(h.permissions.size(), 1);
+    QCOMPARE(h.preparationRequests.last().name, "invoke_capability");
+    QCOMPARE(h.preparationRequests.last().arguments["ref"].toObject(), taskCapabilityRef("read"));
+    QCOMPARE(h.preparationRequests.last().capabilityDefinition["definitionDigest"].toString(), "one");
+    auto denied = h.permissions.takeFirst();
+    denied({false, false});
+    QCoreApplication::processEvents();
+    QCOMPARE(h.toolRequests.size(), 1);
+    QCOMPARE(h.runner->currentTask().status, "Paused");
 }
 
 void TestTaskOrchestrator::ordinaryObservedMessageDoesNotMatchAnExternalWait() {

@@ -88,6 +88,23 @@ QJsonObject tool(QString name, CapabilityRef ref, QJsonObject args = {}) {
   p["tool"] = QJsonObject{{"name", name}, {"arguments", a}};
   return p;
 }
+QJsonObject concreteTool(const QJsonObject& input, const CapabilityRef& ref,
+                         const QJsonObject& arguments) {
+  QString name;
+  for (const auto& value : input["available_tools"].toArray()) {
+    const auto function = value.toObject()["function"].toObject();
+    if (function["name"] == "invoke_capability")
+      QTest::qFail("Host restored generic invocation after projection", __FILE__, __LINE__);
+    if (function["name"].toString().startsWith("cap_" + ref.operationId + "_"))
+      name = function["name"].toString();
+  }
+  if (name.isEmpty())
+    QTest::qFail("Loaded operation is absent from host tools", __FILE__, __LINE__);
+  auto p = plan();
+  p["required_source_tools"] = QJsonArray{name};
+  p["tool"] = QJsonObject{{"name", name}, {"arguments", arguments}};
+  return p;
+}
 QJsonObject verify(const QJsonArray &steps) {
   return {{"complete", true},
           {"supported", true},
@@ -223,9 +240,9 @@ private slots:
       if (system.startsWith("Plan one next step")) {
         if (steps.size() == 0) return tool("load_capability", skill);
         if (steps.size() == 1) return tool("load_capability", search);
-        if (steps.size() == 2) return tool("invoke_capability", search, {{"keyword", QString::fromUtf8("宇宙")}});
+        if (steps.size() == 2) return concreteTool(input, search, {{"keyword", QString::fromUtf8("宇宙")}});
         if (steps.size() == 3) return tool("load_capability", transcript);
-        if (steps.size() == 4) return tool("invoke_capability", transcript, {{"bvid", "BV1xx411c7mD"}, {"part", 2}});
+        if (steps.size() == 4) return concreteTool(input, transcript, {{"bvid", "BV1xx411c7mD"}, {"part", 2}});
         auto p = plan();
         p["candidate_answer"] = "Read one timestamped subtitle page; choose later whether to continue";
         return p;
@@ -482,8 +499,8 @@ private slots:
         if (steps.isEmpty())
           return tool("load_capability", ref);
         if (steps.size() == 1)
-          return tool(
-              "invoke_capability", ref,
+          return concreteTool(
+              input, ref,
               goal == "reading" ? QJsonObject{{"page", 1}}
               : goal == "talk"
                   ? QJsonObject{{"chat_id", "group-a"},
@@ -500,7 +517,7 @@ private slots:
           return p;
         }
         if (goal == "reading" && steps.size() == 2) {
-          auto p = tool("invoke_capability", reading, {{"page", 2}});
+          auto p = concreteTool(input, reading, {{"page", 2}});
           if (!held) {
             held = true;
             heldPlan = p;

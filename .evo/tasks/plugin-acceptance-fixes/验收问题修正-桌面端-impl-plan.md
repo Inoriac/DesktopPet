@@ -14,11 +14,13 @@
 ## Task 2 加载后暴露具体参数
 
 - 关联设计：§3.2 加载后暴露具体参数
-- 状态：[ ]
+- 状态：[x]
 - Wave：2
 - 依赖：Task 1（串行检查点）
 - 文件：core/ai/plugin/capability_context.{h,cpp}；core/ai/ai_brain_loop.cpp；core/ai/task/task_orchestrator.{h,cpp}；core/ai/ai_brain_tasks.cpp（若宿主覆盖投影需调整）；tests/test_capability_context.cpp；tests/test_task_orchestrator.cpp；现有聊天/插件集成回归；相关 CMake 源文件组
-- 回归：加载前无业务 schema；加载后 url 必填且游标可选；两操作独立参数；释放/旧版本不再可用；模型别名映射到网关并保留调用 ID；聊天/任务均走原权限和参数拒绝；原按需预算通过。
+- 回归：加载前无业务 schema；加载后 url 必填且游标可选；两操作独立参数；释放/旧版本不再可用；模型别名映射到网关并保留调用 ID；聊天/任务均走原权限和参数拒绝；原按需预算通过；同 ref 重载后旧投影绑定仍被拒绝。
+- 版本绑定补充范围：ToolExecutionRequest 与 core/ai/task/task_types.h、core/ai/plugin/plugin_gateway.cpp、tests/test_plugin_runtime.cpp（若在原网关测试加入回归）。
+- 完成证据：CapabilityContext 8/8、TaskOrchestrator 38/38、PluginRuntime 30/30；StreamingDialogue/AutonomousChat 全目标通过。WebCommand 编译成功，QProcess 启动 QtGui helper 被 macOS AMFI 拦截，详见审查记录；逻辑边界由实际 Python command 网关补验。
 
 ## Task 3 跨轮工具上下文
 
@@ -36,4 +38,4 @@
 - Wave：4
 - 依赖：Task 3（串行检查点）
 - 文件：core/ai/model/model_router.{h,cpp}；core/ai/plugin/schema_validator.{h,cpp}（安全结构诊断）；core/ai/activity/activity_selector.{h,cpp}；core/ai/ai_brain_autonomy.cpp；core/ai/activity/opportunity_store.cpp（仅必要的现有结果字段）；tests/test_model_router.cpp；tests/test_activity_selector.cpp；tests/test_streaming_dialogue.cpp（宿主诊断）；相关 CMake 源文件组
-- 回归：合法 JSON 与常见包裹格式可解析；非法字段/引用仍失败；修复请求指出具体结构错误；失败保留安全字段路径和阶段，不暴露原文；合法 start/wait、预算和全局关闭边界不退化。
+- 回归：合法 JSON 与常见包裹格式可解析；非法字段/引用仍失败；修复请求指出具体结构错误；失败保留安全字段路径和阶段，不暴露原文；合法 start/wait、预算和全局关闭边界不退化；使用 CapabilityRef::toJson 的条目引用省略 operationId 可正常 start，显式操作引用仍可用。

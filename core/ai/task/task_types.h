@@ -111,6 +111,8 @@ struct TaskToolCall {
     QJsonObject arguments;
     bool readOnly = true;
     int timeoutMs = 0;
+    // Host-only identity of the definition shown to the model for this call.
+    QJsonObject capabilityDefinition;
 };
 struct TaskToolReply {
     bool success = false;
