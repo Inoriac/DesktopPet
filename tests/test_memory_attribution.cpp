@@ -14,6 +14,8 @@ class MemoryAttributionTests : public QObject {
 private slots:
     void explicitOwnFactsMergeAcrossRequests();
     void explicitCorrectionSupersedesOnlyCompleteSameSubjectFact();
+    void explicitCorrectionPreservesUnchangedDetails_data();
+    void explicitCorrectionPreservesUnchangedDetails();
     void sameSummaryDifferentFactsRemainSeparate();
     void reportedSubjectAndParticipantsSurviveConsolidation();
     void privateGraphBridgeAndWorkingMemoryAreInvisible();
@@ -848,6 +850,70 @@ void MemoryAttributionTests::explicitCorrectionSupersedesOnlyCompleteSameSubject
     incomplete.entry.attribution = old.entry.attribution;
     QCOMPARE(MemoryPolicy().applyCandidates({incomplete}, &store).written, 1);
     QCOMPARE(store.readForRecall(latestId)->status, MemoryStatus::Active);
+}
+
+void MemoryAttributionTests::explicitCorrectionPreservesUnchangedDetails_data() {
+    QTest::addColumn<QString>("original");
+    QTest::addColumn<QString>("replacement");
+    QTest::addColumn<bool>("superseded");
+    const QString update = QStringLiteral(
+        "请长期记住：我的盆栽紫砂星现在改为每周五浇水，原来的每周三已经作废，位置仍是东侧窗台。");
+    QTest::newRow("omitted-watering-amount")
+        << QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水200毫升。")
+        << update << false;
+    QTest::newRow("unrelated-same-weekday-action")
+        << QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水，每周三施肥。")
+        << update << false;
+    QTest::newRow("omitted-first-clause-detail")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星每周三浇水200毫升，放在东侧窗台。")
+        << update << false;
+    QTest::newRow("preserved-watering-amount")
+        << QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水200毫升。")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星现在改为每周五浇水200毫升，原来的每周三已经作废，位置仍是东侧窗台。")
+        << true;
+    QTest::newRow("preserved-first-clause-detail")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星每周三浇水200毫升，放在东侧窗台。")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星现在改为每周五浇水200毫升，原来的每周三已经作废，位置仍是东侧窗台。")
+        << true;
+    QTest::newRow("explicitly-preserved-same-weekday-action")
+        << QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三浇水，每周三施肥。")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星现在改为每周五浇水，原来的每周三已经作废，位置仍是东侧窗台，每周三施肥。")
+        << true;
+    QTest::newRow("unchanged-clause-is-not-a-replacement")
+        << QStringLiteral("请长期记住：我的盆栽叫紫砂星，放在东侧窗台，每周三施肥。")
+        << QStringLiteral("请长期记住：我的盆栽紫砂星现在改为每周五浇水，原来的每周三已经作废，位置仍是东侧窗台，每周三施肥。")
+        << false;
+}
+
+void MemoryAttributionTests::explicitCorrectionPreservesUnchangedDetails() {
+    QFETCH(QString, original);
+    QFETCH(QString, replacement);
+    QFETCH(bool, superseded);
+    QTemporaryDir directory;
+    MemoryStore store;
+    store.setProfileId("p");
+    store.setDatabasePath(directory.filePath("memory.db"));
+    QVERIFY(store.loadDatabaseOnly());
+    auto old = MemoryExtractor().extractFromUserInput(original, "user_request").first().entry;
+    old.attribution.profileId = "p";
+    old.attribution.resolved = true;
+    old.attribution.people = {{"owner", MemoryPersonRole::Subject}};
+    old.attribution.claimKind = MemoryClaimKind::Fact;
+    const auto saved = store.addEntry(old);
+    auto correction = MemoryExtractor().extractFromUserInput(replacement, "user_request").first();
+    correction.entry.attribution = old.attribution;
+    QCOMPARE(MemoryPolicy().applyCandidates({correction}, &store).written, 1);
+    QVERIFY(store.refreshDatabaseOnly());
+    const auto retained = store.readForRecall(saved.id);
+    QVERIFY(retained);
+    QCOMPARE(retained->status, superseded ? MemoryStatus::Superseded : MemoryStatus::Active);
+    QCOMPARE(retained->content, saved.content);
+    QCOMPARE(!retained->payload.value("superseded_by").toString().isEmpty(), superseded);
+    int replacements = 0;
+    for (const auto& relation : store.relationGraph().all())
+        if (relation.type == MemoryRelationType::Supersedes && relation.toMemoryId == saved.id)
+            ++replacements;
+    QCOMPARE(replacements, superseded ? 1 : 0);
 }
 
 QTEST_GUILESS_MAIN(MemoryAttributionTests)

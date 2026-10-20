@@ -73,16 +73,31 @@ inline bool replacesCompleteFact(const QString& oldFact, const Correction& updat
     if (clauses.isEmpty()) return false;
     QString subject = clauses.first().trimmed();
     subject.remove(QRegularExpression(QStringLiteral("叫做|名为|叫")));
-    bool replaces = subject.startsWith(update.subject)
-        && subject.mid(update.subject.size()).startsWith(update.previous);
-    if (subject != update.subject && !replaces) return false;
-    // Do not retire a composite fact if the update omits unrelated information.
-    for (const auto& raw : clauses.mid(1)) {
+    if (!subject.startsWith(update.subject)) return false;
+    const QString firstDetail = subject.mid(update.subject.size());
+    if (!firstDetail.isEmpty() && !firstDetail.startsWith(update.previous)) return false;
+    bool replaces = false;
+    const auto coversDetail = [&](const QString& raw) {
         QString clause = raw.trimmed();
-        if (clause.contains(update.previous)) { replaces = true; continue; }
-        clause.remove(QRegularExpression(QStringLiteral("^(?:放在|位于|位置仍是|位置是|位置在|是|在)")));
-        if (clause.isEmpty() || !update.statement.contains(clause)) return false;
-    }
+        QString unchanged = clause;
+        unchanged.remove(QRegularExpression(QStringLiteral("^(?:放在|位于|位置仍是|位置是|位置在|是|在)")));
+        if (!unchanged.isEmpty() && update.statement.contains(unchanged)) return true;
+        const auto previousAt = clause.indexOf(update.previous);
+        if (previousAt < 0) return false;
+        // Only the explicit old value may disappear. A matching weekday alone
+        // must not discard a watering amount or a different action such as feeding.
+        const auto prefix = clause.left(previousAt);
+        const auto suffix = clause.mid(previousAt + update.previous.size());
+        if (update.current.size() <= prefix.size() + suffix.size()
+            || !update.current.startsWith(prefix) || !update.current.endsWith(suffix)) return false;
+        replaces = true;
+        return true;
+    };
+    // The subject's first clause can carry details too, including after a prior
+    // correction; apply the same preservation check as for subsequent clauses.
+    if (!firstDetail.isEmpty() && !coversDetail(firstDetail)) return false;
+    for (const auto& raw : clauses.mid(1))
+        if (!coversDetail(raw)) return false;
     return replaces;
 }
 }
