@@ -715,6 +715,32 @@ class ActivitySelectorTests : public QObject {
         QCOMPARE(r.value().intent.evidenceRefs.size(), 3);
         QCOMPARE(r.value().intent.context.originKind, OriginKind::Internal);
     }
+    void selectActivity_canonicalEntryOnlyAndExplicitOperation_canStart_data() {
+        QTest::addColumn<QString>("operationId");
+        QTest::newRow("entry-only") << QString();
+        QTest::newRow("explicit-operation") << QString("read");
+    }
+    void selectActivity_canonicalEntryOnlyAndExplicitOperation_canStart() {
+        QFETCH(QString, operationId);
+        const CapabilityRef ref{"reading.package", "reader", "1", operationId};
+        auto j = proposal();
+        j["capabilityRefs"] = QJsonArray{ref.toJson()};
+        const auto p = ActivitySelector::parse(j, request());
+        QVERIFY2(p.isOk(), p ? "" : qPrintable(p.error().message));
+        QCOMPARE(p.value().decision, QString("start"));
+        QCOMPARE(p.value().intent.capabilityRefs.first().operationId, operationId);
+    }
+    void selectActivity_invalidBusinessChoice_hasSafeSelectionDiagnostics() {
+        auto j = proposal();
+        j["capabilityRefs"] = QJsonArray{CapabilityRef{
+            "PRIVATE_RESPONSE_SENTINEL", "reader", "1", {}}.toJson()};
+        const auto p = ActivitySelector::parse(j, request());
+        QVERIFY(!p.isOk());
+        QCOMPARE(p.error().code, QString("UNKNOWN_REFERENCE"));
+        QCOMPARE(p.error().details["stage"].toString(), QString("selection"));
+        QCOMPARE(p.error().details["field"].toString(), QString("capabilityRefs"));
+        QVERIFY(!QJsonDocument(p.error().details).toJson().contains("PRIVATE_RESPONSE_SENTINEL"));
+    }
     void
     selectActivity_unknownReferenceOrWrongAudience_rejectsWithoutDispatch() {
         auto p = proposal();

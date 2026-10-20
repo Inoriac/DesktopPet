@@ -13,6 +13,7 @@
 #include <limits>
 
 #include "ai/ai_brain.h"
+#include "ai/activity/opportunity_store.h"
 #include "ai/plugin/capability_context.h"
 #include "ai/chat/profile_chat_history_store.h"
 #include "ai/chat/chat_image_store.h"
@@ -58,6 +59,34 @@ public:
     bool isCancelled() const override { return cancelled; }
 
     bool cancelled = false;
+};
+
+class InvalidSelectionClient final : public ModelCompletionClient {
+public:
+    QString mode;
+    int calls = 0;
+    void completeOnce(const ModelRouteConfig&, const QList<ChatMessage>&,
+                      const QJsonArray&, LlmCompletionHandler complete,
+                      const QString&) override {
+        ++calls;
+        if (mode == "provider") {
+            complete(false, {}, "PRIVATE_RESPONSE_SENTINEL: https://private.invalid/token");
+            return;
+        }
+        LlmResponse response;
+        response.usage.totalTokens = 20;
+        if (mode == "parse") response.content = "PRIVATE_RESPONSE_SENTINEL";
+        else if (mode == "schema") response.content = R"({"reason":"PRIVATE_RESPONSE_SENTINEL"})";
+        else response.content = QString::fromUtf8(QJsonDocument(QJsonObject{
+            {"decision", "start"}, {"reason", "Read a page"},
+            {"goal", "Read"}, {"stopWhen", "Read once"}, {"reconsiderWhen", "New input"},
+            {"evidenceRefs", QJsonArray{}}, {"candidates", QJsonArray{}},
+            {"activityId", ""}, {"nextConsiderAt", ""},
+            {"capabilityRefs", QJsonArray{QJsonObject{
+                {"pluginId", "PRIVATE_RESPONSE_SENTINEL"}, {"entryId", "unknown"},
+                {"entryVersion", "1"}}}}}).toJson(QJsonDocument::Compact));
+        complete(true, response, {});
+    }
 };
 
 class FakeStreamingClient final : public ModelCompletionClient {
@@ -337,6 +366,8 @@ class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
+    void autonomousSelection_failurePersistsSafeDiagnostic_data();
+    void autonomousSelection_failurePersistsSafeDiagnostic();
     void capabilityMetadataIsProjectedWithoutEnteringLongTermMemory();
     void capabilityInvocationRequiresDefinitionInPrecedingRequest();
     void repeatedToolRequestsStopAtEightRounds();
@@ -415,6 +446,64 @@ private slots:
     void stop_whenSideEffectsArePending_shouldNotDeliverCallbacksToDestroyedState();
     void messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillisecondTimerToAdvance();
 };
+
+void StreamingDialogueTests::autonomousSelection_failurePersistsSafeDiagnostic_data() {
+    QTest::addColumn<QString>("mode");
+    QTest::newRow("schema") << QString("schema");
+    QTest::newRow("parse") << QString("parse");
+    QTest::newRow("selection") << QString("selection");
+    QTest::newRow("provider") << QString("provider");
+}
+
+void StreamingDialogueTests::autonomousSelection_failurePersistsSafeDiagnostic() {
+    QFETCH(QString, mode);
+    QTemporaryDir directory;
+    InvalidSelectionClient client;
+    client.mode = mode;
+    ModelRoleConfig model;
+    model.role = ModelRole::AgencyDecision;
+    model.routes = {route("selection")};
+    AIBrain brain(&client, {model});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())));
+    brain.setEnabled(true);
+    AutonomyConfig autonomy;
+    autonomy.enabled = true;
+    autonomy.minDecisionIntervalMs = 1;
+    autonomy.localTickMs = 25;
+    autonomy.noOpBackoffMs = autonomy.maxNoOpBackoffMs = 60000;
+    autonomy.maxSelectionCallsPerHour = 100;
+    autonomy.maxTokensPerHour = 10000000;
+    autonomy.maxEstimatedCostMicrosPerHour = 100000000;
+    QString statusError;
+    connect(&brain, &AIBrain::autonomyStatusChanged, this, [&](const QJsonObject& status) {
+        if (statusError.isEmpty() && status["state"] == "failure") {
+            statusError = status["error"].toString();
+            brain.stop();
+        }
+    });
+    brain.setAutonomyConfig(autonomy);
+    brain.start();
+    QTRY_VERIFY_WITH_TIMEOUT(!statusError.isEmpty(), 10000);
+    const auto metadata = services.chatPreparationRuntimeMetadata();
+    OpportunityStore store(metadata.profileId, metadata.runtimeDatabasePath);
+    const auto snapshot = store.snapshot();
+    QVERIFY(snapshot);
+    const auto decision = snapshot.value()["lastDecision"].toObject();
+    QCOMPARE(decision["outcome"].toString(), QString("failure"));
+    const QString reason = decision["reason"].toString();
+    QCOMPARE(reason, statusError);
+    QVERIFY2(reason.contains("stage=" + mode), qPrintable(reason));
+    QVERIFY(!reason.contains("PRIVATE_RESPONSE_SENTINEL"));
+    QVERIFY(!reason.contains("private.invalid"));
+    QVERIFY(reason.size() <= 512);
+    QCOMPARE(client.calls, mode == "schema" || mode == "parse" ? 2 : 1);
+    if (mode == "schema") {
+        QVERIFY(reason.contains("required"));
+        QVERIFY(reason.contains("decision"));
+    } else if (mode == "selection") QVERIFY(reason.contains("capabilityRefs"));
+}
 
 namespace {
 QJsonArray storedTestImages(AIBrain& brain,QTemporaryDir& dir) {

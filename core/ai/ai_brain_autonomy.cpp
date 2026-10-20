@@ -7,6 +7,31 @@
 #include "runtime/agent_runtime_services.h"
 #include <QPointer>
 
+namespace {
+QString selectionFailureReason(const DomainError& error) {
+    QString stage = error.code == "MODEL_PROVIDER_ERROR" ? "provider" : "selection";
+    const QString reportedStage = error.details["stage"].toString();
+    const bool structural = (error.code == "MODEL_OUTPUT_INVALID" ||
+                             error.code == "UNKNOWN_REFERENCE" || error.code == "INVALID_INPUT") &&
+        (reportedStage == "parse" || reportedStage == "schema" || reportedStage == "selection");
+    if (structural) stage = reportedStage;
+    QString reason = error.code + " stage=" + stage;
+    // Only our validator/selector's fixed diagnostic fields are safe to retain.
+    // Provider messages and arbitrary details can echo responses or private URLs.
+    if (structural) {
+        for (const auto& key : {"schemaPath", "keyword", "field", "reason"}) {
+            const QString value = error.details[key].toString();
+            if (!value.isEmpty()) reason += ' ' + QString(key) + '=' + value;
+        }
+        QStringList missing;
+        for (const auto& field : error.details["missingRequired"].toArray())
+            missing << field.toString();
+        if (!missing.isEmpty()) reason += " missingRequired=" + missing.join(',');
+    }
+    return reason.left(512);
+}
+} // namespace
+
 QJsonObject AIBrain::autonomyStatus() const {
     return {{"enabled", m_autonomyConfig.enabled},
             {"ready", m_autonomyConfigured},
@@ -150,7 +175,7 @@ void AIBrain::beginActivitySelection(OpportunityTicket ticket) {
                         if (!current())
                             return;
                         if (!proposal) {
-                            finish("failure", proposal.error().code);
+                            finish("failure", selectionFailureReason(proposal.error()));
                             return;
                         }
                         if (proposal.value().decision == "wait") {

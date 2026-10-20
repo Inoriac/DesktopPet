@@ -45,6 +45,55 @@ void checkKeywords(const Json& schema) {
         else if (maps.contains(key)) { for (const auto& child : item.value().object_range()) checkKeywords(child.value()); }
     }
 }
+
+QJsonValue atPointer(QJsonValue value, const QString& pointer) {
+    if (pointer.isEmpty()) return value;
+    if (!pointer.startsWith('/')) return QJsonValue::Undefined;
+    for (QString token : pointer.mid(1).split('/')) {
+        token.replace("~1", "/").replace("~0", "~");
+        if (value.isObject()) value = value.toObject().value(token);
+        else if (value.isArray()) {
+            bool ok = false;
+            const auto index = token.toInt(&ok);
+            value = ok && index >= 0 ? value.toArray().at(index) : QJsonValue::Undefined;
+        } else return QJsonValue::Undefined;
+        if (value.isUndefined()) return value;
+    }
+    return value;
+}
+
+QJsonObject validationDetails(const validation_message& message,
+                              const QJsonValue& schema, const QJsonValue& instance) {
+    // Evaluation paths can append an unknown property from the input. The
+    // schema location names the rule itself; publish it only if it resolves
+    // in the supplied schema. Never expose instance locations or messages.
+    QString path = QString::fromStdString(message.schema_location().fragment());
+    auto rule = atPointer(schema, path);
+    const QString keyword = QString::fromStdString(message.keyword());
+    // Some validators point at the containing schema rather than the keyword.
+    if (rule.isObject() && rule.toObject().contains(keyword)) {
+        path += '/' + keyword;
+        rule = rule.toObject()[keyword];
+    }
+    QJsonObject details{{"stage", "schema"}};
+    if (path.size() <= 256 && !rule.isUndefined()) {
+        details["schemaPath"] = path;
+        details["keyword"] = keyword.left(64);
+        if (message.keyword() == "required") {
+            const auto object = atPointer(instance,
+                QString::fromStdString(message.instance_location().string())).toObject();
+            QJsonArray missing;
+            for (const auto& field : rule.toArray()) {
+                if (field.isString() && !object.contains(field.toString()))
+                    missing.append(field.toString().left(128));
+                if (missing.size() == 8) break;
+            }
+            if (!missing.isEmpty()) details["missingRequired"] = missing;
+        }
+    }
+    return details;
+}
+
 Result<void,DomainError> evaluate(const QJsonValue& value, const QJsonValue* instance, const QString& root, const QString& sourceFile) {
     try {
         auto schema=Json::parse(encode(value).toStdString());
@@ -64,12 +113,22 @@ Result<void,DomainError> evaluate(const QJsonValue& value, const QJsonValue* ins
             return result;
         };
         auto compiled=make_json_schema(schema,base.toStdString(),resolver,evaluation_options{}.default_version(dialect));
-        if (instance && !compiled.is_valid(Json::parse(encode(*instance).toStdString())))
-            return Result<void,DomainError>::failure(domainError("INVALID_INPUT","JSON Schema validation failed"));
+        if (instance) {
+            QJsonObject details;
+            compiled.validate(Json::parse(encode(*instance).toStdString()),
+                [&](const validation_message& message) -> walk_result {
+                    details = validationDetails(message, value, *instance);
+                    return walk_result::abort;
+                });
+            if (!details.isEmpty())
+                return Result<void,DomainError>::failure(
+                    domainError("INVALID_INPUT", "JSON Schema validation failed", details));
+        }
         return Result<void,DomainError>::success();
     } catch (const std::exception&) {
         // Never return schema or configuration values in diagnostics.
-        return Result<void,DomainError>::failure(domainError("SCHEMA_UNSUPPORTED","Invalid or unsupported JSON Schema/reference"));
+        return Result<void,DomainError>::failure(domainError("SCHEMA_UNSUPPORTED","Invalid or unsupported JSON Schema/reference",
+                                                            {{"stage", "schema"}, {"reason", "unsupported_schema"}}));
     }
 }
 }

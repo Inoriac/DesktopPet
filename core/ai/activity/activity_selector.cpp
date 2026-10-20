@@ -18,6 +18,12 @@ namespace {
 template <class T> Result<T, DomainError> fail(QString code, QString message) {
     return Result<T, DomainError>::failure(domainError(code, message));
 }
+Result<SelectionProposal, DomainError> invalidSelection(
+    const QString& code, const QString& message, const QString& field,
+    const QString& reason) {
+    return Result<SelectionProposal, DomainError>::failure(domainError(
+        code, message, {{"stage", "selection"}, {"field", field}, {"reason", reason}}));
+}
 QJsonObject stringSchema(int max = 512) {
     return {{"type", "string"}, {"maxLength", max}};
 }
@@ -58,7 +64,7 @@ QJsonObject ActivitySelector::schema(const SelectionRequest &r) {
         {"type", "object"},
         {"additionalProperties", false},
         {"required",
-         QJsonArray{"pluginId", "entryId", "entryVersion", "operationId"}},
+         QJsonArray{"pluginId", "entryId", "entryVersion"}},
         {"properties", QJsonObject{{"pluginId", stringSchema(128)},
                                    {"entryId", stringSchema(128)},
                                    {"entryVersion", stringSchema(64)},
@@ -99,22 +105,22 @@ Result<SelectionProposal, DomainError>
 ActivitySelector::parse(const QJsonObject &j, const SelectionRequest &r) {
     auto valid = SchemaValidator::validate(schema(r), j);
     if (!valid)
-        return fail<SelectionProposal>("MODEL_OUTPUT_INVALID",
-                                       valid.error().message);
+        return Result<SelectionProposal, DomainError>::failure(domainError(
+            "MODEL_OUTPUT_INVALID", valid.error().message, valid.error().details));
     SelectionProposal p;
     p.decision = j["decision"].toString();
     p.reason = j["reason"].toString().trimmed();
     p.evidenceRefs = strings(j["evidenceRefs"].toArray());
     p.activityId = j["activityId"].toString();
     if (p.reason.isEmpty())
-        return fail<SelectionProposal>("MODEL_OUTPUT_INVALID",
-                                       "Selection needs a brief reason");
+        return invalidSelection("MODEL_OUTPUT_INVALID", "Selection needs a brief reason",
+                                "reason", "brief_reason_required");
     if (!j["nextConsiderAt"].toString().isEmpty()) {
         p.nextConsiderAt = QDateTime::fromString(j["nextConsiderAt"].toString(),
                                                  Qt::ISODateWithMs);
         if (!p.nextConsiderAt.isValid())
-            return fail<SelectionProposal>("MODEL_OUTPUT_INVALID",
-                                           "Invalid next consideration time");
+            return invalidSelection("MODEL_OUTPUT_INVALID", "Invalid next consideration time",
+                                    "nextConsiderAt", "invalid_timestamp");
     }
     p.intent.context = r.context;
     p.intent.origin =
@@ -127,17 +133,17 @@ ActivitySelector::parse(const QJsonObject &j, const SelectionRequest &r) {
     for (const auto &v : j["capabilityRefs"].toArray()) {
         const auto ref = CapabilityRef::fromJson(v.toObject());
         if (!knownCapability(ref, r))
-            return fail<SelectionProposal>("UNKNOWN_REFERENCE",
-                                           "Capability was not offered");
+            return invalidSelection("UNKNOWN_REFERENCE", "Capability was not offered",
+                                    "capabilityRefs", "capability_not_offered");
         p.intent.capabilityRefs << ref;
     }
     if (p.decision == "start") {
         if (p.intent.goal.isEmpty() || p.intent.stopWhen.isEmpty() ||
             p.intent.reconsiderWhen.isEmpty() ||
             p.intent.capabilityRefs.isEmpty() || !p.activityId.isEmpty())
-            return fail<SelectionProposal>("MODEL_OUTPUT_INVALID",
-                                           "Start requires goal, stopping "
-                                           "conditions and initial capability");
+            return invalidSelection("MODEL_OUTPUT_INVALID",
+                                    "Start requires goal, stopping conditions and initial capability",
+                                    "decision", "incomplete_start");
     } else if (p.decision == "resume" || p.decision == "continue") {
         const auto it = std::find_if(r.activities.cbegin(), r.activities.cend(),
                                      [&](const auto &a) {
@@ -145,16 +151,17 @@ ActivitySelector::parse(const QJsonObject &j, const SelectionRequest &r) {
                                                 selectionResumeEligible(a);
                                      });
         if (it == r.activities.cend())
-            return fail<SelectionProposal>(
+            return invalidSelection(
                 "UNKNOWN_REFERENCE",
-                "Activity is not eligible for autonomous continuation");
+                "Activity is not eligible for autonomous continuation",
+                "activityId", "activity_not_eligible");
         p.expectedRevision = it->revision;
         if (!p.intent.capabilityRefs.isEmpty())
-            return fail<SelectionProposal>(
-                "INVALID_INPUT", "Resume cannot replace capabilities");
+            return invalidSelection("INVALID_INPUT", "Resume cannot replace capabilities",
+                                    "capabilityRefs", "resume_cannot_replace_capabilities");
     } else if (!p.activityId.isEmpty() || !p.intent.capabilityRefs.isEmpty())
-        return fail<SelectionProposal>("INVALID_INPUT",
-                                       "Wait cannot dispatch or resume");
+        return invalidSelection("INVALID_INPUT", "Wait cannot dispatch or resume",
+                                "decision", "wait_cannot_dispatch");
     return Result<SelectionProposal, DomainError>::success(p);
 }
 QJsonObject ActivitySelector::materials(const SelectionRequest &r) {
@@ -218,7 +225,14 @@ void ActivitySelector::selectActivity(const SelectionRequest &r,
          "claim a query or conversation happened. Keep reasons brief; never "
          "reproduce private thought text. Initial capabilities may reference "
          "an entry without operationId; its methods are loaded before "
-         "execution. No custom authorization fields."},
+         "execution. Map a capability summary's id/version to entryId/entryVersion "
+         "and keep pluginId unchanged. For start, provide goal, stopWhen, "
+         "reconsiderWhen and initial capabilityRefs, with activityId empty. "
+         "For resume/continue, use an eligible activityId and empty capabilityRefs. "
+         "For wait, leave activityId empty and capabilityRefs empty. All required "
+         "fields must be present: use empty strings for unused goal/stopping/time "
+         "fields and empty arrays for absent evidence/candidates. nextConsiderAt "
+         "is an ISO date-time or an empty string. No custom authorization fields."},
         {"user",
          QString::fromUtf8(
              QJsonDocument(materials(r)).toJson(QJsonDocument::Compact))}};

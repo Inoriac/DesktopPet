@@ -1,4 +1,5 @@
 #include "model_router.h"
+#include "ai/plugin/schema_validator.h"
 
 #include <QDateTime>
 #include <QJsonDocument>
@@ -44,55 +45,37 @@ bool isTransientProviderError(const QString& error) {
         || normalized.contains(QStringLiteral("network"));
 }
 
-bool valueMatchesType(const QJsonValue& value, const QString& type) {
-    if (type == QLatin1String("string")) return value.isString();
-    if (type == QLatin1String("number")) return value.isDouble();
-    if (type == QLatin1String("boolean")) return value.isBool();
-    if (type == QLatin1String("object")) return value.isObject();
-    if (type == QLatin1String("array")) return value.isArray();
-    return false;
-}
-
-bool responseMatchesSchema(const QString& content,
-                           const QJsonObject& schema) {
-    if (schema.isEmpty()) return true;
-    if (schema.value(QStringLiteral("type")).toString() != QLatin1String("object")) {
-        return false;
-    }
+Result<QString, DomainError> validatedResponse(const QString& content,
+                                              const QJsonObject& schema) {
+    if (schema.isEmpty()) return Result<QString, DomainError>::success(content);
+    QString json = content.trimmed();
+    static const QRegularExpression fence(
+        QStringLiteral("\\A```(?:json)?[ \\t]*\\r?\\n([\\s\\S]*?)\\r?\\n```\\z"),
+        QRegularExpression::CaseInsensitiveOption);
+    const auto fenced = fence.match(json);
+    if (fenced.hasMatch()) json = fenced.captured(1);
 
     QJsonParseError parseError;
     const QJsonDocument document =
-        QJsonDocument::fromJson(content.toUtf8(), &parseError);
+        QJsonDocument::fromJson(json.toUtf8(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
-        return false;
+        return Result<QString, DomainError>::failure(domainError(
+            "MODEL_OUTPUT_INVALID", "Expected a JSON object or a whole JSON code fence",
+            {{"stage", "parse"}, {"reason", "expected_json_object"}}));
     }
-    const QJsonObject object = document.object();
-
-    const QJsonArray required = schema.value(QStringLiteral("required")).toArray();
-    for (const QJsonValue& field : required) {
-        if (!field.isString() || !object.contains(field.toString())) {
-            return false;
-        }
-    }
-
-    const QJsonObject properties =
-        schema.value(QStringLiteral("properties")).toObject();
-    for (auto it = properties.constBegin(); it != properties.constEnd(); ++it) {
-        if (!object.contains(it.key())) continue;
-        if (!it.value().isObject()) return false;
-        const QString type = it.value().toObject()
-                                 .value(QStringLiteral("type")).toString();
-        if (!valueMatchesType(object.value(it.key()), type)) return false;
-    }
-    return true;
+    const auto valid = SchemaValidator::validate(schema, document.object());
+    if (!valid) return Result<QString, DomainError>::failure(valid.error());
+    return Result<QString, DomainError>::success(
+        QString::fromUtf8(document.toJson(QJsonDocument::Compact)));
 }
 
-ChatMessage repairInstruction() {
+ChatMessage repairInstruction(const DomainError& error) {
     ChatMessage message;
     message.role = QStringLiteral("user");
     message.content = QStringLiteral(
         "上一次输出不符合约定的 JSON Object Schema。"
-        "请只返回满足 required 字段和基本类型约束的 JSON 对象，不要附加解释。");
+        "请按以下结构错误修正，满足全部 Schema 约束，只返回 JSON 对象，不要附加解释。\n")
+        + QString::fromUtf8(QJsonDocument(error.details).toJson(QJsonDocument::Compact));
     return message;
 }
 
@@ -183,7 +166,7 @@ struct ModelRouter::CompletionState {
     ModelRequest request;
     ModelRoleConfig config;
     ModelCompletionHandler callback;
-    bool sawInvalidOutput = false;
+    std::optional<DomainError> invalidOutput;
     std::optional<ModelRouteConfig> lastRoute;
     LlmStreamObserver observer;
     std::shared_ptr<RoutedRequestHandle> requestHandle;
@@ -445,19 +428,19 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
         ++selectedIndex;
     }
     if (selectedIndex >= state->config.routes.size()) {
-        const QString code = state->sawInvalidOutput
+        const QString code = state->invalidOutput
             ? QStringLiteral("MODEL_OUTPUT_INVALID")
             : (!state->lastProviderError.trimmed().isEmpty()
                    ? QStringLiteral("MODEL_PROVIDER_ERROR")
                    : QStringLiteral("MODEL_ROLE_UNAVAILABLE"));
-        QJsonObject details;
-        if (state->lastRoute.has_value()) {
+        QJsonObject details = state->invalidOutput ? state->invalidOutput->details : QJsonObject{};
+        if (state->lastRoute.has_value() && !state->invalidOutput) {
             details.insert(QStringLiteral("routeId"), state->lastRoute->routeId);
             details.insert(QStringLiteral("provider"), state->lastRoute->llm.provider);
             details.insert(QStringLiteral("model"), state->lastRoute->llm.model);
         }
-        const QString message = state->sawInvalidOutput
-            ? QStringLiteral("All routes returned output that did not match the required schema")
+        const QString message = state->invalidOutput
+            ? QStringLiteral("No route produced a valid response for the required schema")
             : (!state->lastProviderError.trimmed().isEmpty()
                    ? state->lastProviderError
                    : QStringLiteral("No configured model route is currently available"));
@@ -488,12 +471,15 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
                 return;
             }
 
-            if (!responseMatchesSchema(response.content,
-                                       state->request.responseSchema)) {
-                state->sawInvalidOutput = true;
+            const auto validated = validatedResponse(response.content, state->request.responseSchema);
+            if (!validated) {
+                state->invalidOutput = validated.error();
+                state->invalidOutput->details.insert("routeId", selectedRoute.routeId);
+                state->invalidOutput->details.insert("provider", selectedRoute.llm.provider);
+                state->invalidOutput->details.insert("model", selectedRoute.llm.model);
                 if (!repairAttempt) {
                     QList<ChatMessage> repairMessages = messages;
-                    repairMessages.append(repairInstruction());
+                    repairMessages.append(repairInstruction(validated.error()));
                     attemptRoute(state, selectedIndex,
                                  std::move(repairMessages), true);
                 } else {
@@ -502,6 +488,8 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
                 }
                 return;
             }
+
+            response.content = validated.value();
 
             ModelCompletion completion;
             completion.response = std::move(response);

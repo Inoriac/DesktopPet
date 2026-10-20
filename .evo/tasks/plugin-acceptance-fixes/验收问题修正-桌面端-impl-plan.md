@@ -35,8 +35,9 @@
 ## Task 4 自主选择输出兼容与诊断
 
 - 关联设计：§3.4 自主选择输出兼容与诊断
-- 状态：[ ]
+- 状态：[x]
 - Wave：4
 - 依赖：Task 3（串行检查点）
 - 文件：core/ai/model/model_router.{h,cpp}；core/ai/plugin/schema_validator.{h,cpp}（安全结构诊断）；core/ai/activity/activity_selector.{h,cpp}；core/ai/ai_brain_autonomy.cpp；core/ai/activity/opportunity_store.cpp（仅必要的现有结果字段）；tests/test_model_router.cpp；tests/test_activity_selector.cpp；tests/test_streaming_dialogue.cpp（宿主诊断）；相关 CMake 源文件组
 - 回归：合法 JSON 与常见包裹格式可解析；非法字段/引用仍失败；修复请求指出具体结构错误；失败保留安全字段路径和阶段，不暴露原文；合法 start/wait、预算和全局关闭边界不退化；使用 CapabilityRef::toJson 的条目引用省略 operationId 可正常 start，显式操作引用仍可用。
+- 完成证据：7/7 相关目标、257 项通过；包含 ModelRouter 44、StreamingDialogue 99、ActivitySelector 25 及自主/预算/运行时回归。结构化输出、真实宿主失败落库和路由归因均有 RED→GREEN。

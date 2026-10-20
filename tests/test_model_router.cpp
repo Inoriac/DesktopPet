@@ -120,6 +120,17 @@ QJsonObject objectSchema() {
     };
 }
 
+QJsonObject nestedSchema() {
+    return {{"type", "object"}, {"required", QJsonArray{"payload"}},
+            {"additionalProperties", false},
+            {"properties", QJsonObject{{"payload", QJsonObject{
+                {"type", "object"}, {"required", QJsonArray{"mode", "limit", "flag"}},
+                {"properties", QJsonObject{
+                    {"mode", QJsonObject{{"type", "string"}, {"enum", QJsonArray{"read", "search"}}}},
+                    {"limit", QJsonObject{{"type", "integer"}, {"minimum", 1}}},
+                    {"flag", QJsonObject{{"type", "null"}}}}}}}}}};
+}
+
 QString writeConfig(QTemporaryDir& directory, const QJsonObject& config) {
     const QString path = directory.filePath(QStringLiteral("model-role-config.json"));
     QFile file(path);
@@ -164,6 +175,14 @@ private slots:
 
     void completeAsync_whenPrimarySucceeds_shouldReturnValidatedResponseAndRoleDimensions();
     void completeAsync_whenOutputSchemaInvalidOnce_shouldRepairThenReturnValidResponse();
+    void structuredOutput_acceptsWholeObjectFormats_data();
+    void structuredOutput_acceptsWholeObjectFormats();
+    void structuredOutput_rejectsNestedViolationsWithSafeDiagnostics_data();
+    void structuredOutput_rejectsNestedViolationsWithSafeDiagnostics();
+    void structuredOutput_repairsNestedViolationAndMissingFields();
+    void structuredOutput_doesNotExtractJsonFromProse_data();
+    void structuredOutput_doesNotExtractJsonFromProse();
+    void structuredOutput_invalidPrimaryThenProviderFailure_keepsDiagnosticRoute();
     void completeAsync_whenProviderTimesOut_shouldTryFallbackWithoutChangingContextScope();
     void completeStreamAsync_whenOnlyRouteFails_shouldPreserveProviderError();
     void completeAsync_whenPrimaryReturnsHttp400_shouldKeepPrimaryAvailable();
@@ -187,6 +206,155 @@ private slots:
     void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
     void completeOnce_whenRouteIsValid_shouldDisableServiceLevelRetries();
 };
+
+void ModelRouterTests::structuredOutput_acceptsWholeObjectFormats_data() {
+    QTest::addColumn<QString>("content");
+    const QString json = R"({"payload":{"mode":"read","limit":1,"flag":null}})";
+    QTest::newRow("json") << json;
+    QTest::newRow("json-fence") << "  ```json\n" + json + "\n```  ";
+    QTest::newRow("plain-fence") << "```\n" + json + "\n```";
+}
+
+void ModelRouterTests::structuredOutput_acceptsWholeObjectFormats() {
+    QFETCH(QString, content);
+    ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision, {route("primary", "model")})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent(content), {}}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::AgencyDecision;
+    request.responseSchema = nestedSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result.has_value());
+    QVERIFY(result->isOk());
+    QCOMPARE(client.routeIds.size(), 1);
+    const auto parsed = QJsonDocument::fromJson(result->value().response.content.toUtf8());
+    QVERIFY(parsed.isObject());
+    QCOMPARE(parsed.object()["payload"].toObject()["limit"].toInt(), 1);
+}
+
+void ModelRouterTests::structuredOutput_rejectsNestedViolationsWithSafeDiagnostics_data() {
+    QTest::addColumn<QString>("content");
+    QTest::addColumn<QString>("keyword");
+    QTest::addColumn<QString>("schemaPath");
+    QTest::newRow("enum")
+        << R"({"payload":{"mode":"PRIVATE_RESPONSE_SENTINEL","limit":1,"flag":null}})"
+        << "enum" << "/properties/payload/properties/mode/enum";
+    QTest::newRow("nested-type")
+        << R"({"payload":{"mode":"read","limit":"PRIVATE_RESPONSE_SENTINEL","flag":null}})"
+        << "type" << "/properties/payload/properties/limit/type";
+    QTest::newRow("integer-minimum")
+        << R"({"payload":{"mode":"read","limit":0,"flag":null}})"
+        << "minimum" << "/properties/payload/properties/limit/minimum";
+    QTest::newRow("nested-required")
+        << R"({"payload":{"mode":"read","limit":1}})"
+        << "required" << "/properties/payload/required";
+    QTest::newRow("unknown-private-property")
+        << R"({"payload":{"mode":"read","limit":1,"flag":null},"PRIVATE_RESPONSE_SENTINEL":"secret"})"
+        << "additionalProperties" << "/additionalProperties";
+}
+
+void ModelRouterTests::structuredOutput_rejectsNestedViolationsWithSafeDiagnostics() {
+    QFETCH(QString, content);
+    QFETCH(QString, keyword);
+    QFETCH(QString, schemaPath);
+    ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision, {route("primary", "model")})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent(content), {}}, {true, responseWithContent(content), {}}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::AgencyDecision;
+    request.responseSchema = nestedSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result.has_value());
+    QVERIFY(!result->isOk());
+    QCOMPARE(client.routeIds.size(), 2);
+    QCOMPARE(result->error().code, QString("MODEL_OUTPUT_INVALID"));
+    const auto details = result->error().details;
+    QCOMPARE(details["stage"].toString(), QString("schema"));
+    QCOMPARE(details["keyword"].toString(), keyword);
+    QCOMPARE(details["schemaPath"].toString(), schemaPath);
+    const QString repair = client.messageBatches[1].last().content;
+    QVERIFY(repair.contains(schemaPath));
+    QVERIFY(repair.contains(keyword));
+    if (keyword == "required") {
+        QCOMPARE(details["missingRequired"].toArray(), QJsonArray{"flag"});
+        QVERIFY(repair.contains("flag"));
+    }
+    QVERIFY(!repair.contains("PRIVATE_RESPONSE_SENTINEL"));
+    QVERIFY(!QJsonDocument(details).toJson().contains("PRIVATE_RESPONSE_SENTINEL"));
+    QVERIFY(!result->error().message.contains("PRIVATE_RESPONSE_SENTINEL"));
+}
+
+void ModelRouterTests::structuredOutput_repairsNestedViolationAndMissingFields() {
+    for (const QString invalid : {QString("{}"), QString(R"({"payload":{"mode":"bad","limit":1,"flag":null}})")}) {
+        ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision, {route("primary", "model")})});
+        FakeModelCompletionClient client;
+        client.replies = {{true, responseWithContent(invalid), {}},
+                         {true, responseWithContent(R"({"payload":{"mode":"read","limit":1,"flag":null}})"), {}}};
+        ModelRouter router(&registry, &client);
+        ModelRequest request;
+        request.role = ModelRole::AgencyDecision;
+        request.responseSchema = nestedSchema();
+        std::optional<Result<ModelCompletion, DomainError>> result;
+        router.completeAsync(request, [&](auto value) { result = std::move(value); });
+        QVERIFY(result.has_value());
+        QVERIFY(result->isOk());
+        QCOMPARE(client.routeIds.size(), 2);
+        QVERIFY(client.messageBatches[1].last().content.contains("payload"));
+    }
+}
+
+void ModelRouterTests::structuredOutput_doesNotExtractJsonFromProse_data() {
+    QTest::addColumn<QString>("content");
+    QTest::newRow("prose") << "PRIVATE_RESPONSE_SENTINEL: {\"answer\":\"ok\"}";
+    QTest::newRow("fence-with-prose") << "PRIVATE_RESPONSE_SENTINEL\n```json\n{\"answer\":\"ok\"}\n```";
+    QTest::newRow("array") << "[{\"answer\":\"ok\"}]";
+}
+
+void ModelRouterTests::structuredOutput_doesNotExtractJsonFromProse() {
+    QFETCH(QString, content);
+    ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision, {route("primary", "model")})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent(content), {}}, {true, responseWithContent(content), {}}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::AgencyDecision;
+    request.responseSchema = objectSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result.has_value());
+    QVERIFY(!result->isOk());
+    QCOMPARE(client.routeIds.size(), 2);
+    QCOMPARE(result->error().details["stage"].toString(), QString("parse"));
+    const auto output = QJsonDocument(result->error().details).toJson();
+    QVERIFY(!output.contains("PRIVATE_RESPONSE_SENTINEL"));
+    QVERIFY(!client.messageBatches[1].last().content.contains("PRIVATE_RESPONSE_SENTINEL"));
+}
+
+void ModelRouterTests::structuredOutput_invalidPrimaryThenProviderFailure_keepsDiagnosticRoute() {
+    ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision,
+        {route("primary", "model-a"), route("fallback", "model-b")})});
+    FakeModelCompletionClient client;
+    client.replies = {{true, responseWithContent("{}"), {}},
+                     {true, responseWithContent("{}"), {}},
+                     {false, {}, "provider unavailable"}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::AgencyDecision;
+    request.responseSchema = objectSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result.has_value());
+    QVERIFY(!result->isOk());
+    QCOMPARE(client.routeIds, QList<QString>({"primary", "primary", "fallback"}));
+    QCOMPARE(result->error().details["routeId"].toString(), QString("primary"));
+    QCOMPARE(result->error().details["model"].toString(), QString("model-a"));
+    QCOMPARE(result->error().details["keyword"].toString(), QString("required"));
+    QVERIFY(!result->error().message.contains("All routes returned"));
+}
 
 void ModelRouterTests::resolve_whenPrimaryRouteMeetsConstraints_shouldReturnPrimary() {
     ModelRoleRegistry registry({roleConfig(
