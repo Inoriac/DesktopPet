@@ -1033,8 +1033,6 @@ void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySo
 }
 
 void StreamingDialogueTests::capabilityMetadataIsProjectedWithoutEnteringLongTermMemory() {
-    const QString logPath = QDir::current().filePath("log/ai_calls.jsonl");
-    const qint64 logOffset = QFileInfo(logPath).size();
     FakeStreamingClient client;
     LlmResponse first, overview, second, third, fourth;
     first.toolCalls = {{"discover", "function", "discover_capabilities", {}}};
@@ -1054,6 +1052,9 @@ void StreamingDialogueTests::capabilityMetadataIsProjectedWithoutEnteringLongTer
     ToolRegistry tools;
     brain.setToolRegistry(&tools);
     QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    const QString logPath = QFileInfo(services.chatPreparationRuntimeMetadata().runtimeDatabasePath)
+        .dir().filePath("logs/ai_calls.jsonl");
+    const qint64 logOffset = QFileInfo(logPath).size();
     for (const auto& name : {"load_capability", "discover_capabilities", "invoke_capability"})
         tools.unregisterTool(name);
     QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("load_capability", &loads)));

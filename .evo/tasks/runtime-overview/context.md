@@ -6,6 +6,7 @@
 
 ## 决策记录
 
+- [集成回归适配] 已有 StreamingDialogueTests 的插件元数据日志回归硬编码全局 log/ai_calls.jsonl。新核心复现读不到预期三条记录后，测试改从该临时角色 runtimeDatabasePath 推导 logs 目录；整组 StreamingDialogueTests 通过。验证仍保留原有元数据/配对检查，不回退生产日志隔离。
 - [code-impl Task 2 sanity check] §3.2.5 的 LauncherChatServer 鉴权/限流路径、EmotionEngine::snapshot(const)、AIBrain 状态 getter、sleepCycleCoordinator()->isActive() 和副作用队列日志所有权已验证一致。运行快照不调用 advanceTo，任务只取 status；详细日志仍在原异步队列写入。
 - [离线日期核查] 保存文件的 today 属于保存当天；launcher 离线读取时从 daily 取当前本机日期，避免隔天打开误把昨天显示成今天。离线本次运行保持不可用。
 - [code-impl Task 1 审查] 按实际客户端调用统计；保留原统计查询和事件接口。已验证首个终态去重、预算拒绝不计、低层关闭重复统计、后台用途归当前 UUID、保存检查点恢复不重复。原有接口用例与新增回归共四个测试目标通过。全项目构建及综合回归在集成后统一执行。

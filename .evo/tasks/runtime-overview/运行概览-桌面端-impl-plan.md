@@ -15,7 +15,7 @@
 - 状态：[x]
 - Wave：2
 - 依赖：Task 1
-- 文件：core/ai/chat/launcher_chat_server.*、core/ai/runtime/runtime_overview.*、ui/petwindow.{cpp,h}、core/ai/ai_brain.{cpp,h}、core/ai/ai_call_logger.*；tests/test_launcher_chat_server.cpp、tests/test_runtime_overview.cpp、tests/test_ai_call_logger.cpp；CMakeLists.txt。
+- 文件：core/ai/chat/launcher_chat_server.*、core/ai/runtime/runtime_overview.*、ui/petwindow.{cpp,h}、core/ai/ai_brain.{cpp,h}、core/ai/ai_call_logger.*；tests/test_launcher_chat_server.cpp、tests/test_runtime_overview.cpp、tests/test_ai_call_logger.cpp、tests/test_streaming_dialogue.cpp（既有日志回归路径）；CMakeLists.txt。
 - 测试：authenticated_overview_without_history、overview_auth_and_unsupported、query_does_not_change_revision、emotion_disabled_no_fake_state、runtime_fields_from_real_inputs、logger_rotation_and_oversize、logger_write_failure。
 
 ## Task 3：Launcher 运行概览与调用记录
