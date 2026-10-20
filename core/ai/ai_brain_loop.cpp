@@ -260,9 +260,12 @@ void AIBrain::thinkInternal(const QString& reason,
             const auto calls=response.toolCalls;
             const ContextSpec context=currentToolContext();
             auto next=std::make_shared<std::function<void(int)>>();
-            *next=[this,guard,isCurrent,next,messages,calls,toolProjection,context,reason,triggerTag,sessionId,toolRound,projectedMessages](int index) {
+            *next=[this,guard,isCurrent,next,messages,calls,toolProjection,context,reason,triggerTag,sessionId,toolRound,projectedMessages,
+                   roundStart = workingMessages.size()](int index) {
                 if (!isCurrent() || suppressMutedAutomaticResponse()) { *next={}; return; }
                 if (index>=calls.size()) {
+                    if (m_activeDialogueResponse->toolHistoryEpoch == m_toolConversationHistory.epoch())
+                        m_toolConversationHistory.add(context, messages->sliced(roundStart));
                     auto completed=*messages; *next={}; publishActiveStage(ChatActivityStage::Finalizing);
                     thinkInternal(reason,triggerTag,sessionId,toolRound+1,completed); return;
                 }

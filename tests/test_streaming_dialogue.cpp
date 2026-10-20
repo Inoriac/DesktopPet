@@ -3,6 +3,7 @@
 #include <QDir>
 #include <QElapsedTimer>
 #include <QJsonArray>
+#include <QScopeGuard>
 #include <QTemporaryDir>
 #include <QTimer>
 
@@ -317,13 +318,26 @@ LlmResponse textResponse(const QString& text) {
     return response;
 }
 
+QList<ChatMessage> historyRound(const QString& id, const QString& content = "page-result") {
+    ChatMessage call;
+    call.role = "assistant";
+    call.toolCalls = {QJsonObject{{"id", id}, {"type", "function"}, {"function", QJsonObject{
+        {"name", "web_fetch"}, {"arguments", "{\"url\":\"https://example.org\"}"}}}}};
+    ChatMessage result;
+    result.role = "tool";
+    result.name = "web_fetch";
+    result.toolCallId = id;
+    result.content = content;
+    return {call, result};
+}
+
 } // namespace
 
 class StreamingDialogueTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void capabilityMetadataIsProjectedAndExcludedFromNextChatMemory();
+    void capabilityMetadataIsProjectedWithoutEnteringLongTermMemory();
     void capabilityInvocationRequiresDefinitionInPrecedingRequest();
     void repeatedToolRequestsStopAtEightRounds();
     void imageMessage_usesVisionAndRetainsOriginalRuntimeInput_data();
@@ -373,7 +387,13 @@ private slots:
     void triggerThink_whenStreamingReplyCompletes_shouldEmitOneLifecycleAndJoinedCompatibilityResponse();
     void triggerThink_whenUserMessageIdProvided_shouldPreserveReplyToIdAcrossToolRounds();
     void thinkInternal_whenToolUseCompletes_shouldAppendContinuationToSameAssistantMessage();
-    void triggerThink_afterToolRound_shouldNotLeakToolProtocolIntoNextRequest();
+    void submitUserMessage_afterToolRound_shouldRetainCompleteProtocolAndCursor();
+    void toolHistory_isolatesHostScopes();
+    void toolHistory_evictsCompleteRoundsAndDropsTransportBlocks();
+    void toolHistory_lifecycleClears_data();
+    void toolHistory_lifecycleClears();
+    void toolHistory_clearDuringPendingResponseDoesNotRestoreHistory();
+    void toolHistory_cancelledPartialRoundAndLateWorkerDoNotPersist();
     void tryHandleRoutedIntent_whenDirectReplySelected_shouldEmitNormalizedLifecycleWithoutNetwork();
     void tryHandleRoutedIntent_whenDirectToolCallSelected_shouldEmitNormalizedLifecycleWithoutNetwork();
     void stopCurrentResponse_whenStreamIsActive_shouldKeepPartialTextAndFinishStoppedOnce();
@@ -923,7 +943,7 @@ void StreamingDialogueTests::memoryWrite_repeatedImpressions_shouldRetainEverySo
     QCOMPARE(matchingImpressions, 1);
 }
 
-void StreamingDialogueTests::capabilityMetadataIsProjectedAndExcludedFromNextChatMemory() {
+void StreamingDialogueTests::capabilityMetadataIsProjectedWithoutEnteringLongTermMemory() {
     const QString logPath = QDir::current().filePath("log/ai_calls.jsonl");
     const qint64 logOffset = QFileInfo(logPath).size();
     FakeStreamingClient client;
@@ -951,7 +971,7 @@ void StreamingDialogueTests::capabilityMetadataIsProjectedAndExcludedFromNextCha
     QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("discover_capabilities", &discovers)));
     QVERIFY(tools.registerTool(std::make_unique<MetadataFixtureTool>("invoke_capability", &invokes, &received)));
     QSignalSpy outcomes(&brain, &AIBrain::toolExecuted);
-    brain.triggerThink("请读取视频资料", "user_request");
+    QVERIFY(brain.submitUserMessage("请读取视频资料", "capability-first").isOk());
     QTRY_COMPARE(client.messageBatches.size(), 5);
     QVERIFY(client.pending);
     const auto alias = readOperationName(client.toolBatches.last());
@@ -1020,13 +1040,16 @@ void StreamingDialogueTests::capabilityMetadataIsProjectedAndExcludedFromNextCha
         QCOMPARE(definition["instructions"].toString().size(), 2525);
         QVERIFY(!definition.contains("instructionsRef"));
     }
-    brain.triggerThink("刚才读到了什么内容？", "user_request");
+    QVERIFY(brain.submitUserMessage("刚才读到了什么内容？", "capability-next").isOk());
     QTRY_COMPARE(client.messageBatches.size(), 7);
     QString nextRequest;
     for (const auto& message : client.messageBatches.last()) nextRequest += message.content;
-    QVERIFY(!nextRequest.contains("DIALOGUE_CAPABILITY_BODY"));
+    QCOMPARE(nextRequest.count("DIALOGUE_CAPABILITY_BODY"), 1);
     QVERIFY(!nextRequest.contains("DISCOVERY_SUMMARY_SENTINEL"));
     QVERIFY(nextRequest.contains("BUSINESS_OBSERVATION_SENTINEL"));
+    QVERIFY(CapabilityContext::hasOperation(client.messageBatches.last(), dialogueCapabilityRef("read")));
+    QVERIFY(!CapabilityContext::hasOperation(client.messageBatches.last(), dialogueCapabilityRef("open")));
+    QCOMPARE(readOperationName(client.toolBatches.last()), alias);
 }
 void StreamingDialogueTests::capabilityInvocationRequiresDefinitionInPrecedingRequest() {
     FakeStreamingClient client;
@@ -1699,11 +1722,13 @@ void StreamingDialogueTests::thinkInternal_whenToolUseCompletes_shouldAppendCont
     }));
 }
 
-void StreamingDialogueTests::triggerThink_afterToolRound_shouldNotLeakToolProtocolIntoNextRequest() {
+void StreamingDialogueTests::submitUserMessage_afterToolRound_shouldRetainCompleteProtocolAndCursor() {
     FakeStreamingClient client;
     LlmResponse toolResponse;
+    const QJsonObject pageInfo{{"url", "https://example.org/article"}, {"nextCursor", "page:2:cursor"}};
     toolResponse.toolCalls.append({QStringLiteral("tool-1"), QStringLiteral("function"),
-                                   QStringLiteral("echo_value"), {}});
+                                   QStringLiteral("echo_value"), {{"value", pageInfo}}});
+    toolResponse.transportBlocks = {QJsonObject{{"signature", "private-provider-signature"}}};
     client.attempts = {
         {{}, true, toolResponse, {}, false},
         {{delta(QStringLiteral("第一次完成"))}, true,
@@ -1713,25 +1738,243 @@ void StreamingDialogueTests::triggerThink_afterToolRound_shouldNotLeakToolProtoc
     };
     AIBrain brain(&client, {dialogueRoutes({route(QStringLiteral("primary"))})});
     QTemporaryDir directory;
-    QVERIFY(initializeBrain(brain, directory));
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
     ToolRegistry tools;
     tools.registerTool(std::make_unique<EchoTool>());
     brain.setToolRegistry(&tools);
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
 
-    brain.triggerThink(QStringLiteral("第一次请求"),
-                       QStringLiteral("user_request"), QStringLiteral("user-1"));
+    QVERIFY(brain.submitUserMessage("第一次请求", "user-1").isOk());
     QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 2, 2000);
-    brain.triggerThink(QStringLiteral("第二次请求"),
-                       QStringLiteral("user_request"), QStringLiteral("user-2"));
+    QTRY_VERIFY(!brain.isBusy());
+    QVERIFY(brain.submitUserMessage("第二次请求", "user-2").isOk());
 
     QTRY_COMPARE_WITH_TIMEOUT(client.messageBatches.size(), 3, 2000);
     QCOMPARE(client.messageBatches.size(), 3);
     const QList<ChatMessage>& secondRequest = client.messageBatches.at(2);
-    QVERIFY(std::none_of(
-        secondRequest.cbegin(), secondRequest.cend(), [](const ChatMessage& message) {
-            return message.role == QLatin1String("tool")
-                || !message.toolCallId.isEmpty() || !message.toolCalls.isEmpty();
-        }));
+    QCOMPARE(secondRequest.last().role, "user");
+    const auto retainedResult = secondRequest[secondRequest.size() - 2];
+    const auto retainedCall = secondRequest[secondRequest.size() - 3];
+    QCOMPARE(retainedResult.role, "tool");
+    QCOMPARE(retainedResult.toolCallId, "tool-1");
+    QCOMPARE(retainedCall.role, "assistant");
+    QCOMPARE(retainedCall.toolCalls.first().toObject()["id"].toString(), retainedResult.toolCallId);
+    const auto page = QJsonDocument::fromJson(retainedResult.content.toUtf8()).object()["data"].toObject()["value"].toObject();
+    QCOMPARE(page["url"].toString(), "https://example.org/article");
+    QCOMPARE(page["nextCursor"].toString(), "page:2:cursor");
+    QVERIFY(retainedCall.transportBlocks.isEmpty());
+}
+
+void StreamingDialogueTests::toolHistory_isolatesHostScopes() {
+    ToolConversationHistory history;
+    auto context = ContextSpec::localOwner("profile");
+    context.conversationRevision = 10;
+    context.identityRevision = 20;
+    context.participantPersonIds = {"alice", "bob"};
+    QVERIFY(history.add(context, historyRound("a")));
+    QCOMPARE(history.messages(context).size(), 2);
+    auto reordered = context;
+    reordered.participantPersonIds = {"bob", "alice"};
+    QCOMPARE(history.messages(reordered).size(), 2);
+    auto laterMessage = context;
+    ++laterMessage.conversationRevision;
+    QCOMPARE(history.messages(laterMessage).size(), 2);
+    const QList<std::function<void(ContextSpec&)>> mutations{
+        [](auto& c) { c.profileId = "another-profile"; },
+        [](auto& c) { c.conversationId = "another-conversation"; },
+        [](auto& c) { c.channel = "another-channel"; },
+        [](auto& c) { c.originKind = OriginKind::External; },
+        [](auto& c) { ++c.identityRevision; },
+        [](auto& c) { c.participantPersonIds = {"alice", "carol"}; },
+        [](auto& c) { c.audienceProjectionRef = "new-audience"; }
+    };
+    for (const auto& mutate : mutations) {
+        auto other = context;
+        mutate(other);
+        QVERIFY(history.messages(other).isEmpty());
+    }
+    auto secondConversation = context;
+    secondConversation.conversationId = "second";
+    QVERIFY(history.add(secondConversation, historyRound("b")));
+    QCOMPARE(history.messages(context).last().toolCallId, "a");
+    QCOMPARE(history.messages(secondConversation).last().toolCallId, "b");
+    auto changedIdentity = context;
+    ++changedIdentity.identityRevision;
+    QVERIFY(history.add(changedIdentity, historyRound("new-identity")));
+    QVERIFY(history.messages(context).isEmpty());
+    QCOMPARE(history.messages(changedIdentity).last().toolCallId, "new-identity");
+}
+
+void StreamingDialogueTests::toolHistory_evictsCompleteRoundsAndDropsTransportBlocks() {
+    ToolConversationHistory history;
+    const auto context = ContextSpec::localOwner("profile");
+    auto round = historyRound("one");
+    const QJsonObject opaque{{"data", QString(100000, 'x')}};
+    for (auto& message : round) {
+        message.transportBlocks = {opaque};
+        message.contentBlocks = {opaque};
+    }
+    QVERIFY(!history.add(context, {round.first()}));
+    auto mismatched = round;
+    mismatched.last().toolCallId = "wrong-id";
+    QVERIFY(!history.add(context, mismatched));
+    // Multiple calls are one unit: a missing or duplicated result cannot be stored.
+    auto multiple = round;
+    multiple.first().toolCalls.append(historyRound("two").first().toolCalls.first());
+    QVERIFY(!history.add(context, multiple));
+    multiple.append(round.last());
+    QVERIFY(!history.add(context, multiple));
+    multiple.last() = historyRound("two").last();
+    QVERIFY(history.add(context, multiple));
+    const auto stored = history.messages(context);
+    QCOMPARE(stored.size(), 3);
+    for (const auto& message : stored) {
+        QVERIFY(message.transportBlocks.isEmpty());
+        QVERIFY(message.contentBlocks.isEmpty());
+    }
+    QVERIFY(history.add(context, historyRound("three")));
+    QVERIFY(history.add(context, historyRound("four")));
+    const auto retained = history.messages(context);
+    QCOMPARE(retained.size(), 4);
+    QCOMPARE(retained[1].toolCallId, "three");
+    QCOMPARE(retained[3].toolCallId, "four");
+
+    history.clear();
+    QList<ContextSpec> contexts;
+    for (int i = 0; i < 3; ++i) {
+        auto next = context;
+        next.conversationId = QString::number(i);
+        contexts.append(next);
+        QVERIFY(history.add(next, historyRound(QString::number(i), QString(12000, 'x'))));
+    }
+    QVERIFY(history.messages(contexts[0]).isEmpty());
+    QCOMPARE(history.messages(contexts[1]).size(), 2);
+    QCOMPARE(history.messages(contexts[2]).size(), 2);
+    QVERIFY(!history.add(contexts[2], historyRound("oversized", QString(ToolConversationHistory::MaxBytes, 'x'))));
+    QCOMPARE(history.messages(contexts[2]).last().toolCallId, "2");
+    const auto epoch = history.epoch();
+    history.clear();
+    QVERIFY(history.epoch() != epoch);
+    QVERIFY(history.messages(contexts[1]).isEmpty());
+    QVERIFY(history.messages(contexts[2]).isEmpty());
+}
+
+void StreamingDialogueTests::toolHistory_lifecycleClears_data() {
+    QTest::addColumn<QString>("action");
+    QTest::newRow("clear") << QString("clear");
+    QTest::newRow("restore") << QString("restore");
+    QTest::newRow("runtime") << QString("runtime");
+}
+
+void StreamingDialogueTests::toolHistory_lifecycleClears() {
+    QFETCH(QString, action);
+    FakeStreamingClient client;
+    LlmResponse response;
+    response.toolCalls = {{"old-tool", "function", "echo_value", {{"value", "old-page"}}}};
+    client.attempts = {{{}, true, response}, {{}, true, textResponse("已读。")},
+        {{}, true, textResponse("继续。")}, {{}, true, textResponse("新对话。")}};
+    QTemporaryDir directory;
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    auto bridge = makeRuntimeBridge();
+    AgentRuntimeServices services;
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    brain.setToolRegistry(&tools);
+    QVERIFY(AgentBootstrap::start(services, runtimeRequestFor(directory, &brain, bridge.get())).isOk());
+    brain.triggerThink("请读这份资料", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 2);
+    QTRY_VERIFY(!brain.isBusy());
+    brain.triggerThink("继续刚才的资料", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 3);
+    QTRY_VERIFY(!brain.isBusy());
+    QVERIFY(std::any_of(client.messageBatches.last().cbegin(), client.messageBatches.last().cend(),
+        [](const auto& m) { return m.toolCallId == "old-tool"; }));
+    if (action == "clear") brain.clearMemory();
+    else if (action == "restore") brain.restoreConversationHistory({});
+    else {
+        // Return to the same profile so a changed scope alone cannot hide stale records.
+        brain.setRuntimeServices(nullptr);
+        brain.setRuntimeServices(&services);
+    }
+    brain.triggerThink("开始一段新的讨论", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 4);
+    QVERIFY(std::none_of(client.messageBatches.last().cbegin(), client.messageBatches.last().cend(),
+        [](const auto& m) { return m.role == "tool" || !m.toolCalls.isEmpty(); }));
+}
+
+void StreamingDialogueTests::toolHistory_clearDuringPendingResponseDoesNotRestoreHistory() {
+    FakeStreamingClient client;
+    LlmResponse response;
+    response.toolCalls = {{"late-tool", "function", "echo_value", {{"value", "late-page"}}}};
+    client.attempts = {{{}, true, response, {}, true}, {{}, true, textResponse("完成。")},
+        {{}, true, textResponse("下一轮。")}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    brain.setToolRegistry(&tools);
+    brain.triggerThink("请读资料", "user_request");
+    QTRY_VERIFY(client.pending);
+    brain.clearMemory();
+    client.finishPendingEvenIfCancelled();
+    QTRY_COMPARE(client.messageBatches.size(), 2);
+    QTRY_VERIFY(!brain.isBusy());
+    brain.triggerThink("开始下一轮讨论", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 3);
+    QVERIFY(std::none_of(client.messageBatches.last().cbegin(), client.messageBatches.last().cend(),
+        [](const auto& m) { return m.role == "tool" || !m.toolCalls.isEmpty(); }));
+}
+
+void StreamingDialogueTests::toolHistory_cancelledPartialRoundAndLateWorkerDoNotPersist() {
+    struct WorkerState { std::atomic_bool started{false}, release{false}, finished{false}; };
+    class DelayedTool final : public AITool {
+    public:
+        explicit DelayedTool(std::shared_ptr<WorkerState> state)
+            : AITool("delayed_page", "Read delayed page"), m_state(std::move(state)) {}
+        QJsonObject parameterSchema() const override { return {{"type", "object"}}; }
+        ToolResult execute(const QJsonObject&) override {
+            m_state->started = true;
+            while (!m_state->release) QThread::msleep(2);
+            m_state->finished = true;
+            return ToolResult::ok({{"nextCursor", "cancelled-cursor"}});
+        }
+        std::shared_ptr<WorkerState> m_state;
+    };
+    const auto state = std::make_shared<WorkerState>();
+    FakeStreamingClient client;
+    LlmResponse response;
+    response.toolCalls = {{"partial", "function", "echo_value", {{"value", "partial-page"}}},
+                          {"late", "function", "delayed_page", {}}};
+    client.attempts = {{{}, true, response}, {{}, true, textResponse("新一轮。"), {}, true},
+        {{}, true, textResponse("最后一轮。")}};
+    AIBrain brain(&client, {dialogueRoutes({route("primary")})});
+    const auto releaseOnFailure = qScopeGuard([state] { state->release = true; });
+    QTemporaryDir directory;
+    QVERIFY(initializeBrain(brain, directory));
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    tools.registerTool(std::make_unique<DelayedTool>(state), HostToolMetadata::safeRead(HostToolExecutor::Worker),
+        [state] { return std::make_unique<DelayedTool>(state); });
+    brain.setToolRegistry(&tools);
+    QSignalSpy outcomes(&brain, &AIBrain::toolExecuted);
+    brain.triggerThink("读取两份资料", "user_request");
+    QTRY_VERIFY(state->started.load());
+    QCOMPARE(outcomes.size(), 1);
+    brain.stopCurrentResponse();
+    brain.triggerThink("处理新的话题", "user_request");
+    QTRY_VERIFY(client.pending);
+    state->release = true;
+    QTRY_VERIFY(state->finished.load());
+    client.finishPendingEvenIfCancelled();
+    QTRY_VERIFY(!brain.isBusy());
+    brain.triggerThink("继续新的话题", "user_request");
+    QTRY_COMPARE(client.messageBatches.size(), 3);
+    QCOMPARE(outcomes.size(), 1);
+    for (const auto& batch : client.messageBatches.sliced(1))
+        QVERIFY(std::none_of(batch.cbegin(), batch.cend(),
+            [](const auto& m) { return m.role == "tool" || !m.toolCalls.isEmpty(); }));
 }
 
 void StreamingDialogueTests::tryHandleRoutedIntent_whenDirectReplySelected_shouldEmitNormalizedLifecycleWithoutNetwork() {
@@ -2441,11 +2684,16 @@ messageSend_whenPreparationTakesOneHundredMilliseconds_shouldAllowSixteenMillise
 
 void StreamingDialogueTests::externalConversation_queuesSeparatelyAndKeepsBoundTargetAndHistory() {
     QTemporaryDir directory;FakeStreamingClient client;
+    LlmResponse deniedCall;
+    deniedCall.toolCalls = {{"group-a-call", "function", "echo_value", {{"value", "GROUP_A_PRIVATE_ARGUMENT"}}}};
     FakeStreamingClient::Attempt first;first.deferred=true;first.response=textResponse(QStringLiteral("给群A的回答"));
     FakeStreamingClient::Attempt second;second.response=textResponse(QStringLiteral("给群B的回答"));
     FakeStreamingClient::Attempt third;third.response=textResponse(QStringLiteral("继续群A"));
-    client.attempts={first,second,third};AIBrain brain(&client,{dialogueRoutes({route("dialogue")})});
+    client.attempts={{{}, true, deniedCall},first,second,third};AIBrain brain(&client,{dialogueRoutes({route("dialogue")})});
     auto bridge=makeRuntimeBridge();AgentRuntimeServices services;
+    ToolRegistry tools;
+    tools.registerTool(std::make_unique<EchoTool>());
+    brain.setToolRegistry(&tools);
     QVERIFY(AgentBootstrap::start(services,runtimeRequestFor(directory,&brain,bridge.get())).isOk());
     QStringList sentTargets;QStringList sentTexts;
     auto host=[&](const QString& remote){
@@ -2467,14 +2715,24 @@ void StreamingDialogueTests::externalConversation_queuesSeparatelyAndKeepsBoundT
     int accepted=0;brain.submitIncomingMessage(incoming("a","a-1","群A讨论天文"),[&](auto r){QVERIFY(r);++accepted;});
     QTRY_VERIFY(client.pending);QCOMPARE(accepted,1);
     brain.submitIncomingMessage(incoming("b","b-1","群B讨论私人菜谱"),[&](auto r){QVERIFY(r);++accepted;});
-    QTRY_COMPARE(accepted,2);QCOMPARE(client.messageBatches.size(),1);
+    QTRY_COMPARE(accepted,2);QCOMPARE(client.messageBatches.size(),2);
     client.finishPendingEvenIfCancelled();QTRY_COMPARE(sentTargets.size(),2);
     QCOMPARE(sentTargets,QStringList({"a","b"}));QCOMPARE(desktopDeltas.size(),0);
+    QVERIFY(std::none_of(client.messageBatches.last().cbegin(), client.messageBatches.last().cend(),
+        [](const auto& m) { return m.role == "tool" || !m.toolCalls.isEmpty(); }));
     brain.submitIncomingMessage(incoming("a","a-2","继续刚才的话题"),[&](auto r){QVERIFY(r);++accepted;});
     QTRY_COMPARE(sentTargets.size(),3);QTRY_VERIFY(!brain.isBusy());QCOMPARE(sentTargets.last(),QString("a"));
     QString thirdPrompt;for(const auto& message:client.messageBatches.last())thirdPrompt+=message.content;
     QVERIFY(thirdPrompt.contains("群A讨论天文"));QVERIFY(thirdPrompt.contains("给群A的回答"));
     QVERIFY(!thirdPrompt.contains("群B讨论私人菜谱"));
+    const auto& thirdRequest = client.messageBatches.last();
+    const auto result = thirdRequest[thirdRequest.size() - 2];
+    const auto call = thirdRequest[thirdRequest.size() - 3];
+    QCOMPARE(result.toolCallId, "group-a-call");
+    QCOMPARE(call.toolCalls.first().toObject()["id"].toString(), result.toolCallId);
+    QVERIFY(call.toolCalls.first().toObject()["function"].toObject()["arguments"].toString().contains("GROUP_A_PRIVATE_ARGUMENT"));
+    // The intentionally ungranted call still forms a paired, conversation-scoped error round.
+    QVERIFY(!QJsonDocument::fromJson(result.content.toUtf8()).object()["success"].toBool());
     for(const auto& tools:client.toolBatches)QVERIFY(tools.isEmpty());
 }
 

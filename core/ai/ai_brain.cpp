@@ -210,6 +210,7 @@ void AIBrain::setPromptTemplate(const PromptTemplate& templ) {
 
 void AIBrain::setRuntimeServices(AgentRuntimeServices* services) {
     if (m_runtimeServices == services) return;
+    m_toolConversationHistory.clear();
     retirePluginRuntime();
     m_toolRuntime.cancelAll();
     shutdownTaskRuntime();
@@ -898,6 +899,13 @@ void AIBrain::continuePreparedThink(ChatPreparationResult result) {
     }
     enqueueUserMemoryWrite(reason, triggerTag, result.requestId,
                            result.generation, sessionId);
+    // Prepared input is the final message; prior tool rounds must precede it.
+    const auto toolHistory = m_toolConversationHistory.messages(currentToolContext());
+    if (!toolHistory.isEmpty()) {
+        auto currentInput = result.messages.takeLast();
+        result.messages.append(toolHistory);
+        result.messages.append(std::move(currentInput));
+    }
     thinkInternal(reason, triggerTag, sessionId, 0, result.messages);
 }
 
@@ -910,6 +918,7 @@ void AIBrain::beginActiveResponse(const QString& replyToId,
     response.triggerTag = triggerTag;
     response.sessionId = sessionId;
     response.generation = m_requestGeneration;
+    response.toolHistoryEpoch = m_toolConversationHistory.epoch();
     response.acceptedAtMonotonicMs = monotonicMilliseconds();
     response.priorConversation = m_memory;
     response.originalMessages = m_dispatchingUserMessages;
@@ -1241,6 +1250,7 @@ void AIBrain::onUserInteraction(const QString& eventName, const QString& detail)
 
 void AIBrain::clearMemory() {
     m_memory.clear();
+    m_toolConversationHistory.clear();
     m_workingMemoryCache.clear();
     m_memoryStore.clear();
     m_memoryStore.save();

@@ -25,11 +25,12 @@
 ## Task 3 跨轮工具上下文
 
 - 关联设计：§3.3 跨轮工具上下文
-- 状态：[ ]
+- 状态：[x]
 - Wave：3
 - 依赖：Task 2
 - 文件：core/ai/ai_brain.{h,cpp}；core/ai/ai_brain_loop.cpp；core/ai/ai_brain_router.cpp；core/ai/chat 下的小型工具会话记录辅助类（若需要）；tests/test_streaming_dialogue.cpp；相关 CMake 源文件组
 - 回归：第二轮包含上一轮 URL/nextCursor 及工具调用配对；标准插件仍按需重新投影/校验；两会话不串；清空/切角色丢弃记录；大小预算只删除完整回合；过期/取消回调不写入新会话。
+- 完成证据：StreamingDialogue 95/95；正式 submitUserMessage 两轮续读与插件定义投影 RED→GREEN；外部会话隔离、容量、清理及取消回调均通过。
 
 ## Task 4 自主选择输出兼容与诊断
 

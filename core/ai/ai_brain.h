@@ -23,6 +23,7 @@
 #include "ai_types.h"
 #include "chat/chat_side_effect_queue.h"
 #include "chat/chat_types.h"
+#include "chat/tool_conversation_history.h"
 #include "domain/domain_result.h"
 #include "emotion/emotion_types.h"
 #include "event/event_types.h"
@@ -407,6 +408,7 @@ private:
         ChatMessageStatus status = ChatMessageStatus::Pending;
         ChatActivityStage stage = ChatActivityStage::WaitingForModel;
         quint64 generation = 0;
+        quint64 toolHistoryEpoch = 0;
         qint64 acceptedAtMonotonicMs = 0;
         qint64 preparedAtMonotonicMs = 0;
         qint64 uiAcknowledgeMs = 0;
@@ -422,6 +424,7 @@ private:
     int m_maxMemoryMessages = 20;
 
     QList<ChatMessage> m_memory;
+    ToolConversationHistory m_toolConversationHistory;
     QHash<QString, AgentSession> m_runtimeSessions;
     QHash<QString, quint64> m_pendingSideEffectBarriers;
     struct PendingResponseLog {

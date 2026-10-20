@@ -422,6 +422,7 @@ void AIBrain::rememberToolOutcome(const QString& toolName,
 void AIBrain::restoreConversationHistory(const QList<ChatHistoryEntry>& history) {
     if (m_busy) return;
     m_memory.clear();
+    m_toolConversationHistory.clear();
     m_workingMemoryCache.clear();
     QSet<QString> seen;
     QSet<QString> userIds;
@@ -459,9 +460,8 @@ void AIBrain::rememberScreenObservation(const QString& observation) {
 }
 
 void AIBrain::appendToMemory(const ChatMessage& message) {
-    // Tool protocol messages are only valid inside the request that contains
-    // their matching assistant tool_calls entry. Cross-request memory keeps
-    // natural conversation only, otherwise Gemini rejects orphan results.
+    // Natural conversation stays separate from the bounded, paired tool history.
+    // Copying individual protocol messages here would create orphan results.
     if ((message.role != QLatin1String("user") && message.role != QLatin1String("assistant"))
         || message.content.trimmed().isEmpty()
         || !message.toolCallId.isEmpty() || !message.toolCalls.isEmpty()) {
