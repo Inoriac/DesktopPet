@@ -43,6 +43,7 @@ from pages.advanced_page import AdvancedPage
 from pages.about_page import AboutPage
 from pages.private_diary_page import PrivateDiaryPage
 from pages.chat_page import ChatPage
+from pages.statistics_page import StatisticsPage
 from launcher_chat_client import AsyncLauncherChatClient, LauncherChatError
 from owner_diary_client import OwnerDiaryClient, OwnerDiaryError
 from process_tracker import PetProcessTracker
@@ -275,6 +276,7 @@ class LauncherWindow(MSFluentWindow):
         self._chat_bootstrap_path: str | None = None
         self._chat_connect_generation = 0
         self._chat_log_path: str | None = None
+        self._chat_profile_id = ""
         self._active_core_executable: str | None = None
         self._pet_process_tracker = PetProcessTracker()
 
@@ -288,6 +290,7 @@ class LauncherWindow(MSFluentWindow):
         self.bubble_page = BubblePage(self.state)
         self.advanced_page = AdvancedPage(self.state)
         self.chat_page = ChatPage()
+        self.statistics_page = StatisticsPage()
         self.private_diary_page = PrivateDiaryPage()
         self.about_page = AboutPage()
 
@@ -301,9 +304,12 @@ class LauncherWindow(MSFluentWindow):
         self.addSubInterface(self.bubble_page, FIF.CHAT, "气泡")
         self.addSubInterface(self.advanced_page, FIF.SETTING, "高级")
         self.addSubInterface(self.chat_page, FIF.MESSAGE, "聊天")
+        self.addSubInterface(self.statistics_page, FIF.PIE_SINGLE, "运行概览")
         self.addSubInterface(self.private_diary_page, FIF.DOCUMENT, "私人日记")
         self.chat_page.openRequested.connect(self._show_chat_page)
         self.chat_page.connectionLost.connect(self._on_chat_connection_lost)
+        self.pet_page.pet_combo.currentTextChanged.connect(self._sync_statistics_profile)
+        self._sync_statistics_profile()
 
         # 主题切换项：放「关于」之上（底部区，先于关于加入即排在关于上方）。
         # 不可选中（isSelectable=False），点击切换主题不切换页面。
@@ -348,6 +354,9 @@ class LauncherWindow(MSFluentWindow):
         chat_page = getattr(self, "chat_page", None)
         if chat_page is not None:
             chat_page.refresh_theme()
+        statistics_page = getattr(self, "statistics_page", None)
+        if statistics_page is not None:
+            statistics_page.refresh_theme()
         self._sync_theme_glyph()
 
     def _sync_theme_glyph(self):
@@ -378,6 +387,9 @@ class LauncherWindow(MSFluentWindow):
             self.show()
         self.raise_()
         self.activateWindow()
+
+    def _sync_statistics_profile(self, _name: str = "") -> None:
+        self.statistics_page.set_profile(self.state.pet_profile_id, self.state.pet_name)
 
     def _export_current_configuration(self) -> str:
         template = config_loader.load_effective_config()
@@ -478,6 +490,9 @@ class LauncherWindow(MSFluentWindow):
         self._chat_bootstrap_path = chat_bootstrap["path"]
         self._chat_connect_generation += 1
         chat_generation = self._chat_connect_generation
+        # Bind the connection to the process we launch. The selection can change
+        # while its asynchronous handshake is still in progress.
+        self._chat_profile_id = profile.profile_id
 
         # 2) 启动 C++ 核心（绝对路径 --config）。detach 语义跨平台：
         #    POSIX 用 start_new_session（新进程组/会话）；Windows 用
@@ -488,6 +503,7 @@ class LauncherWindow(MSFluentWindow):
             log_stream, log_path = self._open_core_log(
                 profile.name, profile.profile_id, core_executable, config_path)
             self._chat_log_path = log_path
+            self.statistics_page.set_core_log_path(log_path, profile.profile_id)
             args = [
                 core_executable,
                 "--config", config_path,  # 绝对路径，避开 QDir::setCurrent 歧义
@@ -686,6 +702,7 @@ class LauncherWindow(MSFluentWindow):
             return
         self._append_chat_log("connected", attempt=attempt + 1)
         self.chat_page.set_client(client)
+        self.statistics_page.set_client(client, self._chat_profile_id)
         self._chat_bootstrap_path = None
 
     def _on_chat_connect_failed(self, generation: int, attempt: int,
@@ -709,6 +726,7 @@ class LauncherWindow(MSFluentWindow):
         self._secure_remove_bootstrap(self._chat_bootstrap_path)
         self._chat_bootstrap_path = None
         self.chat_page.set_client(None)
+        self.statistics_page.set_client(None, "")
         InfoBar.error("聊天连接失败", "桌宠的聊天服务暂不可用，请重新启动桌宠。",
                       parent=self, position=InfoBarPosition.TOP, duration=6000)
 
@@ -720,6 +738,7 @@ class LauncherWindow(MSFluentWindow):
             "connection_lost", error=LauncherChatError(reason))
         self.launcher_chat_client = None
         self.chat_page.set_client(None)
+        self.statistics_page.set_client(None, "")
         client.close()
         client.deleteLater()
         generation = self._chat_connect_generation
@@ -794,6 +813,7 @@ class LauncherWindow(MSFluentWindow):
     def _close_chat_session(self) -> None:
         self._chat_connect_generation += 1
         self.chat_page.set_client(None)
+        self.statistics_page.set_client(None, "")
         if self.launcher_chat_client is not None:
             self.launcher_chat_client.close()
             self.launcher_chat_client.deleteLater()
@@ -803,6 +823,7 @@ class LauncherWindow(MSFluentWindow):
         self._secure_remove_bootstrap(self._chat_bootstrap_path)
         self._chat_bootstrap_path = None
         self._chat_log_path = None
+        self._chat_profile_id = ""
 
     def closeEvent(self, event):
         self._close_owner_diary_session()

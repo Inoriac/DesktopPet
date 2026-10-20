@@ -6,6 +6,10 @@
 
 ## 决策记录
 
+- [最终集成] 全项目构建成功；非 Launcher/WebCommand 回归 72/72、Launcher 系列 7/7 通过，共 79 个选定测试组。当前注册 80 组，WebCommandTests 因既有 macOS 系统拦截未执行；真实模型/音乐用例仍按原有开关跳过。合成截图覆盖独立页和原生 Launcher 外壳，无页面横向溢出；未改动真实角色数据或调用付费模型。
+- [UI 验证方式] 完整 macOS qframelesswindow 外壳在 offscreen 平台存在 native 崩溃，独立页面 offscreen 和完整 Launcher 原生平台分别验证均成功。此处只调整 QA 路径，没有修改依赖或产品行为。
+- [code-impl Task 3 sanity check] §3.3.5 的 main 页面生命周期/连接代次、pet_combo 信号先更新 AppState、AsyncLauncherChatClient 操作队列/响应分发及 _app_data_dir 路径已核对一致；profileId 取启动时快照，避免握手期间切换选择导致错绑。
+- [launcher CR] 用户操作继续优先，聊天状态与概览两个低优先级合并轮询交替派发，避免慢响应下概览饥饿。离线重新显示时即使保存时间未变也按当前日期重算 today。自主活动和任务状态使用核心实际状态值，不把 failure/running/budget_wait 都显示为等待。
 - [集成回归适配] 已有 StreamingDialogueTests 的插件元数据日志回归硬编码全局 log/ai_calls.jsonl。新核心复现读不到预期三条记录后，测试改从该临时角色 runtimeDatabasePath 推导 logs 目录；整组 StreamingDialogueTests 通过。验证仍保留原有元数据/配对检查，不回退生产日志隔离。
 - [code-impl Task 2 sanity check] §3.2.5 的 LauncherChatServer 鉴权/限流路径、EmotionEngine::snapshot(const)、AIBrain 状态 getter、sleepCycleCoordinator()->isActive() 和副作用队列日志所有权已验证一致。运行快照不调用 advanceTo，任务只取 status；详细日志仍在原异步队列写入。
 - [离线日期核查] 保存文件的 today 属于保存当天；launcher 离线读取时从 daily 取当前本机日期，避免隔天打开误把昨天显示成今天。离线本次运行保持不可用。

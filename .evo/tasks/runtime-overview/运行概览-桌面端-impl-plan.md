@@ -20,7 +20,7 @@
 
 ## Task 3：Launcher 运行概览与调用记录
 - 关联设计：§3.3
-- 状态：[ ]
+- 状态：[x]
 - Wave：3
 - 依赖：Task 1、Task 2
 - 文件：launcher/pages/statistics_page.py、launcher/statistics_data.py、launcher/launcher_chat_client.py、launcher/main.py；tests/test_launcher_statistics.py、tests/test_launcher_chat_transport.py；CMakeLists.txt、launcher/README.md、本任务验收文档和 visual-qa 脚本/截图。
@@ -28,3 +28,11 @@
 
 ## 每 Wave 校验
 检查冲突、相关新旧测试、测试场景覆盖、tests/ 布局、设计锚点及 context 留痕。审查通过后提交；最终补充实现总结和本地/Windows 验收边界。
+
+## 最终集成验证
+
+- 全项目构建成功，包含 Desktop_Pet 与 C++ 测试目标。
+- 非 Launcher、非 WebCommand 的 CTest 回归 72/72 通过；Launcher 系列 7/7 通过，包含新页面测试和 C++ 本地认证服务测试。两次集合不重叠，合计 79/79 个选定测试组通过。
+- 当前共注册 80 个 CTest 组。WebCommandTests 因已有 macOS AMFI/XProtect 终止问题未纳入本轮执行；真实模型及真实音乐相关用例仍按默认开关跳过，不把测试组通过等同实机通过。
+- 16 张合成截图覆盖独立页面及原生 Launcher 外壳的浅/深色、窄屏、明细、离线、空态；截图和几何检查通过，未新增 UI 依赖。
+- Windows、真实模型和长期运行步骤见 [运行概览-验收.md](运行概览-验收.md)。

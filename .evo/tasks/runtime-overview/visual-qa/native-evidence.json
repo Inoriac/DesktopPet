@@ -1,0 +1,106 @@
+[
+  {
+    "file": "native-light-overview.png",
+    "theme": "Light",
+    "mode": "online",
+    "window": [
+      1100,
+      875
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-dark-overview.png",
+    "theme": "Dark",
+    "mode": "online",
+    "window": [
+      1100,
+      920
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-narrow-overview.png",
+    "theme": "Light",
+    "mode": "online",
+    "window": [
+      760,
+      875
+    ],
+    "pageWidth": 687,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-light-records.png",
+    "theme": "Light",
+    "mode": "online",
+    "window": [
+      1100,
+      875
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-dark-records.png",
+    "theme": "Dark",
+    "mode": "online",
+    "window": [
+      1100,
+      920
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-narrow-records.png",
+    "theme": "Light",
+    "mode": "online",
+    "window": [
+      760,
+      875
+    ],
+    "pageWidth": 687,
+    "horizontalOverflow": false,
+    "live": true,
+    "recentRows": 25
+  },
+  {
+    "file": "native-offline-overview.png",
+    "theme": "Light",
+    "mode": "offline",
+    "window": [
+      1100,
+      875
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": false,
+    "recentRows": 25
+  },
+  {
+    "file": "native-empty-overview.png",
+    "theme": "Light",
+    "mode": "empty",
+    "window": [
+      1100,
+      920
+    ],
+    "pageWidth": 1027,
+    "horizontalOverflow": false,
+    "live": false,
+    "recentRows": 0
+  }
+]

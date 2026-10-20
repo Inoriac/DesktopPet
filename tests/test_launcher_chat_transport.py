@@ -43,6 +43,7 @@ class ChatServer:
         self.delayed_poll = False
         self.dribble_poll = False
         self.invalid_poll = False
+        self.delayed_overview = False
 
     def _accept(self):
         while self.server.hasPendingConnections():
@@ -74,6 +75,8 @@ class ChatServer:
                 else {"revision": len(self.requests), "messages": []}
             if action in {"get_chat_history", "search_chat_history"}:
                 data = {"messages": [], "requestToken": request["payload"].get("requestToken", "")}
+            if action == "get_runtime_overview":
+                data = {"schemaVersion": 1, "profileId": "synthetic-profile", "statistics": {}}
             error = self.response_error.get(action)
             response = {
                 "protocolVersion": 1,
@@ -92,6 +95,9 @@ class ChatServer:
                                lambda b=bytes([value]), s=socket: self._send(s, b))
             elif self.delayed_poll and action == "get_chat_state":
                 self.delayed_poll = False
+                self.later(45, lambda s=socket, f=frame: self._send(s, f))
+            elif self.delayed_overview and action == "get_runtime_overview":
+                self.delayed_overview = False
                 self.later(45, lambda s=socket, f=frame: self._send(s, f))
             else:
                 self._send(socket, frame)
@@ -209,6 +215,57 @@ class AsyncLauncherChatTests(unittest.TestCase):
             "get_chat_state"])
         self.assertEqual(self.server.requests[-1]["payload"]["afterRevision"], 49)
         self.assertEqual(self.errors, [])
+
+    def test_overview_transport_coalesces_and_user_priority(self):
+        self.connect_client()
+        overviews = []
+        self.client.overviewReceived.connect(overviews.append)
+        self.server.delayed_overview = True
+        self.client.request_runtime_overview()
+        for _ in range(50):
+            self.client.request_runtime_overview()
+        self.client.send_message("hello")
+        self.client.request_history(request_token="history")
+        self.client.stop_response()
+        self.client.request_state(12)
+        self.wait_for(lambda: len(overviews) == 2 and len(self.finished) == 3 and bool(self.states))
+        self.assertEqual([r["action"] for r in self.server.requests], [
+            "hello", "get_runtime_overview", "send_message", "get_chat_history",
+            "stop_response", "get_chat_state", "get_runtime_overview"])
+        self.assertTrue(all(r["payload"]["sessionToken"] == TOKEN
+                            for r in self.server.requests[1:]))
+        self.assertEqual(self.errors, [])
+
+    def test_overview_failures_use_independent_signal(self):
+        self.connect_client()
+        failures = []
+        self.client.overviewFailed.connect(lambda *args: failures.append(args))
+        self.server.response_error["get_runtime_overview"] = "ACTION_UNSUPPORTED"
+        self.client.request_runtime_overview()
+        self.wait_for(lambda: bool(failures))
+        self.assertEqual(failures, [("ACTION_UNSUPPORTED", "request rejected")])
+        self.assertEqual(self.errors, [])
+        self.assertTrue(self.client.is_connected)
+        self.server.response_error.clear()
+        self.server.stall.add("get_runtime_overview")
+        self.client.request_runtime_overview()
+        self.wait_for(lambda: len(failures) == 2)
+        self.assertEqual(failures[-1][0], "CONNECTION_LOST")
+        self.assertEqual(self.errors, [])
+        self.assertEqual(len(self.disconnects), 1)
+
+    def test_continuous_chat_polls_do_not_starve_overview(self):
+        self.connect_client()
+        overviews = []
+        self.client.overviewReceived.connect(overviews.append)
+        self.client.stateReceived.connect(
+            lambda data: self.client.request_state(data["revision"]) if len(self.states) < 6 else None)
+        self.server.delayed_poll = True
+        self.client.request_state(-1)
+        self.client.request_runtime_overview()
+        self.wait_for(lambda: bool(overviews))
+        self.assertEqual([r["action"] for r in self.server.requests[:3]],
+                         ["hello", "get_chat_state", "get_runtime_overview"])
 
     def test_task_controls_use_authenticated_serial_transport_and_explicit_extension(self):
         self.connect_client()

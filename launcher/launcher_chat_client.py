@@ -42,6 +42,9 @@ class LauncherChatClient(OwnerDiaryClient):
             "afterRevision": int(after_revision),
         })
 
+    def get_runtime_overview(self) -> dict:
+        return self._chat_exchange("get_runtime_overview", {})
+
     def request_history(self, before_message_id: str = "", around_message_id: str = "",
                         limit: int = 40, request_token: str = "") -> dict:
         return self._chat_exchange("get_chat_history", {
@@ -109,6 +112,8 @@ class AsyncLauncherChatClient(QObject):
     operationFinished = Signal(str, dict)
     operationFailed = Signal(str, str)
     historyFailed = Signal(str, str, str)
+    overviewReceived = Signal(dict)
+    overviewFailed = Signal(str, str)
 
     def __init__(self, socket_factory=QLocalSocket, timeout_ms: int = 2000,
                  max_frame_bytes: int = 1024 * 1024, parent=None):
@@ -126,6 +131,8 @@ class AsyncLauncherChatClient(QObject):
         self._request = None
         self._operations = deque()
         self._pending_revision = None
+        self._pending_overview = False
+        self._last_poll = "get_runtime_overview"
         self._deadline = QTimer(self)
         self._deadline.setSingleShot(True)
         self._deadline.timeout.connect(self._on_timeout)
@@ -160,6 +167,12 @@ class AsyncLauncherChatClient(QObject):
         if not self.is_connected:
             return
         self._pending_revision = int(after_revision)
+        self._dispatch_next()
+
+    def request_runtime_overview(self) -> None:
+        if not self.is_connected:
+            return
+        self._pending_overview = True
         self._dispatch_next()
 
     def request_history(self, before_message_id: str = "", around_message_id: str = "",
@@ -211,6 +224,8 @@ class AsyncLauncherChatClient(QObject):
         self._request = None
         self._operations.clear()
         self._pending_revision = None
+        self._pending_overview = False
+        self._last_poll = "get_runtime_overview"
         self._incoming.clear()
         if socket is not None:
             # Abort without a blocking wait; queued callbacks belong to the old generation.
@@ -233,8 +248,11 @@ class AsyncLauncherChatClient(QObject):
             "clientNonce": _base64url_token(16),
         }, restart_deadline=False)
 
-    def _report_operation_failure(self, action: str, payload: dict, message: str) -> None:
-        if action in {"get_chat_history", "search_chat_history"}:
+    def _report_operation_failure(self, action: str, payload: dict, message: str,
+                                  code: str = "CONNECTION_LOST") -> None:
+        if action == "get_runtime_overview":
+            self.overviewFailed.emit(code, message)
+        elif action in {"get_chat_history", "search_chat_history"}:
             self.historyFailed.emit(action, str(payload.get("requestToken", "")), message)
         else:
             self.operationFailed.emit(action, message)
@@ -255,12 +273,19 @@ class AsyncLauncherChatClient(QObject):
             return
         if self._operations:
             action, payload = self._operations.popleft()
+        elif self._pending_overview and (self._pending_revision is None
+                                         or self._last_poll == "get_chat_state"):
+            action = "get_runtime_overview"
+            payload = {}
+            self._pending_overview = False
         elif self._pending_revision is not None:
             action = "get_chat_state"
             payload = {"afterRevision": self._pending_revision}
             self._pending_revision = None
         else:
             return
+        if action in {"get_chat_state", "get_runtime_overview"}:
+            self._last_poll = action
         self._send_request(action, {**payload, "sessionToken": self._session_token})
 
     def _send_request(self, action: str, payload: dict,
@@ -327,7 +352,10 @@ class AsyncLauncherChatClient(QObject):
                 return
             self._request = None
             self._deadline.stop()
-            self._report_operation_failure(action, payload, message)
+            code = str(error.get("code") or "REQUEST_FAILED")
+            if action == "get_runtime_overview" and code == "ACTION_UNSUPPORTED":
+                self._pending_overview = False
+            self._report_operation_failure(action, payload, message, code)
             self._dispatch_next()
             return
         data = response.get("data")
@@ -350,6 +378,8 @@ class AsyncLauncherChatClient(QObject):
             self.connected.emit()
         elif action == "get_chat_state":
             self.stateReceived.emit(data)
+        elif action == "get_runtime_overview":
+            self.overviewReceived.emit(data)
         else:
             self.operationFinished.emit(action, data)
         self._dispatch_next()
