@@ -24,7 +24,7 @@ def message(message_id="m1", chat_id="group:123", actor="456", text="你好🙂"
 
 
 class FakeOneBot:
-    def __init__(self, self_id="999", history=None, events=None, unsupported=None, action_log=None):
+    def __init__(self, self_id="999", history=None, events=None, unsupported=None, action_log=None, delivery=None):
         self.self_id = self_id
         self.history = history or {}
         self.events = events or []
@@ -35,6 +35,8 @@ class FakeOneBot:
         self.lock = threading.Lock()
         self.hook = None
         self.action_log = action_log
+        self.delivery = delivery or {}
+        self.sent = {}
 
     def __enter__(self):
         self.server = serve(self.handle, "127.0.0.1", 0)
@@ -75,6 +77,27 @@ class FakeOneBot:
                 elif action in ("get_group_msg_history", "get_friend_msg_history"):
                     chat = ("group:" + str(params["group_id"])) if "group_id" in params else ("private:" + str(params["user_id"]))
                     data = {"messages": self.history.get(chat, [])}
+                elif action in ("send_private_msg", "send_group_msg", "send_msg"):
+                    kind = params.get("message_type") or ("group" if action == "send_group_msg" else "private")
+                    chat = kind + ":" + str(params["group_id" if kind == "group" else "user_id"])
+                    with self.lock:
+                        identifier = str(-1001 - len(self.sent))
+                        data = message(identifier, chat, actor=self.self_id, timestamp=1770000100 + len(self.sent))
+                        data["message"] = params["message"]
+                        data["message_seq"] = len(self.sent) + 1
+                        # NapCat private get_msg/history has user_id=sender and
+                        # no target_id; the history action itself scopes it.
+                        if kind == "private":
+                            data.pop("target_id", None)
+                        data.update(self.delivery.get("overrides", {}))
+                        for field in self.delivery.get("omit_fields", []):
+                            data.pop(field, None)
+                        self.sent[identifier] = data
+                        if not self.delivery.get("omit_history", False):
+                            self.history.setdefault(chat, []).append(data)
+                    data = {} if self.delivery.get("omit_message_id", False) else {"message_id": identifier}
+                elif action == "get_msg":
+                    data = self.sent.get(str(params["message_id"]), {})
                 else:
                     data = {}
                 ws.send(json.dumps({"echo": request["echo"], "status": "ok", "retcode": 0, "data": data}))

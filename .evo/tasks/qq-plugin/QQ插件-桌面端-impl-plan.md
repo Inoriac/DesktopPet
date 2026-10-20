@@ -12,7 +12,7 @@
 
 ## Task 2: 文本发送与可追踪回执
 - 关联设计：§3.2
-- 状态：[ ]
+- 状态：[x]
 - Wave：2
 - 依赖：Task 1
 - 文件：plugins/qq/delivery.py、adapter.py、journal.py（必要的 attempts API）；tests/test_qq_delivery.py、tests/fixtures/qq_backend.py。
@@ -23,7 +23,7 @@
 - 状态：[ ]
 - Wave：3
 - 依赖：Task 1、Task 2
-- 文件：plugins/qq 剩余 manifest/tool/source/skill/setup/configure 与文档；tests/test_qq_configure.py、tests/test_qq_plugin.cpp、tests/fixtures/qq_backend.py；CMakeLists.txt；contracts/tools 文档索引。
+- 文件：plugins/qq 剩余 manifest/tool/source/skill/setup/configure 与文档；tests/test_qq_configure.py、tests/test_qq_plugin.cpp、tests/run_qq_tests.py（可选依赖检测）、tests/fixtures/qq_backend.py；CMakeLists.txt；contracts/tools 文档索引。
 - 测试：preview_no_write、apply_preserves_unrelated_and_idempotent、invalid_or_concurrent_config_rejected、precise_grants_and_identity、runtime_load_read_archive_send_receipt、runtime_scope_and_disable、source_autonomy_independent、package_immutable。
 
 ## Wave 检查

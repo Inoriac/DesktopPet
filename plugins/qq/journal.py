@@ -27,6 +27,7 @@ class Journal:
                 self.db.execute("CREATE TABLE IF NOT EXISTS messages (seq INTEGER PRIMARY KEY AUTOINCREMENT, chat_id TEXT NOT NULL, remote_id TEXT NOT NULL, payload TEXT NOT NULL, UNIQUE(chat_id,remote_id))")
                 self.db.execute("CREATE INDEX IF NOT EXISTS idx_messages_chat_seq ON messages(chat_id,seq)")
                 self.db.execute("CREATE TABLE IF NOT EXISTS source_ack (singleton INTEGER PRIMARY KEY CHECK(singleton=1), event_id TEXT NOT NULL, cursor TEXT NOT NULL)")
+                self.db.execute("CREATE TABLE IF NOT EXISTS attempts (receipt_id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, text TEXT NOT NULL, reply_to TEXT NOT NULL, status TEXT NOT NULL, remote_id TEXT NOT NULL DEFAULT '', result_json TEXT NOT NULL DEFAULT '{}')")
                 self.db.execute("INSERT OR IGNORE INTO meta VALUES('identity',?)", (json_text([self.settings["connectionKey"], self.settings["selfId"]]),))
                 self.db.execute("INSERT OR IGNORE INTO meta VALUES('journal_id',?)", (uuid.uuid4().hex,))
                 identity = self.db.execute("SELECT value FROM meta WHERE key='identity'").fetchone()[0]
@@ -110,3 +111,34 @@ class Journal:
             if previous and self.cursor_number(previous[0]) >= seq:
                 return
             self.db.execute("INSERT OR REPLACE INTO source_ack VALUES(1,?,?)", (event_id, cursor))
+
+    def has_message(self, chat_id, identifier):
+        authorize_chat(self.settings, chat_id)
+        return self.db.execute("SELECT 1 FROM messages WHERE chat_id=? AND remote_id=?", (chat_id, identifier)).fetchone() is not None
+
+    def create_attempt(self, chat_id, text, reply_to):
+        authorize_chat(self.settings, chat_id)
+        attempt = {"receipt_id": uuid.uuid4().hex, "chat_id": chat_id, "text": text,
+                   "reply_to": reply_to, "status": "pending", "remote_id": "", "result": {}}
+        # Commit before the caller dispatches. A crash leaves a queryable
+        # pending attempt, never permission to send it a second time.
+        with self.db:
+            self.db.execute("INSERT INTO attempts(receipt_id,chat_id,text,reply_to,status) VALUES(?,?,?,?,?)",
+                            (attempt["receipt_id"], chat_id, text, reply_to, "pending"))
+        return attempt
+
+    def get_attempt(self, chat_id, receipt_id):
+        authorize_chat(self.settings, chat_id)
+        row = self.db.execute("SELECT text,reply_to,status,remote_id,result_json FROM attempts WHERE receipt_id=? AND chat_id=?",
+                              (receipt_id, chat_id)).fetchone()
+        if row is None:
+            raise AdapterError("RECEIPT_NOT_FOUND", "Receipt does not belong to this conversation and QQ journal")
+        return {"receipt_id": receipt_id, "chat_id": chat_id, "text": row[0], "reply_to": row[1],
+                "status": row[2], "remote_id": row[3], "result": json.loads(row[4])}
+
+    def update_attempt(self, attempt, result):
+        status = result["data"]["delivery"]
+        with self.db:
+            self.db.execute("UPDATE attempts SET status=?,remote_id=?,result_json=? WHERE receipt_id=? AND chat_id=?",
+                            (status, attempt["remote_id"], json_text(result), attempt["receipt_id"], attempt["chat_id"]))
+        attempt["status"], attempt["result"] = status, result

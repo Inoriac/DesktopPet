@@ -297,6 +297,27 @@ class QQAdapterTests(unittest.TestCase):
             self.assertEqual(self.op("status")["state"], "completed")
             self.assertEqual(self.journal().after(""), [])
 
+    def test_action_outcome_requires_unambiguous_status_and_retcode(self):
+        cases = [({"status": "async", "retcode": 1}, "PROTOCOL_ERROR"),
+                 ({"status": "ok", "retcode": 1}, "PROTOCOL_ERROR"),
+                 ({"status": "failed"}, "PROTOCOL_ERROR"),
+                 ({"status": "failed", "retcode": 0}, "PROTOCOL_ERROR"),
+                 ({"status": "ok", "retcode": False}, "PROTOCOL_ERROR"),
+                 ({}, "PROTOCOL_ERROR"),
+                 ({"status": "failed", "retcode": 100}, "API_REJECTED"),
+                 ({"status": "failed", "retcode": 1404}, "UNSUPPORTED_ACTION")]
+        with FakeOneBot() as backend:
+            self.settings["wsUrl"] = backend.url
+            for reply, expected in cases:
+                with self.subTest(reply=reply):
+                    def respond(ws, request):
+                        ws.send(json.dumps(dict(reply, echo=request["echo"])))
+                        return True
+                    backend.hook = respond
+                    result = self.op("status")
+                    self.assertEqual(result["state"], "failed")
+                    self.assertEqual(result["data"]["error"]["code"], expected)
+
     def test_status_and_list_token_and_settings(self):
         token = self.directory / "token.txt"
         token.write_text("test-secret\n", encoding="utf-8")

@@ -81,10 +81,16 @@ class OneBotClient:
                             raise AdapterError("PROTOCOL_ERROR", "Too many OneBot events before the action response")
                         self.events.append(value)
                     continue
-                if value.get("status") != "ok" or type(value.get("retcode")) is not int or value["retcode"] != 0:
-                    code = "UNSUPPORTED_ACTION" if value.get("retcode") in (1404, 404) else "API_REJECTED"
+                status, retcode = value.get("status"), value.get("retcode")
+                if status == "ok" and type(retcode) is int and retcode == 0:
+                    return value.get("data")
+                if status == "failed" and type(retcode) is int and retcode != 0:
+                    code = "UNSUPPORTED_ACTION" if retcode in (1404, 404) else "API_REJECTED"
                     raise AdapterError(code, "OneBot rejected the requested action")
-                return value.get("data")
+                # An async acknowledgement or malformed response isn't an
+                # explicit rejection. A caller that sent a message must keep
+                # its outcome unknown rather than encourage a retry.
+                raise AdapterError("PROTOCOL_ERROR", "OneBot did not return an unambiguous action outcome")
         except AdapterError:
             raise
         except TimeoutError:

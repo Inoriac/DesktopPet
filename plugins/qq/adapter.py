@@ -10,15 +10,19 @@ if __package__:
     from .common import AdapterError, MAX_JSON_BYTES, authorize_chat, bounded_text, decode_json, failed, json_text, load_settings, timestamp, validate_settings
     from .journal import Journal
     from .transport import OneBotClient
+    from .delivery import receipt, send
 else:
     from common import AdapterError, MAX_JSON_BYTES, authorize_chat, bounded_text, decode_json, failed, json_text, load_settings, timestamp, validate_settings
     from journal import Journal
     from transport import OneBotClient
+    from delivery import receipt, send
 
 
 def execute(settings, operation, arguments):
     try:
         settings = validate_settings(settings)
+        if operation in ("send", "receipt"):
+            return (send if operation == "send" else receipt)(settings, arguments)
         allowed = {"status": set(), "list": set(), "read": {"chat_id", "cursor", "limit"}}
         if operation not in allowed:
             raise AdapterError("UNKNOWN_OPERATION", "Unknown QQ operation")

@@ -4,6 +4,7 @@
 用户要求借鉴 https://github.com/Mai-with-u/MaiBot ，改进为适合 DesktopPet 的插件。延续用户对后台 QQ、通用工具契约、自主选择、人物关系/范围隔离与分阶段 commit 的要求。实现不测试真实私人账号或向外发消息。
 
 ## 决策记录
+- [code-impl Task 2 sanity check] send/receipt 的 execute 分派、OneBotClient.call 的截止时限、Journal 的账号绑定和新 attempts API、capabilityDeliveryReceipt 的真实 id/content/time 要求一致。实际 API 状态归因修正见设计偏差，已复测。
 - [code-impl Task 1 sanity check] ObservationStore::ingest/normalize 的文本、身份、时间和历史标志映射；CapabilityExecutor::execute 的 stdin=call.arguments；source start/ack/stop 均核对一致。细化 OneBotClient.capture_events 与 Journal.ingest.requested_chat 已回写 §3.1，正文不改变现有宿主契约。
 - [协议证据] OneBot v11 get_msg 标准未要求目标字段；NapCat `450fb0429a064e3418e0c698b1b4d78324101929` 的 packages/napcat-onebot/api/msg.ts 初始化 user_id=sender，私聊无 peer 字段。§3.1/3.2 已据此细化：历史自身消息用可信查询目标，私聊发送回执必要时用目标限定历史验证同消息。source 无目标自身私聊不猜路由。有符号 message_id 与正数 QQ 账号分开处理。仅阅读源码证据，不连接实际 QQ。
 - [用户最新范围] 不测试实际 QQ 是否连通；真实 QQ 登录、连通与收发的测试文档交接其他人。实现期间仅本地假服务及代码回归，交付不能声称真实 QQ 已通过。
@@ -15,7 +16,7 @@
 - 测试布局参照 plugins/bilibili 与 tests/test_bilibili_{adapter,configure}.py / test_bilibili_plugin.cpp。没有 AGENTS.md。
 
 ## 设计偏差
-无。
+- [Task 2 协议回溯，已解决] Task 1 将所有非 ok/0 响应归明确拒绝，无法正确区分 async/畸形响应。主代理先以 6 个变体复现误分类，再细化 §1.5、修正 transport，发送层将此类情况保留 unknown。未扩大宿主协议。
 
 ## 待回溯设计的发现
 无。
