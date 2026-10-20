@@ -7,7 +7,7 @@
 1. 保留唯一主体：插件负责后台 QQ 读写，不包含模型、记忆、回复生成器或新的自主调度器。宿主继续决定浏览、等待、回复和离开。采用 OneBot v11 正向 WebSocket（NapCat / SnowLuma），不操控屏幕。
 2. 首版完整范围为文本私聊/群聊、引用、授权会话查询、可选消息源、可靠发送状态、安装配置和验收。收到图片/语音/表情/文件时明确输出占位；不实现视觉理解、上传图片、群管理、空间、登录客户端。既有宿主仅接受 text/reply，媒体扩展独立进行。保持接收与自主回复分开，默认 source 关闭，可显式启用。
 3. 独立 Python 包 `plugins/qq`，只依赖 `websockets==15.0.1`（Python >=3.9）。不引入 MaiBot SDK 或复制其 GPL 代码；文档给出研究来源和固定提交。所有 mutable settings/token/journal/venv 位于包外。每一角色使用独立 stateDir，数据库绑定 namespace+selfId，账号改变必须新建 stateDir。
-4. 所有网络连接必须先 get_login_info 对照配置 selfId，再接收业务事件或派发动作；消息不能更改绑定身份。配置明确 backend=napcat|snowluma、wsUrl、tokenFile、selfId、connectionKey、allowedConversations。会话键 `group:<id>` / `private:<id>` 避免号码碰撞；身份 provider=qq、namespace=connectionKey、remoteActorId=QQ 号。昵称不是身份。不推断主人、不扩张 allowlist。
+4. 所有网络连接必须先 get_login_info 对照配置 selfId，再接收业务事件或派发动作；消息不能更改绑定身份。配置明确 backend=napcat|snowluma、wsUrl、selfId、connectionKey、stateDir、allowedConversations（会话键字符串数组），tokenFile 可省略表示服务无 token，存在时读取包外文件。requestTimeoutSeconds 默认 10，整数范围 1–25。会话键 `group:<id>` / `private:<id>` 避免号码碰撞；身份 provider=qq、namespace=connectionKey、remoteActorId=QQ 号。昵称不是身份。不推断主人、不扩张 allowlist。settings/token/state 路径绝对且在包外。
 5. OneBot action 使用唯一 echo 相关，成功必须 status=ok 且 retcode=0。连接/响应有时限，WS 最大报文 1 MiB。日志不回显 token、原始异常 URL 或消息正文。配置 URL 禁止内嵌认证信息，token 通过 Bearer header。写动作从不自动重试。连接重连仅用于 source，指数退避上限 30s；stop/EOF 可及时结束。
 6. 日志 SQLite WAL，每条消息在一个事务内分配递增 seq，(chat_id,remote_id) 唯一。事件正文首次入库后固定。event/cursor 含 journal UUID+seq；重启重放稳定，外库游标必须报错。source 从宿主 start.cursor 重放，最大未 ACK 64，收到合法 ACK 才更新本地诊断水位；不因 read 推进 source 水位。不裁剪日志，文档告知磁盘增长。缺时间保留未知；查询补入的旧消息标 historicalImport=true，实时已入库消息读取保留原标志。允许断线期间有不可恢复空档，不宣称 exactly once 平台投递。
 7. 正常业务错误输出 `{state:failed,data:{error:{code,message}}}`；已派发但未证实的发送输出 unknown，不能当成功。stdout 命令为一个 JSON，source 为协议 JSONL；诊断走 stderr。所有 body 至多 8000 UTF-16，保留明确截断标记。源单行 <=64KiB。源码设置 dont_write_bytecode，不污染包摘要。
@@ -37,7 +37,7 @@ Tool command 每次使用短连接，source 使用独立长连接；共享 journ
 把允许的 QQ 会话转换为已有观察契约，提供离线缓存和在线近期历史查询。
 
 #### 3.1.2 接口
-`load_settings(path) -> dict`；`OneBotClient(settings)` context manager，`call(action, params) -> data`、`receive(timeout) -> event|None`；`Journal(settings)`，`ingest(event,historical=False) -> item|None`、`read(chat_id,cursor='',limit=10) -> dict`、`after(cursor,limit=64) -> items`、`ack(event_id,cursor)`；`execute(settings, operation, arguments) -> result`；`run_source(settings, stdin, stdout)`。
+`load_settings(path) -> dict`；`OneBotClient(settings,capture_events=False)` context manager，`call(action, params) -> data`、`receive(timeout) -> event|None`；仅 source 设 capture_events=True，最多暂存 64 条登录验证期间推送，验证后才交付；短命令丢弃推送。`Journal(settings)`，`ingest(event,historical=False,requested_chat=None) -> item|None`、`read(chat_id,cursor='',limit=10) -> dict`、`after(cursor,limit=64) -> items`、`ack(event_id,cursor)`；`execute(settings, operation, arguments) -> result`；`run_source(settings, stdin, stdout)`。
 
 | 入参 | 值来源 |
 |---|---|
@@ -47,10 +47,10 @@ Tool command 每次使用短连接，source 使用独立长连接；共享 journ
 | event/historical | 系统推导（来源: WS 实时事件 / 显式历史查询） |
 | stdin start/ack/stop | 调用方传入（宿主观察源协议） |
 
-命令 status/list/read。status 实际连接并验证账号；list 只列配置允许会话并附本地最近消息摘要。read 首次页在线调用 `get_group_msg_history(group_id,count=50)` / `get_friend_msg_history(user_id,count=50)`；分页游标只读本地。返回 `{state,data:{items,next_cursor,freshness,warning?}}`，每个 item 包含 event_id,sequence,cursor,chat_id,message_id,speaker_id,display_name,text,reply_to,historical，可选 occurred_at。source 从同一行构造标准 observation。
+命令 status/list/read。status 实际连接并验证账号；list 只列配置允许会话并附本地最近消息摘要（160 UTF-16）。read 首次页在线调用 `get_group_msg_history(group_id,count=50)` / `get_friend_msg_history(user_id,count=50)`；分页游标只读本地。返回 `{state,data:{items,next_cursor,freshness,warning?}}`，每个 item 包含 event_id,sequence,cursor,chat_id,message_id,speaker_id,display_name,text,reply_to,historical，可选 occurred_at。source 从同一行构造标准 observation。
 
 #### 3.1.3 流程
-校验配置 → 打开绑定账号的 journal → 连接验证 self → 按操作处理。历史响应按时间排序后入库；必须包含平台 message_id。private 由 message_type 判断，即使包含 group_id 仍为私聊。不把未知 actor 伪装为已知身份。结构化 text、at、face、reply 转换，其他类型明确占位；CQ 字符串安全解析为可读文本，正文中的控制串出站始终作为纯文本段。
+校验配置 → 打开绑定账号的 journal → 连接验证 self → 按操作处理。历史响应按时间排序后入库；必须包含平台 message_id（允许 OneBot 有符号整数 ID）。private 由 message_type 判断，即使包含 group_id 仍为私聊。不把未知 actor 伪装为已知身份。结构化 text、at、face、reply 转换，其他类型明确占位；CQ 字符串安全解析为可读文本，正文中的控制串出站始终作为纯文本段。NapCat 的私聊历史中 user_id 是发送者，自己的历史消息可由本次可信查询的 chat_id 确定目标；若实时自己的私聊没有目标字段，则跳过，不能猜目标。历史返回有明确其他目标字段时不得覆盖为当前请求目标。
 
 source：读取 start → 重放日志 → 建立验证连接 → 接收允许事件并事务写入 → 按 seq 发出 → 记录 ACK。每次循环处理控制与日志，重连等待期间仍可 stop/replay。达到 64 条未确认时暂停输出，继续有界地逐条写盘。无 ACK 不丢数据。只跳过明确不支持/未授权/缺 ID 的事件；journal/配置错误停止，避免吞掉存储故障。
 
@@ -62,7 +62,7 @@ source：读取 start → 重放日志 → 建立验证连接 → 接收允许�
 |---|---|
 | `contracts/tools/examples/controlled-chat/{adapter.py,source.json}` | start/ack/stop、source 配置，不能照抄其无界未确认发送 |
 | `core/ai/observation/observation_store.cpp::ingest` | 只允许 text/reply，remote kind 是 group/direct；时间可省略 |
-| `ObservationStore::observations` 的映射路径 | fields 使用 JSON Pointer，historicalImport/speakerDisplayName 可映射 |
+| `ObservationStore::normalize` 的映射路径 | fields 使用 JSON Pointer，historicalImport/speakerDisplayName 可映射 |
 | `CapabilityExecutor::execute` | stdin 仅 call.arguments，不含 callId；reported completion 必须绑定 state/data |
 
 #### 3.1.6 异常
@@ -93,7 +93,9 @@ send 返回 data 中 receipt_id、delivery 状态；完成必须附 remote_messa
 #### 3.2.3 流程
 先验 allowlist/text/replyTo（只准引用本会话已入 journal 的消息）→ 验证连接身份 → 在 journal 插入 pending attempt 并提交 → 单次 action。NapCat 使用 send_group_msg/send_private_msg；SnowLuma 使用 send_msg+message_type。message 是 text 段和可选 reply 段，禁止 raw CQ 执行。保存 remote id 后 get_msg 查询证实；核对 message_id、发送者=self、message_type、group_id 或 private 目标、正文非空及原始有效 time。SnowLuma 群聊还需正整数 message_seq。返回实际正文/时间，不用本地 now 填充。
 
-get_msg 不支持/未到/数据不符/超时：unknown 保留 receipt 和已知 remote id；重复 receipt 只重新 get_msg，永不重发 send。断连前不能确认是否写出也记 unknown。明确 API 拒绝为 failed；进程崩溃留下 pending，查询显示 unknown。宿主 callId 派发幂等继续由宿主负责，不用正文相同推断重复。
+NapCat 实际 get_msg 的私聊 user_id 是发送者而非接收者，不强制要求它等于目标。若私聊缺少明确 peer/target 信息，则追加一次目标限定的 get_friend_msg_history(user_id=目标,count=50)，在返回里匹配同 message_id、self sender、有效时间和正文确认目标；明确错目标绝不能用此方式覆盖。不支持或找不到时保持 unknown。
+
+get_msg 不支持/未到/数据不符/超时：unknown 保留 receipt 和已知 remote id；重复 receipt 只重新查询 get_msg/必要的目标历史，永不重发 send。断连前不能确认是否写出也记 unknown。明确 API 拒绝为 failed；进程崩溃留下 pending，查询显示 unknown。宿主 callId 派发幂等继续由宿主负责，不用正文相同推断重复。
 
 #### 3.2.4 数据变更
 attempts(receipt_id,chat_id,text,reply_to,status,remote_id,result_json)，发送前提交 pending，action 返回后先保存 remote id，再确认。确认不会修改既有入站正文；receipt 结果持久化，可跨进程检查。无远端 id 时只返回未知，不猜测匹配聊天记录。
@@ -105,7 +107,7 @@ attempts(receipt_id,chat_id,text,reply_to,status,remote_id,result_json)，发送
 目标不符/引用跨会话：failed，不触发发送。API 明确拒绝：failed；派发超时/异常确认：unknown，不重发，遵循 §1.5/7。错 receipt_id/跨会话 receipt：failed，不查询远端任意消息。磁盘出错导致未保存 pending：不发送。
 
 #### 3.2.7 关键行为
-私聊、群聊、SnowLuma 发送正常文本及引用，各执行一次，实际 get_msg 字段进入回执。seq=0、错群、错 sender、缺时间、不支持 get_msg 均 unknown。超时无自动重试，重启查 receipt 可恢复已知 id 的确认；无 id 保持 unknown。明确拒绝失败，CQ 字面量不执行，未授权目标无网络调用。
+私聊、群聊、SnowLuma 发送正常文本及引用，各执行一次，实际 get_msg 字段进入回执。NapCat 无私聊目标字段用目标限定历史确认，历史无记录则未知。seq=0、错群、错 sender、缺时间、不支持 get_msg 均 unknown。超时无自动重试，重启查 receipt 可恢复已知 id 的确认；无 id 保持 unknown。明确拒绝失败，CQ 字面量不执行，未授权目标无网络调用。
 
 ### 3.3 插件打包、角色配置与宿主验收
 
@@ -133,7 +135,7 @@ attempts(receipt_id,chat_id,text,reply_to,status,remote_id,result_json)，发送
 仅目标 plugins.json 与备份，使用 compare original 防编辑覆盖，写失败保留旧配置。SQLite 不在配置时创建。setup 不创建/修改个人账号配置。
 
 #### 3.3.5 实现锚点
-`plugins/bilibili/configure.py` 的 preview/backup/atomic replace 参照；`controlled-chat/make_host_config.py` 的 UUIDv5 conversationId；现有 `grants.objectArguments` 支持数组授权值。resultAdapters `entry:operation` 键沿用已有 runtime；read 字段 mapping 相对于 outcome.data。`tests/test_bilibili_plugin.cpp`、`test_external_observation.cpp` 为网关/观察 C++ 测试参照；CMake 注册，测试均在 tests 根目录。
+`plugins/bilibili/configure.py` 的 preview/backup/atomic replace 参照；`controlled-chat/make_host_config.py` 的 UUIDv5 conversationId；现有 `grants.objectArguments` 逐 JSON Pointer 比较精确值，因此外部 grant 使用 `{"/chat_id":"group:123"}`，不是允许值数组。resultAdapters `entry/operation` 键沿用已有 runtime；read 字段 mapping 相对于 outcome.data。`tests/test_bilibili_plugin.cpp`、`test_external_observation.cpp` 为网关/观察 C++ 测试参照；CMake 注册，测试均在 tests 根目录。
 
 #### 3.3.6 异常
 配置无允许会话/UUID 无效/包内状态/格式冲突：preview 失败、不写文件；并发编辑 plugins.json：apply 拒绝覆盖。安装依赖失联：显示可重新执行的错误，保留 state。网络必须由 status 显式验证，configure 不假装已连接。

@@ -4,7 +4,7 @@
 
 ## Task 1: 授权会话读取与可靠观察源
 - 关联设计：§3.1
-- 状态：[ ]
+- 状态：[x]
 - Wave：1
 - 依赖：无
 - 文件：plugins/qq/{common,transport,journal,adapter,source}.py、requirements.txt；tests/test_qq_adapter.py、tests/fixtures/qq_backend.py。
