@@ -3,6 +3,7 @@
 from pathlib import Path
 import os
 import shutil
+import struct
 import subprocess
 import sys
 import tempfile
@@ -19,6 +20,15 @@ def cmake_path(path):
     return str(path).replace("\\", "/")
 
 
+def write_pe(path, machine=0x8664):
+    payload = bytearray(0x88)
+    payload[:2] = b"MZ"
+    struct.pack_into("<I", payload, 0x3C, 0x80)
+    payload[0x80:0x84] = b"PE\0\0"
+    struct.pack_into("<H", payload, 0x84, machine)
+    path.write_bytes(payload)
+
+
 @unittest.skipUnless(CMAKE, "CMake is required")
 class WindowsRuntimeDeploymentTests(unittest.TestCase):
     def setUp(self):
@@ -28,11 +38,15 @@ class WindowsRuntimeDeploymentTests(unittest.TestCase):
         self.output = self.root / "output"
         self.output.mkdir()
         self.exe = self.output / "test.exe"
-        self.exe.touch()
+        write_pe(self.exe)
         self.dependencies = self.root / "dependency bin"
         self.dependencies.mkdir()
+        self.sqlite = self.root / "Qt plugins" / "sqldrivers" / "qsqlite.dll"
+        self.sqlite.parent.mkdir(parents=True)
+        self.sqlite.write_bytes(b"sqlite plugin")
 
-    def run_script(self, *, config="Release", resolved=(), unresolved=(), extra=(), fail=False, qt=True):
+    def run_script(self, *, config="Release", resolved=(), unresolved=(), extra=(), fail=False,
+                   qt=True, deploy_sqlite=True):
         # Stub only platform-specific tools, retaining real locks, directory discovery,
         # copy commands and errors from the production deployment script.
         script = self.root / "test.cmake"
@@ -51,6 +65,11 @@ function(execute_process)
         _file(APPEND [==[{cmake_path(calls)}]==] "${{ARGV}}\\n")
         set(_deploy_result {'1' if fail else '0'} PARENT_SCOPE)
         set(_deploy_error "fixture deployment error" PARENT_SCOPE)
+        if(NOT {'TRUE' if fail else 'FALSE'} AND {'TRUE' if deploy_sqlite else 'FALSE'})
+            _file(MAKE_DIRECTORY [==[{cmake_path(self.output / 'sqldrivers')}]==])
+            _file(COPY [==[{cmake_path(self.sqlite)}]==]
+                DESTINATION [==[{cmake_path(self.output / 'sqldrivers')}]==])
+        endif()
     else()
         _execute_process(${{ARGV}})
         set(_copy_result "${{_copy_result}}" PARENT_SCOPE)
@@ -67,6 +86,8 @@ function(file)
             set(${{ARGV2}} "${{${{ARGV2}}}}" PARENT_SCOPE)
         elseif(ARGV0 STREQUAL "GLOB")
             set(${{ARGV1}} "${{${{ARGV1}}}}" PARENT_SCOPE)
+        elseif(ARGV0 STREQUAL "READ" OR ARGV0 STREQUAL "SIZE")
+            set(${{ARGV2}} "${{${{ARGV2}}}}" PARENT_SCOPE)
         endif()
     endif()
 endfunction()
@@ -76,12 +97,14 @@ include([==[{cmake_path(ROOT / 'cmake/DeployWindowsRuntime.cmake')}]==])
         return result, calls.read_text() if calls.exists() else ""
 
     def test_configuration_and_compiler_runtime(self):
-        for config, switch in (("Debug", "--debug"), ("Release", "--release"),
-                               ("RelWithDebInfo", "--release")):
+        for config in ("Debug", "Release", "RelWithDebInfo"):
             with self.subTest(config=config):
                 result, calls = self.run_script(config=config)
                 self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertIn(switch + ";--compiler-runtime", calls)
+                self.assertNotIn("--debug", calls)
+                self.assertNotIn("--release", calls)
+                self.assertIn("--compiler-runtime", calls)
+                self.assertNotIn("--skip-plugin-types", calls)
                 self.assertIn("--dir;" + cmake_path(self.output), calls)
                 self.assertNotIn("--no-system-d3d-compiler", calls)
                 (self.root / "calls.txt").unlink()
@@ -94,23 +117,55 @@ include([==[{cmake_path(ROOT / 'cmake/DeployWindowsRuntime.cmake')}]==])
         system = self.root / "Windows/System32/kernel32.dll"
         system.parent.mkdir(parents=True)
         system.touch()
-        result, _ = self.run_script(resolved=(runtime, system), extra=(provider,))
+        msvc = self.root / "Windows/System32/MSVCP140.dll"
+        write_pe(msvc)
+        result, _ = self.run_script(resolved=(runtime, system, msvc), extra=(provider,))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual((self.output / runtime.name).read_bytes(), b"runtime")
         self.assertEqual((self.output / provider.name).read_bytes(), b"provider")
+        self.assertEqual((self.output / msvc.name).read_bytes(), msvc.read_bytes())
         self.assertFalse((self.output / system.name).exists())
 
+    def test_rejects_mismatched_msvc_runtime_architecture(self):
+        msvc = self.root / "Windows/System32/VCRUNTIME140.dll"
+        msvc.parent.mkdir(parents=True)
+        write_pe(msvc, machine=0x014C)
+        result, _ = self.run_script(resolved=(msvc,))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("does not match executable architecture", result.stderr)
+
     def test_scans_required_qt_plugins(self):
-        for name in ("platforms/qwindows.dll", "sqldrivers/qsqlite.dll", "tls/qschannelbackend.dll",
-                     "sqldrivers/qsqlmysql.dll"):
+        for name in ("platforms/qwindows.dll", "tls/qschannelbackend.dll",
+                     "sqldrivers/qsqlmysql.dll", "sqldrivers/qsqlpsql.dll",
+                     "tls/qopensslbackend.dll", "plugins/platforms/qwindows.dll"):
             plugin = self.output / name
-            plugin.parent.mkdir(exist_ok=True)
+            plugin.parent.mkdir(parents=True, exist_ok=True)
             plugin.touch()
         result, calls = self.run_script()
         self.assertEqual(result.returncode, 0, result.stderr)
         for name in ("qwindows.dll", "qsqlite.dll", "qschannelbackend.dll"):
             self.assertIn(name, calls)
+        self.assertEqual((self.output / "sqldrivers/qsqlite.dll").read_bytes(),
+                         b"sqlite plugin")
+        self.assertFalse((self.output / "sqldrivers/qsqlpsql.dll").exists())
+        self.assertFalse((self.output / "tls/qopensslbackend.dll").exists())
+        self.assertFalse((self.output / "plugins/platforms").exists())
         self.assertNotIn("qsqlmysql.dll", calls)
+
+    def test_qt_target_without_sql_preserves_shared_sqlite(self):
+        result, _ = self.run_script(deploy_sqlite=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertFalse((self.output / "sqldrivers").exists())
+
+        (self.root / "calls.txt").unlink()
+        sqlite = self.output / "sqldrivers/qsqlite.dll"
+        sqlite.parent.mkdir()
+        sqlite.write_bytes(b"shared sqlite plugin")
+        (sqlite.parent / "qsqlpsql.dll").touch()
+        result, _ = self.run_script(deploy_sqlite=False)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sqlite.read_bytes(), b"shared sqlite plugin")
+        self.assertFalse((sqlite.parent / "qsqlpsql.dll").exists())
 
     def test_missing_dependency_fails_actionably(self):
         result, _ = self.run_script(unresolved=("libstdc++-6.dll",))
