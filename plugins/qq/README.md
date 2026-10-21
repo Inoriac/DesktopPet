@@ -2,6 +2,8 @@
 
 `desktop-pet.qq` 通过 OneBot v11 正向 WebSocket 对接 NapCat / SnowLuma，把 QQ 私聊和群聊接入 DesktopPet 现有工具、观察、人物关系与活动运行时。不控制鼠标或屏幕，也不启动另一个模型或 bot 回复循环。
 
+**需要自行运行 NapCat 或 SnowLuma，不能只安装普通 QQ 客户端。** NapCat 不是唯一后端，但当前也不承诺兼容任意 OneBot 实现。首次使用请从[主 README 的 QQ / NapCat 准备步骤](../../README.md#qq-后台插件可选)开始，包含安装来源、正向 WS 设置、账号 / token 对照、启动顺序和故障排查。
+
 提供 `status / list / read / send / receipt`、一个按需加载的 Skill，以及默认关闭的消息 source。主体自行决定浏览、等待或回应。**内部活动可以自主浏览；发送必须发生在对应外部会话活动中。当前没有从内部活动任意选人主动开聊或切换会话的工具。** 外部会话机会由现有宿主机制提供，不能通过插件伪造上下文。
 
 首版支持文本、回复引用、私聊/群聊隔离、近期历史查询、监听与重放、可追踪发送回执。收到图片/语音/视频等会显示占位，尚不理解或发送媒体。离线消息能否补齐取决于后端近期历史接口，不能保证完整补齐。
@@ -132,7 +134,7 @@ ctest --test-dir build -R '^QQ' --output-on-failure
 
 Windows 用 `& $qqPython` 执行 Python；多配置生成器构建加 `--config Debug`，CTest 加 `-C Debug`。Qt 查找路径沿用项目构建环境。QQ_TEST_PYTHON 只选择 QQ 测试解释器，不替换项目全局 Python；没装 websockets 时适配器、发送和 C++ 集成测试明确 skip，配置测试仍可运行。实际平台验收请使用[验收交接](验收交接.md)，不要将假服务命令指向私人账号。
 
-Windows 运行 `QQPluginTests` 前应把匹配的 Qt 和编译器 `bin` 放进当前终端的 `PATH`；缺少运行时 DLL 时常见退出码为 `0xc0000135`。如果 setup 因用户配置的 pip 镜像提示找不到 `websockets==15.0.1`，可只为本次终端临时指定官方索引后重跑，已有 stateDir 会保留：
+Windows 单独构建 `qq_plugin_tests` 时，CMake 也会自动部署匹配的 Qt 和编译器运行库，不需要依赖其他目标先补齐 DLL；若仍报 `0xc0000135`，见[主 README 的运行库排查](../../README.md#windows-dll)，可构建 `qq_plugin_tests_deploy_runtime` 修复缺失部署。如果 setup 因用户配置的 pip 镜像提示找不到 `websockets==15.0.1`，可只为本次终端临时指定官方索引后重跑，已有 stateDir 会保留：
 
 ```powershell
 $env:PIP_INDEX_URL = 'https://pypi.org/simple'

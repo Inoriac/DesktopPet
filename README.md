@@ -5,6 +5,10 @@
 
 > **⚠️ 本项目基于 MateEngine 部分核心逻辑与资源开发，遵循 MateEngine Pro License (v2.1)，严禁商用，仅供学习与研究。**
 
+**第一次使用？** 先看[安装与启动](#安装启动指南)，遇到 DLL 问题看 [Windows 运行库排查](#windows-dll)，然后按需启用[内置插件](#内置插件上手)和 [QQ / NapCat](#qq-后台插件可选)。最后用[完整功能验收清单](#完整功能验收)逐项确认。
+
+本项目不是下载一个 EXE 就具备全部能力的成品安装包：**C++ 核心负责桌宠与 Agent，Python launcher 是正式入口，插件及外部服务需要逐个配置**。3D 角色资产需自行准备；LLM 需要可用的模型服务；QQ 需要另行运行 NapCat 或 SnowLuma。不需要的能力可以保持关闭，不影响基础使用。
+
 ---
 
 ## ✨ 已完成
@@ -38,7 +42,7 @@
 
 ## 🚧 未完成 / 开发中
 
-* **Embedding 模型分发**：`OnnxEmbeddingProvider`、WordPiece tokenizer、`SqliteEmbeddingIndex` 与生产组装已经实现；模型文件仍需单独准备，缺失或加载失败时语义检索会降级为关键词路径。
+* **Embedding 分发与兼容性**：仓库已包含 `assets/embeddings/model_quantized.onnx` 与词表；平台专属 ONNX Runtime 仍需单独准备。模型或运行库不可用时语义检索会降级为关键词路径，真实数据效果和跨平台分发仍需校准。
 * **RRF 三通道融合检索**：向量 / 关键词 / 图谱三路召回 + 排名融合（计划阶段）。
 * **图谱检索融合**：关系类型图和标签共现图已落库，尚未作为完整召回通道接入 RRF。
 * **成长体验完善**：人格成长已接入模型反思与本地证据门槛；长期真实体验校准、完整情绪历史轨迹、自适应阈值、成长历史 UI 与可视化编辑仍待完善。
@@ -105,6 +109,8 @@
 
 ---
 
+<a id="安装启动指南"></a>
+
 ## 🚀 安装与使用
 
 以下流程以 Windows 10 / 11 为主。当前已实机验证的组合是 Qt 6.5.3 MinGW 64-bit、MinGW 11.2、CMake/Ninja 和 Python 3.12；MSVC 2019+ 也受构建脚本支持，但 Qt 套件必须与编译器 ABI 匹配，不能混用 MinGW Qt 与 MSVC。
@@ -113,9 +119,10 @@
 
 * Git、CMake 3.20+、Ninja 或 Visual Studio 生成器，以及支持 C++20 的编译器。
 * Qt 6，包含 Core、Gui、Widgets、Network、OpenGL、OpenGLWidgets、Sql 和 Test 模块。
-* Python 3.10+。核心 launcher 与 QQ 插件最低要求较低，但 3.10+ 同时满足当前各可选插件。
+* 推荐 **Python 3.12 x64**，使用 3.10–3.12 可同时覆盖 launcher 与当前插件。不要直接选最新 Python：launcher 固定了 PySide6-Essentials 6.7.3，较新 Python 可能没有对应 wheel。
 * 支持 OpenGL 3.3 Core 的显卡和驱动。
 * 可选：libsodium 与 Qt6Keychain 同时存在时启用加密内心活动和私人日记；缺失时普通桌宠仍可构建，但不会降级保存明文私密内容。
+* MSVC 构建或使用由 MSVC 编译的第三方 DLL / Python 扩展时，安装微软官方 [Visual C++ v14 x64 运行库](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。CMake 不会替你执行系统安装程序。Debug 程序需要开发环境，不作为普通用户分发版本。
 
 角色模型、语音模型和平台凭据不随 Git 提供。默认角色记录会指向 `assets/models/milltina/model/milltina.gltf`；首次启动前须放入自己有权使用的模型，或修改本地 `pets.json` 的 `modelPath`。目录约定见 [模型资产说明](assets/models/README.md)。
 
@@ -140,15 +147,50 @@ cmake -S . -B build -G Ninja `
 cmake --build build --parallel
 ```
 
+只想先启动、不构建全部测试时，最后一条可以改为 `cmake --build build --target Desktop_Pet desktop_pet_web --parallel`。测试前再执行完整构建。**编译 Qt/C++ 核心不依赖 Python 的 PySide6；安装 PySide6 也不能替代原生 Qt 开发套件。**
+
 使用 Visual Studio 2022 和匹配的 Qt/MSVC 套件时，可改用：
 
 ```powershell
-cmake -S . -B build -G "Visual Studio 17 2022" -A x64 `
-  -DCMAKE_PREFIX_PATH='C:\Qt\6.7.3\msvc2022_64'
-cmake --build build --config Release --parallel
+cmake -S . -B cmake-build-msvc -G "Visual Studio 17 2022" -A x64 `
+  -DCMAKE_PREFIX_PATH='C:\Qt\6.8.3\msvc2022_64'
+cmake --build cmake-build-msvc --config Release --parallel
+$env:DESKTOP_PET_EXECUTABLE = (Resolve-Path 'cmake-build-msvc\Release\Desktop_Pet.exe').Path
 ```
 
-每次拉取包含 `CMakeLists.txt` 或测试注册变化的代码后，先重新执行 `cmake -S . -B build ...`。Windows 构建会为正式程序运行 `windeployqt`；开发期测试若报 `0xc0000135`，请确认 Qt 与编译器的 `bin` 仍在当前终端 `PATH` 中。
+两个方案二选一；切换编译器、Qt 套件、架构或生成器时使用新的构建目录，不复用旧 CMakeCache。MSVC 示例用了自定义目录，所以每次新开终端启动 launcher 前都要设置上述 `DESKTOP_PET_EXECUTABLE`。后文 `build` 路径相应改为 `cmake-build-msvc`，所有 `cmake --build` 命令加 `--config Release`，所有 `ctest` 命令加 `-C Release`。
+
+每次拉取包含 CMake 或测试注册变化的代码后，先重新执行原来的 `cmake -S . -B ...` 配置命令。当前 Windows 构建默认为**所有可执行目标**运行统一部署，包括核心、Web helper、单独构建的测试和 fixture；使用 toolchain 文件时也不会跳过。具体配置按实际构建的 Debug / Release 选择，不混用 DLL。
+
+<a id="windows-dll"></a>
+
+### Windows DLL 自动部署与排查
+
+链接完成后 CMake 调用同一 Qt 套件的 `windeployqt`，部署 Qt DLL、平台 / SQLite / TLS 等插件和编译器运行库，再扫描导入依赖、补齐能找到的非系统 DLL（如 libsodium、QtKeychain、ONNX Runtime）。同一输出目录的部署串行执行，避免并行构建相互覆盖。找不到工具或依赖会明确报错，不再静默产出缺库程序。
+
+这解决的是**链接完成后或运行测试时缺运行库**的问题，不会自动安装未安装的 SDK，也不能修复不同 ABI / 架构的库。`LNK1104`、`cannot find -l...` 是链接阶段缺库；`0xc0000135`、缺 `Qt6Core.dll` 等通常是启动阶段缺库，应区分处理。
+
+| 现象 | 处理方式 |
+| --- | --- |
+| 找不到 `windeployqt` | 检查选中的 Qt 套件是否包含部署工具；必要时配置 `-DDESKTOP_PET_WINDEPLOYQT=C:/Qt/对应套件/bin/windeployqt.exe`，不能借用另一版本或 PySide6 内的 Qt DLL |
+| 缺 `Qt6*.dll`、`libstdc++-6.dll`、`libgcc_s_*.dll`、`libwinpthread-1.dll` | 先重新配置并构建该目标；核对编译器 / Qt 的位数和版本，以及 MinGW `bin` 是否存在。保留输出目录全部运行库，不要只移动 EXE |
+| 缺 `libsodium.dll`、`qt6keychain*.dll`、ONNX 或其他第三方 DLL | 提供对应 DLL 的目录；只有 `.lib` / `.dll.a` 导入库并不足以运行，第三方运行库也必须匹配架构和配置 |
+| `qwindows` 平台插件失败、`QSQLITE driver not loaded` | 保留 EXE 旁的 `platforms` / `sqldrivers`；排查全局 `QT_PLUGIN_PATH` / `QT_QPA_PLATFORM_PLUGIN_PATH` 是否指向别的 Qt。可临时设 `$env:QT_DEBUG_PLUGINS='1'` 查看日志，结束后移除 |
+| `0xc000007b`、入口点不存在 | 常见于 x86/x64、Debug/Release 或 Qt 版本混装；使用新构建目录和同一套依赖，不从网上随意补同名 DLL |
+| 拷贝 DLL 失败 / access denied | 先退出桌宠、测试和 Web helper，再重建；检查目标目录写权限及安全软件拦截 |
+
+第三方运行库不在标准位置时，将实际目录传入 CMake；可以用分号分隔多个目录，Debug 和 Release 应分别配置匹配的路径：
+
+```powershell
+cmake -S . -B build '-DDESKTOP_PET_RUNTIME_SEARCH_DIRS=C:/deps/bin;C:/other-deps/bin'
+cmake --build build --target Desktop_Pet desktop_pet_web --parallel
+
+# EXE 没变、只是 DLL 被误删时，不必改源码强制重新链接：
+cmake --build build --target Desktop_Pet_deploy_runtime desktop_pet_web_deploy_runtime
+# 单独测试也有对应目标，例如 qq_plugin_tests_deploy_runtime。
+```
+
+部署开关 `DESKTOP_PET_DEPLOY_WINDOWS_RUNTIME` 默认 ON。仅在你已有独立打包流程或交叉编译时设为 OFF，并自行部署依赖。发布给没有开发环境的机器时使用 Release，保留整个部署目录，安装所需微软运行库，再在干净终端验证；本项目仍需要源码资源目录、Python launcher、模型与各插件状态目录，**部署 DLL 不等于制作了完整安装包**。
 
 ### 3. 安装并启动 launcher
 
@@ -172,7 +214,7 @@ $env:DESKTOP_PET_EXECUTABLE = 'C:\absolute\path\Desktop_Pet.exe'
 
 ### 4. 首次配置
 
-1. 首次打开 launcher 会创建默认角色 `Milltina` 和稳定的随机 `profileId`。当前界面可以选择已有角色，尚不提供新增角色流程。
+1. 首次打开 launcher 会创建默认角色 `Milltina` 和稳定的随机 `profileId`。当前界面可以选择已有角色，尚不提供新增角色流程。如需修改 `pets.json` 的 `modelPath`，先关闭 launcher 和桌宠，保留 `profileId`，保存 UTF-8 JSON 后重新打开；GLTF 的外部纹理与 `.bin` 文件也要齐全。
 2. 在“AI”页开启 AI，在“连接档案”中选择 `openai-compatible` 或 `anthropic-messages`，填写服务 URL、API Key 和服务端实际支持的模型 ID。
 3. 点击“测试连接”。这会用当前编辑值发出一次真实的最小 `ping` 模型请求，不只是检查格式。OpenAI-compatible 地址会补 `/chat/completions`，Anthropic 地址会补 `/v1/messages`。
 4. 为对话、视觉、快速提取、记忆整理、日记、Daydream、任务受理、任务执行和人格反思选择连接档案与模型。视觉角色应使用实际支持图片输入的模型。
@@ -216,6 +258,8 @@ launcher 拉起的核心进程日志另存于仓库的 `log\launcher\`。不要�
 | QQ 会话 | NapCat 或 SnowLuma、已登录 QQ、OneBot v11 正向 WS | [下方 QQ 指南](#qq-后台插件可选) |
 | LX Music | Windows LX Music、本地开放 API；部分操作需要真实数据库和程序路径 | [LX Music 插件](plugins/lx-music/README.md) |
 | 语音合成 | GENIE / `genie-tts` 环境、角色模型与参考音频 | [语音运行时](runtime/voice/README.md) |
+| 语义记忆检索 | 平台专属 ONNX Runtime；仓库已带 embedding 模型 / 词表 | [增强能力准备](#增强能力准备) |
+| 加密内心活动 / 私人日记 | 构建时同时找到 libsodium 与 Qt6Keychain；运行时密钥链可用、日记模型配置正确 | [增强能力准备](#增强能力准备) |
 
 插件安装不会替用户打开宿主自主活动总开关。先退出目标角色，预览配置，确认路径和授权后再应用，随后重启角色。模型是否自主使用某个能力还取决于插件授权、全局开关、上下文和预算。
 
@@ -231,11 +275,167 @@ ctest --test-dir build --output-on-failure -j 4
 & .\.venv\Scripts\python.exe -m unittest discover -s tests -p 'test_launcher_*.py'
 ```
 
-测试出现 `Skipped` 时先确认是否缺少该能力的 Python 包、Qt DLL、真实播放器或平台后端；跳过不能记作该集成已经通过。完整 launcher 说明见 [launcher/README.md](launcher/README.md)，配置结构见 [config/default_common_config.example.json](config/default_common_config.example.json)。
+Qt / DLL 缺失属于环境失败，不应当作正常跳过。测试出现 `Skipped` 时先确认该测试是否缺少 Python 包或可选后端；跳过不能记作该集成已经通过。完整 launcher 说明见 [launcher/README.md](launcher/README.md)，配置结构见 [config/default_common_config.example.json](config/default_common_config.example.json)。
+
+<a id="内置插件上手"></a>
+
+## 内置插件：从安装到实际使用
+
+“内置”表示能力包源码随仓库提供，**不表示已经安装 Python 依赖、登录平台或获得角色权限**。Web / B 站 / LX Music / QQ 均通过角色目录里的 `plugins.json` 接入；没有统一的一键全开按钮。以下命令从仓库根目录执行，不需要手动启动插件适配器或 source 常驻进程，宿主会按需管理它们。
+
+### 共用准备
+
+先通过 launcher 启动目标角色一次，再退出桌宠。每开一个新 PowerShell 窗口，先重新设置变量：
+
+```powershell
+$petPython = (Resolve-Path '.venv\Scripts\python.exe').Path
+$petDataDir = Join-Path $env:APPDATA 'Desktop Pet Team\Desktop Pet'
+$pets = Get-Content -LiteralPath (Join-Path $petDataDir 'pets.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+$pets | Select-Object name, profileId
+$profileId = '替换为目标角色的真实小写UUID'
+$profileDir = Join-Path $petDataDir "profiles\$profileId"
+if (!(Test-Path -LiteralPath $profileDir -PathType Container)) { throw '请先启动该角色一次再退出' }
+$pluginState = Join-Path $env:LOCALAPPDATA "DesktopPet\plugins\$profileId"
+$OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+[Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false)
+```
+
+每项按“准备依赖 → 预览 → `--apply` → 重启角色 → 真实只读调用”操作。只有 `--apply` 才写入角色配置；保留输出的 `backupDirectory`。所有路径都是绝对路径，移动仓库、构建目录或 venv 后须重新配置。以下示例显式使用 `--autonomous off`，先验证手动调用；Web / B 站 / QQ 配置器省略此参数时默认是 on，不要误以为省略等于关闭。
+
+### Web：搜索与网页阅读
+
+无需 API Key 或额外 Python 包，只需已经构建的 Qt helper：
+
+```powershell
+$webProgram = (Resolve-Path 'build\desktop_pet_web.exe').Path
+# MSVC 示例改用 cmake-build-msvc\Release\desktop_pet_web.exe。
+$webState = Join-Path $pluginState 'web'
+$webArgs = @('-B', 'plugins\web\configure.py', '--profile-dir', $profileDir,
+  '--program', $webProgram, '--state-dir', $webState, '--autonomous', 'off')
+& $petPython @webArgs
+if ($LASTEXITCODE -ne 0) { throw 'Web 配置预览失败' }
+& $petPython @webArgs --apply
+if ($LASTEXITCODE -ne 0) { throw 'Web 配置失败' }
+```
+
+重启后可以说：“用 `desktop-pet.web` 搜索 Qt 官方文档，读取一个结果并附上来源。”核对真实搜索结果和正文，不以模型声称“已浏览”为准。搜索使用公开 Bing RSS，可能限流或不可达；网页读取不执行 JavaScript、不带登录 Cookie、不解析 PDF，也不能访问内网 / localhost。遇到登录页或正文为空不等于安装失败。详情见 [Web 指南](plugins/web/README.md)。
+
+### Bilibili：搜索、字幕与可选转写
+
+先准备独立环境，再由人类登录；不要把 Cookie 贴到聊天中：
+
+```powershell
+$biliState = Join-Path $pluginState 'bilibili'
+& $petPython -B plugins\bilibili\setup.py --state-dir $biliState
+if ($LASTEXITCODE -ne 0) { throw 'B 站环境安装失败' }
+$biliPython = Join-Path $biliState 'venv\Scripts\python.exe'
+& $biliPython -B plugins\bilibili\login.py --state-dir $biliState
+# 按输出路径打开本地二维码，用 B 站 App 扫码；成功后再继续。
+if ($LASTEXITCODE -ne 0) { throw 'B 站登录未完成' }
+$biliArgs = @('-B', 'plugins\bilibili\configure.py', '--profile-dir', $profileDir,
+  '--state-dir', $biliState, '--autonomous', 'off')
+& $biliPython @biliArgs
+if ($LASTEXITCODE -ne 0) { throw 'B 站配置预览失败' }
+& $biliPython @biliArgs --apply
+if ($LASTEXITCODE -ne 0) { throw 'B 站配置失败' }
+```
+
+公开搜索可尝试匿名，但字幕通常要求登录；没有字幕并不代表已经有本地转写能力。要启用 ASR，另行下载模型并重新授予启动转写权限：
+
+```powershell
+& $petPython -B plugins\bilibili\setup.py --state-dir $biliState --asr-model tiny
+if ($LASTEXITCODE -ne 0) { throw 'ASR 模型准备失败' }
+$biliModel = Join-Path $biliState 'models\tiny'
+& $biliPython @biliArgs --asr-model-path $biliModel
+if ($LASTEXITCODE -ne 0) { throw 'ASR 配置预览失败' }
+& $biliPython @biliArgs --asr-model-path $biliModel --apply
+if ($LASTEXITCODE -ne 0) { throw 'ASR 配置失败' }
+```
+
+重启后试：“用 B 站插件搜索一个科普视频，读取字幕，区分原字幕与本地转写并注明时间戳。”插件只读，不发评论、不点赞，也不理解画面。ASR 使用 CPU/int8，`tiny` 适合连通性测试，中文准确率不保证；`accepted` 是任务已受理，需继续查询到完成。后续 configure 不传 `--asr-model-path` 会关闭 ASR 授权。平台风控、登录过期、无字幕和下载失败不能靠 CMake 解决，详见 [B 站指南](plugins/bilibili/README.md)。
+
+### LX Music：连接真实播放器
+
+安装并打开 Windows LX Music，在设置中启用本地开放 API，核对端口（示例 `23330`）；先手动确认播放器能播放。此插件使用 Python 标准库，不安装额外 pip 包，也不提供音乐源。
+
+```powershell
+$musicDatabase = Join-Path $env:APPDATA 'lx-music-desktop\LxDatas\lx.data.db'
+$musicExecutable = 'C:\替换为实际安装目录\lx-music-desktop.exe'
+# 便携版 / 不同版本请改成实际数据库路径，不要创建一个空数据库充数。
+$musicArgs = @('-B', 'plugins\lx-music\configure.py', '--profile-dir', $profileDir,
+  '--database', $musicDatabase, '--executable', $musicExecutable,
+  '--api-url', 'http://127.0.0.1:23330', '--autonomous', 'off')
+& $petPython @musicArgs
+if ($LASTEXITCODE -ne 0) { throw '音乐配置预览失败' }
+& $petPython @musicArgs --apply
+if ($LASTEXITCODE -ne 0) { throw '音乐配置失败' }
+& $petPython -B plugins\lx-music\adapter.py `
+  --settings (Join-Path $profileDir 'lx-music.settings.json') --diagnose
+```
+
+诊断的 `state=completed` 只表示诊断执行完毕，实际看 `data.availability` 和 API / 数据库 / 程序路径各项。重启后试：“用 `desktop-pet.lx-music` 查询当前曲目和歌单，先不要播放。”旧原生 `lx_music_*` 工具仍存在，不算新插件接入成功。只读通过后再试播放 / 暂停；`unknown` 代表可能已执行，先查状态，不能自动重发。自主权限可选 `off/read/all`，建议先 read。详情和回滚见 [LX Music 指南](plugins/lx-music/README.md)。
+
+### 自主使用、停用与隐私
+
+* 插件授权和 launcher 的“自主活动 / 暂停自主活动”是两道独立开关。启用两者也不保证立即执行；主体可以等待，预算和空闲判断仍然有效。
+* 在角色停止时重新 configure 可以调整授权；`--autonomous off` **只撤销自主权限，不禁用本地主人的插件调用**。彻底停用时，备份 `plugins.json`，将对应 `plugins` 项的 `enabled` 改为 `false`，再重启；不要删除整个配置或记忆数据库。
+* QQ 消息、网页、字幕等材料可能进入模型上下文；是否出机取决于连接档案所指向的模型服务。“本地插件”不等于“材料仅在本地处理”。只授权自己有权读取的内容，并征得会话参与者同意。
+* token、B 站凭证、QQ 消息缓存及角色数据库都可能含敏感内容。保存在当前账户可控目录，不提交 Git、不随日志打包公开；回滚整份旧 `plugins.json` 会同时撤销其后的其他插件修改。
+
+<a id="增强能力准备"></a>
+
+## 语音、语义记忆与私人日记
+
+**语音合成（不是语音识别）：** 默认关闭。仓库根目录运行以下命令准备独立语音环境与预设，下载会占用磁盘 / 网络，不在普通聊天时自动安装：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\voice\setup_voice_env.ps1 -VenvPath runtime\voice\venv
+& .\runtime\voice\venv\Scripts\python.exe tools\voice\download_genie_assets.py --preset feibi --with-roberta
+if ($LASTEXITCODE -ne 0) { throw '语音资源验证失败，请勿先开启语音' }
+```
+
+关闭 launcher 和桌宠，在本机 `launch_config.json` 的现有 `voice` 对象中将 `venvPath` 改为 `runtime/voice/venv`（也可用绝对路径），保留其他字段；具体嵌套位置参照[默认模板](config/default_common_config.example.json)。重新打开 launcher，在“语音”页选择已下载的 `feibi` 并开启合成。自定义音色还需要转换后的模型与参考音频，不能只换一个名字。若共用根目录 `.venv` 可使用脚本默认路径，但可能改变 launcher 的 Python 依赖；独立环境更稳妥。
+
+**语义记忆检索：** 仓库已跟踪约 55 MiB 的量化模型和词表，位于 `assets/embeddings`；需要另外准备 **C++ ONNX Runtime**，Python `pip install onnxruntime` 不能代替它：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File tools\fetch_onnxruntime.ps1
+if ($LASTEXITCODE -ne 0) { throw 'ONNX Runtime 准备失败' }
+cmake -S . -B build -DDESKTOP_PET_ENABLE_ONNX_RUNTIME=ON
+cmake --build build --target Desktop_Pet memory_strategy_tests --parallel
+ctest --test-dir build -R '^MemoryStrategyTests$' --output-on-failure
+```
+
+配置输出应包含 `onnxruntime found`，Windows 包须同时包含头文件、链接用 `onnxruntime.lib` 和运行用 DLL；重新编译后才启用。下载脚本固定版本若无法获取，按 [ONNX Runtime 说明](third_party/onnxruntime/README.md)核实官方可用版本与平台。只在此目录保留当前平台的候选包，避免误选另一平台。暂不需要时配置 `-DDESKTOP_PET_ENABLE_ONNX_RUNTIME=OFF`，基础记忆与关键词召回仍可使用。
+
+**加密内心活动 / 私人日记：** 安装与原生 Qt / 编译器匹配的 libsodium 和 Qt6Keychain 开发包及其运行库，再重新配置。可通过 `CMAKE_PREFIX_PATH`、`SODIUM_INCLUDE_DIR`、`SODIUM_LIBRARY`、`Qt6Keychain_DIR` 指定位置；非标准 DLL 路径用 `DESKTOP_PET_RUNTIME_SEARCH_DIRS`。配置输出必须是 `Private reflection capability available`，否则此能力没有编入。运行时还需系统凭据库可用，配置日记 / 反思模型并产生足够经历和睡眠周期；空日记列表不一定是故障。通过 launcher 的只读日记页访问，不直接编辑加密数据库。缺依赖不会降级为明文；私密正文仍可能发送给你配置的相应模型服务商。
+
+依赖来自 [libsodium](https://doc.libsodium.org/installation) 和 [QtKeychain](https://github.com/frankosterfeld/qtkeychain)。QtKeychain 必须选择 Qt 6 构建（`BUILD_WITH_QT6=ON`），不是 Qt 5 版本；使用包管理器时也不能把其另一套 Qt 与当前 `$qtRoot` 混用。假设二者已经安装到各自包含 `include` / `lib` / `bin` 的前缀，MinGW 示例可这样接入（改成真实路径）：
+
+```powershell
+cmake -S . -B build `
+  "-DCMAKE_PREFIX_PATH=$qtRoot;C:/deps/qtkeychain-install;C:/deps/libsodium" `
+  '-DDESKTOP_PET_RUNTIME_SEARCH_DIRS=C:/deps/qtkeychain-install/bin;C:/deps/libsodium/bin'
+cmake --build build --target Desktop_Pet --parallel
+```
+
+这条命令只查找已有依赖，不会下载它们。请以 CMake 的能力检测输出为准，而不是仅凭 configure 命令退出成功判断日记已启用。
 
 ## QQ 后台插件（可选）
 
-QQ 插件通过 OneBot v11 **正向 WebSocket** 连接 NapCat 或 SnowLuma。NapCat/SnowLuma 在已经登录 QQ 的环境中提供 WebSocket 服务端，Desktop Pet 是客户端；插件不安装后端、不负责扫码登录，也不控制 QQ 窗口。
+**QQ 插件需要 NapCat 吗？需要一个兼容后端，但不限定 NapCat：当前明确支持 `napcat` 和 `snowluma` 两种后端。** 普通 QQ 客户端本身不能直接连接这个插件，也不是安装 `websockets` 就完成了 QQ 接入。不要把“支持 OneBot”理解为任意 OneBot 实现都已经兼容历史与发送回执。
+
+QQ 插件通过 OneBot v11 **正向 WebSocket** 连接 NapCat 或 SnowLuma。NapCat/SnowLuma 在已经登录 QQ 的环境中提供 WebSocket 服务端，Desktop Pet 是客户端；插件不安装后端、不负责扫码登录，也不控制 QQ 窗口。无需另装 MaiBot，也不启动另一套 bot / LLM 回复循环。
+
+```text
+你登录的 QQ 账号
+    ↕
+NapCat 或 SnowLuma（OneBot v11 正向 WS 服务端）
+    ↕ ws://127.0.0.1:3001（仅示例，实际端口由你设置）
+QQ 插件（Python 适配器 / 可选消息 source）
+    ↕ 角色授权与宿主活动运行时
+Desktop Pet Agent（复用 launcher 配置的模型）
+```
 
 当前支持授权私聊/群聊的文本读取、文本或引用发送、发送回执，以及可选的后台消息观察。图片、语音、视频等媒体只保留占位，不支持理解或发送；断线期间的历史能否补齐取决于后端。
 
@@ -248,6 +448,24 @@ QQ 插件通过 OneBot v11 **正向 WebSocket** 连接 NapCat 或 SnowLuma。Nap
 * 已通过 launcher 启动过一次目标角色，使 `%APPDATA%\Desktop Pet Team\Desktop Pet\profiles\<profileId>` 存在。
 
 NapCat 与 SnowLuma 的历史接口和发送证据不同，需要分别验收，不能用其中一个的结果代替另一个。
+
+### NapCat 具体准备顺序
+
+1. 从 [NapCatQQ 官方仓库](https://github.com/NapNeko/NapCatQQ)及其文档 / Releases 获取适合你的 Windows 和 QQ 客户端版本的安装方式。NapCat 的安装、QQ 版本兼容和登录方式由该项目维护，不使用来源不明的整合包。
+2. 启动 NapCat，按它的提示登录你有权使用的测试 QQ 账号，确认在线并可在真实 QQ 客户端收发消息。记录此账号 QQ 号作为 `selfId`，**不是**机器人的昵称、群号或对方 QQ 号。
+3. 在 NapCat 网络配置中新增并启用 **OneBot v11 WebSocket 服务端 / 正向 WS**。同机使用时绑定 `127.0.0.1`，选择一个空闲端口（例如 `3001`），设置独立的强 token，保存配置，按后端要求重启服务。
+4. 记录实际 WS 地址。NapCat WebUI 的管理地址、HTTP API 地址、反向 WS 客户端配置都不是这里的 `wsUrl`；若后端设置了路径，地址也必须带该路径。插件从本机发起连接，无需你再启动一个 WS 接收服务器。
+5. 在后端保持在线时，完成下面的 Python 设置及只读 `status` 验证，再启动桌宠。以后启动顺序同样为 **NapCat → QQ 登录在线 → launcher → 桌宠**；QQ 掉线后桌宠可能仍能普通聊天，但 QQ 功能不可用。
+
+| 配置项 | 本项目示例 | 注意 |
+| --- | --- | --- |
+| 网络类型 | OneBot v11 正向 WebSocket | 不选 HTTP，不选反向 WebSocket |
+| 监听地址 / 端口 | `127.0.0.1:3001` | 只是示例，不是承诺的 NapCat 默认值 |
+| token | 后端设置的访问 token | 文件中只写 token 本身；插件自动添加 `Authorization: Bearer ...`，不写进 URL |
+| 消息格式 | 消息段数组优先 | 插件也能解析 CQ 字符串，但媒体只显示占位 |
+| 白名单 | 一个测试群或测试私聊 | 插件 `allowedConversations` 必须显式列出；不支持 `*` |
+
+不要把 QQ 控制接口或 WebUI 暴露在公网。跨机器连接应自行配置可信网络、鉴权与 `wss`，不是直接把示例 host 换成公网 IP。第三方 QQ 自动化有账号风控、协议变化和服务条款风险，建议先用测试账号及获准的测试群；本项目不能保证账号安全、长期兼容或实时回复。
 
 ### 2. 创建 QQ 独立环境和设置
 
@@ -294,7 +512,9 @@ $settings = [ordered]@{
 
 ```powershell
 & $qqPython -B plugins\qq\configure.py --profile-dir $profileDir --settings $qqSettings --source off --autonomous off
+if ($LASTEXITCODE -ne 0) { throw 'QQ 配置预览失败' }
 & $qqPython -B plugins\qq\configure.py --profile-dir $profileDir --settings $qqSettings --source off --autonomous off --apply
+if ($LASTEXITCODE -ne 0) { throw 'QQ 配置失败' }
 ```
 
 第一条命令只输出预览；第二条才更新该角色的 `plugins.json`，并在 `qq-backups` 下保存备份。重复应用相同配置不会重复写入。配置变化后重启该角色。
@@ -325,6 +545,19 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
 先确认账号、白名单、群聊/私聊分流、中文、emoji、引用和分页。随后可重新配置为 `--source on --autonomous off --apply`，从允许会话发送测试消息，确认只归档、不自主回复。最后确有需要时再配置 `--source on --autonomous on --apply`，并在 launcher 中开启且取消暂停自主活动。
 
 宿主验收看实际 `discover/load/invoke` 调用、观察归档、QQ 客户端收到的消息和发送回执，不以模型口头说“已经发送”作为成功依据。主体可以选择等待，并非每条消息都必须回复。
+
+本地聊天可先问：“用 QQ 插件检查连接状态，列出授权会话，只读最近几条文本，不发送。”本地主人会话无 `send` 授权，要求“帮我给某人发 QQ”被拒绝是当前设计，不应通过放宽全局安全策略绕开。外部 QQ 回复发生在该 QQ 会话自己的活动中。launcher 聊天页仍只展示本地主人的对话，**不是 QQ 收件箱**。
+
+| 状态 | 首先检查 |
+| --- | --- |
+| `DEPENDENCY_UNAVAILABLE` | configure 是否由 `$qqPython` 执行；该环境是否安装了 `websockets==15.0.1` |
+| `NETWORK_ERROR` / 超时 | NapCat 是否运行且账号在线；端口、路径是否为正向 WS；token 是否一致；防火墙是否拦截。可用 `Test-NetConnection 127.0.0.1 -Port 3001` 检查端口，但端口通不证明 OneBot / 鉴权正确 |
+| `INVALID_SETTINGS` | settings 是否 UTF-8 无 BOM；token 非空、无 BOM、只有可打印 ASCII；QQ 号为字符串，路径为绝对路径且在插件包外 |
+| `ACCOUNT_MISMATCH` | `selfId` 是否等于后端当前登录 QQ 号，切号后是否误用旧 stateDir |
+| `PERMISSION_DENIED` | 会话是否在精确白名单中，profileId 和 grant 是否正确；本地主人不能发送，外部会话不能跨会话读取 / 发送 |
+| `status` 正常却没有后台消息 / 不回复 | source 是否 on、配置后是否重启；自主授权和总开关是否都开启且未暂停；测试消息是否来自授权会话；主体是否选择等待 |
+| 历史不全 / `local_only` | 后端历史接口不支持或有限；本地缓存不是 QQ 全量历史备份 |
+| 发送 `unknown` | 先检查实际 QQ 客户端，用原 `receipt_id` 核对，绝不自动重复发送 |
 
 ### 5. 发送与回执验收
 
@@ -359,9 +592,31 @@ cmake --build build --target qq_plugin_tests --parallel
 ctest --test-dir build -R '^QQ' --output-on-failure
 ```
 
-Visual Studio 多配置构建给后两条命令加 `--config Release` 和 `-C Release`。运行 `QQPluginTests` 前应让 Qt 与编译器的 `bin` 位于 `PATH`；否则 Windows 可能报 `0xc0000135`。缺少 `websockets` 时部分 QQ 测试会标为跳过，不能算通过。
+Visual Studio 多配置构建给后两条命令加 `--config Release` 和 `-C Release`，构建目录与前文保持一致。现在单独构建 `qq_plugin_tests` 也会部署 Qt 和编译器 DLL，不再依赖先构建其他测试来补库；仍有缺库时按 [Windows 运行库排查](#windows-dll)处理。缺少 `websockets` 时部分 QQ 测试会标为跳过，不能算通过。
 
 受控回归只证明插件协议、单次派发、回执、权限和宿主链路，不代表真实 QQ 已通过。完整配置、运行边界与回滚见 [QQ 插件文档](plugins/qq/README.md)，NapCat/SnowLuma 的 A1-A11、H1-H11 实机表见 [QQ 验收交接](plugins/qq/验收交接.md)。
+
+<a id="完整功能验收"></a>
+
+## 完整功能启动检查表
+
+建议从上到下验证；前一步没有通过时，不要一次开启所有自主能力增加排障难度。下表是验收标准，不是已在每个平台验证通过的声明。
+
+| 阶段 | 通过标准 |
+| --- | --- |
+| 核心 / DLL | Release 构建成功；新终端中无需手工追加 Qt / MinGW 的 `bin` 即可启动已部署程序；能独立运行刚构建的一个测试目标 |
+| 模型与 launcher | launcher 可打开，角色能启动并显示；托盘、拖拽、退出正常；重启后 profileId 不变 |
+| AI / 视觉 | 连接测试通过；实际文本聊天收到回复；配置视觉模型后能识别一张非敏感测试图片；连接测试只证明该次模型请求，不保证所有工具 / 视觉都支持 |
+| 记忆 / 日记 | 重启后历史和身份仍在；需要语义检索时确认 ORT 与模型加载成功；日记需加密依赖和实际生成条件，不能把关键词降级或空日记直接算完整通过 |
+| Web / B 站 | 真实 discover/load/invoke 调用成功；能读到网页正文、真实字幕或明确的限制；ASR 须等实际任务完成 |
+| LX Music | 只读诊断就绪、曲目和歌单正确；手动播放 / 暂停与真实播放器一致，不仅看退出码 |
+| QQ | 正确后端、账号、白名单；只读 status/read 正常；source 能收到测试消息；需要回复时，在精确外部会话中验证一次实际发送及回执 |
+| 语音 | 已下载的音色可实际出声；语音失败不应当作文本聊天失败，也不能把 B 站 ASR 当作桌宠麦克风输入 |
+| 自主活动 | 仅在手动验证通过后打开对应插件授权和总开关；确认“暂停自主活动”能阻止新自主调用，允许主体选择等待 |
+
+不需要某项能力就保持关闭，无需为了启动桌宠安装全部可选依赖。QQ 后端、B 站登录 / 限流、音乐源及模型服务由各自外部系统决定，自动化替身测试不能替代真实环境验收。
+
+排障先看 launcher 的“运行概览 / 诊断日志”、`log/launcher` 中的进程输出及当前角色 `profiles/<profileId>/logs`。报告问题时附 Windows / Qt / 编译器 / Python 版本、构建命令、目标名、缺失 DLL 原名或插件错误码，以及脱敏后的相关日志；不要附 API Key、token、Cookie、完整 QQ 消息或私人日记。不要以删除角色数据库作为通用修复方法。
 
 ---
 

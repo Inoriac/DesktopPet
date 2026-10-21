@@ -39,7 +39,7 @@ $webProgram = @(
 if (-not $webProgram) { throw '未找到 desktop_pet_web.exe，请使用实际构建输出路径' }
 ```
 
-如果平时运行 Debug，改用 `--config Debug` 并指向 `build\Debug\desktop_pet_web.exe`；不要混用 Qt Debug/Release DLL。CMake 找到 `windeployqt.exe` 时，会为 helper 部署 Qt 和 TLS 插件。若构建环境没有该工具，请用同一 Qt 安装的 `windeployqt.exe <helper绝对路径>` 完成部署。实际启动与 HTTPS 连通性仍需在 Windows 验收。
+如果平时运行 Debug，改用 `--config Debug` 并指向 `build\Debug\desktop_pet_web.exe`；不要混用 Qt Debug/Release DLL。CMake 默认要求同一 Qt 套件的 `windeployqt.exe`，自动部署 Qt / TLS 插件并检查运行库，toolchain 构建也适用。DLL 被误删时可构建 `desktop_pet_web_deploy_runtime` 修复；缺工具或第三方 DLL 的处理见[主 README](../../README.md#windows-dll)。实际启动与 HTTPS 连通性仍需在 Windows 验收。
 
 保留完整 `plugins/web` 文件夹，并让程序与缓存位于包外。配置保存绝对路径，移动源码包、helper 或缓存目录后重新运行 configure。建议每个角色使用独立网页缓存目录。
 

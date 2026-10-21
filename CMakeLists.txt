@@ -5,19 +5,16 @@ option(DESKTOP_PET_ENABLE_ONNX_RUNTIME
     "Build optional ONNX Runtime embedding tests when a compatible runtime exists"
     ON)
 
-if(NOT CMAKE_BUILD_TYPE)
-    set(CMAKE_BUILD_TYPE Release)
+if(NOT CMAKE_CONFIGURATION_TYPES AND NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE Release CACHE STRING "Build configuration" FORCE)
 endif()
 
-# 添加编译优化选项
-if(CMAKE_BUILD_TYPE MATCHES Release)
-    if(MSVC)
-        add_compile_options(/O2 /GL)
-        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG")
-    else()
-        add_compile_options(-O3 -DNDEBUG)
-    endif()
-    message(STATUS "Building in Release mode with optimizations")
+# Keep Release-only flags out of Debug in multi-configuration generators.
+if(MSVC)
+    add_compile_options($<$<CONFIG:Release>:/O2> $<$<CONFIG:Release>:/GL>)
+    add_link_options($<$<CONFIG:Release>:/LTCG>)
+else()
+    add_compile_options($<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-DNDEBUG>)
 endif()
 
 set(CMAKE_CXX_STANDARD 20)
@@ -1791,10 +1788,14 @@ if(DESKTOP_PET_ENABLE_ONNX_RUNTIME)
         endif()
     endforeach()
     if(ORT_ROOT)
+        # An empty normal variable suppresses find_library; discard stale cache
+        # entries too when switching runtime packages or platforms.
+        unset(ORT_LIB)
+        unset(ORT_LIB CACHE)
         find_library(ORT_LIB onnxruntime NO_DEFAULT_PATH PATHS "${ORT_ROOT}/lib")
-        if(NOT ORT_LIB)
+        if(NOT ORT_LIB AND NOT WIN32)
             # macOS 包名带版本，再放宽找一次
-            file(GLOB _ort_lib "${ORT_ROOT}/lib/libonnxruntime*.dylib" "${ORT_ROOT}/lib/libonnxruntime*.so" "${ORT_ROOT}/lib/onnxruntime*.dll")
+            file(GLOB _ort_lib "${ORT_ROOT}/lib/libonnxruntime*.dylib" "${ORT_ROOT}/lib/libonnxruntime*.so")
             if(_ort_lib)
                 list(GET _ort_lib 0 ORT_LIB)
                 set(ORT_LIB ${ORT_LIB} CACHE FILEPATH "")
@@ -1826,9 +1827,8 @@ if(ORT_ROOT AND ORT_LIB)
             "${ORT_ROOT}/bin/*.dll"
             "${ORT_ROOT}/lib/*.dll")
         if(ORT_RUNTIME_DLLS)
-            add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:memory_strategy_tests>)
+            set_property(TARGET memory_strategy_tests PROPERTY
+                DESKTOP_PET_EXTRA_RUNTIME_DLLS "${ORT_RUNTIME_DLLS}")
         endif()
     endif()
     # Exercise the actual background chat path with native ONNX as well.
@@ -1841,9 +1841,8 @@ if(ORT_ROOT AND ORT_LIB)
         DESKTOP_PET_EMBEDDING_ASSETS="${CMAKE_CURRENT_SOURCE_DIR}/assets/embeddings")
     set_target_properties(chat_preparation_executor_tests PROPERTIES BUILD_RPATH "${ORT_ROOT}/lib")
     if(WIN32 AND ORT_RUNTIME_DLLS)
-        add_custom_command(TARGET chat_preparation_executor_tests POST_BUILD
-            COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:chat_preparation_executor_tests>)
+        set_property(TARGET chat_preparation_executor_tests PROPERTY
+            DESKTOP_PET_EXTRA_RUNTIME_DLLS "${ORT_RUNTIME_DLLS}")
     endif()
     # 生产目标同样编入 ONNX provider：聊天 Worker 在 DESKTOP_PET_HAS_ORT 下尝试加载
     # assets/embeddings 模型，失败则语义索引静默禁用（退关键词召回）。
@@ -1858,9 +1857,8 @@ if(ORT_ROOT AND ORT_LIB)
         INSTALL_RPATH "@loader_path")
     if(WIN32)
         if(ORT_RUNTIME_DLLS)
-            add_custom_command(TARGET Desktop_Pet POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    ${ORT_RUNTIME_DLLS} $<TARGET_FILE_DIR:Desktop_Pet>)
+            set_property(TARGET Desktop_Pet PROPERTY
+                DESKTOP_PET_EXTRA_RUNTIME_DLLS "${ORT_RUNTIME_DLLS}")
         endif()
     endif()
 else()
@@ -2011,7 +2009,8 @@ target_compile_definitions(web_command_tests PRIVATE
     WEB_COMMAND_FIXTURE="$<TARGET_FILE:web_command_fixture>"
     WEB_PACKAGE="${CMAKE_CURRENT_SOURCE_DIR}/plugins/web")
 add_executable(command_test_fixture tests/fixtures/command_probe.cpp)
-set_target_properties(command_test_fixture PROPERTIES AUTOMOC OFF AUTORCC OFF AUTOUIC OFF)
+set_target_properties(command_test_fixture PROPERTIES
+    AUTOMOC OFF AUTORCC OFF AUTOUIC OFF DESKTOP_PET_DEPLOY_QT OFF)
 add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
     SOURCES
         tests/test_file_and_web_tools.cpp
@@ -2042,145 +2041,6 @@ add_desktop_pet_cpp_test(file_web_tool_tests FileWebToolTests
 add_dependencies(file_web_tool_tests command_test_fixture)
 target_compile_definitions(file_web_tool_tests PRIVATE
     DESKTOP_PET_COMMAND_TEST_FIXTURE="$<TARGET_FILE:command_test_fixture>")
-
-if (WIN32 AND NOT DEFINED CMAKE_TOOLCHAIN_FILE)
-    # ---- 判断 Debug 后缀 ----
-    set(DEBUG_SUFFIX "")
-    if (MSVC AND CMAKE_BUILD_TYPE MATCHES "Debug")
-        # MSVC 下 Debug 版 DLL 带 d 后缀
-        set(DEBUG_SUFFIX "d")
-    endif ()
-
-    # ---- 推断 Qt 安装路径 ----
-    set(QT_INSTALL_PATH "")
-    if (TARGET Qt6::qmake)
-        get_target_property(QT_QMAKE_EXECUTABLE Qt6::qmake IMPORTED_LOCATION)
-        if (QT_QMAKE_EXECUTABLE)
-            get_filename_component(QT_BIN_PATH "${QT_QMAKE_EXECUTABLE}" DIRECTORY)
-            get_filename_component(QT_INSTALL_PATH "${QT_BIN_PATH}" DIRECTORY)
-        endif ()
-    endif ()
-    if (NOT EXISTS "${QT_INSTALL_PATH}/bin" AND Qt6Core_DIR)
-        get_filename_component(
-            QT_INSTALL_PATH "${Qt6Core_DIR}/../../.." ABSOLUTE)
-    endif ()
-
-    message(STATUS "Detected Qt install path: ${QT_INSTALL_PATH}")
-
-    # ---- 平台插件 (qwindows.dll) ----
-    if (EXISTS "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll")
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${QT_INSTALL_PATH}/plugins/platforms/qwindows${DEBUG_SUFFIX}.dll"
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
-    elseif (EXISTS "${QT_INSTALL_PATH}/plugins/platforms/qwindows.dll")
-        # ✅ MinGW 没有 debug 后缀，补充这一分支
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${QT_INSTALL_PATH}/plugins/platforms/qwindows.dll"
-                "$<TARGET_FILE_DIR:${PROJECT_NAME}>/plugins/platforms/")
-    endif ()
-
-    # ---- 复制 Qt 核心 DLL ----
-    foreach (QT_LIB Core Gui Widgets Network OpenGL OpenGLWidgets Sql)
-        if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
-            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
-                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
-        elseif (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll")
-            add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll"
-                    "$<TARGET_FILE_DIR:${PROJECT_NAME}>")
-        endif ()
-    endforeach ()
-
-    # ---- 调用 windeployqt 自动部署 ----
-    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
-        add_custom_command(TARGET desktop_pet_web POST_BUILD
-                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
-                --no-translations
-                --no-system-d3d-compiler
-                "$<TARGET_FILE:desktop_pet_web>"
-                COMMENT "Deploying Qt Core/Gui/Network and TLS plugins for desktop_pet_web...")
-        add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
-                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
-                --no-translations
-                --no-system-d3d-compiler
-                "$<TARGET_FILE:${PROJECT_NAME}>"
-                COMMENT "Running windeployqt to copy Qt runtime dependencies...")
-    endif ()
-
-    # ---- 调用 windeployqt 自动部署测试程序 ----
-    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
-        add_custom_command(TARGET statistic_tests POST_BUILD
-                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
-                --no-translations
-                --no-system-d3d-compiler
-                "$<TARGET_FILE:statistic_tests>"
-                COMMENT "Running windeployqt for statistic_tests...")
-    endif ()
-
-    # ---- 部署 MemoryStrategyTests 的 Qt 运行时依赖 ----
-    # memory_strategy_tests 链接 Qt::Sql，单独构建/运行该测试时也需要 Qt6Sql.dll
-    # 以及 SQLite 驱动插件；否则 Windows 会以 0xC0000135 报缺失 DLL。
-    foreach (QT_LIB Core Sql Test)
-        if (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll")
-            add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}${DEBUG_SUFFIX}.dll"
-                    "$<TARGET_FILE_DIR:memory_strategy_tests>")
-        elseif (EXISTS "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll")
-            add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                    "${QT_INSTALL_PATH}/bin/Qt6${QT_LIB}.dll"
-                    "$<TARGET_FILE_DIR:memory_strategy_tests>")
-        endif ()
-    endforeach ()
-
-    if (EXISTS "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite${DEBUG_SUFFIX}.dll")
-        add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
-        add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite${DEBUG_SUFFIX}.dll"
-            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
-    elseif (EXISTS "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite.dll")
-        add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E make_directory
-            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
-        add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND ${CMAKE_COMMAND} -E copy_if_different
-                "${QT_INSTALL_PATH}/plugins/sqldrivers/qsqlite.dll"
-            "$<TARGET_FILE_DIR:memory_strategy_tests>/sqldrivers/")
-    endif ()
-
-    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
-        add_custom_command(TARGET memory_strategy_tests POST_BUILD
-                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
-                --no-translations
-                --no-system-d3d-compiler
-                "$<TARGET_FILE:memory_strategy_tests>"
-                COMMENT "Running windeployqt for memory_strategy_tests...")
-    endif ()
-
-    if (EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
-        add_custom_command(TARGET emotion_runtime_tests POST_BUILD
-                COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe"
-                --no-translations
-                --no-system-d3d-compiler
-                "$<TARGET_FILE:emotion_runtime_tests>"
-                COMMENT "Running windeployqt for emotion_runtime_tests...")
-    endif ()
-endif ()
 
 # Personality evolution and bounded complex tasks.
 if(Python3_EXECUTABLE)
@@ -2224,13 +2084,6 @@ add_desktop_pet_cpp_test(task_experience_tests TaskExperienceTests
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/core/ai ${CMAKE_CURRENT_SOURCE_DIR}/include ${CMAKE_CURRENT_SOURCE_DIR}/statistic
     LIBRARIES Qt::Core Qt::Gui Qt::Network Qt::Sql Qt::Test $<$<PLATFORM_ID:Windows>:psapi>
     APPLE_CORE_GRAPHICS PRIVATE_REFLECTION)
-if(WIN32 AND EXISTS "${QT_INSTALL_PATH}/bin/windeployqt.exe")
-    foreach(task_test task_orchestrator_tests personality_consolidation_tests task_experience_tests)
-        add_custom_command(TARGET ${task_test} POST_BUILD
-            COMMAND "${QT_INSTALL_PATH}/bin/windeployqt.exe" --no-translations --no-system-d3d-compiler "$<TARGET_FILE:${task_test}>")
-    endforeach()
-endif()
-
 add_desktop_pet_cpp_test(avatar_presentation_tests AvatarPresentationTests
     SOURCES tests/test_avatar_presentation.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
@@ -2349,3 +2202,16 @@ add_desktop_pet_cpp_test(capability_context_tests CapabilityContextTests
     SOURCES tests/test_capability_context.cpp core/ai/plugin/capability_context.cpp
     INCLUDE_DIRS ${CMAKE_CURRENT_SOURCE_DIR}/core ${CMAKE_CURRENT_SOURCE_DIR}/include
     LIBRARIES Qt::Core Qt::Test)
+
+# Keep this after all target declarations so standalone test builds deploy too.
+include(cmake/WindowsRuntime.cmake)
+
+if(Python3_Interpreter_FOUND)
+    add_test(NAME WindowsRuntimeDeploymentTests
+        COMMAND "${CMAKE_COMMAND}" -E env
+            "DESKTOP_PET_TEST_CMAKE_GENERATOR=${CMAKE_GENERATOR}"
+            "DESKTOP_PET_TEST_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}"
+            "DESKTOP_PET_TEST_CXX_COMPILER=${CMAKE_CXX_COMPILER}"
+            "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/tests/test_windows_runtime_deployment.py"
+            "${CMAKE_COMMAND}")
+endif()
