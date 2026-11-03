@@ -119,6 +119,7 @@ public:
     void setAutonomyConfig(const AutonomyConfig &);
     QJsonObject autonomyStatus() const;
     void setAutonomyPaused(bool paused);
+    void resetAutonomyBudget(std::function<void(Result<void, DomainError>)> completion = {});
     void requestAutonomousOpportunity(const QString &kind = "tick", const QString &contextId = {},
                                       const QStringList &eventIds = {});
     ProactiveChatTiming proactiveChatTiming(int baseIntervalMs) const;

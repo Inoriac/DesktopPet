@@ -414,6 +414,22 @@ void ActivityRuntime::configureOpportunitiesAsync(AutonomyConfig config, Control
             });
     });
 }
+void ActivityRuntime::resetAutonomyBudgetAsync(ControlCompletion done) {
+    auto *w = m_worker;
+    QPointer<ActivityRuntime> self(this);
+    QMetaObject::invokeMethod(w, [w, self, done = std::move(done)]() mutable {
+        auto r = w->opportunities
+                     ? w->opportunities->store.resetHourlyBudgetAndCooldown(
+                           OpportunityStore::systemClock())
+                     : Result<void, DomainError>::failure(domainError(
+                           "STORE_UNAVAILABLE", "Opportunity worker unavailable"));
+        if (self && done)
+            QMetaObject::invokeMethod(self, [self, r, done = std::move(done)]() mutable {
+                if (self)
+                    done(r);
+            });
+    });
+}
 void ActivityRuntime::publishReadinessAsync(OpportunitySignal signal) {
     auto *w = m_worker;
     QMetaObject::invokeMethod(w, [w, signal = std::move(signal)] {

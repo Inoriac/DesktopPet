@@ -616,6 +616,26 @@ void AIBrain::setAutonomyPaused(bool paused) {
     }
     requestAutonomousOpportunity("control");
 }
+void AIBrain::resetAutonomyBudget(
+    std::function<void(Result<void, DomainError>)> completion) {
+    if (!m_activityRuntime) {
+        if (completion)
+            completion(Result<void, DomainError>::failure(
+                domainError("RUNTIME_UNAVAILABLE", "Activity runtime unavailable")));
+        return;
+    }
+    QPointer<AIBrain> self(this);
+    m_activityRuntime->resetAutonomyBudgetAsync(
+        [self, completion = std::move(completion)](Result<void, DomainError> result) mutable {
+            if (self && result) {
+                self->publishAutonomyStatus(
+                    self->m_autonomyConfig.enabled ? "ready" : "disabled");
+                self->requestAutonomousOpportunity("control");
+            }
+            if (completion)
+                completion(std::move(result));
+        });
+}
 RuntimeReadiness AIBrain::autonomousReadiness() const {
     RuntimeReadiness r;
     r.running = m_running;

@@ -284,7 +284,48 @@ Result<QJsonObject, DomainError> OpportunityStore::snapshot() const {
         return Result<QJsonObject, DomainError>::failure(s.error());
     auto output = s.value().control;
     output["runtimeRevision"] = s.value().revision;
+    auto cue = ObservationStore::pendingCue(tx.db, m_profileId);
+    if (cue && cue.value()) {
+        output["pendingCueConversationId"] = cue.value()->conversationId;
+        output["pendingCueEventIds"] = QJsonArray::fromStringList(cue.value()->eventIds);
+    }
     return Result<QJsonObject, DomainError>::success(output);
+}
+Result<void, DomainError> OpportunityStore::resetHourlyBudgetAndCooldown(
+    const OpportunityClock &clock) {
+    if (!validClock(clock))
+        return fail<void>("INVALID_INPUT", "Invalid host clock");
+    Transaction tx(m_databasePath);
+    if (!tx.ok())
+        return Result<void, DomainError>::failure(tx.error);
+    auto loaded = read(tx.db, m_profileId);
+    if (!loaded)
+        return Result<void, DomainError>::failure(loaded.error());
+    auto s = loaded.value();
+    auto b = s.control.value("hourlyBudget").toObject();
+    auto attempts = b.value("attempts").toObject();
+    for (auto it = attempts.begin(); it != attempts.end();) {
+        QSqlQuery q(tx.db);
+        q.prepare("INSERT INTO agent_runtime_migrations(profile_id,migration_id,cursor_json,state) "
+                  "VALUES(?,?,?,'completed') ON CONFLICT(profile_id,migration_id) DO NOTHING");
+        q.addBindValue(m_profileId);
+        q.addBindValue("model-attempt:" + it.key());
+        auto a = it.value().toObject();
+        a["settled"] = true;
+        q.addBindValue(json(a));
+        if (!q.exec())
+            return fail<void>("STORE_UNAVAILABLE", q.lastError().text());
+        it = attempts.erase(it);
+    }
+    b["attempts"] = QJsonObject{};
+    b["activeSegments"] = QJsonArray{};
+    s.control["hourlyBudget"] = b;
+    s.control.remove("lastDecisionLogical");
+    s.control.remove("nextConsiderLogical");
+    s.control.remove("nextConsiderAt");
+    s.control["backoff"] = 0;
+    s.control.remove("selectionReservation");
+    return commitState(tx, m_profileId, s, clock);
 }
 Result<void, DomainError> OpportunityStore::configure(const AutonomyConfig &config,
                                                       const OpportunityClock &clock) {
@@ -583,9 +624,12 @@ OpportunityStore::reserveModelAttempt(const ModelBudgetRequest &r) {
     auto config = AutonomyConfig::fromJson(s.control.value("autonomyConfig").toObject());
     auto now = logicalNow(s.control, r.clock);
     auto used = totals(s.control, now);
+    const qint64 attemptCost = r.routeEstimatedCostMicros > 0
+        ? r.routeEstimatedCostMicros
+        : (r.purpose == "selection" ? config.unknownAttemptCostMicros : 0);
     ModelBudgetReservation reservation{
         r.attemptId, r.inputBytes + 1024 + r.maxOutputTokens,
-        qMax(r.routeEstimatedCostMicros, config.unknownAttemptCostMicros)};
+        attemptCost};
     if (reservation.tokens > config.maxTokensPerHour - qMin(used.tokens, config.maxTokensPerHour) ||
         reservation.estimatedCostMicros >
             config.maxEstimatedCostMicrosPerHour -

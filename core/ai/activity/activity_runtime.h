@@ -20,6 +20,7 @@ class ActivityRuntime final : public QObject {
     void setDependencies(TaskDependencies dependencies);
     using ControlCompletion = std::function<void(Result<void, DomainError>)>;
     void configureOpportunitiesAsync(AutonomyConfig, ControlCompletion = {});
+    void resetAutonomyBudgetAsync(ControlCompletion = {});
     void publishReadinessAsync(OpportunitySignal);
     void requestOpportunityAsync(OpportunitySignal);
     void setAutonomyPausedAsync(bool, ControlCompletion = {});

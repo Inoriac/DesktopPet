@@ -288,6 +288,20 @@ struct LlmUsage {
     }
 };
 
+// 单次 completion 解析结果
+struct LlmResponse {
+    QString id;
+    QString model;
+    qint64 created = 0;
+
+    QString content;
+    QString reasoningContent;
+    QString finishReason;
+    LlmUsage usage;
+    QList<LlmToolCall> toolCalls;
+    QJsonArray transportBlocks;
+};
+
 struct ModelAttemptReport {
     QString attemptId;
     QString profileId;
@@ -301,20 +315,10 @@ struct ModelAttemptReport {
     qint64 durationMs = 0;
     LlmUsage usage;
     QDateTime completedAt;
-};
-
-// 单次 completion 解析结果
-struct LlmResponse {
-    QString id;
-    QString model;
-    qint64 created = 0;
-
-    QString content;
-    QString reasoningContent;
-    QString finishReason;
-    LlmUsage usage;
-    QList<LlmToolCall> toolCalls;
-    QJsonArray transportBlocks;
+    QList<ChatMessage> messages;
+    QJsonArray tools;
+    LlmResponse response;
+    QString errorMessage;
 };
 
 struct ModelAttemptHooks;

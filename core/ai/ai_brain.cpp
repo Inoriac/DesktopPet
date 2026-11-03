@@ -76,8 +76,25 @@ AIBrain::AIBrain(ModelCompletionClient* modelClient,
     , m_modelRoleRegistry(std::move(modelRoles))
     , m_modelRouter(&m_modelRoleRegistry,
                     modelClient ? modelClient : &m_modelClient) {
-    m_modelRouter.setAttemptObserver([](const ModelAttemptReport& report) {
+    m_modelRouter.setAttemptObserver([this](const ModelAttemptReport& report) {
         StatisticManager::getInstance().recordLlmAttempt(report);
+        if (report.role != QLatin1String("dialogue")
+            && (!report.messages.isEmpty() || !report.errorMessage.isEmpty())) {
+            enqueueCallLog(
+                ChatSideEffectType::RequestLog, report.attemptId, report.attemptId,
+                m_requestGeneration,
+                AiCallLogger::requestRecord(
+                    report.attemptId,
+                    report.petName.isEmpty() ? m_petName : report.petName,
+                    report.role, report.role, 0, report.messages, report.tools));
+            enqueueCallLog(
+                ChatSideEffectType::ResponseLog, report.attemptId, report.attemptId,
+                m_requestGeneration,
+                AiCallLogger::responseRecord(
+                    report.attemptId,
+                    report.petName.isEmpty() ? m_petName : report.petName,
+                    report.success, report.response, report.errorMessage));
+        }
     });
     m_imageReadPool.setMaxThreadCount(1);
     // AIBrain is the trusted desktop entry point even before runtime services attach.

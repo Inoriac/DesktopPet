@@ -16,6 +16,7 @@ class OpportunityStore {
     Result<ModelBudgetReservation, DomainError> reserveModelAttempt(const ModelBudgetRequest &);
     Result<void, DomainError> settleModelAttempt(const ModelBudgetSettlement &);
     Result<QJsonObject, DomainError> snapshot() const;
+    Result<void, DomainError> resetHourlyBudgetAndCooldown(const OpportunityClock &);
     Result<qint64, DomainError> remainingActiveMs(const OpportunityClock &) const;
     // Called inside the activity checkpoint UoW; both ledgers commit together.
     static Result<qint64, DomainError> accountActive(QSqlDatabase, const QString &profile,

@@ -605,10 +605,19 @@ void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
             report.provider = route.llm.provider;
             report.model = route.llm.model;
             report.routeId = route.routeId;
+            if (state->request.role != ModelRole::Diary
+                && state->request.role != ModelRole::PersonalityEvolution) {
+                report.messages = messages;
+                for (ChatMessage& msg : report.messages) {
+                    msg.transportBlocks = {};
+                }
+                report.tools = state->request.tools;
+            }
             QElapsedTimer elapsed;
             elapsed.start();
             auto done = [hooks, attemptId, alive, returnToOwner, error, completionReceived,
                          report, elapsed, attemptObserver = m_attemptObserver,
+                         role = state->request.role,
                          requestHandle = state->requestHandle,
                          completion = std::move(completion)](bool ok, LlmResponse response,
                                                              QString message) mutable {
@@ -626,6 +635,11 @@ void ModelRouter::sendAttempt(const std::shared_ptr<CompletionState> &state,
                 report.completedAt = QDateTime::currentDateTimeUtc();
                 report.usage = response.usage;
                 if (!response.model.isEmpty()) report.model = response.model;
+                report.errorMessage = message;
+                if (role != ModelRole::Diary && role != ModelRole::PersonalityEvolution) {
+                    report.response = response;
+                    report.response.transportBlocks = {};
+                }
                 if (attemptObserver) attemptObserver(report);
                 // Settlement has no dependency on router/UI lifetime.
                 const auto usage = response.usage;
