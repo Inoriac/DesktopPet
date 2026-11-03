@@ -227,6 +227,41 @@ class PetProcessTrackerTests(unittest.TestCase):
         self.assertGreaterEqual(top_left.x(), 0)
         self.assertLess(bottom_right.x(), page.viewport().width())
 
+    def test_connectOwnerDiary_whenBootstrapWasNotConsumed_shouldSkipBlockingSocketConnect(self):
+        with tempfile.TemporaryDirectory() as directory:
+            bootstrap_path = os.path.join(directory, "owner-bootstrap.json")
+            with open(bootstrap_path, "w", encoding="utf-8") as handle:
+                handle.write("{}")
+            launcher = Mock()
+            launcher._owner_connect_generation = 1
+            launcher._owner_socket_name = "dp-o-test"
+            launcher._owner_capability_token = "token"
+            launcher._owner_bootstrap_path = bootstrap_path
+            launcher._core_process_has_exited.return_value = False
+            launcher._secure_remove_bootstrap.side_effect = (
+                LauncherWindow._secure_remove_bootstrap)
+
+            with patch("main.OwnerDiaryClient") as client_cls:
+                LauncherWindow._connect_owner_diary(launcher, 1, 0)
+
+            client_cls.assert_not_called()
+            self.assertFalse(os.path.exists(bootstrap_path))
+            launcher.private_diary_page.set_client.assert_called_once_with(None)
+
+    def test_onChatConnectionLost_whenCoreExited_shouldNotRetryReconnect(self):
+        launcher = Mock()
+        client = Mock()
+        client.is_connected = False
+        launcher.launcher_chat_client = client
+        launcher._core_process_has_exited.return_value = True
+
+        with patch("main.QTimer.singleShot") as single_shot:
+            LauncherWindow._on_chat_connection_lost(launcher, "closed")
+
+        single_shot.assert_not_called()
+        launcher._close_owner_diary_session.assert_called_once_with()
+        launcher._close_chat_session.assert_called_once_with()
+
 
 if __name__ == "__main__":
     unittest.main()

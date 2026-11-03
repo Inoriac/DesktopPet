@@ -134,3 +134,106 @@ def seven_day_values(statistics: dict, now: datetime | None = None) -> list[tupl
     days = {row.get("date"): row.get("totalTokens", 0) for row in statistics.get("daily", [])}
     return [((day := today - timedelta(days=6-i)).strftime("%m/%d"), int(days.get(day.isoformat(), 0)))
             for i in range(7)]
+
+
+def _parse_iso_seconds(value: str) -> float | None:
+    if not value or not isinstance(value, str):
+        return None
+    try:
+        text = value.strip()
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is None:
+            dt = dt.astimezone()
+        return dt.timestamp()
+    except (ValueError, OSError):
+        return None
+
+
+def find_call_log_pair(profile_id: str, call: dict) -> dict | None:
+    """Locate the request/response JSONL pair in ai_calls.jsonl for a call row."""
+    try:
+        logs_dir = profile_directory(profile_id) / "logs"
+    except ValueError:
+        return None
+    if not logs_dir.is_dir():
+        return None
+
+    attempt_id = str(call.get("attemptId") or "")
+    completed_ts = _parse_iso_seconds(str(call.get("completedAt") or ""))
+    duration_sec = max(0.0, float(call.get("durationMs") or 0) / 1000.0)
+    expected_req_ts = (completed_ts - duration_sec) if completed_ts is not None else None
+
+    candidates = [logs_dir / "ai_calls.jsonl"]
+    for idx in range(1, 4):
+        backup = logs_dir / f"ai_calls.jsonl.{idx}"
+        if backup.is_file():
+            candidates.append(backup)
+
+    requests_by_id: dict[str, dict] = {}
+    responses_by_id: dict[str, dict] = {}
+    for log_file in candidates:
+        if not log_file.is_file():
+            continue
+        try:
+            with log_file.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        record = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(record, dict):
+                        continue
+                    rid = str(record.get("request_id") or "")
+                    if not rid:
+                        continue
+                    rtype = record.get("type")
+                    if rtype == "request" and rid not in requests_by_id:
+                        requests_by_id[rid] = record
+                    elif rtype == "response" and rid not in responses_by_id:
+                        responses_by_id[rid] = record
+        except OSError:
+            continue
+
+    if attempt_id and (attempt_id in requests_by_id or attempt_id in responses_by_id):
+        return {
+            "requestId": attempt_id,
+            "request": requests_by_id.get(attempt_id),
+            "response": responses_by_id.get(attempt_id),
+        }
+
+    # Fallback for dialogue calls where requestId differs from attemptId:
+    # match by closest timestamp within a 5-second window.
+    best_rid = ""
+    best_score = 10.0
+    call_success = bool(call.get("success"))
+    for rid, resp in responses_by_id.items():
+        resp_ts = _parse_iso_seconds(str(resp.get("timestamp") or ""))
+        if completed_ts is not None and resp_ts is not None:
+            diff = abs(resp_ts - completed_ts)
+            if diff <= 5.0:
+                if bool(resp.get("success")) != call_success:
+                    diff += 2.0
+                if diff < best_score:
+                    best_score = diff
+                    best_rid = rid
+    if not best_rid and expected_req_ts is not None:
+        for rid, req in requests_by_id.items():
+            req_ts = _parse_iso_seconds(str(req.get("timestamp") or ""))
+            if req_ts is not None:
+                diff = abs(req_ts - expected_req_ts)
+                if diff <= 5.0 and diff < best_score:
+                    best_score = diff
+                    best_rid = rid
+
+    if best_rid:
+        return {
+            "requestId": best_rid,
+            "request": requests_by_id.get(best_rid),
+            "response": responses_by_id.get(best_rid),
+        }
+    return None

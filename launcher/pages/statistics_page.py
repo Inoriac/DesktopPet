@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import json
 import math
 
 from PySide6.QtCore import Qt, QTimer, QRectF, QUrl
 from PySide6.QtGui import QColor, QDesktopServices, QPainter, QPen
 from PySide6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QGridLayout, QTableWidgetItem,
-    QHeaderView, QAbstractItemView, QSizePolicy,
+    QHeaderView, QAbstractItemView, QSizePolicy, QDialog, QPlainTextEdit,
 )
 from qfluentwidgets import (
     BodyLabel, CaptionLabel, SubtitleLabel, TitleLabel, StrongBodyLabel,
@@ -16,9 +17,10 @@ from qfluentwidgets import (
 )
 
 from statistics_data import (
-    EMOTION_LABELS, ROLE_LABELS, RESULT_LABELS, empty_counters, format_count,
-    format_duration, format_time, load_saved_statistics, offline_snapshot,
-    profile_directory, recent_result, seven_day_values,
+    EMOTION_LABELS, ROLE_LABELS, RESULT_LABELS, empty_counters,
+    find_call_log_pair, format_count, format_duration, format_time,
+    load_saved_statistics, offline_snapshot, profile_directory, recent_result,
+    seven_day_values,
 )
 from ._ui import ScrollPage, Section
 
@@ -100,6 +102,153 @@ def _table(headers):
     table.setMinimumWidth(0)
     table.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Fixed)
     return table
+
+
+class CallDetailDialog(QDialog):
+    """Display the injected messages, tools, and response for one model call."""
+
+    def __init__(self, call: dict, log_pair: dict | None, parent=None):
+        super().__init__(parent)
+        self.setAttribute(Qt.WA_DeleteOnClose)
+        role_label = ROLE_LABELS.get(call.get("role"), call.get("role", "未分类"))
+        self.setWindowTitle(f"请求详情 · {role_label} · {call.get('model', '')}")
+        self.resize(860, 680)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(20, 16, 20, 16)
+        layout.setSpacing(10)
+
+        usage = call.get("usage") or {}
+        summary = (
+            f"完成时间：{format_time(call.get('completedAt', ''))}    "
+            f"用途：{role_label}    "
+            f"提供方 / 模型：{call.get('provider', '')} / {call.get('model', '')}    "
+            f"结果：{RESULT_LABELS.get(recent_result(call), '')}    "
+            f"耗时：{call.get('durationMs', 0) / 1000:.2f}s\n"
+            f"Token：输入 {format_count(usage.get('promptTokens', 0))} · "
+            f"输出 {format_count(usage.get('completionTokens', 0))} · "
+            f"总计 {format_count(usage.get('totalTokens', 0))}    "
+            f"调用 ID：{call.get('attemptId', '')}"
+        )
+        header = _body(summary, self)
+        layout.addWidget(header)
+
+        self.viewer = QPlainTextEdit(self)
+        self.viewer.setReadOnly(True)
+        self.viewer.setPlainText(self._format_details(call, log_pair))
+        layout.addWidget(self.viewer, 1)
+
+        footer = QHBoxLayout()
+        footer.addStretch(1)
+        close_btn = PushButton("关闭", self)
+        close_btn.clicked.connect(self.close)
+        footer.addWidget(close_btn)
+        layout.addLayout(footer)
+        self._apply_theme()
+
+    def _apply_theme(self):
+        dark = isDarkTheme()
+        bg, fg = ("#22262E", "#F0F2F5") if dark else ("#F3F5F8", "#262B35")
+        surface = "#292D35" if dark else "#FFFFFF"
+        line = "#383D47" if dark else "#E8ECF1"
+        self.setStyleSheet(f"QDialog {{ background: {bg}; color: {fg}; }}")
+        self.viewer.setStyleSheet(
+            f"QPlainTextEdit {{ background: {surface}; color: {fg}; "
+            f"border: 1px solid {line}; border-radius: 6px; padding: 10px; "
+            f"font-family: Consolas, 'Microsoft YaHei UI', monospace; font-size: 13px; }}")
+
+    @staticmethod
+    def _format_details(call: dict, log_pair: dict | None) -> str:
+        if not log_pair or (not log_pair.get("request") and not log_pair.get("response")):
+            role = call.get("role", "")
+            if role in ("diary", "personalityEvolution"):
+                return ("该调用属于私密日记/人格反思角色，为保护隐私，不将完整上下文写入普通调用日志。")
+            return (
+                "未在 ai_calls.jsonl 中找到该次调用的详细注入记录。\n"
+                "（旧版非对话角色调用未记录上下文，新发起的调用将自动记录完整注入内容。）"
+            )
+
+        sections = []
+        req = log_pair.get("request")
+        resp = log_pair.get("response")
+
+        if isinstance(req, dict):
+            if req.get("omitted"):
+                sections.append(f"=== 注入请求 (已省略：{req.get('omitted_reason')}) ===")
+            else:
+                sections.append(
+                    f"=== 请求元信息 ===\n"
+                    f"Request ID : {req.get('request_id', '')}\n"
+                    f"Timestamp  : {req.get('timestamp', '')}\n"
+                    f"Trigger Tag: {req.get('trigger_tag', '')}\n"
+                    f"Reason     : {req.get('reason', '')}\n"
+                    f"Tool Round : {req.get('tool_round', 0)}"
+                )
+                messages = req.get("messages") or []
+                msg_lines = [f"=== 注入消息 (Messages: 共 {len(messages)} 条) ==="]
+                for idx, msg in enumerate(messages, 1):
+                    if not isinstance(msg, dict):
+                        continue
+                    m_role = msg.get("role", "")
+                    m_name = f" ({msg['name']})" if msg.get("name") else ""
+                    m_tcid = f" [tool_call_id={msg['tool_call_id']}]" if msg.get("tool_call_id") else ""
+                    content = str(msg.get("content") or "")
+                    # Pretty-print JSON user payloads (e.g., ActivitySelector materials)
+                    stripped = content.strip()
+                    if (stripped.startswith("{") and stripped.endswith("}")) or (
+                            stripped.startswith("[") and stripped.endswith("]")):
+                        try:
+                            parsed = json.loads(stripped)
+                            content = json.dumps(parsed, ensure_ascii=False, indent=2)
+                        except json.JSONDecodeError:
+                            pass
+                    msg_lines.append(f"\n--- [{idx}] {m_role}{m_name}{m_tcid} ---\n{content}")
+                    if msg.get("tool_calls"):
+                        msg_lines.append(
+                            "tool_calls:\n" + json.dumps(msg["tool_calls"], ensure_ascii=False, indent=2))
+                sections.append("\n".join(msg_lines))
+
+                tools = req.get("tools") or []
+                if tools:
+                    tool_names = []
+                    for t in tools:
+                        if isinstance(t, dict):
+                            fn = t.get("function") if isinstance(t.get("function"), dict) else t
+                            tool_names.append(str(fn.get("name") or ""))
+                    sections.append(
+                        f"=== 注入工具定义 (Tools: 共 {len(tools)} 个) ===\n"
+                        f"工具列表: {', '.join(n for n in tool_names if n)}\n\n"
+                        + json.dumps(tools, ensure_ascii=False, indent=2)
+                    )
+                else:
+                    sections.append("=== 注入工具定义 (Tools: 0 个) ===")
+
+        if isinstance(resp, dict):
+            resp_lines = [
+                "=== 模型响应 (Response) ===",
+                f"Success      : {resp.get('success')}",
+                f"Finish Reason: {resp.get('finish_reason', '')}",
+            ]
+            if resp.get("error"):
+                resp_lines.append(f"Error        : {resp.get('error')}")
+            if resp.get("reasoning_content"):
+                resp_lines.append(f"\n--- 思考过程 (Reasoning) ---\n{resp.get('reasoning_content')}")
+            content = str(resp.get("content") or "")
+            stripped = content.strip()
+            if (stripped.startswith("{") and stripped.endswith("}")) or (
+                    stripped.startswith("[") and stripped.endswith("]")):
+                try:
+                    content = json.dumps(json.loads(stripped), ensure_ascii=False, indent=2)
+                except json.JSONDecodeError:
+                    pass
+            resp_lines.append(f"\n--- 输出正文 (Content) ---\n{content or '(空)'}")
+            if resp.get("tool_calls"):
+                resp_lines.append(
+                    "\n--- 工具调用 (Tool Calls) ---\n"
+                    + json.dumps(resp.get("tool_calls"), ensure_ascii=False, indent=2)
+                )
+            sections.append("\n".join(resp_lines))
+
+        return "\n\n" + ("\n\n" + "=" * 64 + "\n\n").join(sections)
 
 
 class StatisticsPage(ScrollPage):
@@ -253,7 +402,7 @@ class StatisticsPage(ScrollPage):
         self.addCard(model_card)
 
         recent_card = Section("近期调用", self)
-        recent_card.addWidget(_caption("保留最近 200 次实际模型调用，仅显示元数据。每页 25 条。"))
+        recent_card.addWidget(_caption("保留最近 200 次实际模型调用。点击任意一行可查看该次调用注入的完整 Prompt、上下文消息、工具与模型输出。"))
         filters = QWidget()
         filter_layout = QGridLayout(filters)
         filter_layout.setContentsMargins(0, 0, 0, 0)
@@ -277,6 +426,7 @@ class StatisticsPage(ScrollPage):
         for column, width in enumerate((155, 105, 170, 70, 90, 90, 95, 85)):
             self.recent_table.setColumnWidth(column, width)
         self.recent_table.setFixedHeight(380)
+        self.recent_table.cellClicked.connect(self._on_recent_call_clicked)
         recent_card.addWidget(self.recent_table)
         self.recent_empty = _caption("暂无调用记录。")
         recent_card.addWidget(self.recent_empty)
@@ -593,14 +743,29 @@ class StatisticsPage(ScrollPage):
                          f"{call.get('durationMs', 0)/1000:.2f}s"))
         self._fill_table(self.recent_table, rows)
         for row_index, call in enumerate(page_calls):
-            tooltip = f"提供方：{call.get('provider', '')}\n路由：{call.get('routeId', '')}\n调用 ID：{call.get('attemptId', '')}"
+            tooltip = (
+                f"提供方：{call.get('provider', '')}\n"
+                f"路由：{call.get('routeId', '')}\n"
+                f"调用 ID：{call.get('attemptId', '')}\n"
+                "（点击查看注入上下文与响应详情）"
+            )
             self.recent_table.item(row_index, 2).setToolTip(tooltip)
+        self._current_page_calls = page_calls
         self.page_label.setText(f"{self._page+1} / {pages} 页 · {len(calls)} 条")
         self.previous_button.setEnabled(self._page > 0)
         self.next_button.setEnabled(self._page+1 < pages)
         self.recent_empty.setText("没有符合筛选条件的调用。" if self._statistics().get("recentCalls") else "暂无调用记录。")
         self.recent_empty.setVisible(not calls)
         self.recent_table.setVisible(bool(calls))
+
+    def _on_recent_call_clicked(self, row: int, _column: int = 0) -> None:
+        page_calls = getattr(self, "_current_page_calls", [])
+        if not (0 <= row < len(page_calls)):
+            return
+        call = page_calls[row]
+        log_pair = find_call_log_pair(self._profile_id, call) if self._profile_id else None
+        dialog = CallDetailDialog(call, log_pair, self.window())
+        dialog.open()
 
     def _filters_changed(self, *_args):
         self._page = 0

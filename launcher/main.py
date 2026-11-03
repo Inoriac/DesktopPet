@@ -44,6 +44,8 @@ from pages.about_page import AboutPage
 from pages.private_diary_page import PrivateDiaryPage
 from pages.chat_page import ChatPage
 from pages.statistics_page import StatisticsPage
+from pages.debug_page import DebugPage
+from pages.memory_page import MemoryPage
 from launcher_chat_client import AsyncLauncherChatClient, LauncherChatError
 from owner_diary_client import OwnerDiaryClient, OwnerDiaryError
 from process_tracker import PetProcessTracker
@@ -278,19 +280,27 @@ class LauncherWindow(MSFluentWindow):
         self._chat_log_path: str | None = None
         self._chat_profile_id = ""
         self._active_core_executable: str | None = None
+        self._active_core_process = None
         self._pet_process_tracker = PetProcessTracker()
 
         # 主题：从共享 QSettings 读取并应用
         self._apply_theme(self._read_theme())
 
         # 宠物页为首页，承载底部「启动桌宠」主按钮
-        self.pet_page = PetPage(self.state, on_start=self._on_start)
+        self.pet_page = PetPage(
+            self.state,
+            on_start=self._on_start,
+            on_toggle_avatar=self._on_toggle_avatar_visibility,
+            on_stop=self._on_stop_pet,
+        )
         self.ai_page = AiPage(self.state, on_save=self._on_save_configuration)
         self.voice_page = VoicePage(self.state)
         self.bubble_page = BubblePage(self.state)
         self.advanced_page = AdvancedPage(self.state)
         self.chat_page = ChatPage()
         self.statistics_page = StatisticsPage()
+        self.memory_page = MemoryPage()
+        self.debug_page = DebugPage()
         self.private_diary_page = PrivateDiaryPage()
         self.about_page = AboutPage()
 
@@ -305,9 +315,14 @@ class LauncherWindow(MSFluentWindow):
         self.addSubInterface(self.advanced_page, FIF.SETTING, "高级")
         self.addSubInterface(self.chat_page, FIF.MESSAGE, "聊天")
         self.addSubInterface(self.statistics_page, FIF.PIE_SINGLE, "运行概览")
+        self.addSubInterface(self.memory_page, FIF.BOOK_SHELF, "记忆库")
+        self.addSubInterface(self.debug_page, FIF.DEVELOPER_TOOLS, "调试触发")
         self.addSubInterface(self.private_diary_page, FIF.DOCUMENT, "私人日记")
         self.chat_page.openRequested.connect(self._show_chat_page)
         self.chat_page.connectionLost.connect(self._on_chat_connection_lost)
+        self.chat_page.avatarVisibilityChanged.connect(
+            self.pet_page.set_avatar_visible)
+        self.chat_page.closePetRequested.connect(self._on_stop_pet)
         self.pet_page.pet_combo.currentTextChanged.connect(self._sync_statistics_profile)
         self._sync_statistics_profile()
 
@@ -357,6 +372,9 @@ class LauncherWindow(MSFluentWindow):
         statistics_page = getattr(self, "statistics_page", None)
         if statistics_page is not None:
             statistics_page.refresh_theme()
+        debug_page = getattr(self, "debug_page", None)
+        if debug_page is not None:
+            debug_page.refresh_theme()
         self._sync_theme_glyph()
 
     def _sync_theme_glyph(self):
@@ -388,8 +406,30 @@ class LauncherWindow(MSFluentWindow):
         self.raise_()
         self.activateWindow()
 
+    def _on_toggle_avatar_visibility(self) -> None:
+        self.chat_page.toggle_avatar_visibility()
+
+    def _on_stop_pet(self) -> None:
+        if (self.launcher_chat_client is not None
+                and self.launcher_chat_client.is_connected):
+            self.launcher_chat_client.close_pet()
+        self._close_owner_diary_session()
+        self._close_chat_session()
+        self._pet_process_tracker.terminate_all(timeout_seconds=1.5)
+        self._active_core_process = None
+        self.pet_page.set_starting(False)
+        self.pet_page.set_chat_connected(False)
+        self._refresh_alive_pet_count()
+        InfoBar.success(
+            "已关闭桌宠", "桌宠进程已安全退出",
+            parent=self, position=InfoBarPosition.TOP, duration=3000)
+
     def _sync_statistics_profile(self, _name: str = "") -> None:
         self.statistics_page.set_profile(self.state.pet_profile_id, self.state.pet_name)
+        if hasattr(self, "memory_page") and self.memory_page is not None:
+            self.memory_page.set_profile(self.state.pet_profile_id, self.state.pet_name)
+        if hasattr(self, "debug_page") and self.debug_page is not None:
+            self.debug_page.set_profile(self.state.pet_profile_id, self.state.pet_name)
 
     def _export_current_configuration(self) -> str:
         template = config_loader.load_effective_config()
@@ -484,7 +524,6 @@ class LauncherWindow(MSFluentWindow):
         self._owner_capability_token = owner_bootstrap["capability_token"]
         self._owner_bootstrap_path = owner_bootstrap["path"]
         self._owner_connect_generation += 1
-        owner_generation = self._owner_connect_generation
         self._chat_socket_name = chat_bootstrap["socket_name"]
         self._chat_capability_token = chat_bootstrap["capability_token"]
         self._chat_bootstrap_path = chat_bootstrap["path"]
@@ -519,12 +558,14 @@ class LauncherWindow(MSFluentWindow):
                     args,
                     creationflags=DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP,
                     close_fds=True,
+                    stdin=subprocess.DEVNULL,
                     stdout=log_stream,
                     stderr=subprocess.STDOUT,
                     cwd=_PROJECT_ROOT)
             else:
                 core_process = subprocess.Popen(
                     args, start_new_session=True, cwd=_PROJECT_ROOT,
+                    stdin=subprocess.DEVNULL,
                     stdout=log_stream, stderr=subprocess.STDOUT)
         except OSError as e:
             self._close_owner_diary_session()
@@ -536,11 +577,10 @@ class LauncherWindow(MSFluentWindow):
             if log_stream is not None:
                 log_stream.close()
 
+        self._active_core_process = core_process
         alive_count = self._pet_process_tracker.add(core_process)
         self.pet_page.set_alive_count(alive_count)
 
-        QTimer.singleShot(
-            200, lambda: self._connect_owner_diary(owner_generation, 0))
         QTimer.singleShot(
             200, lambda: self._connect_chat(chat_generation, 0))
         QTimer.singleShot(
@@ -577,6 +617,36 @@ class LauncherWindow(MSFluentWindow):
         return self._create_private_bootstrap(
             profile_id, "chat", 1024 * 1024)
 
+    @staticmethod
+    def _resolve_bootstrap_dir() -> str:
+        if (getattr(tempfile.gettempdir, "__module__", "") != "tempfile"
+                or tempfile.tempdir is not None):
+            directory = tempfile.gettempdir()
+            os.makedirs(directory, exist_ok=True)
+            return directory
+        fallback_dir = os.path.join(
+            _PROJECT_ROOT, "runtime", "launcher", "bootstrap")
+        candidates = []
+        for env_name in ("TMPDIR", "TEMP", "TMP"):
+            value = os.environ.get(env_name)
+            if value:
+                candidates.append(value)
+        candidates.append(fallback_dir)
+        flags = (os.O_WRONLY | os.O_CREAT | os.O_EXCL
+                 | getattr(os, "O_BINARY", 0))
+        for candidate in candidates:
+            try:
+                os.makedirs(candidate, exist_ok=True)
+                probe = os.path.join(
+                    candidate, f".dp-probe-{secrets.token_hex(8)}.tmp")
+                descriptor = os.open(probe, flags, 0o600)
+                os.close(descriptor)
+                os.unlink(probe)
+                return candidate
+            except OSError:
+                continue
+        return tempfile.gettempdir()
+
     def _create_private_bootstrap(
             self, profile_id: str, purpose: str, max_frame_bytes: int) -> dict:
         token = base64.urlsafe_b64encode(
@@ -598,7 +668,7 @@ class LauncherWindow(MSFluentWindow):
             "sessionTtlSeconds": 300,
         }, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
         path = os.path.join(
-            tempfile.gettempdir(),
+            LauncherWindow._resolve_bootstrap_dir(),
             f"desktop-pet-{purpose}-{secrets.token_hex(16)}.json")
         descriptor = _open_private_bootstrap(path)
         try:
@@ -613,7 +683,7 @@ class LauncherWindow(MSFluentWindow):
             os.fsync(descriptor)
         except Exception:
             os.close(descriptor)
-            self._secure_remove_bootstrap(path)
+            LauncherWindow._secure_remove_bootstrap(path)
             raise
         else:
             os.close(descriptor)
@@ -649,18 +719,39 @@ class LauncherWindow(MSFluentWindow):
             + "\n").encode("utf-8"))
         return stream, os.path.abspath(path)
 
+    def _core_process_has_exited(self) -> bool:
+        process = getattr(self, "_active_core_process", None)
+        if process is None:
+            return False
+        try:
+            return process.poll() is not None
+        except (OSError, ValueError):
+            return True
+
     def _connect_owner_diary(self, generation: int, attempt: int) -> None:
         if generation != self._owner_connect_generation \
                 or self._owner_socket_name is None \
                 or self._owner_capability_token is None:
             return
-        client = OwnerDiaryClient(timeout_ms=150)
+        # AgentBootstrap consumes and removes the owner bootstrap before
+        # starting LauncherChatServer. If the file still exists after chat is
+        # connected (or the process exited), private reflection is inactive.
+        if self._core_process_has_exited() or (
+                self._owner_bootstrap_path
+                and os.path.isfile(self._owner_bootstrap_path)):
+            self._owner_socket_name = None
+            self._owner_capability_token = None
+            self._secure_remove_bootstrap(self._owner_bootstrap_path)
+            self._owner_bootstrap_path = None
+            self.private_diary_page.set_client(None)
+            return
+        client = OwnerDiaryClient(timeout_ms=500)
         try:
             client.connect_to_server(
                 self._owner_socket_name, self._owner_capability_token)
         except OwnerDiaryError:
             client.close()
-            if attempt < 59:
+            if attempt < 2 and not self._core_process_has_exited():
                 QTimer.singleShot(
                     250,
                     lambda: self._connect_owner_diary(generation, attempt + 1))
@@ -683,6 +774,10 @@ class LauncherWindow(MSFluentWindow):
                 or self._chat_capability_token is None \
                 or self.launcher_chat_client is not None:
             return
+        if self._core_process_has_exited():
+            self._close_owner_diary_session()
+            self._close_chat_session()
+            return
         client = AsyncLauncherChatClient(timeout_ms=2000, parent=self)
         self.launcher_chat_client = client
         client.connected.connect(
@@ -691,7 +786,9 @@ class LauncherWindow(MSFluentWindow):
             lambda action, reason: self._on_chat_connect_failed(
                 generation, attempt, client, action, reason))
         client.connect_to_server(
-            self._chat_socket_name, self._chat_capability_token)
+            self._chat_socket_name,
+            self._chat_capability_token,
+            connect_timeout_ms=10000)
 
     def _on_chat_connected(self, generation: int, attempt: int,
                            client: AsyncLauncherChatClient) -> None:
@@ -703,7 +800,16 @@ class LauncherWindow(MSFluentWindow):
         self._append_chat_log("connected", attempt=attempt + 1)
         self.chat_page.set_client(client)
         self.statistics_page.set_client(client, self._chat_profile_id)
+        if hasattr(self, "debug_page") and self.debug_page is not None:
+            self.debug_page.set_client(client, self._chat_profile_id)
+        if hasattr(self, "pet_page") and self.pet_page is not None:
+            self.pet_page.set_chat_connected(True)
         self._chat_bootstrap_path = None
+        owner_generation = getattr(self, "_owner_connect_generation", None)
+        connect_owner = getattr(self, "_connect_owner_diary", None)
+        if owner_generation is not None and callable(connect_owner):
+            QTimer.singleShot(
+                0, lambda: connect_owner(owner_generation, 0))
 
     def _on_chat_connect_failed(self, generation: int, attempt: int,
                                client: AsyncLauncherChatClient,
@@ -714,6 +820,10 @@ class LauncherWindow(MSFluentWindow):
         self.launcher_chat_client = None
         client.close()
         client.deleteLater()
+        if self._core_process_has_exited():
+            self._close_owner_diary_session()
+            self._close_chat_session()
+            return
         if attempt == 0 or (attempt + 1) % 10 == 0 or attempt >= 59:
             self._append_chat_log("connect_failed", attempt=attempt + 1,
                                   error=LauncherChatError(reason))
@@ -727,6 +837,8 @@ class LauncherWindow(MSFluentWindow):
         self._chat_bootstrap_path = None
         self.chat_page.set_client(None)
         self.statistics_page.set_client(None, "")
+        if hasattr(self, "debug_page") and self.debug_page is not None:
+            self.debug_page.set_client(None, "")
         InfoBar.error("聊天连接失败", "桌宠的聊天服务暂不可用，请重新启动桌宠。",
                       parent=self, position=InfoBarPosition.TOP, duration=6000)
 
@@ -739,8 +851,15 @@ class LauncherWindow(MSFluentWindow):
         self.launcher_chat_client = None
         self.chat_page.set_client(None)
         self.statistics_page.set_client(None, "")
+        if hasattr(self, "debug_page") and self.debug_page is not None:
+            self.debug_page.set_client(None, "")
         client.close()
         client.deleteLater()
+        if self._core_process_has_exited():
+            self._close_owner_diary_session()
+            self._close_chat_session()
+            self._refresh_alive_pet_count()
+            return
         generation = self._chat_connect_generation
         if self._chat_socket_name and self._chat_capability_token:
             QTimer.singleShot(
@@ -814,6 +933,10 @@ class LauncherWindow(MSFluentWindow):
         self._chat_connect_generation += 1
         self.chat_page.set_client(None)
         self.statistics_page.set_client(None, "")
+        if hasattr(self, "debug_page") and self.debug_page is not None:
+            self.debug_page.set_client(None, "")
+        if hasattr(self, "pet_page") and self.pet_page is not None:
+            self.pet_page.set_chat_connected(False)
         if self.launcher_chat_client is not None:
             self.launcher_chat_client.close()
             self.launcher_chat_client.deleteLater()
