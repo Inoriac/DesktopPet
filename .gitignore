@@ -9,6 +9,10 @@ reference/
 !.env.example
 runtime/memory/*
 runtime/emotion/
+runtime/appdata/
+runtime/launcher/
+runtime/skills/
+runtime/agent_workspace/
 /test.log
 
 # Python cache

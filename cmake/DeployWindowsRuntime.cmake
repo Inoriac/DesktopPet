@@ -26,10 +26,20 @@ if(DEPLOY_QT)
     if(NOT _deploy_result STREQUAL "0")
         message(FATAL_ERROR "windeployqt failed for ${DEPLOY_EXECUTABLE}:\n${_deploy_output}\n${_deploy_error}")
     endif()
-    # Schannel provides the supported Windows TLS backend. Do not ship the
-    # optional OpenSSL backend without its matching OpenSSL runtime, and clean
-    # the duplicate platform layout produced by older deployment attempts.
-    file(REMOVE "${_destination}/tls/qopensslbackend.dll")
+    # Schannel provides the fallback Windows TLS backend, while OpenSSL 3
+    # handles TLS 1.3 + ECDSA endpoints that Qt 6.5's Schannel plugin drops.
+    # Only keep qopensslbackend.dll when matching OpenSSL 3 DLLs are deployed.
+    if(DEPLOY_OPENSSL_DLLS)
+        foreach(_ssl_dll IN LISTS DEPLOY_OPENSSL_DLLS)
+            execute_process(COMMAND "${CMAKE_COMMAND}" -E copy_if_different "${_ssl_dll}" "${_destination}"
+                RESULT_VARIABLE _ssl_copy_result)
+            if(NOT _ssl_copy_result STREQUAL "0")
+                message(FATAL_ERROR "Failed to deploy ${_ssl_dll}. Stop running pets/tests and retry the build.")
+            endif()
+        endforeach()
+    else()
+        file(REMOVE "${_destination}/tls/qopensslbackend.dll")
+    endif()
     file(REMOVE_RECURSE "${_destination}/plugins/platforms")
 
     # windeployqt selects plugins from the actual executable. A target that

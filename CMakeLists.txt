@@ -17,6 +17,14 @@ else()
     add_compile_options($<$<CONFIG:Release>:-O3> $<$<CONFIG:Release>:-DNDEBUG>)
 endif()
 
+# MinGW's assembler defaults to the small COFF object format. Template-heavy
+# translation units (e.g. jsoncons-backed schema validation) exceed the
+# 65,535-section / file-size limits and fail with "too many sections", so ask
+# the assembler for big objects on MinGW.
+if(MINGW)
+    add_compile_options(-Wa,-mbig-obj)
+endif()
+
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_AUTOMOC ON)
 set(CMAKE_AUTORCC ON)
@@ -35,6 +43,14 @@ find_package(Qt6 COMPONENTS
 
 # Private reflection is optional. Missing crypto/keychain dependencies must not
 # disable the non-private desktop pet targets.
+if(SODIUM_INCLUDE_DIR AND NOT EXISTS "${SODIUM_INCLUDE_DIR}/sodium.h")
+    unset(SODIUM_INCLUDE_DIR)
+    unset(SODIUM_INCLUDE_DIR CACHE)
+endif()
+if(SODIUM_LIBRARY AND NOT EXISTS "${SODIUM_LIBRARY}")
+    unset(SODIUM_LIBRARY)
+    unset(SODIUM_LIBRARY CACHE)
+endif()
 find_path(SODIUM_INCLUDE_DIR sodium.h)
 find_library(SODIUM_LIBRARY NAMES sodium libsodium)
 find_package(Qt6Keychain QUIET CONFIG)
@@ -43,7 +59,9 @@ find_package(Qt6Keychain QUIET CONFIG)
 include_directories(${CMAKE_CURRENT_SOURCE_DIR}/third_party/hnswlib)
 
 set(DESKTOP_PET_HAS_LIBSODIUM FALSE)
-if(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY)
+if(SODIUM_INCLUDE_DIR AND SODIUM_LIBRARY
+   AND EXISTS "${SODIUM_INCLUDE_DIR}/sodium.h"
+   AND EXISTS "${SODIUM_LIBRARY}")
     set(DESKTOP_PET_HAS_LIBSODIUM TRUE)
 endif()
 
@@ -662,6 +680,10 @@ if(Python3_Interpreter_FOUND)
     add_test(NAME LauncherConfigTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_config.py)
     set_tests_properties(LauncherConfigTests PROPERTIES
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    add_test(NAME LauncherAtomicWriteTests
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_launcher_atomic_write.py)
+    set_tests_properties(LauncherAtomicWriteTests PROPERTIES
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     add_test(NAME PetProfileIdTests
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tests/test_pet_profile_id.py)
@@ -2102,6 +2124,13 @@ target_sources(statistic_tests PRIVATE core/animation/avatar_3d_backend.cpp core
 target_link_libraries(statistic_tests avatar_presentation)
 
 # Plugin catalogue and generic capability runtime.
+if(MINGW)
+    # jsoncons jsonschema instantiates all draft builders with deep template
+    # symbols; un-inlined -O0 -g debug frames overflow GNU as's 16 MB COFF
+    # string table even with -mbig-obj.
+    set_source_files_properties(core/ai/plugin/schema_validator.cpp PROPERTIES
+        COMPILE_OPTIONS "-O2;-g0")
+endif()
 add_library(plugin_support STATIC
     core/ai/plugin/capability_types.cpp
     core/ai/plugin/capability_discovery.cpp
