@@ -144,6 +144,11 @@ void LauncherChatServer::requestOpenInLauncher() {
 }
 
 void LauncherChatServer::acceptConnections() {
+    for (QLocalSocket* existing : m_connections.keys()) {
+        if (existing && existing->state() == QLocalSocket::UnconnectedState) {
+            closeConnection(existing);
+        }
+    }
     while (QLocalSocket* socket = m_server->nextPendingConnection()) {
         if (m_connections.size() >= kMaxConnections || !peerIsCurrentUser(socket)) {
             socket->disconnectFromServer();
@@ -324,6 +329,53 @@ QJsonObject LauncherChatServer::handleRequest(
         notifyStateChanged();
         return ownerDiarySuccessResponse(requestId, {});
     }
+    if (action == QLatin1String("set_avatar_visible")) {
+        if (!m_callbacks.setAvatarVisible) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("ACTION_UNSUPPORTED"),
+                                          QStringLiteral("当前版本不支持形象显示控制。"));
+        }
+        if (!payload.value(QStringLiteral("visible")).isBool()) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("PROTOCOL_INVALID"),
+                                          QStringLiteral("形象显示状态参数无效。"));
+        }
+        const auto result = m_callbacks.setAvatarVisible(
+            payload.value(QStringLiteral("visible")).toBool());
+        if (!result.isOk()) return resultError(requestId, result.error());
+        notifyStateChanged();
+        return ownerDiarySuccessResponse(requestId, result.value());
+    }
+    if (action == QLatin1String("close_pet")) {
+        if (!m_callbacks.closePet) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("ACTION_UNSUPPORTED"),
+                                          QStringLiteral("当前版本不支持关闭桌宠。"));
+        }
+        const auto result = m_callbacks.closePet();
+        if (!result.isOk()) return resultError(requestId, result.error());
+        notifyStateChanged();
+        return ownerDiarySuccessResponse(requestId, {});
+    }
+    if (action == QLatin1String("debug_trigger")) {
+        if (!m_callbacks.debugAction) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("ACTION_UNSUPPORTED"),
+                                          QStringLiteral("当前版本不支持调试触发。"));
+        }
+        const QString target = payload.value(QStringLiteral("target")).toString().trimmed();
+        if (target.isEmpty()) {
+            return ownerDiaryErrorResponse(requestId, QStringLiteral("PROTOCOL_INVALID"),
+                                          QStringLiteral("调试触发目标不能为空。"));
+        }
+        QPointer<LauncherChatServer> server(this);
+        QPointer<QLocalSocket> receiver(socket);
+        m_callbacks.debugAction(
+            target, payload,
+            [server, receiver, requestId](ChatHistoryResult result) {
+                if (!server || !receiver || !server->m_connections.contains(receiver.data())) return;
+                if (result) server->notifyStateChanged();
+                server->writeResponse(receiver, result ? ownerDiarySuccessResponse(requestId, result.value())
+                                                       : resultError(requestId, result.error()));
+            });
+        return {};
+    }
     if (action == QLatin1String("resume_task") || action == QLatin1String("pause_task")
         || action == QLatin1String("stop_task") || action == QLatin1String("resolve_task_call")) {
         if (!m_callbacks.taskAction) {
@@ -356,12 +408,7 @@ QJsonObject LauncherChatServer::handleHello(
     auto found = m_connections.find(socket);
     const QByteArray provided = ownerDiaryTokenFromBase64Url(
         payload.value(QStringLiteral("capabilityToken")).toString());
-    const bool hasAuthenticatedPeer = std::any_of(
-        m_connections.cbegin(), m_connections.cend(),
-        [](const ConnectionState& state) {
-            return !state.sessionToken.isEmpty()
-                && state.expiresAt > QDateTime::currentDateTimeUtc();
-        });
+    const bool hasAuthenticatedPeer = hasAuthenticatedClient();
     if (found == m_connections.end() || hasAuthenticatedPeer
         || !found->sessionToken.isEmpty()
         || provided.size() != 32

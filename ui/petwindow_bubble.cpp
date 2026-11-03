@@ -17,7 +17,7 @@
 #include <algorithm>
 
 bool PetWindow::showBubbleMessage(const QString& message, int durationMs) {
-    if (!outputBubble || !streamingTextPaginator
+    if (!isVisible() || !outputBubble || !streamingTextPaginator
         || !bubblePlaybackController) {
         return false;
     }
@@ -72,7 +72,7 @@ void PetWindow::showNextBubblePage() {
 }
 
 void PetWindow::showBubbleInput() {
-    if (!inputBubble) {
+    if (!isVisible() || !inputBubble) {
         return;
     }
 
@@ -105,7 +105,7 @@ void PetWindow::updateThinkingBubble() {
 }
 
 void PetWindow::beginStreamingBubble(const QString& messageId) {
-    if (messageId.isEmpty() || !outputBubble || !streamingTextPaginator
+    if (!isVisible() || messageId.isEmpty() || !outputBubble || !streamingTextPaginator
         || !bubblePlaybackController || !thinkingStatusSelector) {
         return;
     }

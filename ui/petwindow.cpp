@@ -391,6 +391,7 @@ void PetWindow::setupLauncherChatBridge() {
         const QJsonObject runtime{
             {QStringLiteral("petName"), modelName},
             {QStringLiteral("profileId"), profileMigration.profileId},
+            {QStringLiteral("avatarVisible"), isVisible()},
             {QStringLiteral("aiEnabled"), aiBrain && aiBrain->isEnabled()},
             {QStringLiteral("busy"), aiBrain && (aiBrain->isBusy() || aiBrain->pendingUserMessageCount() > 0)},
             {QStringLiteral("pendingMessageCount"), aiBrain ? aiBrain->pendingUserMessageCount() : 0},
@@ -507,6 +508,117 @@ void PetWindow::setupLauncherChatBridge() {
     callbacks.stopResponse = [this]() -> Result<void, DomainError> {
         if (aiBrain) aiBrain->stopCurrentResponse();
         return Result<void, DomainError>::success();
+    };
+    callbacks.setAvatarVisible = [this](bool visible) -> Result<QJsonObject, DomainError> {
+        setAvatarVisible(visible);
+        return Result<QJsonObject, DomainError>::success({
+            {QStringLiteral("avatarVisible"), isVisible()}
+        });
+    };
+    callbacks.closePet = [this]() -> Result<void, DomainError> {
+        QTimer::singleShot(0, this, &PetWindow::close);
+        return Result<void, DomainError>::success();
+    };
+    callbacks.debugAction = [this](const QString& target, const QJsonObject& payload,
+                                   ChatHistoryCompletion completion) {
+        if (!aiBrain || !aiBrain->isStorageInitialized()) {
+            completion(ChatHistoryResult::failure(domainError(
+                QStringLiteral("AI_UNAVAILABLE"), QStringLiteral("AI 运行时尚未就绪。"))));
+            return;
+        }
+        if (target == QLatin1String("reset_autonomy_budget")) {
+            aiBrain->resetAutonomyBudget([this, completion = std::move(completion)](Result<void, DomainError> res) mutable {
+                if (!res) {
+                    completion(ChatHistoryResult::failure(res.error()));
+                    return;
+                }
+                completion(ChatHistoryResult::success({
+                    {QStringLiteral("message"), QStringLiteral("已清空自主活动每小时预算、冷却与退避计时，并触发机会检查。")},
+                    {QStringLiteral("autonomy"), aiBrain ? aiBrain->autonomyStatus() : QJsonObject{}}
+                }));
+            });
+            return;
+        }
+        if (target == QLatin1String("autonomy_opportunity")) {
+            const QString contextId = payload.value(QStringLiteral("contextId")).toString().trimmed();
+            const bool bypassCooldown = payload.value(QStringLiteral("bypassCooldown")).toBool(true);
+            auto triggerNow = [this, contextId, completion = std::move(completion)]() mutable {
+                if (!aiBrain) {
+                    completion(ChatHistoryResult::failure(domainError(
+                        QStringLiteral("AI_UNAVAILABLE"), QStringLiteral("AI 大脑不可用。"))));
+                    return;
+                }
+                if (!aiBrain->autonomyEnabled()) {
+                    AutonomyConfig cfg = ConfigManager::instance().getAutonomyConfig();
+                    cfg.enabled = true;
+                    cfg.paused = false;
+                    aiBrain->setAutonomyConfig(cfg);
+                }
+                aiBrain->requestAutonomousOpportunity(
+                    contextId.isEmpty() ? QStringLiteral("manual_debug") : QStringLiteral("important_reply"),
+                    contextId);
+                completion(ChatHistoryResult::success({
+                    {QStringLiteral("message"), contextId.isEmpty()
+                        ? QStringLiteral("已触发自主活动机会检查（若存在挂起的外部会话如 QQ 消息将优先处理）。")
+                        : QStringLiteral("已触发指定会话 (%1) 的自主活动机会检查。").arg(contextId)},
+                    {QStringLiteral("autonomy"), aiBrain->autonomyStatus()}
+                }));
+            };
+            if (bypassCooldown) {
+                aiBrain->resetAutonomyBudget([triggerNow = std::move(triggerNow)](Result<void, DomainError>) mutable {
+                    triggerNow();
+                });
+            } else {
+                triggerNow();
+            }
+            return;
+        }
+        if (target == QLatin1String("proactive_chat")) {
+            if (!aiBrain->isEnabled()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("AI_DISABLED"), QStringLiteral("请先启用 AI 开关。"))));
+                return;
+            }
+            aiBrain->triggerThink(QStringLiteral("manual_debug_proactive_chat"),
+                                  QStringLiteral("proactive_chat"));
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"), QStringLiteral("已手动触发一次主动搭话（proactive_chat）。")}
+            }));
+            return;
+        }
+        if (target == QLatin1String("idle_action")) {
+            if (!aiBrain->isEnabled()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("AI_DISABLED"), QStringLiteral("请先启用 AI 开关。"))));
+                return;
+            }
+            aiBrain->triggerThink(QStringLiteral("manual_debug_idle_action"),
+                                  QStringLiteral("idle_action"));
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"), QStringLiteral("已手动触发一次空闲待机动作（idle_action）。")}
+            }));
+            return;
+        }
+        if (target == QLatin1String("screen_chat")) {
+            triggerScreenChatNow(QStringLiteral("manual_menu"));
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"), QStringLiteral("已手动触发屏幕识别观察对话（screen_chat）。")}
+            }));
+            return;
+        }
+        if (target == QLatin1String("daydream")) {
+            const auto res = aiBrain->requestManualDaydream();
+            if (!res) {
+                completion(ChatHistoryResult::failure(res.error()));
+                return;
+            }
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"), QStringLiteral("已安排后台记忆整理（Daydream）。")}
+            }));
+            return;
+        }
+        completion(ChatHistoryResult::failure(domainError(
+            QStringLiteral("ACTION_UNSUPPORTED"), QStringLiteral("未知的调试触发目标：%1").arg(target))));
     };
     callbacks.taskAction = [this](const QString& action, const QJsonObject& payload)
         -> Result<void, DomainError> {
@@ -664,13 +776,17 @@ void PetWindow::setupRenderViewport() {
     renderViewport->bindPresentation(avatarPresentation.get());
     if (QSystemTrayIcon::isSystemTrayAvailable()) {
         avatarTray = new QSystemTrayIcon(style()->standardIcon(QStyle::SP_ComputerIcon), this);
-        auto* menu = new QMenu(this);
+        avatarTray->setToolTip(QStringLiteral("Desktop Pet - %1").arg(modelName));
+        auto* menu = new QMenu();
+        connect(this, &QObject::destroyed, menu, &QObject::deleteLater);
         menu->addAction(QStringLiteral("显示形象"), this, [this] { setAvatarVisible(true); });
         menu->addAction(QStringLiteral("隐藏形象"), this, [this] { setAvatarVisible(false); });
         menu->addAction(QStringLiteral("退出"), this, &PetWindow::close);
         avatarTray->setContextMenu(menu); avatarTray->show();
         connect(avatarTray, &QSystemTrayIcon::activated, this, [this](QSystemTrayIcon::ActivationReason reason) {
-            if (reason == QSystemTrayIcon::Trigger) setAvatarVisible(!isVisible());
+            if (reason == QSystemTrayIcon::Trigger || reason == QSystemTrayIcon::DoubleClick) {
+                setAvatarVisible(!isVisible());
+            }
         });
     }
     renderViewport->setMinimumHeight(400);
@@ -722,16 +838,39 @@ void PetWindow::unloadModel() {
 
 void PetWindow::setAvatarVisible(bool visible) {
     if (visible) show(); else hide();
+    if (launcherChatServer) launcherChatServer->notifyStateChanged();
 }
 void PetWindow::showEvent(QShowEvent* event) {
     QWidget::showEvent(event);
-    if (!changingWindowFlags && avatarPresentation) avatarPresentation->setVisible(true);
+    if (!changingWindowFlags) {
+        if (avatarPresentation) avatarPresentation->setVisible(true);
+        if (inputBubble) {
+            inputBubble->applyScreenChatConfig(screenChatConfig);
+            updateInputBubblePosition();
+            inputBubble->refreshGlass();
+            inputBubble->showInput("输入后按 Enter 发送...", false);
+        }
+        if (launcherChatServer) launcherChatServer->notifyStateChanged();
+    }
 }
 void PetWindow::hideEvent(QHideEvent* event) {
-    if (!changingWindowFlags && avatarPresentation) {
-        avatarPresentation->setVisible(false);
+    if (!changingWindowFlags) {
+        if (avatarPresentation) avatarPresentation->setVisible(false);
         stopDropAnimation();
         isDragging = false;
+        if (thinkingBubbleTimer) thinkingBubbleTimer->stop();
+        if (bubbleHideTimer) bubbleHideTimer->stop();
+        streamingBubbleMessageId.clear();
+        streamingBubbleFinished = true;
+        if (outputBubble) {
+            outputBubble->setHasMorePages(false);
+            outputBubble->hideBubble();
+        }
+        if (inputBubble) {
+            inputBubble->setInputSubmissionEnabled(true);
+            inputBubble->hideBubble();
+        }
+        if (launcherChatServer) launcherChatServer->notifyStateChanged();
     }
     QWidget::hideEvent(event);
 }

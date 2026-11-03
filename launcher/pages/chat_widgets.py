@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from PySide6.QtCore import QDateTime, Qt, Signal
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QVBoxLayout, QWidget
 from qfluentwidgets import PushButton, isDarkTheme
@@ -11,6 +13,36 @@ from .chat_images import MessageImageGrid
 
 def message_datetime(message: dict) -> QDateTime:
     return QDateTime.fromString(str(message.get("timestamp") or ""), Qt.ISODateWithMs).toLocalTime()
+
+
+def concise_error_reason(detail: str) -> str:
+    raw = " ".join(str(detail or "").split()).strip()
+    if not raw:
+        return ""
+    lower = raw.lower()
+    http_match = re.search(r"\bhttp\s*(\d{3})\b", lower)
+    status_code = int(http_match.group(1)) if http_match else 0
+    tail = raw.split(":", 1)[1].strip() if ":" in raw else raw
+    if len(tail) > 72:
+        tail = tail[:69] + "..."
+    if status_code in (401, 403) or any(
+            k in lower for k in ("unauthorized", "authentication", "invalid api key", "api_key")):
+        prefix = f"HTTP {status_code} 鉴权失败" if status_code else "鉴权失败"
+        return f"{prefix} ({tail})" if tail and tail.lower() != prefix.lower() else prefix
+    if status_code == 404:
+        return f"HTTP 404 接口或模型不存在 ({tail})" if tail else "HTTP 404 接口或模型不存在"
+    if status_code == 429:
+        return f"HTTP 429 请求限流或额度不足 ({tail})" if tail else "HTTP 429 请求限流或额度不足"
+    if status_code >= 500:
+        return f"HTTP {status_code} 服务端错误 ({tail})" if tail else f"HTTP {status_code} 服务端错误"
+    if ("operation canceled" in lower or "timeout" in lower
+            or "timed out" in lower or "超时" in lower):
+        return f"请求超时 ({tail})" if tail else "请求超时"
+    if any(k in lower for k in ("ssl", "tls", "certificate", "handshake")):
+        return f"TLS/SSL 握手失败 ({tail})" if tail else "TLS/SSL 握手失败"
+    if any(k in lower for k in ("connection", "network", "连接", "网络", "host not found", "refused")):
+        return f"网络请求失败 ({tail})" if tail else "网络请求失败"
+    return tail or raw[:72]
 
 
 class MessageRow(QWidget):
@@ -87,9 +119,13 @@ class MessageRow(QWidget):
         images = [image for image in message.get("images", []) if isinstance(image, dict)]
         self.image_grid.set_images(images)
         status = str(message.get("status") or "")
-        status_text = {"failed": "回复失败", "interrupted": "回复中断", "stopped": "已停止回复"}.get(status, "") \
+        error_detail = str(message.get("errorMessage") or "").strip()
+        base_status = {"failed": "回复失败", "interrupted": "回复中断", "stopped": "已停止回复"}.get(status, "") \
             if message.get("role") == "assistant" else ""
+        brief_reason = concise_error_reason(error_detail) if base_status and status in {"failed", "interrupted"} else ""
+        status_text = f"{base_status}：{brief_reason}" if brief_reason else base_status
         self.status_label.setText(status_text)
+        self.status_label.setToolTip(error_detail if error_detail else "")
         self.status_bar.setVisible(bool(status_text))
         self.retry_button.setVisible(bool(status_text) and status in {"failed", "interrupted"}
                                      and bool(message.get("replyToId")))

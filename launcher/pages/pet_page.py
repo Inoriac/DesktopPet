@@ -8,7 +8,7 @@ from __future__ import annotations
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget, QHBoxLayout
 from qfluentwidgets import (
-    BodyLabel, ComboBox, CompactSpinBox, PrimaryPushButton, Slider,
+    BodyLabel, ComboBox, CompactSpinBox, PrimaryPushButton, PushButton, Slider,
     SwitchButton,
 )
 from qfluentwidgets import FluentIcon as FIF
@@ -19,10 +19,16 @@ from ._ui import ScrollPage, Section
 
 
 class PetPage(ScrollPage):
-    def __init__(self, state: AppState, on_start=None, parent=None):
+    def __init__(self, state: AppState, on_start=None,
+                 on_toggle_avatar=None, on_stop=None, parent=None):
         super().__init__("PetPage", parent)
         self.state = state
         self._on_start = on_start
+        self._on_toggle_avatar = on_toggle_avatar
+        self._on_stop = on_stop
+        self._avatar_visible = True
+        self._chat_connected = False
+        self._alive_count = 0
         self.registry_error: str | None = None
 
         # —— 角色与外观 ——
@@ -77,6 +83,18 @@ class PetPage(ScrollPage):
         rl.setSpacing(12)
         self.alive_count_label = BodyLabel("运行中：0", start_row)
         self.alive_count_label.setMinimumWidth(88)
+        self.toggle_avatar_btn = PushButton("隐藏形象", start_row)
+        self.toggle_avatar_btn.setFixedHeight(44)
+        self.toggle_avatar_btn.setMinimumWidth(116)
+        self.toggle_avatar_btn.setEnabled(False)
+        if self._on_toggle_avatar is not None:
+            self.toggle_avatar_btn.clicked.connect(self._on_toggle_avatar)
+        self.stop_btn = PushButton("关闭桌宠", start_row)
+        self.stop_btn.setFixedHeight(44)
+        self.stop_btn.setMinimumWidth(116)
+        self.stop_btn.setEnabled(False)
+        if self._on_stop is not None:
+            self.stop_btn.clicked.connect(self._on_stop)
         self.start_btn = PrimaryPushButton(FIF.PLAY, "启动桌宠", start_row)
         self.start_btn.setFixedHeight(44)
         self.start_btn.setMinimumWidth(180)
@@ -85,6 +103,8 @@ class PetPage(ScrollPage):
             self.start_btn.clicked.connect(self._request_start)
         rl.addStretch(1)
         rl.addWidget(self.alive_count_label, 0, Qt.AlignRight | Qt.AlignVCenter)
+        rl.addWidget(self.toggle_avatar_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
+        rl.addWidget(self.stop_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
         rl.addWidget(self.start_btn, 0, Qt.AlignRight | Qt.AlignVCenter)
         self.addCard(start_row)
 
@@ -112,7 +132,25 @@ class PetPage(ScrollPage):
         self.state.pet_profile_id = self._profiles_by_name[self.state.pet_name].profile_id
 
     def set_alive_count(self, count: int) -> None:
-        self.alive_count_label.setText(f"运行中：{max(0, int(count))}")
+        self._alive_count = max(0, int(count))
+        self.alive_count_label.setText(f"运行中：{self._alive_count}")
+        self._sync_runtime_controls()
+
+    def set_chat_connected(self, connected: bool) -> None:
+        self._chat_connected = bool(connected)
+        if not self._chat_connected:
+            self._avatar_visible = True
+        self._sync_runtime_controls()
+
+    def set_avatar_visible(self, visible: bool) -> None:
+        self._avatar_visible = bool(visible)
+        self._sync_runtime_controls()
+
+    def _sync_runtime_controls(self) -> None:
+        self.toggle_avatar_btn.setText(
+            "隐藏形象" if self._avatar_visible else "显示形象")
+        self.toggle_avatar_btn.setEnabled(self._chat_connected)
+        self.stop_btn.setEnabled(self._alive_count > 0 or self._chat_connected)
 
     def set_starting(self, starting: bool) -> None:
         self.start_btn.setText("启动中" if starting else "启动桌宠")

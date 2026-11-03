@@ -24,6 +24,9 @@ struct LauncherChatCallbacks {
     std::function<Result<QJsonObject, DomainError>(const QString&)> retryMessage;
     std::function<Result<void, DomainError>()> stopResponse;
     std::function<Result<void, DomainError>(const QString&, const QJsonObject&)> taskAction;
+    std::function<Result<QJsonObject, DomainError>(bool)> setAvatarVisible;
+    std::function<Result<void, DomainError>()> closePet;
+    std::function<void(const QString&, const QJsonObject&, ChatHistoryCompletion)> debugAction;
 };
 
 class LauncherChatServer final : public QObject {

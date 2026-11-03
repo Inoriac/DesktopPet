@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import QEvent, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QImage, QKeyEvent, QKeySequence, QPixmap, QShortcut
+from PySide6.QtCore import QDateTime, QEvent, QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QImage, QInputMethodEvent, QKeyEvent, QKeySequence, QPixmap, QShortcut
 from PySide6.QtWidgets import (
     QAbstractSlider, QBoxLayout, QFileDialog, QFrame, QGridLayout, QHBoxLayout, QLabel, QLayout,
     QLineEdit, QListWidget, QListWidgetItem, QPlainTextEdit, QPushButton, QScrollArea,
@@ -14,7 +14,7 @@ from qfluentwidgets import (
     StrongBodyLabel, PushButton, PrimaryPushButton, isDarkTheme,
 )
 
-from .chat_widgets import MessageRow, message_datetime
+from .chat_widgets import MessageRow, concise_error_reason, message_datetime
 from .chat_images import ChatImageDraft, MAX_IMAGES
 
 
@@ -26,7 +26,30 @@ class ChatInput(QPlainTextEdit):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.images_enabled = True
+        self._configured_placeholder = ""
+        self._has_preedit = False
         self.setAcceptDrops(True)
+
+    def setPlaceholderText(self, placeholderText: str) -> None:
+        self._configured_placeholder = str(placeholderText or "")
+        super().setPlaceholderText("" if self._has_preedit else self._configured_placeholder)
+
+    def placeholderText(self) -> str:
+        return self._configured_placeholder
+
+    def inputMethodEvent(self, event: QInputMethodEvent) -> None:
+        has_preedit = bool(event.preeditString())
+        if has_preedit != self._has_preedit:
+            self._has_preedit = has_preedit
+            super().setPlaceholderText("" if has_preedit else self._configured_placeholder)
+        super().inputMethodEvent(event)
+        self.viewport().update()
+
+    def focusOutEvent(self, event) -> None:
+        if self._has_preedit:
+            self._has_preedit = False
+            super().setPlaceholderText(self._configured_placeholder)
+        super().focusOutEvent(event)
 
     @staticmethod
     def _image_mime(source) -> bool:
@@ -85,6 +108,8 @@ class ChatInput(QPlainTextEdit):
 class ChatPage(QWidget):
     openRequested = Signal()
     connectionLost = Signal(str)
+    avatarVisibilityChanged = Signal(bool)
+    closePetRequested = Signal()
     PAGE_SIZE = 40
 
     def __init__(self, parent=None):
@@ -95,6 +120,7 @@ class ChatPage(QWidget):
         self._open_request_id = 0
         self._busy = False
         self._ai_enabled = False
+        self._avatar_visible = True
         self._messages: list[dict] = []
         self._rows: dict[str, MessageRow] = {}
         self._recent_messages: list[dict] = []
@@ -163,6 +189,16 @@ class ChatPage(QWidget):
         identity.addWidget(self.status_label)
         header.addLayout(identity)
         header.addStretch(1)
+        self.avatar_visibility_button = PushButton("隐藏形象", self.header)
+        self.avatar_visibility_button.setFixedHeight(30)
+        self.avatar_visibility_button.setToolTip("显示或隐藏桌面上的 3D 桌宠形象")
+        self.avatar_visibility_button.clicked.connect(self.toggle_avatar_visibility)
+        header.addWidget(self.avatar_visibility_button)
+        self.close_pet_button = PushButton("关闭桌宠", self.header)
+        self.close_pet_button.setFixedHeight(30)
+        self.close_pet_button.setToolTip("退出正在运行的桌宠核心进程")
+        self.close_pet_button.clicked.connect(self.closePetRequested.emit)
+        header.addWidget(self.close_pet_button)
         root.addWidget(self.header)
 
         self.body_layout = QBoxLayout(QBoxLayout.LeftToRight)
@@ -631,6 +667,13 @@ class ChatPage(QWidget):
         self.header_avatar.setText(name[:1].upper())
         self._busy = bool(state.get("busy"))
         self._ai_enabled = bool(state.get("aiEnabled"))
+        if "avatarVisible" in state:
+            visible = bool(state.get("avatarVisible"))
+            if visible != self._avatar_visible:
+                self._avatar_visible = visible
+                self.avatarVisibilityChanged.emit(self._avatar_visible)
+            else:
+                self._avatar_visible = visible
         self._task = state.get("task") if isinstance(state.get("task"), dict) else {}
         pending_count = int(state.get("pendingMessageCount") or 0)
         self.status_label.setText(
@@ -844,9 +887,7 @@ class ChatPage(QWidget):
         else:
             self._older_history_failed(action, token, detail)
             return
-        self._diagnostic_events.append(f"聊天记录: {detail}")
-        self._diagnostic_events = self._diagnostic_events[-30:]
-        self._update_diagnostics()
+        self._record_diagnostic(f"聊天记录: {detail}")
         self._sync_search_controls()
         self._update_history_button()
 
@@ -855,9 +896,7 @@ class ChatPage(QWidget):
             return
         self._history_request_token = ""
         self._history_error = True
-        self._diagnostic_events.append(f"历史消息: {detail}")
-        self._diagnostic_events = self._diagnostic_events[-30:]
-        self._update_diagnostics()
+        self._record_diagnostic(f"历史消息: {detail}")
         self._update_history_button()
 
     def scroll_to_bottom(self) -> None:
@@ -1050,6 +1089,10 @@ class ChatPage(QWidget):
             self._client.send_message(self._pending_text)
         self._sync_controls()
 
+    def toggle_avatar_visibility(self) -> None:
+        if self._client is not None and self._client.is_connected:
+            self._client.set_avatar_visible(not self._avatar_visible)
+
     def _stop(self) -> None:
         if self._client is not None and self._client.is_connected:
             if not self._send_inflight:
@@ -1098,6 +1141,10 @@ class ChatPage(QWidget):
             self._search_loaded(_result)
             return
         self._last_error = ""
+        if operation == "set_avatar_visible":
+            if "avatarVisible" in _result:
+                self._avatar_visible = bool(_result["avatarVisible"])
+                self.avatarVisibilityChanged.emit(self._avatar_visible)
         if operation in {"resume_task", "pause_task", "stop_task", "resolve_task_call"}:
             self._task_action_pending = False
             if operation == "resume_task" and self._task_feedback \
@@ -1145,22 +1192,33 @@ class ChatPage(QWidget):
                 and self._ai_enabled and not self._busy and not self._send_inflight)
 
     @staticmethod
+    def _now_timestamp() -> str:
+        return QDateTime.currentDateTime().toString("yyyy-MM-dd HH:mm:ss")
+
+    @classmethod
+    def _message_timestamp_prefix(cls, message: dict) -> str:
+        dt = message_datetime(message)
+        if dt.isValid():
+            return dt.toString("yyyy-MM-dd HH:mm:ss")
+        raw = str(message.get("timestamp") or "").strip()
+        return raw if raw else cls._now_timestamp()
+
+    def _record_diagnostic(self, text: str) -> None:
+        self._diagnostic_events.append(f"[{self._now_timestamp()}] {text}")
+        self._diagnostic_events = self._diagnostic_events[-30:]
+        self._update_diagnostics()
+
+    @staticmethod
     def _friendly_error(detail: str) -> str:
-        text = detail.lower()
-        if "timeout" in text or "timed out" in text or "超时" in text:
-            return "模型服务响应超时，请稍后重试。"
-        if any(word in text for word in ("connection", "network", "连接", "网络")):
-            return "与模型服务的连接中断，请检查网络后重试。"
-        if any(word in text for word in ("401", "403", "unauthorized", "authentication")):
-            return "模型服务拒绝访问，请检查连接配置。"
+        reason = concise_error_reason(detail)
+        if reason:
+            return f"原因：{reason}。请检查网络或配置后重试。"
         return "暂时无法完成回复，请稍后重试。"
 
     def _show_problem(self, title: str, message: str, detail: str = "",
                       retry_id: str = "") -> None:
         if detail:
-            self._diagnostic_events.append(f"{title}: {detail}")
-            self._diagnostic_events = self._diagnostic_events[-30:]
-            self._update_diagnostics()
+            self._record_diagnostic(f"{title}: {detail}")
         key = f"{title}:{detail}:{retry_id}"
         if key == self._last_error:
             return
@@ -1175,10 +1233,11 @@ class ChatPage(QWidget):
     def _update_diagnostics(self) -> None:
         lines = list(self._diagnostic_events)
         for message in self._diagnostic_messages + self._messages:
+            ts = self._message_timestamp_prefix(message)
             if message.get("role") not in {"user", "assistant"}:
-                lines.append(str(message.get("content") or ""))
+                lines.append(f"[{ts}] {message.get('content') or ''}")
             elif message.get("status") in {"failed", "interrupted", "stopped"}:
-                lines.append(f"{message.get('id')}: {message.get('status')} — "
+                lines.append(f"[{ts}] {message.get('id')}: {message.get('status')} — "
                              f"{message.get('errorMessage') or ''}")
         text = "\n".join(lines[-100:])
         if text != self.diagnostics_text.toPlainText():
@@ -1192,6 +1251,7 @@ class ChatPage(QWidget):
         self._poll_timer.stop()
         self._user_scroll_serial += 1
         self._busy = self._ai_enabled = False
+        self._avatar_visible = True
         self._pending_text = None
         self._pending_draft_text = None
         self._pending_images = []
@@ -1220,6 +1280,10 @@ class ChatPage(QWidget):
             remove.setEnabled(not self._send_inflight)
         self.stop_button.setVisible(self._busy and connected)
         self.stop_button.setEnabled(connected)
+        self.avatar_visibility_button.setEnabled(connected)
+        self.avatar_visibility_button.setText(
+            "隐藏形象" if self._avatar_visible else "显示形象")
+        self.close_pet_button.setEnabled(connected)
         for row in self._rows.values():
             row.retry_button.setEnabled(self._can_retry())
         self._sync_task_card(connected)

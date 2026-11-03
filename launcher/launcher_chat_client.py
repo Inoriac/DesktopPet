@@ -76,6 +76,15 @@ class LauncherChatClient(OwnerDiaryClient):
     def stop_response(self) -> dict:
         return self._chat_exchange("stop_response", {})
 
+    def set_avatar_visible(self, visible: bool) -> dict:
+        return self._chat_exchange("set_avatar_visible", {"visible": bool(visible)})
+
+    def close_pet(self) -> dict:
+        return self._chat_exchange("close_pet", {})
+
+    def debug_trigger(self, target: str, **kwargs) -> dict:
+        return self._chat_exchange("debug_trigger", {"target": str(target), **kwargs})
+
     def resume_task(self, task_id: str, feedback: str = "", extend_budget: bool = False) -> dict:
         return self._chat_exchange("resume_task", {"taskId": task_id, "feedback": feedback,
                                                     "extendBudget": bool(extend_budget)})
@@ -141,7 +150,8 @@ class AsyncLauncherChatClient(QObject):
     def is_connected(self) -> bool:
         return self._connected
 
-    def connect_to_server(self, socket_name: str, capability_token: str) -> None:
+    def connect_to_server(self, socket_name: str, capability_token: str,
+                          connect_timeout_ms: int | None = None) -> None:
         self.close()
         generation = self._generation
         if not socket_name or len(_decode_token(capability_token)) != 32:
@@ -160,7 +170,9 @@ class AsyncLauncherChatClient(QObject):
             lambda: self._on_disconnected(socket, generation))
         socket.errorOccurred.connect(
             lambda _error: self._on_socket_error(socket, generation))
-        self._deadline.start(self._timeout_ms)
+        handshake_timeout = self._timeout_ms if connect_timeout_ms is None \
+            else max(self._timeout_ms, int(connect_timeout_ms))
+        self._deadline.start(handshake_timeout)
         socket.connectToServer(socket_name, QIODeviceBase.ReadWrite)
 
     def request_state(self, after_revision: int = -1) -> None:
@@ -198,6 +210,15 @@ class AsyncLauncherChatClient(QObject):
 
     def stop_response(self) -> None:
         self._queue_operation("stop_response", {})
+
+    def set_avatar_visible(self, visible: bool) -> None:
+        self._queue_operation("set_avatar_visible", {"visible": bool(visible)})
+
+    def close_pet(self) -> None:
+        self._queue_operation("close_pet", {})
+
+    def debug_trigger(self, target: str, **kwargs) -> None:
+        self._queue_operation("debug_trigger", {"target": str(target), **kwargs})
 
     def resume_task(self, task_id: str, feedback: str = "", extend_budget: bool = False) -> None:
         self._queue_operation("resume_task", {"taskId": task_id, "feedback": feedback,

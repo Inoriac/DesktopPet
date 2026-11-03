@@ -15,7 +15,7 @@ if LAUNCHER not in sys.path:
 
 from PySide6.QtCore import QIODeviceBase, QObject, QPoint, QPointF, Signal, Qt
 from PySide6.QtTest import QTest
-from PySide6.QtGui import QTextCursor, QWheelEvent
+from PySide6.QtGui import QInputMethodEvent, QTextCursor, QWheelEvent
 from PySide6.QtNetwork import QLocalSocket
 from PySide6.QtWidgets import QApplication, QAbstractSlider, QStackedWidget, QPlainTextEdit
 
@@ -481,12 +481,14 @@ class LauncherChatTests(unittest.TestCase):
             self.settle()
             self.assertEqual(notice.call_count, 1)
         row = page._rows["answer"]
-        self.assertEqual(row.status_label.text(), "回复失败")
+        self.assertIn("回复失败", row.status_label.text())
+        self.assertIn("Connection closed", row.status_label.text())
         self.assertEqual(row.text_label.text(), "")
         self.assertTrue(row.retry_button.isVisible())
         QTest.mouseClick(row.retry_button, Qt.LeftButton)
         self.assertEqual(client.retry_calls, ["answer"])
         self.assertIn("Connection closed", page.diagnostics_text.toPlainText())
+        self.assertRegex(page.diagnostics_text.toPlainText(), r"\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\]")
         reopened = self.page()
         reopened.set_client(client)
         reopened._apply_state(self.state([user, failed], revision=5))
@@ -881,6 +883,16 @@ class LauncherChatTests(unittest.TestCase):
         self.assertEqual(page.search_results.count(), 0)
         self.assertEqual(page.search_input.text(), "")
         self.assertNotIn("失败", page.search_status.text())
+
+    def test_ime_preedit_hides_placeholder_until_composition_ends(self):
+        page = self.page()
+        self.assertEqual(page.input_edit.placeholderText(), "发送消息…")
+        self.assertEqual(QPlainTextEdit.placeholderText(page.input_edit), "发送消息…")
+        QApplication.sendEvent(page.input_edit, QInputMethodEvent("ni'hao", []))
+        self.assertEqual(page.input_edit.placeholderText(), "发送消息…")
+        self.assertEqual(QPlainTextEdit.placeholderText(page.input_edit), "")
+        QApplication.sendEvent(page.input_edit, QInputMethodEvent("", []))
+        self.assertEqual(QPlainTextEdit.placeholderText(page.input_edit), "发送消息…")
 
 
 if __name__ == "__main__":

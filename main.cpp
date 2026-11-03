@@ -50,6 +50,7 @@ int main(int argc, char *argv[])
     QSurfaceFormat::setDefaultFormat(fmt);
 
     QApplication app(argc, argv);
+    app.setQuitOnLastWindowClosed(false);
     app.setApplicationName("Desktop Pet");
     app.setOrganizationName("Desktop Pet Team");
     app.setApplicationVersion("1.0.0");
@@ -119,8 +120,7 @@ int main(int argc, char *argv[])
     profileMigration.profileId = profile.profileId;
     profileMigration.registeredProfileIds = registeredProfileIds;
     profileMigration.confirmedLegacyOwnerProfileId = std::nullopt;
-    profileMigration.appDataRoot =
-        QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    profileMigration.appDataRoot = Pet::resolveAppDataRoot();
     profileMigration.legacyDatabasePath = QStringLiteral("runtime/memory/memory.db");
     profileMigration.legacyJsonPath = QStringLiteral("log/ai_memory.json");
 
