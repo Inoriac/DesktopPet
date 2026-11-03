@@ -36,7 +36,11 @@ async def login(state_dir, qr=None, timeout_seconds=180, poll_seconds=2):
 
     async def flow():
         await qr.generate_qrcode()
-        descriptor, temporary = tempfile.mkstemp(prefix=".qr-", dir=str(state))
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        temporary = state / f".qr-{os.getpid()}.tmp"
+        if os.path.exists(temporary):
+            os.unlink(temporary)
+        descriptor = os.open(str(temporary), flags, 0o600)
         try:
             with os.fdopen(descriptor, "wb") as output:
                 output.write(qr.get_qrcode_picture().content)

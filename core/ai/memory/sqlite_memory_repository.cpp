@@ -81,6 +81,7 @@ bool SQLiteMemoryRepository::open(const QString& path, QString* errorMessage) {
         pragma.exec(QStringLiteral("PRAGMA journal_mode=WAL"));
         pragma.exec(QStringLiteral("PRAGMA foreign_keys=ON"));
         pragma.exec(QStringLiteral("PRAGMA busy_timeout=5000"));
+        pragma.exec(QStringLiteral("PRAGMA temp_store=MEMORY"));
     }
 
     if (!initSchema(errorMessage)) {

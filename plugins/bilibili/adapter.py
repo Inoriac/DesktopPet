@@ -16,7 +16,7 @@ import json
 import os
 from pathlib import Path
 import re
-import tempfile
+import uuid
 
 if __package__:
     from .backend import BilibiliBackend, BilibiliError, translate_error
@@ -196,7 +196,9 @@ def atomic_json(path, value):
     path = Path(path)
     try:
         path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary = tempfile.mkstemp(prefix=".pending-", dir=str(path.parent))
+        flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL | getattr(os, "O_BINARY", 0)
+        temporary = path.parent / f".pending-{uuid.uuid4().hex}.tmp"
+        descriptor = os.open(str(temporary), flags, 0o600)
         try:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 output.write(json_text(value))

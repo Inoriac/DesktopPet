@@ -14,6 +14,7 @@
 class Pet {
 public:
     static Pet& instance();
+    static QString resolveAppDataRoot();
 
     // C++ 只读 launcher 管理的角色清单。
     bool load(QString* errorMessage = nullptr);
