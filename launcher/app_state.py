@@ -51,7 +51,6 @@ class AppState:
     # AI 设置
     ai_enabled: bool = False
     autonomy_enabled: bool = False
-    autonomy_paused: bool = False
     emotion_enabled: bool = True
     auto_screen_chat: bool = False
     chat_interval_min_ms: int = 480000
@@ -190,8 +189,11 @@ class AppState:
             profile = ai
         set_bool("ai_enabled", profile, "enabled")
         autonomy = object_at(object_at(config, "aiSettings"), "autonomy")
-        set_bool("autonomy_enabled", autonomy, "enabled")
-        set_bool("autonomy_paused", autonomy, "paused")
+        autonomy_enabled = autonomy.get("enabled")
+        autonomy_paused = autonomy.get("paused")
+        if isinstance(autonomy_enabled, bool):
+            state.autonomy_enabled = autonomy_enabled and not (
+                autonomy_paused if isinstance(autonomy_paused, bool) else False)
         registry = profile.get("modelEndpoints")
         state.model_endpoints = {}
         state.model_roles = {}
@@ -285,7 +287,6 @@ class AppState:
             "clickThrough": d["click_through"],
             "aiEnabled": d["ai_enabled"],
             "autonomyEnabled": d["autonomy_enabled"],
-            "autonomyPaused": d["autonomy_paused"],
             "emotionEnabled": d["emotion_enabled"],
             "autoScreenChat": d["auto_screen_chat"],
             "chatIntervalMinMs": d["chat_interval_min_ms"],

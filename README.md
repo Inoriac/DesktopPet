@@ -218,7 +218,7 @@ $env:DESKTOP_PET_EXECUTABLE = 'C:\absolute\path\Desktop_Pet.exe'
 2. 在“AI”页开启 AI，在“连接档案”中选择 `openai-compatible` 或 `anthropic-messages`，填写服务 URL、API Key 和服务端实际支持的模型 ID。
 3. 点击“测试连接”。这会用当前编辑值发出一次真实的最小 `ping` 模型请求，不只是检查格式。OpenAI-compatible 地址会补 `/chat/completions`，Anthropic 地址会补 `/v1/messages`。
 4. 为对话、视觉、快速提取、记忆整理、日记、Daydream、任务受理、任务执行和人格反思选择连接档案与模型。视觉角色应使用实际支持图片输入的模型。
-5. 点击“保存配置”，回到“宠物”页选择角色并点击“启动桌宠”。启动操作也会保存当前配置。AI、自主活动、暂停自主活动和自动屏幕聊天是独立开关；默认不会自动开启自主活动。
+5. 点击“保存配置”，回到“宠物”页选择角色并点击“启动桌宠”。启动操作也会保存当前配置。AI、自主活动和自动屏幕聊天是独立开关；默认不会自动开启自主活动。
 
 API Key 会保存在本机 `%APPDATA%\Desktop Pet Team\Desktop Pet\launch_config.json`，并非系统凭据库。请按敏感文件保护，不要提交或粘贴到问题报告中。
 
@@ -377,7 +377,7 @@ if ($LASTEXITCODE -ne 0) { throw '音乐配置失败' }
 
 ### 自主使用、停用与隐私
 
-* 插件授权和 launcher 的“自主活动 / 暂停自主活动”是两道独立开关。启用两者也不保证立即执行；主体可以等待，预算和空闲判断仍然有效。
+* 插件授权和 launcher 的“自主活动”是两道独立开关。启用两者也不保证立即执行；主体可以等待，预算和空闲判断仍然有效。
 * 在角色停止时重新 configure 可以调整授权；`--autonomous off` **只撤销自主权限，不禁用本地主人的插件调用**。彻底停用时，备份 `plugins.json`，将对应 `plugins` 项的 `enabled` 改为 `false`，再重启；不要删除整个配置或记忆数据库。
 * QQ 消息、网页、字幕等材料可能进入模型上下文；是否出机取决于连接档案所指向的模型服务。“本地插件”不等于“材料仅在本地处理”。只授权自己有权读取的内容，并征得会话参与者同意。
 * token、B 站凭证、QQ 消息缓存及角色数据库都可能含敏感内容。保存在当前账户可控目录，不提交 Git、不随日志打包公开；回滚整份旧 `plugins.json` 会同时撤销其后的其他插件修改。
@@ -524,7 +524,7 @@ if ($LASTEXITCODE -ne 0) { throw 'QQ 配置失败' }
 * 本地主人始终只能使用 Skill、`status/list/read/receipt`，没有 `send`。
 * `--autonomous on` 才给内部自主活动只读权限，并给每个精确外部 QQ 会话启用 `read/send/receipt` 自主调用；内部活动不能任意选择联系人主动开聊。
 * 外部会话没有 `list`，也不能读取或发送到另一个会话。
-* `--source on|off` 只控制后台接收；`--autonomous on|off` 只控制本插件授权；launcher 的“自主活动”和“暂停自主活动”仍是独立总开关。
+* `--source on|off` 只控制后台接收；`--autonomous on|off` 只控制本插件授权；launcher 的“自主活动”仍是独立总开关。
 
 ### 4. 先做只读连通验证
 
@@ -542,7 +542,7 @@ $OutputEncoding = New-Object System.Text.UTF8Encoding($false)
   & $qqPython -B plugins\qq\adapter.py --settings $qqSettings --operation read
 ```
 
-先确认账号、白名单、群聊/私聊分流、中文、emoji、引用和分页。随后可重新配置为 `--source on --autonomous off --apply`，从允许会话发送测试消息，确认只归档、不自主回复。最后确有需要时再配置 `--source on --autonomous on --apply`，并在 launcher 中开启且取消暂停自主活动。
+先确认账号、白名单、群聊/私聊分流、中文、emoji、引用和分页。随后可重新配置为 `--source on --autonomous off --apply`，从允许会话发送测试消息，确认只归档、不自主回复。最后确有需要时再配置 `--source on --autonomous on --apply`，并在 launcher 中开启自主活动。
 
 宿主验收看实际 `discover/load/invoke` 调用、观察归档、QQ 客户端收到的消息和发送回执，不以模型口头说“已经发送”作为成功依据。主体可以选择等待，并非每条消息都必须回复。
 
@@ -612,7 +612,7 @@ Visual Studio 多配置构建给后两条命令加 `--config Release` 和 `-C Re
 | LX Music | 只读诊断就绪、曲目和歌单正确；手动播放 / 暂停与真实播放器一致，不仅看退出码 |
 | QQ | 正确后端、账号、白名单；只读 status/read 正常；source 能收到测试消息；需要回复时，在精确外部会话中验证一次实际发送及回执 |
 | 语音 | 已下载的音色可实际出声；语音失败不应当作文本聊天失败，也不能把 B 站 ASR 当作桌宠麦克风输入 |
-| 自主活动 | 仅在手动验证通过后打开对应插件授权和总开关；确认“暂停自主活动”能阻止新自主调用，允许主体选择等待 |
+| 自主活动 | 仅在手动验证通过后打开对应插件授权和总开关；关闭“自主活动”能阻止新自主调用，允许主体选择等待 |
 
 不需要某项能力就保持关闭，无需为了启动桌宠安装全部可选依赖。QQ 后端、B 站登录 / 限流、音乐源及模型服务由各自外部系统决定，自动化替身测试不能替代真实环境验收。
 

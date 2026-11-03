@@ -11,10 +11,10 @@ import copy
 import json
 import os
 import re
-import tempfile
 from typing import Any, Dict
 
 from app_state import DEFAULT_ANTHROPIC_VERSION, MODEL_ROLES
+from atomic_write import atomic_write_text
 
 TEMPLATE_PATH = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -44,12 +44,19 @@ def saved_config_path() -> str:
 
 def load_saved_config() -> Dict[str, Any] | None:
     """Load the last explicitly saved/exported launcher configuration."""
-    try:
-        with open(saved_config_path(), "r", encoding="utf-8") as handle:
-            config = json.load(handle)
-    except (FileNotFoundError, OSError, json.JSONDecodeError):
-        return None
-    return config if isinstance(config, dict) else None
+    candidates = [
+        saved_config_path(),
+        os.path.join(_fallback_config_dir(), SAVED_CONFIG_NAME),
+    ]
+    for path in candidates:
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                config = json.load(handle)
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            continue
+        if isinstance(config, dict):
+            return config
+    return None
 
 
 def merge_with_template(
@@ -272,8 +279,7 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
     autonomy = cfg.setdefault("aiSettings", {}).setdefault("autonomy", {})
     if "autonomyEnabled" in settings:
         autonomy["enabled"] = bool(settings["autonomyEnabled"])
-    if "autonomyPaused" in settings:
-        autonomy["paused"] = bool(settings["autonomyPaused"])
+        autonomy["paused"] = False
     profile = _profile(cfg)
     if "aiEnabled" in settings:
         profile["enabled"] = bool(settings["aiEnabled"])
@@ -322,26 +328,37 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
     return cfg
 
 
+def _fallback_config_dir() -> str:
+    return os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+        "runtime",
+        "launcher",
+    )
+
+
 def export_config(cfg: Dict[str, Any]) -> str:
     """导出到 AppData/launch_config.json，返回绝对路径（供 --config 传给 C++）。"""
+    payload = json.dumps(cfg, indent=2, ensure_ascii=False)
     directory = _app_data_dir()
-    os.makedirs(directory, exist_ok=True)
     out_path = saved_config_path()
-    descriptor, temporary_path = tempfile.mkstemp(
-        prefix=".launch_config-", suffix=".tmp", dir=directory)
     try:
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            json.dump(cfg, handle, indent=2, ensure_ascii=False)
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary_path, out_path)
-    except Exception:
-        try:
-            os.unlink(temporary_path)
-        except OSError:
-            pass
-        raise
-    return out_path
+        os.makedirs(directory, exist_ok=True)
+        atomic_write_text(
+            out_path,
+            payload,
+            prefix=".launch_config-",
+        )
+        return out_path
+    except PermissionError:
+        fallback_dir = _fallback_config_dir()
+        os.makedirs(fallback_dir, exist_ok=True)
+        fallback_path = os.path.join(fallback_dir, SAVED_CONFIG_NAME)
+        atomic_write_text(
+            fallback_path,
+            payload,
+            prefix=".launch_config-",
+        )
+        return fallback_path
 
 
 def _clamp_int(value: Any, lo: int, hi: int, default: int) -> int:
