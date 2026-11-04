@@ -29,6 +29,7 @@ def prepare(state_dir):
     commands = [[os.path.abspath(sys.executable), "-B", "-m", "venv", str(environment)],
                 [str(python), "-B", "-m", "pip", "install", "--no-cache-dir", "-r", str(PACKAGE / "requirements.txt")]]
     child_env = dict(os.environ, PYTHONDONTWRITEBYTECODE="1",
+                     PIP_NO_CACHE_DIR="1",
                      TMP=str(tmp_dir), TEMP=str(tmp_dir), TMPDIR=str(tmp_dir))
     try:
         for command in commands:

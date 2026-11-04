@@ -85,12 +85,25 @@ class BilibiliBackend:
         result = await api.search.search_by_type(keyword=keyword,
                                                 search_type=api.search.SearchObjectType.VIDEO,
                                                 order_type=order_type, page=page, page_size=limit)
-        entries = [{"bvid": item["bvid"], "title": clean_title(item["title"]),
-                    "author": item.get("author", ""), "duration": item.get("duration", ""),
-                    "description": item.get("description", "")}
-                   for item in result["result"][:limit]]
-        total = int(result["numResults"])
-        return {"entries": entries, "total": total, "hasMore": page < int(result["numPages"])}
+        raw_items = result.get("result") or []
+        entries = []
+        for item in raw_items:
+            if not isinstance(item, dict):
+                continue
+            bvid = item.get("bvid")
+            if not isinstance(bvid, str) or not bvid.startswith("BV"):
+                continue
+            entries.append({
+                "bvid": bvid,
+                "title": clean_title(item.get("title", "")),
+                "author": item.get("author", ""),
+                "duration": str(item.get("duration", "")),
+                "description": item.get("description", ""),
+            })
+            if len(entries) >= limit:
+                break
+        total = int(result.get("numResults") or 0)
+        return {"entries": entries, "total": total, "hasMore": page < int(result.get("numPages") or 0)}
 
     async def video_info(self, bvid, part):
         api = load_library(self.settings)

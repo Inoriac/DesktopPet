@@ -405,7 +405,8 @@ class BackendTests(unittest.TestCase):
         async def search_by_type(**kwargs):
             self.assertEqual(kwargs, {"keyword": "测试", "search_type": "video", "order_type": "latest",
                                       "page": 2, "page_size": 2})
-            return {"result": [{"bvid": BV, "title": '<em class="keyword">测试</em> &amp; 一',
+            return {"result": [{"bvid": "", "type": "ketang", "title": "课程推广"},
+                                {"bvid": BV, "title": '<em class="keyword">测试</em> &amp; 一',
                                  "author": "作者", "duration": "3:00", "description": "简介"}],
                     "numResults": 30, "numPages": 15}
         self.library.search = SimpleNamespace(search_by_type=search_by_type,
@@ -413,6 +414,8 @@ class BackendTests(unittest.TestCase):
             OrderVideo=SimpleNamespace(TOTALRANK="rank", CLICK="click", PUBDATE="latest", DM="dm"))
         with patch.object(backend, "load_library", return_value=self.library):
             value = asyncio.run(backend.BilibiliBackend(self.settings).search("测试", 2, 2, "pubdate"))
+        self.assertEqual(len(value["entries"]), 1)
+        self.assertEqual(value["entries"][0]["bvid"], BV)
         self.assertEqual(value["entries"][0]["title"], "测试 & 一")
         self.assertTrue(value["hasMore"])
 

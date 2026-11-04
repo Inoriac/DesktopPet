@@ -34,6 +34,7 @@ def prepare(state_dir, asr_model=None):
     tmp_dir = state / "tmp"
     tmp_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
     environment = dict(os.environ, HF_HOME=str(state / "hf-cache"), PYTHONDONTWRITEBYTECODE="1",
+                       PIP_NO_CACHE_DIR="1",
                        TMP=str(tmp_dir), TEMP=str(tmp_dir), TMPDIR=str(tmp_dir))
     venv = state / "venv"
     python = venv / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
