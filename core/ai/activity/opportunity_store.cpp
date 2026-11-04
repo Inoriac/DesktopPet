@@ -437,7 +437,8 @@ OpportunityStore::considerOpportunity(const OpportunitySignal &inputSignal) {
   auto cue = ObservationStore::pendingCue(tx.db, m_profileId);
   if (!cue)
     return Result<OpportunityTicket, DomainError>::failure(cue.error());
-  if (cue.value()) {
+  if (cue.value() && (signal.contextId.isEmpty() ||
+                      signal.contextId == cue.value()->conversationId)) {
     signal.contextId = cue.value()->conversationId;
     signal.eventIds = cue.value()->eventIds;
     auto watermarks = mergeInput(s.control.value("inputWatermarks").toObject(),
@@ -561,6 +562,24 @@ Result<void, DomainError> OpportunityStore::finishOpportunity(const OpportunityF
           f.clock.utc.addMSecs(delay).toString(Qt::ISODateWithMs);
       s.control["observedWatermarks"] = mergeInput(
           s.control.value("observedWatermarks").toObject(), f.inputWatermark);
+    } else if (f.outcome == "failure") {
+      // A model/provider failure must not turn into an immediate retry loop
+      // that burns the hourly selection budget. Keep the cue pending and use
+      // the same capped exponential backoff as a no-op wait.
+      auto config = AutonomyConfig::fromJson(
+          s.control.value("autonomyConfig").toObject());
+      qint64 delay = qMin<qint64>(
+          config.maxNoOpBackoffMs,
+          qMax<qint64>(config.noOpBackoffMs,
+                       s.control.value("backoff").toInteger() * 2));
+      if (f.nextConsiderAt.isValid())
+        delay = std::clamp<qint64>(f.clock.utc.msecsTo(f.nextConsiderAt),
+                                   config.minDecisionIntervalMs,
+                                   config.maxNoOpBackoffMs);
+      s.control["backoff"] = delay;
+      s.control["nextConsiderLogical"] = logicalNow(s.control, f.clock) + delay;
+      s.control["nextConsiderAt"] =
+          f.clock.utc.addMSecs(delay).toString(Qt::ISODateWithMs);
     }
     s.control["lastDecision"] = QJsonObject{
         {"ticketId", f.ticketId}, {"outcome", f.outcome}, {"reason", f.reason.left(512)}};

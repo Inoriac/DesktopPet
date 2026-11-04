@@ -853,6 +853,25 @@ private slots:
     QVERIFY(f.store.configure(f.config, restarted.clock));
     QVERIFY(!f.store.finishOpportunity(finish(next.value(), restarted.clock)));
   }
+  void finishOpportunity_failureBacksOffWithoutConsumingTheCue() {
+    Fixture f;
+    auto t = f.store.considerOpportunity(signal());
+    QVERIFY(t);
+    auto ended = finish(t.value(), signal().clock);
+    ended.outcome = "failure";
+    ended.reason = "MODEL_OUTPUT_INVALID stage=parse reason=output_truncated";
+    QVERIFY(f.store.finishOpportunity(ended));
+    const auto snapshot = f.store.snapshot();
+    QVERIFY(snapshot);
+    QCOMPARE(snapshot.value()["backoff"].toInteger(),
+             qint64(f.config.noOpBackoffMs));
+    QVERIFY(!snapshot.value()["nextConsiderAt"].toString().isEmpty());
+    auto immediate = f.store.considerOpportunity(signal(1000));
+    QVERIFY(!immediate);
+    QCOMPARE(immediate.error().code, QString("OPPORTUNITY_DEFERRED"));
+    auto later = f.store.considerOpportunity(signal(f.config.noOpBackoffMs + 1000));
+    QVERIFY(later);
+  }
   void evaluateIdle_onlyExternalWaitOrBackgroundMemory_returnsIdle() {
     // WaitingExternal and background maintenance do not own foreground.
     RuntimeReadiness readiness;

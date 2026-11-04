@@ -13,7 +13,7 @@ struct AutonomyConfig {
     int minDecisionIntervalMs = 60000, noOpBackoffMs = 300000;
     int maxNoOpBackoffMs = 1800000, localTickMs = 15000, ticketTtlMs = 120000;
     int maxSelectionCallsPerHour = 12;
-    qint64 maxActiveMsPerHour = 900000, maxTokensPerHour = 120000;
+    qint64 maxActiveMsPerHour = 900000, maxTokensPerHour = 300000;
     qint64 maxEstimatedCostMicrosPerHour = 1000000, unknownAttemptCostMicros = 50000;
     static AutonomyConfig fromJson(const QJsonObject &json);
 };

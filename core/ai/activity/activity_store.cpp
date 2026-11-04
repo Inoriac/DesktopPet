@@ -1533,13 +1533,18 @@ Result<void, DomainError> ActivityStore::saveTask(TaskRecord &task,
         if (task.evidence.isEmpty())
             return fail<void>("INVALID_INPUT",
                               "Task completion needs verified evidence");
+        const bool autonomousActivity =
+            a.intent["origin"] == "self" || a.intent["origin"] == "event";
         for (const auto &ref : task.evidence) {
             if (ref.toString() == "user_input" &&
                 task.originKind == OriginKind::LocalOwner && task.accepted)
                 continue;
             auto call = readAction(tx.db, m_profileId, ref.toString());
-            if (!call || call.value().activityId != task.id ||
-                call.value().status != "succeeded")
+            const bool validStatus =
+                call && call.value().activityId == task.id &&
+                (call.value().status == "succeeded" ||
+                 (autonomousActivity && call.value().status == "failed"));
+            if (!validStatus)
                 return fail<void>("INVALID_INPUT",
                                   "Task completion evidence is not verified");
         }

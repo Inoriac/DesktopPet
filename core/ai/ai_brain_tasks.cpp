@@ -13,6 +13,9 @@
 #include <QPointer>
 #include <QRegularExpression>
 #include <QSet>
+#include <QSqlDatabase>
+#include <QSqlQuery>
+#include <QUuid>
 #include <utility>
 
 namespace {
@@ -141,6 +144,19 @@ void AIBrain::initializeTaskRuntime() {
                 if (!isTaskActive())
                     finishTaskResponse();
             });
+    connect(m_activityRuntime.get(), &ActivityRuntime::taskFinished, this,
+            [this](const QJsonObject &task) {
+                if (m_taskResponse || m_busy || !automaticTextAllowed())
+                    return;
+                if (!task.value("autonomous").toBool() ||
+                    task.value("origin_kind").toString() != QLatin1String("internal") ||
+                    task.value("status").toString() != QLatin1String("Completed"))
+                    return;
+                const QString summary = task.value("result").toString().trimmed();
+                if (!summary.isEmpty())
+                    emit assistantResponseReady(summary.left(600),
+                                                QStringLiteral("proactive"));
+            });
     m_taskExperienceAdapter = std::make_unique<TaskExperienceAdapter>(
         m_chatPreparationRuntimeMetadata.profileId, m_activityRuntime.get(),
         m_runtimeServices->eventLedger(), &m_memoryStore,
@@ -241,6 +257,106 @@ void AIBrain::refreshTaskDependencies() {
                         : QJsonArray{};
                 context["available_tools"] = CapabilityContext::projectTools(
                     gateways, context["steps"].toArray()).tools;
+                const QString rtDbPath = runtime->databasePath();
+                if (!rtDbPath.isEmpty()) {
+                    const QString connName =
+                        QStringLiteral("task_ctx_") +
+                        QUuid::createUuid().toString(QUuid::WithoutBraces);
+                    {
+                        QSqlDatabase db =
+                            QSqlDatabase::addDatabase(QStringLiteral("QSQLITE"), connName);
+                        db.setConnectOptions(
+                            QStringLiteral("QSQLITE_OPEN_READONLY;QSQLITE_BUSY_TIMEOUT=1000"));
+                        db.setDatabaseName(rtDbPath);
+                        if (db.open()) {
+                            if (input.scope.originKind == OriginKind::External &&
+                                !input.scope.conversationId.isEmpty()) {
+                                QSqlQuery cq(db);
+                                cq.prepare("SELECT channel,remote_id,kind FROM agent_conversations "
+                                           "WHERE profile_id=? AND id=?");
+                                cq.addBindValue(input.scope.profileId);
+                                cq.addBindValue(input.scope.conversationId);
+                                QJsonObject extConv;
+                                if (cq.exec() && cq.next()) {
+                                    extConv["channel"] = cq.value(0).toString();
+                                    extConv["chat_id"] = cq.value(1).toString();
+                                    extConv["kind"] = cq.value(2).toString();
+                                }
+                                QSqlQuery mq(db);
+                                mq.prepare(
+                                    "SELECT remote_id,direction,occurred_at,payload_json "
+                                    "FROM agent_messages WHERE profile_id=? AND conversation_id=? "
+                                    "ORDER BY COALESCE(NULLIF(occurred_at,''),received_at) DESC, rowid DESC LIMIT 6");
+                                mq.addBindValue(input.scope.profileId);
+                                mq.addBindValue(input.scope.conversationId);
+                                QJsonArray recentMsgs;
+                                if (mq.exec()) {
+                                    QList<QJsonObject> items;
+                                    while (mq.next()) {
+                                        const auto p = QJsonDocument::fromJson(
+                                                           mq.value(3).toByteArray())
+                                                           .object();
+                                        items.prepend(QJsonObject{
+                                            {"message_id", mq.value(0).toString()},
+                                            {"direction", mq.value(1).toString()},
+                                            {"occurred_at", mq.value(2).toString()},
+                                            {"speaker", p["externalSpeaker"]
+                                                            .toObject()["remoteActorId"]
+                                                            .toString()},
+                                            {"text", p["text"].toString().left(500)}});
+                                    }
+                                    for (const auto &item : items)
+                                        recentMsgs.append(item);
+                                }
+                                extConv["recent_messages"] = recentMsgs;
+                                context["external_conversation"] = extConv;
+                            } else if (input.scope.originKind == OriginKind::Internal &&
+                                       input.autonomous &&
+                                       !input.scope.allowOwnerMemory) {
+                                QSqlQuery cq(db);
+                                cq.prepare(
+                                    "SELECT id,channel,remote_id,kind FROM agent_conversations "
+                                    "WHERE profile_id=? AND kind<>'local_owner' "
+                                    "ORDER BY updated_at DESC LIMIT 6");
+                                cq.addBindValue(input.scope.profileId);
+                                QJsonArray channels;
+                                if (cq.exec()) {
+                                    while (cq.next()) {
+                                        QJsonObject ch{
+                                            {"channel", cq.value(1).toString()},
+                                            {"chat_id", cq.value(2).toString()},
+                                            {"kind", cq.value(3).toString()}};
+                                        QSqlQuery lq(db);
+                                        lq.prepare(
+                                            "SELECT remote_id,direction,occurred_at,payload_json "
+                                            "FROM agent_messages WHERE profile_id=? AND conversation_id=? "
+                                            "ORDER BY COALESCE(NULLIF(occurred_at,''),received_at) DESC, rowid DESC LIMIT 1");
+                                        lq.addBindValue(input.scope.profileId);
+                                        lq.addBindValue(cq.value(0).toString());
+                                        if (lq.exec() && lq.next()) {
+                                            const auto p = QJsonDocument::fromJson(
+                                                               lq.value(3).toByteArray())
+                                                               .object();
+                                            ch["last_message"] = QJsonObject{
+                                                {"message_id", lq.value(0).toString()},
+                                                {"direction", lq.value(1).toString()},
+                                                {"occurred_at", lq.value(2).toString()},
+                                                {"speaker", p["externalSpeaker"]
+                                                                .toObject()["remoteActorId"]
+                                                                .toString()},
+                                                {"text", p["text"].toString().left(240)}};
+                                        }
+                                        channels.append(ch);
+                                    }
+                                }
+                                if (!channels.isEmpty())
+                                    context["external_channels"] = channels;
+                            }
+                        }
+                        db.close();
+                    }
+                    QSqlDatabase::removeDatabase(connName);
+                }
             }
             context["memory_material"] =
                 guard->m_memoryStore.summaryForContext(input.scope, 8)

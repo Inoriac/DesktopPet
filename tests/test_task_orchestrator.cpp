@@ -108,6 +108,7 @@ private slots:
   void missingCapabilityContextReplansBeforePreparationOrDispatch();
   void ordinaryObservedMessageDoesNotMatchAnExternalWait();
   void taskRunner_realWaitProposal_usesHostReceiptAnchorAndReleasesForeground();
+  void nullWaitWithToolIsNotAMutuallyExclusiveProposal();
   void invalidWaitProposalCannotInventHostAnchors_data();
   void invalidWaitProposalCannotInventHostAnchors();
   void safeCheckpointPreservesReturnedPlanAndVerification();
@@ -137,6 +138,9 @@ private slots:
   void lateToolReceiptArchivesAfterRunnerDestroyed();
   void lateReceiptStorageFailureDoesNotPauseReplacementActivity();
   void resumeRefreshesGroupParticipantsInRunnerAndModelScope();
+  void planPausesCleanlyWhenAutonomyBudgetExhausted();
+  void autonomousTaskCanCompleteTruthfullyWhenRequiredSourceFails();
+  void callingBareEntryOperationReplansForOperationLoad();
 };
 
 namespace {
@@ -339,6 +343,17 @@ void TestTaskOrchestrator::
   QCOMPARE(saved.value().waitingCondition["remoteJobId"].toString(),
            QString("job-42"));
   QCOMPARE(saved.value().waitingCondition["callId"].toString(), callId);
+}
+void TestTaskOrchestrator::nullWaitWithToolIsNotAMutuallyExclusiveProposal() {
+  Harness h;
+  QVERIFY(h.start());
+  h.reply(decision());
+  auto proposal = nextTool();
+  proposal["wait"] = QJsonValue::Null;
+  h.reply(proposal);
+  QCOMPARE(h.toolRequests.size(), 1);
+  QVERIFY(h.runner->isActive());
+  QVERIFY(!h.runner->currentTask().reason.contains("mutually exclusive"));
 }
 void TestTaskOrchestrator::invalidWaitProposalCannotInventHostAnchors_data() {
   QTest::addColumn<QString>("problem");
@@ -845,6 +860,99 @@ void TestTaskOrchestrator::smallEmotionChangeDoesNotReselectAutonomousIntent() {
     QCOMPARE(h.modelRequests.last().phase, QString("plan"));
     QCOMPARE(h.runner->currentTask().id, started.value().activityId);
     QCOMPARE(h.runner->currentTask().decisions.size(), 1);
+}
+
+void TestTaskOrchestrator::planPausesCleanlyWhenAutonomyBudgetExhausted() {
+    Harness h;
+    QVERIFY(h.ready);
+    ActivityIntent intent;
+    intent.context.profileId = h.store.activityStore()->profileId();
+    intent.origin = "self";
+    intent.goal = "Read sources";
+    auto started = h.store.activityStore()->startActivity(intent);
+    QVERIFY(started);
+    QVERIFY(h.runner->activate(started.value().activityId));
+    h.reply(decision());
+    QCOMPARE(h.modelRequests.last().phase, QString("plan"));
+    const int beforeCalls = h.modelRequests.size();
+    auto done = h.models.takeFirst();
+    done({false, {}, "BUDGET_EXHAUSTED"});
+    QCoreApplication::processEvents();
+    QCOMPARE(h.modelRequests.size(), beforeCalls);
+    QCOMPARE(h.runner->currentTask().status, QString("Paused"));
+    QCOMPARE(h.runner->currentTask().hostPauseReason, QString("budget"));
+    const auto saved = h.store.activityStore()->find(started.value().activityId);
+    QVERIFY(saved);
+    QCOMPARE(saved.value().pauseReason, QString("budget"));
+}
+
+void TestTaskOrchestrator::autonomousTaskCanCompleteTruthfullyWhenRequiredSourceFails() {
+    // Non-autonomous user task citing a failed required source must still replan.
+    {
+        Harness h;
+        QVERIFY(h.ready);
+        h.requiredSources = {"web_search"};
+        QVERIFY(h.start({}, QStringLiteral("查询实时数据")));
+        h.reply(decision());
+        h.reply(nextTool("web_search", {{"query", "test"}}));
+        h.tool(false);
+        const QString failedStepId = h.toolRequests.first().id;
+        h.reply(candidate());
+        h.reply(verification(true, failedStepId));
+        QCOMPARE(h.runner->currentTask().status, QString("Replanning"));
+    }
+    // Autonomous task whose stopWhen permits stopping on unavailable source can complete truthfully.
+    {
+        Harness h;
+        QVERIFY(h.ready);
+        ActivityIntent intent;
+        intent.context.profileId = h.store.activityStore()->profileId();
+        intent.origin = "self";
+        intent.goal = QStringLiteral("查看音乐状态与歌单，若接口不可用则如实停止");
+        intent.stopWhen = QStringLiteral("完成查看，或连续查询失败确认服务不可用时停止");
+        auto started = h.store.activityStore()->startActivity(intent);
+        QVERIFY(started);
+        QVERIFY(h.runner->activate(started.value().activityId));
+        h.reply(decision());
+        auto toolPlan = nextTool("web_search", {{"query", "playlist"}});
+        toolPlan["required_source_tools"] = QJsonArray{"web_search"};
+        h.reply(toolPlan);
+        h.tool(false);
+        const QString failedStepId = h.toolRequests.first().id;
+        auto stopCandidate = candidate();
+        stopCandidate["required_source_tools"] = QJsonArray{"web_search"};
+        stopCandidate["completion_criteria"] = QStringLiteral("成功获取歌单，或确认只读接口失败后如实停止");
+        stopCandidate["candidate_answer"] = QStringLiteral("只读查询接口失败（offline），本次按规则停止，未编造歌单。");
+        h.reply(stopCandidate);
+        QCOMPARE(h.modelRequests.last().phase, QString("verify"));
+        h.reply(verification(true, failedStepId));
+        QCOMPARE(h.runner->currentTask().status, QString("Completed"));
+    }
+}
+
+void TestTaskOrchestrator::callingBareEntryOperationReplansForOperationLoad() {
+    Harness h;
+    h.schemas = {QJsonObject{{"name", "load_capability"}}, QJsonObject{{"name", "invoke_capability"}}};
+    QVERIFY(h.start());
+    h.reply(decision());
+    const QJsonObject entryRef{{"pluginId", "test.plugin"}, {"entryId", "music"}, {"entryVersion", "1"}};
+    h.reply(nextTool("load_capability", {{"ref", entryRef}}));
+    auto done = h.tools.takeFirst();
+    TaskToolReply overview;
+    overview.success = true;
+    overview.businessEvidence = false;
+    overview.output = {{"ref", entryRef}, {"kind", "tool"}, {"catalogRevision", 1}, {"definitionDigest", "one"},
+        {"instructions", "Entry overview"},
+        {"operations", QJsonArray{QJsonObject{{"id", "status"}, {"summary", "Query status"}}}}};
+    done(overview);
+    QCoreApplication::processEvents();
+
+    auto bareCall = nextTool("status", {});
+    bareCall["required_source_tools"] = QJsonArray{"status"};
+    h.reply(bareCall);
+    QVERIFY(h.runner->isActive());
+    QCOMPARE(h.runner->currentTask().replans, 1);
+    QVERIFY(h.modelRequests.last().context["reason"].toString().contains("operationId"));
 }
 
 QTEST_GUILESS_MAIN(TestTaskOrchestrator)

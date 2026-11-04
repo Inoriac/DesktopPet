@@ -539,7 +539,9 @@ std::shared_ptr<ModelAttemptHooks> ActivityRuntime::modelBudgetHooks(QString act
         request.ticketId = ticketId;
         request.attemptId = attempt.attemptId;
         request.purpose = ticketId.isEmpty() ? "activity" : "selection";
-        request.inputBytes = QJsonDocument(payload).toJson(QJsonDocument::Compact).size();
+        const qint64 rawPayloadBytes =
+            QJsonDocument(payload).toJson(QJsonDocument::Compact).size();
+        request.inputBytes = qMax<qint64>(1, rawPayloadBytes / 3);
         request.maxOutputTokens = attempt.route.llm.maxTokens;
         request.routeEstimatedCostMicros = attempt.route.estimatedCostMicros;
         request.clock = OpportunityStore::systemClock();
