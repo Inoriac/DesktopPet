@@ -23,7 +23,7 @@ Result<ModelRoleConfig, DomainError> ModelRoleRegistry::configFor(
             for (auto& route : inherited.routes) {
                 route.llm.retryCount = 0;
                 route.llm.maxTokens = qMax(route.llm.maxTokens,
-                    role == ModelRole::AgencyDecision ? 512 : 2048);
+                    role == ModelRole::AgencyDecision ? 4096 : 2048);
             }
             return Result<ModelRoleConfig, DomainError>::success(std::move(inherited));
         }

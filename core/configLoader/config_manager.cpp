@@ -258,7 +258,8 @@ static ModelRoleConfig parseModelRoleConfig(ModelRole role,
                                             const QJsonObject& object,
                                             const LlmConfig& defaults,
                                             const QHash<QString, LlmConfig>& endpoints,
-                                            bool strictEndpointRefs) {
+                                            bool strictEndpointRefs,
+                                            bool disableReasoning) {
     ModelRoleConfig config;
     config.role = role;
     const QJsonObject limits = object.value(QStringLiteral("limits")).toObject();
@@ -280,6 +281,12 @@ static ModelRoleConfig parseModelRoleConfig(ModelRole role,
         if (!parsed.has_value()) continue;
         ModelRouteConfig route = std::move(parsed.value());
         if (route.routeId.isEmpty()) continue;
+        if (disableReasoning && route.llm.provider == "openai-compatible"
+            && !route.llm.extraParams.contains(QStringLiteral("thinking"))) {
+            route.llm.extraParams.insert(
+                QStringLiteral("thinking"),
+                QJsonObject{{QStringLiteral("type"), QStringLiteral("disabled")}});
+        }
         config.routes.append(std::move(route));
     }
     return config;
@@ -669,7 +676,8 @@ bool ConfigManager::loadConfig(const QString& configPath) {
                 if (!roles.value(key).isObject()) continue;
                 modelRoleConfigs.append(parseModelRoleConfig(
                     role, roles.value(key).toObject(), llmConfig,
-                    modelEndpoints, hasEndpointRegistry));
+                    modelEndpoints, hasEndpointRegistry,
+                    aiRaw.value(QStringLiteral("disableReasoning")).toBool(false)));
             }
         }
 

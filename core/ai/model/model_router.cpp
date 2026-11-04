@@ -62,6 +62,7 @@ bool isTransientProviderError(const QString& error) {
 }
 
 Result<QString, DomainError> validatedResponse(const QString& content,
+                                              const QString& finishReason,
                                               const QJsonObject& schema) {
     if (schema.isEmpty()) return Result<QString, DomainError>::success(content);
     QString json = content.trimmed();
@@ -75,9 +76,15 @@ Result<QString, DomainError> validatedResponse(const QString& content,
     const QJsonDocument document =
         QJsonDocument::fromJson(json.toUtf8(), &parseError);
     if (parseError.error != QJsonParseError::NoError || !document.isObject()) {
+        const bool truncated =
+            finishReason.compare(QStringLiteral("length"), Qt::CaseInsensitive) == 0;
         return Result<QString, DomainError>::failure(domainError(
-            "MODEL_OUTPUT_INVALID", "Expected a JSON object or a whole JSON code fence",
-            {{"stage", "parse"}, {"reason", "expected_json_object"}}));
+            "MODEL_OUTPUT_INVALID",
+            truncated ? QStringLiteral("Model output was truncated before a JSON object")
+                      : QStringLiteral("Expected a JSON object or a whole JSON code fence"),
+            {{"stage", "parse"},
+             {"reason", truncated ? "output_truncated" : "expected_json_object"},
+             {"finishReason", finishReason}}));
     }
     const auto valid = SchemaValidator::validate(schema, document.object());
     if (!valid) return Result<QString, DomainError>::failure(valid.error());
@@ -487,13 +494,20 @@ void ModelRouter::attemptRoute(const std::shared_ptr<CompletionState>& state,
                 return;
             }
 
-            const auto validated = validatedResponse(response.content, state->request.responseSchema);
+            const auto validated = validatedResponse(response.content, response.finishReason,
+                                                     state->request.responseSchema);
             if (!validated) {
                 state->invalidOutput = validated.error();
                 state->invalidOutput->details.insert("routeId", selectedRoute.routeId);
                 state->invalidOutput->details.insert("provider", selectedRoute.llm.provider);
                 state->invalidOutput->details.insert("model", selectedRoute.llm.model);
-                if (!repairAttempt) {
+                // A repaired prompt cannot recover tokens already spent in
+                // the truncated response; move on instead of paying for a
+                // second attempt that will truncate identically.
+                const bool truncated =
+                    validated.error().details.value("reason").toString() ==
+                    QStringLiteral("output_truncated");
+                if (!truncated && !repairAttempt) {
                     QList<ChatMessage> repairMessages = messages;
                     repairMessages.append(repairInstruction(validated.error()));
                     attemptRoute(state, selectedIndex,

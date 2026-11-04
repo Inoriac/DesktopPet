@@ -72,7 +72,7 @@
       "minDecisionIntervalMs": 60000, "noOpBackoffMs": 300000,
       "maxNoOpBackoffMs": 1800000, "localTickMs": 15000, "ticketTtlMs": 120000,
       "maxSelectionCallsPerHour": 12, "maxActiveMsPerHour": 900000,
-      "maxTokensPerHour": 120000, "maxEstimatedCostMicrosPerHour": 1000000,
+      "maxTokensPerHour": 300000, "maxEstimatedCostMicrosPerHour": 1000000,
       "unknownAttemptCostMicros": 50000
     },
     "personalityPolicy": {
@@ -96,6 +96,7 @@
     "profiles": {
       "default": {
         "enabled": false,
+        "disableReasoning": true,
         "modelEndpoints": {
           "DEFAULT": {
             "provider": "anthropic-messages",
@@ -117,7 +118,7 @@
           "agencyDecision": {
             "routes": [{"routeId": "agency-primary", "enabled": true,
               "endpointRef": "DEFAULT", "model": "YOUR_TEXT_MODEL_HERE",
-              "timeoutMs": 30000, "maxTokens": 512, "temperature": 0.4}]
+              "timeoutMs": 30000, "maxTokens": 4096, "temperature": 0.4}]
           },
           "taskExecution": {
             "routes": [{"routeId": "task-primary", "enabled": true,

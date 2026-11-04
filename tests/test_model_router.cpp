@@ -181,6 +181,7 @@ private slots:
     void structuredOutput_rejectsNestedViolationsWithSafeDiagnostics_data();
     void structuredOutput_rejectsNestedViolationsWithSafeDiagnostics();
     void structuredOutput_repairsNestedViolationAndMissingFields();
+    void structuredOutput_truncatedResponseIsNotRepaired();
     void structuredOutput_doesNotExtractJsonFromProse_data();
     void structuredOutput_doesNotExtractJsonFromProse();
     void structuredOutput_invalidPrimaryThenProviderFailure_keepsDiagnosticRoute();
@@ -202,6 +203,7 @@ private slots:
     void getModelRoleConfig_whenRoleReferencesAnthropicEndpoint_shouldMergeConnectionAndModel();
     void getModelRoleConfig_whenEndpointReferenceIsMissing_shouldRejectRouteWithoutDefaultKeyFallback();
     void getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnoreItWithoutPuttingItInExtraParams();
+    void getModelRoleConfig_whenDisableReasoning_shouldInjectThinkingDisabled();
     void getModelRoleConfig_whenDaydreamReferencesSpecialEndpoint_shouldUseOnlyItsKeyAndModel();
     void getModelRoleConfig_whenLegacyDaydreamFieldsExist_shouldSynthesizeCompatibleRoute();
     void configFor_whenRoleExists_shouldReturnOnlyRequestedRole();
@@ -310,6 +312,26 @@ void ModelRouterTests::structuredOutput_repairsNestedViolationAndMissingFields()
         QCOMPARE(client.routeIds.size(), 2);
         QVERIFY(client.messageBatches[1].last().content.contains("payload"));
     }
+}
+
+void ModelRouterTests::structuredOutput_truncatedResponseIsNotRepaired() {
+    ModelRoleRegistry registry({roleConfig(ModelRole::AgencyDecision, {route("primary", "model")})});
+    FakeModelCompletionClient client;
+    LlmResponse truncated = responseWithContent({});
+    truncated.finishReason = "length";
+    client.replies = {{true, truncated, {}},
+                      {true, responseWithContent(QStringLiteral("{\"answer\":\"ok\"}")), {}}};
+    ModelRouter router(&registry, &client);
+    ModelRequest request;
+    request.role = ModelRole::AgencyDecision;
+    request.responseSchema = objectSchema();
+    std::optional<Result<ModelCompletion, DomainError>> result;
+    router.completeAsync(request, [&](auto value) { result = std::move(value); });
+    QVERIFY(result.has_value());
+    QVERIFY(!result->isOk());
+    QCOMPARE(client.routeIds.size(), 1);
+    QCOMPARE(result->error().details["reason"].toString(),
+             QString("output_truncated"));
 }
 
 void ModelRouterTests::structuredOutput_doesNotExtractJsonFromProse_data() {
@@ -930,6 +952,39 @@ void ModelRouterTests::getModelRoleConfig_whenHeaderValueIsNotString_shouldIgnor
     QVERIFY(!config.extraHeaders.contains(QStringLiteral("x-invalid")));
     QCOMPARE(config.extraParams.value(QStringLiteral("top_k")).toInt(), 7);
     QVERIFY(!config.extraParams.contains(QStringLiteral("x-invalid")));
+}
+
+void ModelRouterTests::getModelRoleConfig_whenDisableReasoning_shouldInjectThinkingDisabled() {
+    QTemporaryDir directory;
+    QVERIFY(directory.isValid());
+    const QJsonObject endpoint{
+        {QStringLiteral("provider"), QStringLiteral("openai-compatible")},
+        {QStringLiteral("baseUrl"), QStringLiteral("https://deepseek.example/v1")},
+        {QStringLiteral("apiKey"), QStringLiteral("deepseek-key")}};
+    const QJsonObject route{
+        {QStringLiteral("routeId"), QStringLiteral("dialogue-primary")},
+        {QStringLiteral("endpointRef"), QStringLiteral("DEFAULT")},
+        {QStringLiteral("model"), QStringLiteral("deepseek-flash")}};
+    QJsonObject root = configWithDialogueRoute(route);
+    QJsonObject aiSettings = root.value(QStringLiteral("aiSettings")).toObject();
+    QJsonObject profiles = aiSettings.value(QStringLiteral("profiles")).toObject();
+    QJsonObject profile = profiles.value(QStringLiteral("default")).toObject();
+    profile.insert(QStringLiteral("disableReasoning"), true);
+    profile.insert(QStringLiteral("modelEndpoints"), QJsonObject{
+        {QStringLiteral("DEFAULT"), endpoint}});
+    profiles.insert(QStringLiteral("default"), profile);
+    aiSettings.insert(QStringLiteral("profiles"), profiles);
+    root.insert(QStringLiteral("aiSettings"), aiSettings);
+    const QString path = writeConfig(directory, root);
+    QVERIFY(!path.isEmpty());
+    QVERIFY(ConfigManager::instance().loadConfig(path));
+
+    const LlmConfig config = ConfigManager::instance()
+                                 .getModelRoleConfig(ModelRole::Dialogue)
+                                 .routes.first().llm;
+    QCOMPARE(config.extraParams.value(QStringLiteral("thinking"))
+                 .toObject().value(QStringLiteral("type")).toString(),
+             QStringLiteral("disabled"));
 }
 
 void ModelRouterTests::getModelRoleConfig_whenDaydreamReferencesSpecialEndpoint_shouldUseOnlyItsKeyAndModel() {
