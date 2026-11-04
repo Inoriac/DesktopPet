@@ -565,8 +565,14 @@ void PetWindow::setupLauncherChatBridge() {
                 }));
             };
             if (bypassCooldown) {
-                aiBrain->resetAutonomyBudget([triggerNow = std::move(triggerNow)](Result<void, DomainError>) mutable {
-                    triggerNow();
+                if (aiBrain->isTaskActive() && aiBrain->taskSnapshot().value("autonomous").toBool()) {
+                    aiBrain->stopTask();
+                }
+                QTimer::singleShot(150, this, [this, triggerNow = std::move(triggerNow)]() mutable {
+                    if (!aiBrain) return;
+                    aiBrain->resetAutonomyBudget([triggerNow = std::move(triggerNow)](Result<void, DomainError>) mutable {
+                        triggerNow();
+                    });
                 });
             } else {
                 triggerNow();

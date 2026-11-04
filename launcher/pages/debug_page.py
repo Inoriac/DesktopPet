@@ -318,7 +318,7 @@ class DebugPage(ScrollPage):
                         f"lastDecisionAt  : {ctrl.get('lastDecisionAt', '无')}\n"
                         f"nextConsiderAt  : {ctrl.get('nextConsiderAt', '立即可考虑')} (backoff={ctrl.get('backoff', 0)} ms)\n"
                         f"近1小时预算占用 : 选择调用 {sel_count}/{cfg.get('maxSelectionCallsPerHour', 12)} 次 · "
-                        f"Token {used_tokens:,}/{cfg.get('maxTokensPerHour', 120000):,} · "
+                        f"Token {used_tokens:,}/{cfg.get('maxTokensPerHour', 300000):,} · "
                         f"估算成本 {used_cost:,}/{cfg.get('maxEstimatedCostMicrosPerHour', 1000000):,}"
                     )
 
@@ -340,17 +340,36 @@ class DebugPage(ScrollPage):
                 lines.append("\n".join(cue_lines))
 
                 acts = conn.execute(
-                    "SELECT id, state, focus_owned, intent_json, updated_at "
+                    "SELECT id, state, focus_owned, intent_json, execution_json, updated_at "
                     "FROM agent_activities WHERE profile_id=? ORDER BY rowid DESC LIMIT 6",
                     (self._profile_id,),
                 ).fetchall()
                 act_lines = [f"=== 近期自主/复杂活动 (agent_activities, 最近 {len(acts)} 条) ==="]
-                for aid, st, focus, raw_intent, upd in acts:
+                for aid, st, focus, raw_intent, raw_exec, upd in acts:
                     intent = json.loads(raw_intent)
+                    exec_obj = json.loads(raw_exec) if raw_exec else {}
+                    call_status = dict(
+                        conn.execute(
+                            "SELECT call_id, status FROM agent_action_calls "
+                            "WHERE profile_id=? AND activity_id=?",
+                            (self._profile_id, aid),
+                        ).fetchall()
+                    )
+                    steps = exec_obj.get("steps") or []
+                    step_names = [
+                        f"{s.get('name')}({s.get('status') or call_status.get(s.get('id'), 'pending')})"
+                        for s in steps[-5:]
+                    ]
+                    detail_line = f"    steps={len(steps)} {step_names}" if steps else "    steps=0"
+                    if exec_obj.get("reason"):
+                        detail_line += f"  reason={str(exec_obj.get('reason'))[:120]}"
+                    if exec_obj.get("result"):
+                        detail_line += f"\n    result={str(exec_obj.get('result')).replace(chr(10), ' ')[:180]}"
                     act_lines.append(
                         f"  [{st}{'/前台' if focus else ''}] {upd} · ID={aid[:8]}…\n"
                         f"    origin={intent.get('origin')}  goal={intent.get('goal')}\n"
-                        f"    caps={json.dumps(intent.get('capabilityRefs') or [], ensure_ascii=False)}"
+                        f"    caps={json.dumps(intent.get('capabilityRefs') or [], ensure_ascii=False)}\n"
+                        f"{detail_line}"
                     )
                 if not acts:
                     act_lines.append("  (暂无活动记录)")
