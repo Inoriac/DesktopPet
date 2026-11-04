@@ -571,6 +571,48 @@ private slots:
             auto call=makeCall(loaded.value()); call.arguments=args; std::optional<CapabilityOutcome> outcome; runtime.invokeCapability(call,[&](CapabilityOutcome v){outcome=v;}); QTRY_VERIFY(outcome); QVERIFY(!outcome->executed); QCOMPARE(outcome->error.code,"PERMISSION_DENIED");
         }
     }
+    void hostBoundObjectArgument_isOptionalAndFilledBeforeDispatch() {
+        QTemporaryDir dir; const auto root=dir.filePath("package"); makeTool(root);
+        editTool(root,[](QJsonObject& tool) {
+            auto definition=tool["definition"].toObject(); auto operations=definition["operations"].toArray();
+            auto operation=operations[0].toObject();
+            operation["parameters"]=QJsonObject{{"source","inline"},{"schema",QJsonObject{
+                {"type","object"},
+                {"properties",QJsonObject{{"target",QJsonObject{{"type","string"}}},{"mode",QJsonObject{{"type","string"}}}}},
+                {"required",QJsonArray{"target","mode"}},{"additionalProperties",false}}}};
+            operations[0]=operation; definition["operations"]=operations; tool["definition"]=definition;
+        });
+        auto config=hostConfig(root);
+        auto grant=config["grants"].toArray()[0].toObject();
+        grant["conversationId"]="external-1"; grant["autonomous"]=true;
+        grant["objectArguments"]=QJsonObject{{"/target","room-A"}};
+        // A missing executor proves the call passed object authorization (the
+        // host filled /target) without spawning a real process.
+        const QString missingExecutor=dir.filePath("missing-executor.exe");
+        grant["executor"]=missingExecutor;
+        config["grants"]=QJsonArray{grant};
+        auto configuration=config["configuration"].toObject();
+        auto toolConfiguration=configuration["example.tool"].toObject();
+        toolConfiguration["program"]=missingExecutor;
+        configuration["example.tool"]=toolConfiguration;
+        config["configuration"]=configuration;
+        PluginRuntime runtime("pet",dir.filePath("plugins.json")); QVERIFY(runtime.setHostConfiguration(config));
+        ContextSpec context=ContextSpec::localOwner("pet"); context.originKind=OriginKind::External; context.conversationId="external-1";
+        const auto loaded=runtime.loadCapability({"example.plugin","example.tool","1","probe"},context,true); QVERIFY(loaded);
+        const auto schema=loaded.value().parameterSchema;
+        QVERIFY(!schema["required"].toArray().contains(QJsonValue("target")));
+        QVERIFY(schema["required"].toArray().contains(QJsonValue("mode")));
+        QVERIFY(schema["properties"].toObject()["target"].toObject()["description"].toString().contains("Host-bound"));
+        auto call=makeCall(loaded.value()); call.context=context; call.autonomous=true; call.arguments={{"mode","echo"}};
+        std::optional<CapabilityOutcome> outcome; runtime.invokeCapability(call,[&](CapabilityOutcome v){outcome=v;}); QTRY_VERIFY(outcome);
+        QVERIFY2(outcome->stage=="failed",
+                 qPrintable(QString::fromUtf8(QJsonDocument(outcome->toJson()).toJson())));
+        QCOMPARE(outcome->error.code,"DEPENDENCY_UNAVAILABLE");
+        QVERIFY(!outcome->executed);
+        auto mismatched=call; mismatched.callId="call-2"; mismatched.arguments={{"target","room-B"},{"mode","echo"}};
+        std::optional<CapabilityOutcome> denied; runtime.invokeCapability(mismatched,[&](CapabilityOutcome v){denied=v;}); QTRY_VERIFY(denied);
+        QVERIFY(!denied->executed); QCOMPARE(denied->error.code,"PERMISSION_DENIED");
+    }
     void gateway_disableQueuedInvocation_preservesInFlightCall() {
         QTemporaryDir dir; const auto root=dir.filePath("package"); makeTool(root); PluginRuntime plugin("pet",dir.filePath("plugins.json")); QVERIFY(plugin.setHostConfiguration(hostConfig(root)));
         ToolRegistry registry; plugin.attach(&registry); ToolRuntime runtime; runtime.setToolRegistry(&registry);

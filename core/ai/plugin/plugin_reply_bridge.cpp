@@ -25,21 +25,33 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
   if (path.isEmpty())
     return fail<O>("DEPENDENCY_UNAVAILABLE",
                    "Reply archive database is unavailable");
-  if (call.context.originKind != OriginKind::External ||
-      call.context.conversationId.isEmpty())
+  const bool internalAutonomous =
+      call.context.originKind == OriginKind::Internal &&
+      call.context.conversationId.isEmpty() && call.autonomous &&
+      !call.context.allowOwnerMemory;
+  if (!internalAutonomous &&
+      (call.context.originKind != OriginKind::External ||
+       call.context.conversationId.isEmpty()))
     return fail<O>(
         "PERMISSION_DENIED",
         "External sending requires an external conversation context");
   std::optional<QJsonObject> match;
+  QString effectiveConversationId = call.context.conversationId;
   for (const auto &value : matches) {
     const auto id =
         conversationIdFor(call.context.profileId, value["channel"].toString(),
                           value["connectionKey"].toString(),
                           value["remoteConversationId"].toString());
-    if (id == call.context.conversationId) {
+    const bool matchesBinding =
+        internalAutonomous
+            ? (!value["grantRef"].toString().isEmpty() &&
+               value["grantRef"].toString() == call.grantRef)
+            : (id == call.context.conversationId);
+    if (matchesBinding) {
       if (match)
         return fail<O>("INVALID_INPUT", "Ambiguous reply binding");
       match = value;
+      effectiveConversationId = id;
     }
   }
   if (!match)
@@ -65,6 +77,15 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
   for (auto it = prepared.binding.argumentBindings.begin();
        it != prepared.binding.argumentBindings.end(); ++it) {
     auto actual = CapabilityExecutor::pointer(call.arguments, it.key());
+    if (it.value() == "replyToRemoteId") {
+      if (actual) {
+        if (!actual.value().isString())
+          return fail<O>("INVALID_INPUT", "Invalid mapped send argument");
+        replyRemote = actual.value().toString();
+        replySeen = true;
+      }
+      continue;
+    }
     if (!actual || !actual.value().isString())
       return fail<O>("INVALID_INPUT", "Invalid mapped send argument");
     if (it.value() == "remoteConversationId") {
@@ -75,9 +96,6 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
     } else if (it.value() == "content") {
       text = actual.value().toString();
       textSeen = true;
-    } else if (it.value() == "replyToRemoteId") {
-      replyRemote = actual.value().toString();
-      replySeen = true;
     } else
       return fail<O>("INVALID_INPUT", "Unknown reply argument mapping");
   }
@@ -88,11 +106,33 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
   ConversationStore store(call.context.profileId, path);
   ReplyTarget target{value["channel"].toString(),
                      value["connectionKey"].toString(),
-                     call.context.conversationId,
+                     effectiveConversationId,
                      value["remoteConversationId"].toString(),
                      {}};
+  if (internalAutonomous) {
+    auto u = SqliteRuntimeUnitOfWork::begin(path);
+    if (!u)
+      return R::failure(u.error());
+    QSqlQuery ensure(QSqlDatabase::database(u.value()->connectionName()));
+    ensure.prepare(
+        "INSERT INTO agent_conversations(profile_id,id,channel,connection_key,"
+        "remote_id,kind,title) VALUES(?,?,?,?,?,?,?) "
+        "ON CONFLICT(profile_id,id) DO NOTHING");
+    ensure.addBindValue(call.context.profileId);
+    ensure.addBindValue(effectiveConversationId);
+    ensure.addBindValue(value["channel"].toString());
+    ensure.addBindValue(value["connectionKey"].toString());
+    ensure.addBindValue(value["remoteConversationId"].toString());
+    ensure.addBindValue(value["kind"].toString("group"));
+    ensure.addBindValue(QStringLiteral(""));
+    if (!ensure.exec())
+      return fail<O>("STORE_UNAVAILABLE", ensure.lastError().text());
+    auto committed = u.value()->commit();
+    if (!committed)
+      return R::failure(committed.error());
+  }
   QStringList sources;
-  auto history = store.loadHistory(call.context.conversationId, 64);
+  auto history = store.loadHistory(effectiveConversationId, 64);
   if (!history)
     return R::failure(history.error());
   for (const auto &row : history.value())
@@ -109,7 +149,7 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
     q.prepare("SELECT id FROM agent_messages WHERE profile_id=? AND "
               "conversation_id=? AND remote_id=?");
     q.addBindValue(call.context.profileId);
-    q.addBindValue(call.context.conversationId);
+    q.addBindValue(effectiveConversationId);
     q.addBindValue(replyRemote);
     if (!q.exec())
       return fail<O>("STORE_UNAVAILABLE", q.lastError().text());
@@ -149,11 +189,20 @@ prepareCapabilityReply(const CapabilityCall &call, const QJsonObject &config,
                      "Prepared reply dispatch is no longer available");
     return R::success(prepared);
   }
-  auto valid = store.validateContext(call.context);
-  if (!valid)
-    return R::failure(valid.error());
+  ContextSpec dispatchContext = call.context;
+  if (internalAutonomous) {
+    auto current = store.currentContext(effectiveConversationId);
+    if (!current)
+      return R::failure(current.error());
+    dispatchContext = current.value();
+    dispatchContext.activityId = call.activityId;
+  } else {
+    auto valid = store.validateContext(call.context);
+    if (!valid)
+      return R::failure(valid.error());
+  }
   ContextRequestV2 request;
-  request.context = call.context;
+  request.context = dispatchContext;
   request.requestId = call.callId;
   request.generation = 0;
   request.replyTarget = target;

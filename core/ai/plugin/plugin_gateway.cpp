@@ -94,7 +94,8 @@ void PluginRuntime::executeGateway(const ToolExecutionRequest& request,ToolRunti
     if (request.toolName=="invoke_capability") {
         const auto ref=CapabilityRef::fromJson(request.arguments["ref"].toObject()); LoadedCapability loaded;
         { QMutexLocker lock(&m_state->mutex); loaded=m_state->loaded.value(request.context.cacheKey()+ref.key()); }
-        auto permission = grant(ref, request.context, {}, request.autonomous);
+        const auto callArguments = request.arguments["arguments"].toObject();
+        auto permission = grant(ref, request.context, {}, request.autonomous, callArguments);
         if (!permission) {
             finish(ToolResult::fail(permission.error().code));
             return;

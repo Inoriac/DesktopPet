@@ -24,6 +24,75 @@ QString canonicalPath(const QString& path) {
     for (const auto& part:missing) resolved=QDir(resolved).filePath(part);
     return QDir::cleanPath(resolved);
 }
+bool insertGrantArgument(QJsonObject& root, const QString& pointer,
+                         const QJsonValue& value) {
+    if (!pointer.startsWith('/') || pointer.size() < 2) return false;
+    auto parts = pointer.mid(1).split('/');
+    for (auto& part : parts) {
+        for (int i = 0; i < part.size(); ++i)
+            if (part[i] == '~' &&
+                (i + 1 >= part.size() || (part[i + 1] != '0' && part[i + 1] != '1')))
+                return false;
+        part.replace("~1", "/"); part.replace("~0", "~");
+    }
+    std::function<bool(QJsonObject&, int)> assign = [&](QJsonObject& object,
+                                                        int index) {
+        const auto key = parts[index];
+        if (index == parts.size() - 1) {
+            if (object.contains(key)) return false;
+            object[key] = value; return true;
+        }
+        if (object.contains(key) && !object[key].isObject()) return false;
+        auto child = object[key].toObject();
+        if (!assign(child, index + 1)) return false;
+        object[key] = child;
+        return true;
+    };
+    return assign(root, 0);
+}
+// A grant may pin an operation argument to one host-chosen object (for
+// example the current QQ chat_id). Treat those values as host-bound: the
+// model must not have to learn or echo them, but an explicitly supplied
+// value is still checked by authorize().
+void fillGrantedObjectArguments(const QJsonObject& grant,
+                                QJsonObject& arguments) {
+    const auto objects = grant["objectArguments"].toObject();
+    for (auto it = objects.begin(); it != objects.end(); ++it)
+        if (!CapabilityExecutor::pointer(arguments, it.key()))
+            insertGrantArgument(arguments, it.key(), it.value());
+}
+void markHostBoundArguments(LoadedCapability& loaded, const QJsonObject& grant) {
+    const auto objects = grant["objectArguments"].toObject();
+    if (objects.isEmpty() || loaded.ref.operationId.isEmpty()) return;
+    auto adjust = [&](QJsonObject schema) {
+        auto properties = schema["properties"].toObject();
+        QJsonArray required = schema["required"].toArray();
+        for (auto it = objects.begin(); it != objects.end(); ++it) {
+            const QString pointer = it.key();
+            // Nested object pins are not reflected in the top-level schema.
+            if (!pointer.startsWith('/') || pointer.mid(1).contains('/')) continue;
+            const QString key = pointer.mid(1);
+            if (!properties.contains(key)) continue;
+            QJsonArray filtered;
+            for (const auto& value : required)
+                if (value.toString() != key) filtered.append(value);
+            required = filtered;
+            auto property = properties[key].toObject();
+            property["description"] =
+                "Host-bound to the current conversation; omit it and the host supplies the granted value.";
+            properties[key] = property;
+        }
+        schema["properties"] = properties;
+        schema["required"] = required;
+        return schema;
+    };
+    loaded.parameterSchema = adjust(loaded.parameterSchema);
+    auto parameters = loaded.operation["parameters"].toObject();
+    if (parameters["schema"].isObject()) {
+        parameters["schema"] = adjust(parameters["schema"].toObject());
+        loaded.operation["parameters"] = parameters;
+    }
+}
 }
 PluginRuntime::PluginRuntime(QString profile,QString settings,QObject* parent):QObject(parent),m_profileId(std::move(profile)),m_settingsPath(std::move(settings)),m_discoveryInstanceId(QUuid::createUuid().toString(QUuid::WithoutBraces)) { m_worker.setMaxThreadCount(1); }
 PluginRuntime::~PluginRuntime() {
@@ -136,16 +205,18 @@ Result<PluginRegistration,DomainError> PluginRuntime::registerPlugin(const Plugi
 quint64 PluginRuntime::catalogRevision() const { QMutexLocker lock(&m_state->mutex); return m_state->catalog->revision(); }
 Result<QJsonObject, DomainError>
 PluginRuntime::grant(const CapabilityRef &ref, const ContextSpec &context,
-                     const QString &id, bool autonomous) const {
+                     const QString &id, bool autonomous,
+                     const QJsonObject &arguments) const {
     QMutexLocker lock(&m_state->mutex);
     return findGrant(m_profileId, m_state->config, ref, context, id,
-                     autonomous);
+                     autonomous, arguments);
 }
 Result<QJsonObject, DomainError>
 PluginRuntime::findGrant(const QString &profile,
                          const QJsonObject &configuration,
                          const CapabilityRef &ref, const ContextSpec &context,
-                         const QString &id, bool autonomous) {
+                         const QString &id, bool autonomous,
+                         const QJsonObject &arguments) {
     if (context.profileId != profile)
         return fail<QJsonObject>("INVALID_INPUT",
                                  "Capability context has the wrong profile");
@@ -163,6 +234,49 @@ PluginRuntime::findGrant(const QString &profile,
             continue;
         if (g["profileId"]==context.profileId && g["pluginId"]==ref.pluginId && scope && g["entryId"]==ref.entryId && (id.isEmpty() || g["id"]==id)
             && (ref.operationId.isEmpty() || g["operationId"]==ref.operationId)) return Result<QJsonObject,DomainError>::success(g);
+    }
+    // In an internal autonomous activity without owner-memory exposure, allow
+    // explicitly reply-bound operations (e.g. QQ send to a whitelisted chat_id)
+    // whose conversation grant has autonomous=true.
+    if (context.originKind == OriginKind::Internal &&
+        context.conversationId.isEmpty() && !context.allowOwnerMemory &&
+        (autonomous || !id.isEmpty()) && !ref.operationId.isEmpty()) {
+        QSet<QString> replyGrantIds;
+        for (const auto &rbValue : configuration["replyBindings"].toArray()) {
+            const auto rb = rbValue.toObject();
+            if (CapabilityRef::fromJson(rb["ref"].toObject()) == ref &&
+                !rb["grantRef"].toString().isEmpty())
+                replyGrantIds.insert(rb["grantRef"].toString());
+        }
+        if (!replyGrantIds.isEmpty()) {
+            for (const auto &value : configuration["grants"].toArray()) {
+                const auto g = value.toObject();
+                if (!g["autonomous"].toBool() ||
+                    !replyGrantIds.contains(g["id"].toString()))
+                    continue;
+                if (g["profileId"] != context.profileId ||
+                    g["pluginId"] != ref.pluginId ||
+                    g["entryId"] != ref.entryId ||
+                    g["operationId"] != ref.operationId ||
+                    (!id.isEmpty() && g["id"] != id))
+                    continue;
+                if (!arguments.isEmpty()) {
+                    const auto objects = g["objectArguments"].toObject();
+                    bool match = !objects.isEmpty();
+                    for (auto it = objects.begin(); it != objects.end(); ++it) {
+                        auto actual =
+                            CapabilityExecutor::pointer(arguments, it.key());
+                        if (!actual || actual.value() != it.value()) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (!match)
+                        continue;
+                }
+                return Result<QJsonObject, DomainError>::success(g);
+            }
+        }
     }
     return fail<QJsonObject>("PERMISSION_DENIED","No host grant matches this capability and conversation");
 }
@@ -305,17 +419,20 @@ Result<LoadedCapability, DomainError> PluginRuntime::loadForDispatch(
         QMutexLocker lock(&m_state->mutex);
         return LearnedSkillAdapter::load(m_state->learned, ref, context);
     }
+    QJsonObject pinnedGrant;
     if (autonomous || context.originKind != OriginKind::LocalOwner) {
         auto allowed = grant(ref, context, {}, autonomous);
         if (!allowed)
             return Result<LoadedCapability, DomainError>::failure(
                 allowed.error());
+        pinnedGrant = allowed.value();
     }
     std::shared_ptr<PluginCatalog> catalog; { QMutexLocker lock(&m_state->mutex); catalog=m_state->catalog; }
     auto loaded=catalog->loadCapability(ref); if (!loaded) return loaded;
     loaded.value().hostConfiguration=binding(ref).configuration;
     if (autonomous && !ref.operationId.isEmpty()) {
-        auto permission = grant(ref, context, {}, autonomous);
+        auto permission = pinnedGrant.isEmpty() ? grant(ref, context, {}, autonomous)
+                                               : Result<QJsonObject, DomainError>::success(pinnedGrant);
         if (!permission)
             return Result<LoadedCapability, DomainError>::failure(
                 permission.error());
@@ -330,7 +447,8 @@ Result<LoadedCapability, DomainError> PluginRuntime::loadForDispatch(
                 permitted.error());
     }
     if (!ref.operationId.isEmpty() && loaded.value().operation["parameters"].toObject()["source"]=="mcp") {
-        auto allowed = grant(ref, context, {}, autonomous);
+        auto allowed = pinnedGrant.isEmpty() ? grant(ref, context, {}, autonomous)
+                                            : Result<QJsonObject, DomainError>::success(pinnedGrant);
         if (!allowed)
             return Result<LoadedCapability, DomainError>::failure(
                 allowed.error());
@@ -346,6 +464,8 @@ Result<LoadedCapability, DomainError> PluginRuntime::loadForDispatch(
         auto schema=CapabilityExecutor::remoteSchema(loaded.value(),bound,5000);
         if (!schema) return Result<LoadedCapability,DomainError>::failure(schema.error()); loaded.value().parameterSchema=schema.value();
     }
+    if (!pinnedGrant.isEmpty() && context.originKind == OriginKind::External)
+        markHostBoundArguments(loaded.value(), pinnedGrant);
     { QMutexLocker lock(&m_state->mutex); m_state->loaded.insert(context.cacheKey()+ref.key(),loaded.value()); }
     return loaded;
 }
@@ -385,7 +505,8 @@ void PluginRuntime::settle(const std::shared_ptr<Pending>& pending) {
 void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityCompletion completion) {
     auto pending=std::make_shared<Pending>(); pending->completion=std::move(completion); m_pending.append(pending);
     QPointer<PluginRuntime> guard(this);
-    m_worker.start([this,guard,pending,call] {
+    auto mutableCall = call;
+    m_worker.start([this,guard,pending,call=std::move(mutableCall)]() mutable {
         std::optional<LoadedCapability> executedDefinition;
         ObservationConfiguration observations;
         QString observationPath;
@@ -404,7 +525,9 @@ void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityComple
             if (call.catalogRevision!=catalog->revision()) return errorOutcome(call,domainError("STALE_REVISION","Loaded capability is stale"));
             auto loaded=catalog->loadCapability(call.ref); if (!loaded) return errorOutcome(call,loaded.error());
             if (loaded.value().definitionDigest!=call.definitionDigest) return errorOutcome(call,domainError("STALE_REVISION","Loaded definition changed"));
-            auto permission=grant(call.ref,call.context,call.grantRef); if (!permission) return errorOutcome(call,permission.error());
+            auto permission=grant(call.ref,call.context,call.grantRef,call.autonomous,call.arguments); if (!permission) return errorOutcome(call,permission.error());
+            if (call.grantRef.isEmpty()) call.grantRef = permission.value()["id"].toString();
+            fillGrantedObjectArguments(permission.value(), call.arguments);
             executedDefinition=loaded.value();
             const auto bound=binding(call.ref); executedDefinition->hostConfiguration=bound.configuration; auto authorized=authorize(loaded.value(),call,permission.value(),bound); if (!authorized) return errorOutcome(call,authorized.error());
             auto prepared = prepareCapabilityReply(call, hostConfiguration,
@@ -424,7 +547,7 @@ void PluginRuntime::invokeCapability(const CapabilityCall& call,CapabilityComple
                     if (m_state->catalog!=catalog || call.catalogRevision!=catalog->revision()) return fail<void>("STALE_REVISION","Capability configuration changed");
                 }
                 auto current=catalog->loadCapability(call.ref); if (!current) return Result<void,DomainError>::failure(current.error());
-                auto currentGrant=grant(call.ref,call.context,call.grantRef); if (!currentGrant) return Result<void,DomainError>::failure(currentGrant.error());
+                auto currentGrant=grant(call.ref,call.context,call.grantRef,call.autonomous,call.arguments); if (!currentGrant) return Result<void,DomainError>::failure(currentGrant.error());
                 auto allowed=authorize(current.value(),call,currentGrant.value(),binding(call.ref));
                 if (allowed) {
                     QMutexLocker lock(&m_state->mutex);

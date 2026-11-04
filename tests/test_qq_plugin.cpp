@@ -187,8 +187,63 @@ private slots:
         QCOMPARE(f.actions(chat.startsWith("group:") ? "send_group_msg" : "send_private_msg"), 1);
         QVERIFY(!QFile::exists(QString(QQ_PACKAGE) + "/__pycache__"));
     }
-    void runtime_scope_and_disable() {
+    void external_read_send_receipt_bind_current_chat_without_model_chat_id() {
         Fixture f;
+        QVERIFY2(f.prepare({{"history", QJsonObject{{"group:123", QJsonArray{message()}}}}}), qPrintable(f.error));
+        PluginRuntime runtime(profileId, f.hostPath());
+        runtime.setObservationDatabase(f.databasePath());
+        QVERIFY(runtime.initialize());
+        auto seeded = invoke(runtime, ContextSpec::localOwner(profileId), "read", {{"chat_id", "group:123"}});
+        QVERIFY2(seeded.result.success, qPrintable(seeded.result.errorMessage));
+        const auto context = f.external("group:123");
+        QCOMPARE(context.originKind, OriginKind::External);
+        auto loaded = gateway(runtime, context, "load_capability", {{"ref", ref("read").toJson()}}, true);
+        QVERIFY2(loaded.result.success, qPrintable(loaded.result.errorMessage));
+        const auto parameters = loaded.result.data["parameters"].toObject();
+        QVERIFY(!parameters["required"].toArray().contains(QJsonValue("chat_id")));
+        QVERIFY(parameters["properties"].toObject()["chat_id"].toObject()["description"].toString().contains("Host-bound"));
+        auto read = invoke(runtime, context, "read", {}, true);
+        QVERIFY2(read.result.success, qPrintable(read.result.errorMessage));
+        QCOMPARE(read.result.data["data"].toObject()["items"].toArray().size(), 1);
+        auto sent = invoke(runtime, context, "send", {{"text", QString::fromUtf8("收到🙂")}, {"reply_to", "m1"}}, true);
+        QVERIFY2(sent.result.success, qPrintable(sent.result.errorMessage));
+        QCOMPARE(sent.result.data["stage"].toString(), "completed");
+        QCOMPARE(f.actions("send_group_msg"), 1);
+        const auto receiptId = sent.result.data["data"].toObject()["receipt_id"].toString();
+        QVERIFY(!receiptId.isEmpty());
+        auto receipt = invoke(runtime, context, "receipt", {{"receipt_id", receiptId}}, true);
+        QVERIFY2(receipt.result.success, qPrintable(receipt.result.errorMessage));
+        QCOMPARE(receipt.result.data["data"].toObject()["delivery"].toString(), "completed");
+    }
+    void internal_autonomous_send_without_owner_memory_reaches_granted_chat_only() {
+        Fixture f;
+        QVERIFY2(f.prepare({{"history", QJsonObject{{"group:123", QJsonArray{message()}}}}}), qPrintable(f.error));
+        PluginRuntime runtime(profileId, f.hostPath());
+        runtime.setObservationDatabase(f.databasePath());
+        QVERIFY(runtime.initialize());
+        ContextSpec internal;
+        internal.profileId = profileId;
+        internal.originKind = OriginKind::Internal;
+        internal.allowInternalMemory = true;
+        internal.allowOwnerMemory = false;
+        internal.activityId = "act-internal-1";
+        auto read = invoke(runtime, internal, "read", {{"chat_id", "group:123"}}, true);
+        QVERIFY2(read.result.success, qPrintable(read.result.errorMessage));
+        auto sent = invoke(runtime, internal, "send", {{"chat_id", "group:123"}, {"text", QString::fromUtf8("我在的～")}}, true);
+        QVERIFY2(sent.result.success, qPrintable(sent.result.errorMessage));
+        QCOMPARE(sent.result.data["stage"].toString(), "completed");
+        QCOMPARE(f.actions("send_group_msg"), 1);
+        // Unwhitelisted chat_id is still rejected.
+        auto wrongChat = invoke(runtime, internal, "send", {{"chat_id", "group:999"}, {"text", "denied"}}, true);
+        QVERIFY(!wrongChat.result.success);
+        // Internal context carrying owner memory must never send externally.
+        ContextSpec withOwner = internal;
+        withOwner.allowOwnerMemory = true;
+        auto ownerLeaking = invoke(runtime, withOwner, "send", {{"chat_id", "group:123"}, {"text", "denied"}}, true);
+        QVERIFY(!ownerLeaking.result.success);
+        QCOMPARE(f.actions("send_group_msg"), 1);
+    }
+    void runtime_scope_and_disable() {        Fixture f;
         QVERIFY2(f.prepare({{"history", QJsonObject{{"group:123", QJsonArray{message()}}}}}), qPrintable(f.error));
         PluginRuntime runtime(profileId, f.hostPath());
         runtime.setObservationDatabase(f.databasePath());

@@ -208,13 +208,13 @@
                 "maxLength": 8000
               },
               "reply_to": {
-                "type": "string"
+                "type": "string",
+                "description": "可选：引用本会话已观察到的消息 message_id；不引用时传空字符串或省略"
               }
             },
             "required": [
               "chat_id",
-              "text",
-              "reply_to"
+              "text"
             ],
             "additionalProperties": false
           }

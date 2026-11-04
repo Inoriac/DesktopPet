@@ -82,11 +82,13 @@ private:
     Result<QJsonObject, DomainError> grant(const CapabilityRef &ref,
                                            const ContextSpec &context,
                                            const QString &id = {},
-                                           bool autonomous = false) const;
+                                           bool autonomous = false,
+                                           const QJsonObject &arguments = {}) const;
     static Result<QJsonObject, DomainError>
     findGrant(const QString &profile, const QJsonObject &configuration,
               const CapabilityRef &ref, const ContextSpec &context,
-              const QString &id = {}, bool autonomous = false);
+              const QString &id = {}, bool autonomous = false,
+              const QJsonObject &arguments = {});
     static CapabilityBinding bindingFor(const QJsonObject &configuration,
                                         const CapabilityRef &ref);
     static Result<void, DomainError>
