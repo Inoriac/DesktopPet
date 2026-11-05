@@ -226,7 +226,13 @@ void ActivitySelector::selectActivity(const SelectionRequest &r,
          "reproduce private thought text. "
          "Exercise genuine autonomy and variety: avoid repeating goals or topics "
          "already attempted, cancelled, or completed in recent activities/cues "
-         "(for example, do not repeatedly pick generic science web articles). "
+         "(for example, do not repeatedly pick generic science web articles or "
+         "check the same chat channel back-to-back). "
+         "External channel_activity cues are optional background chatter, NEVER "
+         "an obligation to reply: like a real person occasionally glancing at "
+         "messages between solo hobbies, often choose wait or a personal "
+         "curiosity (Bilibili, music, web) unless you genuinely feel like "
+         "checking in. "
          "You may design a self-directed multi-step composite activity combining "
          "multiple offered plugins in one coherent plan (for example: checking "
          "QQ conversations via list/read and replying via send if someone spoke "
@@ -488,6 +494,24 @@ ActivitySelector::prepare(SelectionRequest r) {
                 const QString convId = convs.value(0).toString();
                 const QString channel = convs.value(1).toString();
                 const QString remoteId = convs.value(2).toString();
+                // Cooldown: if we already spoke in this external conversation
+                // within the last 15 minutes, let the room breathe instead of
+                // hovering over every follow-up remark.
+                QSqlQuery lastSelf(db);
+                lastSelf.prepare(
+                    "SELECT COALESCE(NULLIF(occurred_at,''),received_at) "
+                    "FROM agent_messages WHERE profile_id=? AND conversation_id=? "
+                    "AND direction='outgoing' "
+                    "ORDER BY COALESCE(NULLIF(occurred_at,''),received_at) DESC, rowid DESC LIMIT 1");
+                lastSelf.addBindValue(r.context.profileId);
+                lastSelf.addBindValue(convId);
+                if (lastSelf.exec() && lastSelf.next()) {
+                    const auto selfTime = QDateTime::fromString(
+                        lastSelf.value(0).toString(), Qt::ISODateWithMs);
+                    if (selfTime.isValid() &&
+                        selfTime.secsTo(QDateTime::currentDateTimeUtc()) < 900)
+                        continue;
+                }
                 QSqlQuery lastMsg(db);
                 lastMsg.prepare(
                     "SELECT payload_json,speaker_id,direction FROM agent_messages "
@@ -520,7 +544,7 @@ ActivitySelector::prepare(SelectionRequest r) {
                 const QString actor =
                     payload["externalSpeaker"].toObject()["remoteActorId"].toString();
                 const QString cueText =
-                    QStringLiteral("[%1 %2 待回应消息%3] %4")
+                    QStringLiteral("[%1 %2 近期动态（非必回，按兴趣偶发浏览）%3] %4")
                         .arg(channel, remoteId,
                              actor.isEmpty() ? QString()
                                              : QStringLiteral(" from %1").arg(actor),

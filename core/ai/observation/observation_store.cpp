@@ -297,18 +297,44 @@ ObservationStore::ingest(const ObservationBinding &binding,
                           "Source cursor compare-and-swap did not commit"));
         if (!accepted.duplicate && !accepted.selfMessage &&
             !accepted.historicalImport) {
-          const QJsonObject cue{{"conversationId", accepted.conversationId},
-                                {"eventId", accepted.originId},
-                                {"messageId", accepted.messageId},
-                                {"bindingId", binding.id}};
-          auto saved = exec(
-              db,
-              "INSERT INTO "
-              "agent_runtime_migrations(profile_id,migration_id,cursor_json,"
-              "state) VALUES(?,?,?,'running')",
-              {m_profile, "observation:cue:" + accepted.originId, json(cue)});
-          if (!saved)
-            return saved;
+          const bool mentionOnly =
+              binding.source.value("wakePolicy").toString() == "mention_only";
+          bool directMention = false;
+          if (!binding.selfIdentity.remoteActorId.isEmpty()) {
+            const QString pattern =
+                QStringLiteral("@%1(?:$|[^0-9])")
+                    .arg(QRegularExpression::escape(
+                        binding.selfIdentity.remoteActorId));
+            directMention =
+                QRegularExpression(pattern).match(incoming.content).hasMatch();
+          }
+          bool waitingExternal = false;
+          if (mentionOnly && !directMention) {
+            QSqlQuery wq(db);
+            wq.prepare(
+                "SELECT 1 FROM agent_activities WHERE profile_id=? AND "
+                "state='WaitingExternal' AND "
+                "json_extract(context_json,'$.conversationId')=? LIMIT 1");
+            wq.addBindValue(m_profile);
+            wq.addBindValue(accepted.conversationId);
+            if (wq.exec() && wq.next())
+              waitingExternal = true;
+          }
+          accepted.urgentCue = !mentionOnly || directMention || waitingExternal;
+          if (accepted.urgentCue) {
+            const QJsonObject cue{{"conversationId", accepted.conversationId},
+                                  {"eventId", accepted.originId},
+                                  {"messageId", accepted.messageId},
+                                  {"bindingId", binding.id}};
+            auto saved = exec(
+                db,
+                "INSERT INTO "
+                "agent_runtime_migrations(profile_id,migration_id,cursor_json,"
+                "state) VALUES(?,?,?,'running')",
+                {m_profile, "observation:cue:" + accepted.originId, json(cue)});
+            if (!saved)
+              return saved;
+          }
         }
         return V::success();
       });

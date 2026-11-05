@@ -29,7 +29,7 @@ void AIBrain::initializePluginRuntime() {
                       m_chatPreparationRuntimeMetadata.profileId)
                 return;
               if (message.duplicate || message.selfMessage ||
-                  message.historicalImport)
+                  message.historicalImport || !message.urgentCue)
                 return;
               m_opportunityInputWatermarks[message.conversationId] =
                   message.messageId;

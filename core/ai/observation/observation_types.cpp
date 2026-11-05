@@ -88,11 +88,15 @@ ObservationConfiguration::parse(const QJsonObject &config) {
         return bad();
       b.source = o["source"].toObject();
       if (!keys(b.source,
-                {"sourceId", "configurationKey", "executor", "enabled"}) ||
+                {"sourceId", "configurationKey", "executor", "enabled",
+                 "wakePolicy"}) ||
           !text(b.source, "sourceId") || !text(b.source, "configurationKey") ||
           !text(b.source, "executor") ||
           !QDir::isAbsolutePath(b.source["executor"].toString()) ||
-          (b.source.contains("enabled") && !b.source["enabled"].isBool()))
+          (b.source.contains("enabled") && !b.source["enabled"].isBool()) ||
+          (b.source.contains("wakePolicy") &&
+           b.source["wakePolicy"] != "immediate" &&
+           b.source["wakePolicy"] != "mention_only"))
         return bad();
       const auto key = b.pluginId + "/" + b.source["sourceId"].toString() +
                        "/" + b.connectionKey;

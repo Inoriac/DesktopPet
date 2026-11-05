@@ -819,6 +819,48 @@ private slots:
     auto valid = SchemaValidator::validateManifest("source", source);
     QVERIFY2(valid, qPrintable(valid ? QString() : valid.error().message));
   }
+  void mentionOnlyWakePolicy_archivesSilentlyUntilDirectMention() {
+    Fixture f;
+    auto b = f.binding();
+    b.source["wakePolicy"] = "mention_only";
+    ObservationStore store(profile, f.path);
+
+    auto ambient = f.envelope("1", "group-a", "message-1");
+    ambient.payload["message"] = QJsonObject{
+        {"remoteMessageId", "message-1"}, {"text", "大家中午吃啥"}, {"replyToRemoteId", ""}};
+    auto first = store.ingest(b, ambient);
+    QVERIFY2(first, qPrintable(first ? QString() : first.error().message));
+    QVERIFY(!first.value().message.urgentCue);
+    QCOMPARE(f.count("agent_messages"), 1);
+    {
+      auto unit = SqliteRuntimeUnitOfWork::begin(f.path);
+      QVERIFY(unit);
+      auto cue = ObservationStore::pendingCue(
+          QSqlDatabase::database(unit.value()->connectionName()), profile);
+      QVERIFY(cue);
+      QVERIFY(!cue.value());
+    }
+
+    auto mentioned = f.envelope("2", "group-a", "message-2");
+    mentioned.payload["message"] = QJsonObject{
+        {"remoteMessageId", "message-2"},
+        {"text", "@" + b.selfIdentity.remoteActorId + " 出来玩"},
+        {"replyToRemoteId", ""}};
+    auto second = store.ingest(b, mentioned);
+    QVERIFY2(second, qPrintable(second ? QString() : second.error().message));
+    QVERIFY(second.value().message.urgentCue);
+    QCOMPARE(f.count("agent_messages"), 2);
+    {
+      auto unit = SqliteRuntimeUnitOfWork::begin(f.path);
+      QVERIFY(unit);
+      auto cue = ObservationStore::pendingCue(
+          QSqlDatabase::database(unit.value()->connectionName()), profile);
+      QVERIFY(cue);
+      QVERIFY(cue.value());
+      QCOMPARE(cue.value()->eventIds,
+               QStringList{second.value().message.originId});
+    }
+  }
 };
 QTEST_GUILESS_MAIN(ExternalObservationTests)
 #include "test_external_observation.moc"

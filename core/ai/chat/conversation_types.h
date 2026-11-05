@@ -47,6 +47,7 @@ struct AcceptedMessage {
     bool duplicate = false;
     bool selfMessage = false;
     bool historicalImport = false;
+    bool urgentCue = true;
     bool originalTimeKnown = true;
     QDateTime receivedAt;
     qint64 revision = 0;

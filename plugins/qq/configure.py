@@ -66,7 +66,7 @@ class ConfigurationPlan:
                 "hostConfiguration": self.host}
 
 
-def prepare_configuration(profile_dir, settings_path, autonomous="on", source="off"):
+def prepare_configuration(profile_dir, settings_path, autonomous="on", source="off", wake_policy="mention_only"):
     profile = Path(profile_dir).expanduser().resolve()
     try:
         if str(uuid.UUID(profile.name)) != profile.name or not profile.is_dir():
@@ -78,8 +78,8 @@ def prepare_configuration(profile_dir, settings_path, autonomous="on", source="o
     except (ValueError, AdapterError) as error:
         raise ConfigurationError(error.message if isinstance(error, AdapterError) else
                                  "profile-dir must be an existing canonical lowercase UUID directory") from None
-    if autonomous not in ("on", "off") or source not in ("on", "off"):
-        raise ConfigurationError("autonomous and source must be on or off")
+    if autonomous not in ("on", "off") or source not in ("on", "off") or wake_policy not in ("mention_only", "immediate"):
+        raise ConfigurationError("autonomous/source must be on or off and wake_policy must be mention_only or immediate")
     interpreter = os.path.abspath(sys.executable)  # Keep venv symlinks: resolve() would select the system environment.
     if not Path(interpreter).is_file():
         raise ConfigurationError("The current Python interpreter is unavailable")
@@ -120,7 +120,8 @@ def prepare_configuration(profile_dir, settings_path, autonomous="on", source="o
                      "selfIdentity": identity,
                      "conversations": [{"remoteConversationId": chat, "kind": "group" if chat.startswith("group:") else "direct"}
                                        for chat in settings["allowedConversations"]],
-                     "source": {"sourceId": SOURCE_ID, "configurationKey": SOURCE_ID, "executor": interpreter, "enabled": source == "on"}})
+                     "source": {"sourceId": SOURCE_ID, "configurationKey": SOURCE_ID, "executor": interpreter,
+                                "enabled": source == "on", "wakePolicy": wake_policy}})
     host["observationBindings"] = bindings
     adapters = [item for item in host.get("observationAdapters", []) if item.get("ref", {}).get("pluginId") != PLUGIN_ID]
     adapters.append({"ref": ref("read"), "observationBindingId": BINDING_ID, "itemsPointer": "/items",
@@ -221,10 +222,11 @@ def main():
     parser.add_argument("--settings", required=True)
     parser.add_argument("--autonomous", choices=("on", "off"), default="on")
     parser.add_argument("--source", choices=("on", "off"), default="off")
+    parser.add_argument("--wake-policy", choices=("mention_only", "immediate"), default="mention_only")
     parser.add_argument("--apply", action="store_true")
     options = parser.parse_args()
     try:
-        plan = prepare_configuration(options.profile_dir, options.settings, options.autonomous, options.source)
+        plan = prepare_configuration(options.profile_dir, options.settings, options.autonomous, options.source, options.wake_policy)
         output, code = (apply_configuration(plan) if options.apply else plan.preview()), 0
     except (ConfigurationError, OSError) as error:
         output, code = {"error": {"code": "CONFIGURATION_ERROR", "message": str(error)}}, 1

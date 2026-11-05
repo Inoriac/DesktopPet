@@ -39,6 +39,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertFalse(self.host.exists())
         self.assertFalse((self.root / "state").exists())
         self.assertFalse(plan.host["observationBindings"][0]["source"]["enabled"])
+        self.assertEqual(plan.host["observationBindings"][0]["source"]["wakePolicy"], "mention_only")
         self.assertNotIn("autonomy", plan.host)
 
     def test_precise_grants_identity_and_mappings(self):
