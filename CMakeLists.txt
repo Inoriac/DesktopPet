@@ -75,7 +75,7 @@ elseif(TARGET qt6keychain)
 endif()
 
 set(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE FALSE)
-if(DESKTOP_PET_HAS_LIBSODIUM AND DESKTOP_PET_QTKEYCHAIN_TARGET)
+if((DESKTOP_PET_HAS_LIBSODIUM AND DESKTOP_PET_QTKEYCHAIN_TARGET) OR WIN32)
     set(DESKTOP_PET_PRIVATE_REFLECTION_AVAILABLE TRUE)
 endif()
 
@@ -543,7 +543,7 @@ target_link_libraries(Desktop_Pet
 )
 
 function(configure_private_reflection target_name)
-    target_link_libraries(${target_name} $<$<PLATFORM_ID:Windows>:advapi32>)
+    target_link_libraries(${target_name} $<$<PLATFORM_ID:Windows>:advapi32> $<$<PLATFORM_ID:Windows>:bcrypt>)
     if(DESKTOP_PET_HAS_LIBSODIUM)
         target_include_directories(${target_name} PRIVATE ${SODIUM_INCLUDE_DIR})
         target_link_libraries(${target_name} ${SODIUM_LIBRARY})

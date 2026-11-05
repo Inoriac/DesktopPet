@@ -8,6 +8,15 @@
 #include <QSqlDatabase>
 #include <QSqlQuery>
 #include <QTemporaryDir>
+#include <QUuid>
+
+#if defined(Q_OS_WIN) && !DESKTOP_PET_HAS_QTKEYCHAIN
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <wincred.h>
+#endif
 
 #include <utility>
 
@@ -1047,6 +1056,50 @@ void SleepCycleTests::composeAsync_whenKeychainUnavailable_shouldReturnPrivateSt
 void SleepCycleTests::privateServices_whenBuildCapabilityIsUnavailable_shouldReturnPrivateStoreUnavailableWithoutPlaintextFallback() {
 #if DESKTOP_PET_HAS_PRIVATE_REFLECTION
     QVERIFY(privateReflectionBuildAvailable());
+    SodiumPrivatePsycheCrypto crypto;
+    const PrivateKeyMaterial key{kProfileId, 1, QByteArray(32, '\x42')};
+    const PrivateRecordAad aad{1, kProfileId, QStringLiteral("diary_entry"),
+                               QStringLiteral("entry-1"), 1};
+    const QByteArray secret = QStringLiteral("今天写了一篇加密的私人日记🙂").toUtf8();
+    const auto encrypted = crypto.encrypt(secret, aad, key);
+    QVERIFY2(encrypted.isOk(), qPrintable(encrypted.isOk() ? QString() : encrypted.error().message));
+    QVERIFY(!encrypted.value().ciphertext.contains(secret));
+    const auto decrypted = crypto.decrypt(encrypted.value(), aad, key);
+    QVERIFY(decrypted.isOk());
+    QCOMPARE(decrypted.value(), secret);
+
+    PrivateRecordAad wrongAad = aad;
+    wrongAad.recordId = QStringLiteral("entry-2");
+    const auto aadRejected = crypto.decrypt(encrypted.value(), wrongAad, key);
+    QVERIFY(!aadRejected.isOk());
+    QCOMPARE(aadRejected.error().code, QStringLiteral("PRIVATE_AUTH_FAILED"));
+
+    EncryptedPrivatePayload tampered = encrypted.value();
+    tampered.ciphertext[tampered.ciphertext.size() - 1] ^= 0x01;
+    const auto tagRejected = crypto.decrypt(tampered, aad, key);
+    QVERIFY(!tagRejected.isOk());
+    QCOMPARE(tagRejected.error().code, QStringLiteral("PRIVATE_AUTH_FAILED"));
+
+    QtKeychainPrivateKeyProvider provider;
+    const auto invalidProfile = provider.loadOrCreate(QStringLiteral("not-a-uuid"));
+    QVERIFY(!invalidProfile.isOk());
+    QCOMPARE(invalidProfile.error().code, QStringLiteral("PRIVATE_STORE_UNAVAILABLE"));
+
+#if defined(Q_OS_WIN) && !DESKTOP_PET_HAS_QTKEYCHAIN
+    const QString ephemeralProfile =
+        QUuid::createUuid().toString(QUuid::WithoutBraces).toLower();
+    const QString account = QString::fromLatin1(
+        QCryptographicHash::hash(ephemeralProfile.toUtf8(), QCryptographicHash::Sha256).toHex());
+    const std::wstring credTarget =
+        QStringLiteral("DesktopPet.PrivatePsyche/%1").arg(account).toStdWString();
+    const auto createdKey = provider.loadOrCreate(ephemeralProfile);
+    const auto reloadedKey = provider.loadOrCreate(ephemeralProfile);
+    CredDeleteW(credTarget.c_str(), CRED_TYPE_GENERIC, 0);
+    QVERIFY2(createdKey.isOk(), qPrintable(createdKey.isOk() ? QString() : createdKey.error().message));
+    QVERIFY2(reloadedKey.isOk(), qPrintable(reloadedKey.isOk() ? QString() : reloadedKey.error().message));
+    QCOMPARE(createdKey.value().key.size(), 32);
+    QCOMPARE(reloadedKey.value().key, createdKey.value().key);
+#endif
 #else
     QVERIFY(!privateReflectionBuildAvailable());
     QtKeychainPrivateKeyProvider provider;

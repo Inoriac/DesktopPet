@@ -64,6 +64,7 @@
 #include "ai/runtime/runtime_ui_bridge.h"
 #include "ai/runtime/runtime_overview.h"
 #include "ai/reflection/sleep_cycle_coordinator.h"
+#include "ai/reflection/diary_fragment_service.h"
 #include "ai/chat/launcher_chat_server.h"
 #include "ai/owner/owner_diary_protocol.h"
 #include "statistic_manager.h"
@@ -620,6 +621,63 @@ void PetWindow::setupLauncherChatBridge() {
             }
             completion(ChatHistoryResult::success({
                 {QStringLiteral("message"), QStringLiteral("已安排后台记忆整理（Daydream）。")}
+            }));
+            return;
+        }
+        if (target == QLatin1String("diary_fragment")) {
+            if (!aiBrain->isEnabled()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("AI_DISABLED"), QStringLiteral("请先启用 AI 开关。"))));
+                return;
+            }
+            if (!runtimeServices || !runtimeServices->diaryFragmentService()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("PRIVATE_STORE_UNAVAILABLE"),
+                    QStringLiteral("日记便签服务未就绪（请确认私密反思与密钥存储可用）。"))));
+                return;
+            }
+            QTimer::singleShot(0, this, [this]() {
+                if (runtimeServices && runtimeServices->diaryFragmentService()) {
+                    const auto res = runtimeServices->diaryFragmentService()->collectFragmentIfIdle();
+                    if (!res.isOk()) {
+                        qWarning() << "[DiaryFragment] manual debug collect failed:"
+                                   << res.error().code << res.error().message;
+                    }
+                }
+            });
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"),
+                 QStringLiteral("已手动触发日记便签收集（若距上次便签新增事件不足阈值则自动跳过）。")}
+            }));
+            return;
+        }
+        if (target == QLatin1String("sleep_cycle")) {
+            if (!aiBrain->isEnabled()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("AI_DISABLED"), QStringLiteral("请先启用 AI 开关。"))));
+                return;
+            }
+            if (!runtimeServices || !runtimeServices->sleepCycleCoordinator()) {
+                completion(ChatHistoryResult::failure(domainError(
+                    QStringLiteral("PRIVATE_STORE_UNAVAILABLE"),
+                    QStringLiteral("私人日记与睡眠协调服务未就绪（请确认密钥存储可用）。"))));
+                return;
+            }
+            SleepTrigger trigger;
+            trigger.type = SleepTriggerType::Manual;
+            trigger.observedIdleSeconds = 3600;
+            trigger.now = QDateTime::currentDateTime();
+            trigger.profileId = profile.profileId;
+            const auto started = runtimeServices->sleepCycleCoordinator()->tryStart(trigger);
+            if (!started.isOk()) {
+                completion(ChatHistoryResult::failure(started.error()));
+                return;
+            }
+            completion(ChatHistoryResult::success({
+                {QStringLiteral("message"),
+                 QStringLiteral("已触发睡眠整理与私人日记撰写（session=%1），稍后可在「私人日记」页刷新查看。")
+                     .arg(started.value().left(8))},
+                {QStringLiteral("sessionId"), started.value()}
             }));
             return;
         }

@@ -46,6 +46,8 @@ class PrivateDiaryPage(ScrollPage):
         self.entry_list = QListWidget(content)
         self.entry_list.setMinimumWidth(260)
         self.entry_list.setMaximumWidth(360)
+        self.entry_list.itemClicked.connect(
+            lambda _item: self.load_selected_entry())
         self.entry_list.itemActivated.connect(
             lambda _item: self.load_selected_entry())
         self.body_view = QTextBrowser(content)

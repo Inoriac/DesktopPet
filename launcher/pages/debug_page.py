@@ -139,6 +139,22 @@ class DebugPage(ScrollPage):
             daydream_btn,
         )
 
+        fragment_btn = PushButton(FIF.EDIT, "立即收集日记便签")
+        fragment_btn.clicked.connect(lambda: self._trigger("diary_fragment"))
+        card.addRow(
+            "日记便签收集 (diary_fragment)",
+            "不等待 5 分钟空闲，立即将近期新事件写成一段加密日记草稿便签",
+            fragment_btn,
+        )
+
+        sleep_btn = PushButton(FIF.DOCUMENT, "立即触发睡眠写日记")
+        sleep_btn.clicked.connect(lambda: self._trigger("sleep_cycle"))
+        card.addRow(
+            "睡眠整理与私人日记 (sleep_cycle)",
+            "不等待 30 分钟空闲，立即触发人格巩固与当日加密私人日记撰写",
+            sleep_btn,
+        )
+
         self._trigger_buttons = (
             self.trigger_autonomy_btn,
             self.reset_budget_btn,
@@ -146,6 +162,8 @@ class DebugPage(ScrollPage):
             idle_btn,
             screen_btn,
             daydream_btn,
+            fragment_btn,
+            sleep_btn,
         )
         self.addCard(card)
 
@@ -391,6 +409,38 @@ class DebugPage(ScrollPage):
                 if not ext_msgs:
                     msg_lines.append("  (暂无外部会话消息)")
                 lines.append("\n".join(msg_lines))
+
+                diary_cnt = conn.execute(
+                    "SELECT COUNT(*) FROM event_log WHERE profile_id=? AND type='DiaryStored'",
+                    (self._profile_id,),
+                ).fetchone()[0]
+                thought_cnt = conn.execute(
+                    "SELECT COUNT(*) FROM event_log WHERE profile_id=? AND type='InnerThoughtStored'",
+                    (self._profile_id,),
+                ).fetchone()[0]
+                has_sleep_tbl = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='sleep_sessions'"
+                ).fetchone()
+                sleep_rows = (
+                    conn.execute(
+                        "SELECT session_id, state, decision, updated_at FROM sleep_sessions "
+                        "WHERE profile_id=? ORDER BY rowid DESC LIMIT 3",
+                        (self._profile_id,),
+                    ).fetchall()
+                    if has_sleep_tbl
+                    else []
+                )
+                diary_lines = [
+                    f"=== 私密反思与私人日记状态 ===",
+                    f"  已归档加密日记事件 (DiaryStored): {diary_cnt} 条  ·  内心独白 (InnerThoughtStored): {thought_cnt} 条",
+                ]
+                for sid, sst, sdec, supd in sleep_rows:
+                    diary_lines.append(
+                        f"  睡眠会话 {sid[:8]}… · state={sst} · decision={sdec} · updated={supd}"
+                    )
+                if not sleep_rows:
+                    diary_lines.append("  (暂无睡眠写日记会话记录)")
+                lines.append("\n".join(diary_lines))
             finally:
                 conn.close()
         except (sqlite3.Error, OSError, json.JSONDecodeError) as error:
