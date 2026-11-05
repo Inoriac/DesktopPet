@@ -23,7 +23,7 @@ from qfluentwidgets import (
 )
 
 from api_connection_tester import ApiConnectionTester
-from app_state import AppState, ModelEndpointState, MODEL_ROLES
+from app_state import AppState, ModelEndpointState, ModelRoleState, MODEL_ROLES
 from ._ui import ScrollPage, Section
 
 
@@ -45,24 +45,25 @@ class AiPage(ScrollPage):
     def __init__(self, state: AppState, parent=None, on_save=None):
         super().__init__("AiPage", parent)
         self.state = state
+        self.state.sync_endpoint_presets()
+        self._active_endpoint_id = self.state.active_endpoint
         self.connection_tester = ApiConnectionTester(self)
         self._active_connection_test_ids: dict[str, str | None] = {
             endpoint_id: None for endpoint_id in state.model_endpoints}
         self._connection_test_buttons = {}
         self._role_endpoint_combos = {}
         self._role_model_edits = {}
-        self._models_by_endpoint = {
-            endpoint_id: next((
-                role.model for role in self.state.model_roles.values()
-                if role.endpoint_ref == endpoint_id and role.model), "")
-            for endpoint_id in self.state.model_endpoints
-        }
+        self._models_by_endpoint = self.state.endpoint_models
         self.connection_tester.finished.connect(
             self._on_connection_test_finished)
 
         self._build_behavior_section()
         self._build_endpoint_section()
         self._build_role_section(on_save)
+        self.endpoint_selector.blockSignals(True)
+        self.endpoint_selector.setCurrentText(self.state.active_endpoint)
+        self.endpoint_selector.blockSignals(False)
+        self._select_endpoint(self.endpoint_selector.currentText(), initial=True)
         self.addStretch()
 
     def _build_behavior_section(self) -> None:
@@ -129,7 +130,9 @@ class AiPage(ScrollPage):
         selector_layout.setSpacing(8)
         self.endpoint_selector = ComboBox(selector_wrap)
         self.endpoint_selector.setMinimumWidth(220)
+        self.endpoint_selector.blockSignals(True)
         self.endpoint_selector.addItems(list(self.state.model_endpoints))
+        self.endpoint_selector.blockSignals(False)
         self.endpoint_selector.currentTextChanged.connect(
             self._select_endpoint)
         selector_layout.addWidget(self.endpoint_selector)
@@ -138,7 +141,11 @@ class AiPage(ScrollPage):
         self.delete_endpoint_button.setToolTip("删除连接档案")
         self.delete_endpoint_button.clicked.connect(self._delete_current_endpoint)
         selector_layout.addWidget(self.delete_endpoint_button)
-        section.addRow("当前档案", "DEFAULT 可编辑但不可删除", selector_wrap)
+        section.addRow(
+            "当前档案",
+            "切换档案会同步切换下方的模型分工；DEFAULT 可编辑但不可删除",
+            selector_wrap,
+        )
 
         add_wrap = QWidget(section)
         add_layout = QHBoxLayout(add_wrap)
@@ -190,13 +197,17 @@ class AiPage(ScrollPage):
 
         if not self.state.model_endpoints:
             self.state.model_endpoints["DEFAULT"] = ModelEndpointState()
+            self.endpoint_selector.blockSignals(True)
             self.endpoint_selector.addItem("DEFAULT")
-        self.endpoint_selector.setCurrentText("DEFAULT")
-        self._select_endpoint(self.endpoint_selector.currentText())
+            self.endpoint_selector.blockSignals(False)
 
     def _build_role_section(self, on_save) -> None:
         section = Section("模型分工", self)
-        section.addRow("材料处理", "反思和日记会发送给对应角色配置的模型服务商；切换连接档案会改变接收方。", QWidget(section))
+        section.addRow(
+            "材料处理",
+            "模型分工随当前连接档案一并保存与切换；反思和日记会发送给对应角色配置的模型服务商。",
+            QWidget(section),
+        )
         endpoint_ids = list(self.state.model_endpoints)
         for role in MODEL_ROLES:
             role_state = self.state.model_roles[role]
@@ -219,7 +230,7 @@ class AiPage(ScrollPage):
             model.setMaximumWidth(300)
             model.textChanged.connect(
                 lambda value, active_role=role:
-                setattr(self.state.model_roles[active_role], "model", value))
+                self._on_role_model_changed(active_role, value))
             layout.addWidget(endpoint_combo)
             layout.addWidget(model)
             self._role_endpoint_combos[role] = endpoint_combo
@@ -264,6 +275,17 @@ class AiPage(ScrollPage):
             return
         setattr(endpoint, field_name, value)
 
+    def _snapshot_active_roles_into_preset(self, endpoint_id: str) -> None:
+        if not endpoint_id or endpoint_id not in self.state.model_endpoints:
+            return
+        self.state.endpoint_role_presets[endpoint_id] = {
+            role: ModelRoleState(
+                self.state.model_roles[role].endpoint_ref,
+                self.state.model_roles[role].model,
+            )
+            for role in MODEL_ROLES
+        }
+
     def _set_endpoint_model(self, model: str) -> None:
         endpoint_id = self._current_endpoint_id()
         if not endpoint_id:
@@ -275,23 +297,77 @@ class AiPage(ScrollPage):
             role_state.model = model
             control = self._role_model_edits.get(role)
             if control is not None and control.text() != model:
+                control.blockSignals(True)
                 control.setText(model)
+                control.blockSignals(False)
+        self._snapshot_active_roles_into_preset(endpoint_id)
+
+    def _on_role_model_changed(self, role: str, model: str) -> None:
+        self.state.model_roles[role].model = model
+        self._snapshot_active_roles_into_preset(self._current_endpoint_id())
 
     def _on_role_endpoint_changed(self, role: str, endpoint_id: str) -> None:
         role_state = self.state.model_roles[role]
         role_state.endpoint_ref = endpoint_id
-        if endpoint_id not in self._models_by_endpoint:
-            return
-        model = self._models_by_endpoint[endpoint_id]
+        preset = self.state.endpoint_role_presets.get(endpoint_id, {})
+        preset_role = preset.get(role) if isinstance(preset, dict) else None
+        if isinstance(preset_role, ModelRoleState) and preset_role.model:
+            model = preset_role.model
+        else:
+            model = self._models_by_endpoint.get(endpoint_id, "")
         role_state.model = model
         control = self._role_model_edits.get(role)
         if control is not None and control.text() != model:
+            control.blockSignals(True)
             control.setText(model)
+            control.blockSignals(False)
+        self._snapshot_active_roles_into_preset(self._current_endpoint_id())
 
-    def _select_endpoint(self, endpoint_id: str) -> None:
+    def _select_endpoint(self, endpoint_id: str, initial: bool = False) -> None:
         endpoint = self.state.model_endpoints.get(endpoint_id)
         if endpoint is None:
             return
+        prev_id = getattr(self, "_active_endpoint_id", "")
+        if (not initial and prev_id and prev_id != endpoint_id
+                and prev_id in self.state.model_endpoints):
+            self._snapshot_active_roles_into_preset(prev_id)
+        self._active_endpoint_id = endpoint_id
+        self.state.active_endpoint = endpoint_id
+
+        if not initial:
+            default_model = self._models_by_endpoint.get(endpoint_id, "")
+            preset = self.state.endpoint_role_presets.get(endpoint_id)
+            if not isinstance(preset, dict):
+                preset = {
+                    role: ModelRoleState(endpoint_id, default_model)
+                    for role in MODEL_ROLES
+                }
+                self.state.endpoint_role_presets[endpoint_id] = preset
+            for role in MODEL_ROLES:
+                src = preset.get(role)
+                ref = (src.endpoint_ref
+                       if isinstance(src, ModelRoleState)
+                       and src.endpoint_ref in self.state.model_endpoints
+                       else endpoint_id)
+                mdl = (src.model
+                       if isinstance(src, ModelRoleState)
+                       else default_model)
+                self.state.model_roles[role] = ModelRoleState(ref, mdl)
+                combo = self._role_endpoint_combos.get(role)
+                if combo is not None:
+                    combo.blockSignals(True)
+                    if combo.findText(ref) < 0:
+                        combo.addItem(ref)
+                    combo.setCurrentText(ref)
+                    combo.blockSignals(False)
+                edit = self._role_model_edits.get(role)
+                if edit is not None:
+                    edit.blockSignals(True)
+                    edit.setText(mdl)
+                    edit.blockSignals(False)
+        else:
+            self._snapshot_active_roles_into_preset(endpoint_id)
+
         controls = (
             self.endpoint_provider,
             self.endpoint_base_url,
@@ -326,9 +402,14 @@ class AiPage(ScrollPage):
         self.state.model_endpoints[endpoint_id] = ModelEndpointState()
         self._active_connection_test_ids[endpoint_id] = None
         self._models_by_endpoint[endpoint_id] = ""
-        self.endpoint_selector.addItem(endpoint_id)
+        self.state.endpoint_role_presets[endpoint_id] = {
+            role: ModelRoleState(endpoint_id, "") for role in MODEL_ROLES
+        }
         for combo in self._role_endpoint_combos.values():
+            combo.blockSignals(True)
             combo.addItem(endpoint_id)
+            combo.blockSignals(False)
+        self.endpoint_selector.addItem(endpoint_id)
         self.new_endpoint_id.clear()
         self.endpoint_selector.setCurrentText(endpoint_id)
 
@@ -336,10 +417,17 @@ class AiPage(ScrollPage):
         endpoint_id = self._current_endpoint_id()
         if endpoint_id == "DEFAULT":
             return
-        if any(role.endpoint_ref == endpoint_id
-               for role in self.state.model_roles.values()):
+        referenced_by = [
+            other_id
+            for other_id, preset in self.state.endpoint_role_presets.items()
+            if other_id != endpoint_id
+            and other_id in self.state.model_endpoints
+            and any(role.endpoint_ref == endpoint_id for role in preset.values())
+        ]
+        if referenced_by:
             InfoBar.error(
-                "无法删除连接档案", "请先将引用它的角色切换到其他档案",
+                "无法删除连接档案",
+                f"请先在档案 {', '.join(referenced_by)} 的模型分工中将角色切换到其他档案",
                 parent=self, position=InfoBarPosition.TOP, duration=4000)
             return
         request_id = self._active_connection_test_ids.get(endpoint_id)
@@ -349,14 +437,21 @@ class AiPage(ScrollPage):
         self._active_connection_test_ids.pop(endpoint_id, None)
         self._connection_test_buttons.pop(endpoint_id, None)
         self._models_by_endpoint.pop(endpoint_id, None)
+        self.state.endpoint_role_presets.pop(endpoint_id, None)
+        self._active_endpoint_id = ""
+        self.endpoint_selector.blockSignals(True)
         index = self.endpoint_selector.findText(endpoint_id)
         if index >= 0:
             self.endpoint_selector.removeItem(index)
+        self.endpoint_selector.setCurrentText("DEFAULT")
+        self.endpoint_selector.blockSignals(False)
         for combo in self._role_endpoint_combos.values():
+            combo.blockSignals(True)
             index = combo.findText(endpoint_id)
             if index >= 0:
                 combo.removeItem(index)
-        self.endpoint_selector.setCurrentText("DEFAULT")
+            combo.blockSignals(False)
+        self._select_endpoint("DEFAULT")
 
     def _test_current_endpoint(self) -> None:
         endpoint_id = self._current_endpoint_id()

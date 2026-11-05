@@ -264,6 +264,80 @@ class LauncherModelRoleConfigTests(unittest.TestCase):
         self.assertEqual(role["limits"], {"maxLatencyMs": 8000})
         self.assertEqual(role["routes"][1]["routeId"], "fallback")
 
+    def test_per_endpoint_role_presets_and_active_endpoint_round_trip(self):
+        state = AppState(
+            active_endpoint="deepseek",
+            model_endpoints={
+                "DEFAULT": endpoint(
+                    "anthropic-messages", "https://claude.example", "claude-key"),
+                "deepseek": endpoint(
+                    "openai-compatible", "https://api.deepseek.com", "ds-key"),
+                "VISION_VENDOR": endpoint(
+                    "openai-compatible", "https://vision.example/v1", "vis-key"),
+            },
+            model_roles={
+                role: (ModelRoleState("VISION_VENDOR", "gpt-4o-vision")
+                       if role == "vision"
+                       else ModelRoleState("deepseek", "deepseek-flash"))
+                for role in MODEL_ROLES
+            },
+            endpoint_models={
+                "DEFAULT": "claude-sonnet-4-6",
+                "deepseek": "deepseek-flash",
+                "VISION_VENDOR": "gpt-4o-vision",
+            },
+            endpoint_role_presets={
+                "DEFAULT": {
+                    role: (ModelRoleState("DEFAULT", "claude-haiku-4-5-20251001")
+                           if role in ("fastExtract", "daydream")
+                           else ModelRoleState("DEFAULT", "claude-sonnet-4-6"))
+                    for role in MODEL_ROLES
+                },
+            },
+        )
+
+        exported = config_loader.apply_settings(
+            config_loader.load_template(), state.to_settings_dict())
+        profile = exported["aiSettings"]["profiles"]["default"]
+        self.assertEqual(profile["activeEndpoint"], "deepseek")
+        self.assertEqual(
+            profile["modelRoles"]["dialogue"]["routes"][0]["endpointRef"],
+            "deepseek",
+        )
+        self.assertEqual(
+            profile["modelRoles"]["vision"]["routes"][0]["endpointRef"],
+            "VISION_VENDOR",
+        )
+        self.assertEqual(
+            profile["modelEndpoints"]["DEFAULT"]["defaultModel"],
+            "claude-sonnet-4-6",
+        )
+        self.assertEqual(
+            profile["modelEndpoints"]["DEFAULT"]["modelRoles"]["fastExtract"],
+            {"endpointRef": "DEFAULT", "model": "claude-haiku-4-5-20251001"},
+        )
+
+        restored = AppState.from_config(exported)
+        self.assertEqual(restored.active_endpoint, "deepseek")
+        self.assertEqual(
+            restored.model_roles["dialogue"],
+            ModelRoleState("deepseek", "deepseek-flash"),
+        )
+        self.assertEqual(
+            restored.model_roles["vision"],
+            ModelRoleState("VISION_VENDOR", "gpt-4o-vision"),
+        )
+        self.assertEqual(
+            restored.endpoint_models["DEFAULT"], "claude-sonnet-4-6")
+        self.assertEqual(
+            restored.endpoint_role_presets["DEFAULT"]["dialogue"],
+            ModelRoleState("DEFAULT", "claude-sonnet-4-6"),
+        )
+        self.assertEqual(
+            restored.endpoint_role_presets["DEFAULT"]["fastExtract"],
+            ModelRoleState("DEFAULT", "claude-haiku-4-5-20251001"),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -189,6 +189,98 @@ class PetProcessTrackerTests(unittest.TestCase):
         self.assertEqual(
             page._role_model_edits["dialogue"].text(), "new-default-model")
 
+    def test_aiPage_whenSwitchingOrAddingEndpoint_shouldSwitchAndPersistRoleAssignmentsPerEndpoint(self):
+        import config_loader
+        from app_state import MODEL_ROLES
+
+        state = AppState(
+            model_endpoints={
+                "DEFAULT": ModelEndpointState(
+                    provider="anthropic-messages",
+                    base_url="https://claude.example",
+                    api_key="claude-key",
+                ),
+            },
+            model_roles={
+                role: (ModelRoleState("DEFAULT", "claude-haiku-4-5-20251001")
+                       if role == "fastExtract"
+                       else ModelRoleState("DEFAULT", "claude-sonnet-4-6"))
+                for role in MODEL_ROLES
+            },
+            endpoint_models={"DEFAULT": "claude-sonnet-4-6"},
+        )
+        page = AiPage(state)
+        self.assertEqual(page.endpoint_selector.currentText(), "DEFAULT")
+
+        # Add a second profile "deepseek": all roles below switch to "deepseek"
+        page.new_endpoint_id.setText("deepseek")
+        page._add_endpoint()
+        self.assertEqual(page.endpoint_selector.currentText(), "deepseek")
+        self.assertEqual(state.active_endpoint, "deepseek")
+        for role in MODEL_ROLES:
+            self.assertEqual(state.model_roles[role].endpoint_ref, "deepseek")
+            self.assertEqual(
+                page._role_endpoint_combos[role].currentText(), "deepseek")
+
+        page.endpoint_model.setText("deepseek-flash")
+        for role in MODEL_ROLES:
+            self.assertEqual(state.model_roles[role].model, "deepseek-flash")
+            self.assertEqual(
+                page._role_model_edits[role].text(), "deepseek-flash")
+
+        # Switch back to DEFAULT: restores DEFAULT's custom role split intact
+        page.endpoint_selector.setCurrentText("DEFAULT")
+        self.assertEqual(state.active_endpoint, "DEFAULT")
+        self.assertEqual(
+            state.model_roles["dialogue"],
+            ModelRoleState("DEFAULT", "claude-sonnet-4-6"),
+        )
+        self.assertEqual(
+            state.model_roles["fastExtract"],
+            ModelRoleState("DEFAULT", "claude-haiku-4-5-20251001"),
+        )
+        self.assertEqual(
+            page._role_model_edits["fastExtract"].text(),
+            "claude-haiku-4-5-20251001",
+        )
+
+        # Switch back to deepseek, export & reload: restores deepseek and keeps DEFAULT preset
+        page.endpoint_selector.setCurrentText("deepseek")
+        exported = config_loader.apply_settings(
+            config_loader.load_template(), state.to_settings_dict())
+        reloaded_state = AppState.from_config(exported)
+        reloaded_page = AiPage(reloaded_state)
+        self.assertEqual(reloaded_page.endpoint_selector.currentText(), "deepseek")
+        self.assertEqual(
+            reloaded_state.model_roles["dialogue"],
+            ModelRoleState("deepseek", "deepseek-flash"),
+        )
+        reloaded_page.endpoint_selector.setCurrentText("DEFAULT")
+        self.assertEqual(
+            reloaded_state.model_roles["fastExtract"],
+            ModelRoleState("DEFAULT", "claude-haiku-4-5-20251001"),
+        )
+
+    def test_aiPage_whenDeletingEndpointReferencedByAnotherProfile_shouldBlockDeletion(self):
+        state = AppState(
+            model_endpoints={
+                "DEFAULT": ModelEndpointState(),
+                "VISION_VENDOR": ModelEndpointState(),
+            },
+            model_roles={
+                "dialogue": ModelRoleState("DEFAULT", "text-model"),
+                "vision": ModelRoleState("VISION_VENDOR", "vision-model"),
+            },
+        )
+        page = AiPage(state)
+        page.endpoint_selector.setCurrentText("VISION_VENDOR")
+
+        with patch("pages.ai_page.InfoBar.error") as show_error:
+            page._delete_current_endpoint()
+
+        show_error.assert_called_once()
+        self.assertIn("VISION_VENDOR", state.model_endpoints)
+
     def test_aiPage_whenConnectionWorksButAiIsOff_shouldExplainDisabledState(self):
         page = AiPage(AppState(ai_enabled=False))
 

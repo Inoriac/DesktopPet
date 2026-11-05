@@ -177,10 +177,19 @@ def apply_model_endpoint_settings(
     profile: Dict[str, Any],
     endpoints: Dict[str, Any],
     roles: Dict[str, Any],
+    *,
+    active_endpoint: str | None = None,
+    endpoint_models: Dict[str, Any] | None = None,
+    endpoint_role_presets: Dict[str, Any] | None = None,
 ) -> None:
     """Write endpoint registry and role references without duplicating secrets."""
     if not isinstance(endpoints, dict) or "DEFAULT" not in endpoints:
         raise ValueError("modelEndpoints must contain DEFAULT")
+    previous_endpoints = (
+        profile.get("modelEndpoints")
+        if isinstance(profile.get("modelEndpoints"), dict)
+        else {}
+    )
     serialized_endpoints = {}
     for endpoint_id, endpoint in endpoints.items():
         if not isinstance(endpoint_id, str) or not ENDPOINT_ID_PATTERN.fullmatch(
@@ -251,6 +260,106 @@ def apply_model_endpoint_settings(
         for legacy_field in ("model", "maxTokens", "temperature"):
             daydream.pop(legacy_field, None)
 
+    if isinstance(active_endpoint, str) and active_endpoint in serialized_endpoints:
+        resolved_active = active_endpoint
+    elif (isinstance(profile.get("activeEndpoint"), str)
+            and profile["activeEndpoint"] in serialized_endpoints):
+        resolved_active = profile["activeEndpoint"]
+    else:
+        dlg_routes = (
+            profile.get("modelRoles", {})
+            .get("dialogue", {})
+            .get("routes", [])
+        )
+        dlg_ref = (
+            dlg_routes[0].get("endpointRef")
+            if isinstance(dlg_routes, list)
+            and dlg_routes
+            and isinstance(dlg_routes[0], dict)
+            else "DEFAULT"
+        )
+        resolved_active = (
+            dlg_ref
+            if isinstance(dlg_ref, str) and dlg_ref in serialized_endpoints
+            else "DEFAULT"
+        )
+
+    active_role_map: Dict[str, tuple[str, str]] = {}
+    for role in MODEL_ROLES:
+        role_cfg = profile.get("modelRoles", {}).get(role)
+        routes = role_cfg.get("routes") if isinstance(role_cfg, dict) else None
+        if isinstance(routes, list) and routes and isinstance(routes[0], dict):
+            ep_ref = routes[0].get("endpointRef", resolved_active)
+            mdl = routes[0].get("model", "")
+            active_role_map[role] = (
+                ep_ref if isinstance(ep_ref, str) and ep_ref in serialized_endpoints else resolved_active,
+                mdl if isinstance(mdl, str) else "",
+            )
+
+    for endpoint_id, endpoint_obj in serialized_endpoints.items():
+        prev_ep = (
+            previous_endpoints.get(endpoint_id)
+            if isinstance(previous_endpoints.get(endpoint_id), dict)
+            else {}
+        )
+        explicit_default = (
+            endpoint_models.get(endpoint_id)
+            if isinstance(endpoint_models, dict)
+            else None
+        )
+        if isinstance(explicit_default, str):
+            default_model = explicit_default
+        elif isinstance(prev_ep.get("defaultModel"), str):
+            default_model = prev_ep["defaultModel"]
+        else:
+            default_model = ""
+
+        raw_preset = None
+        if (endpoint_id != resolved_active
+                and isinstance(endpoint_role_presets, dict)
+                and isinstance(endpoint_role_presets.get(endpoint_id), dict)):
+            raw_preset = endpoint_role_presets[endpoint_id]
+        elif (endpoint_id != resolved_active
+                and isinstance(prev_ep.get("modelRoles"), dict)):
+            raw_preset = prev_ep["modelRoles"]
+
+        serialized_preset: Dict[str, Dict[str, str]] = {}
+        for role in MODEL_ROLES:
+            if endpoint_id == resolved_active:
+                if role in active_role_map:
+                    ep_ref, mdl = active_role_map[role]
+                else:
+                    ep_ref, mdl = endpoint_id, default_model
+            elif isinstance(raw_preset, dict) and role in raw_preset:
+                item = raw_preset[role]
+                cand_ref = str(_state_value(
+                    item, "endpoint_ref",
+                    _state_value(item, "endpointRef", endpoint_id)))
+                ep_ref = cand_ref if cand_ref in serialized_endpoints else endpoint_id
+                mdl = str(_state_value(
+                    item, "model", default_model if ep_ref == endpoint_id else ""))
+            else:
+                ep_ref, mdl = endpoint_id, default_model
+            serialized_preset[role] = {"endpointRef": ep_ref, "model": mdl}
+
+        if not default_model:
+            default_model = next(
+                (entry["model"] for entry in serialized_preset.values()
+                 if entry["endpointRef"] == endpoint_id and entry["model"]),
+                next(
+                    (mdl for ref, mdl in active_role_map.values()
+                     if ref == endpoint_id and mdl),
+                    "",
+                ),
+            )
+            if endpoint_id != resolved_active and raw_preset is None:
+                for role in MODEL_ROLES:
+                    serialized_preset[role]["model"] = default_model
+
+        endpoint_obj["defaultModel"] = default_model
+        endpoint_obj["modelRoles"] = serialized_preset
+
+    profile["activeEndpoint"] = resolved_active
     profile["modelEndpoints"] = serialized_endpoints
     for legacy_field in (
             "provider", "baseUrl", "apiKey", "model", "visual_model",
@@ -285,11 +394,16 @@ def apply_settings(template: Dict[str, Any], settings: Dict[str, Any]) -> Dict[s
         profile["enabled"] = bool(settings["aiEnabled"])
     if "emotionEnabled" in settings:
         profile.setdefault("emotion", {})["enabled"] = bool(settings["emotionEnabled"])
-    if "modelEndpoints" in settings or "modelRoles" in settings:
+    if ("modelEndpoints" in settings or "modelRoles" in settings
+            or "activeEndpoint" in settings
+            or "endpointRolePresets" in settings):
         apply_model_endpoint_settings(
             profile,
             settings.get("modelEndpoints", {}),
             settings.get("modelRoles", {}),
+            active_endpoint=settings.get("activeEndpoint"),
+            endpoint_models=settings.get("endpointModels"),
+            endpoint_role_presets=settings.get("endpointRolePresets"),
         )
     sc = _screen_chat(profile)
     if "autoScreenChat" in settings:

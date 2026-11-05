@@ -55,10 +55,14 @@ class AppState:
     auto_screen_chat: bool = False
     chat_interval_min_ms: int = 480000
     chat_interval_max_ms: int = 720000
+    active_endpoint: str = "DEFAULT"
     model_endpoints: Dict[str, ModelEndpointState] = field(
         default_factory=_default_model_endpoints)
     model_roles: Dict[str, ModelRoleState] = field(
         default_factory=_default_model_roles)
+    endpoint_models: Dict[str, str] = field(default_factory=dict)
+    endpoint_role_presets: Dict[str, Dict[str, ModelRoleState]] = field(
+        default_factory=dict)
 
     # 语音设置（音效开关暂不实现，见计划 §十一）
     voice_enabled: bool = False
@@ -87,11 +91,99 @@ class AppState:
     theme: str = "dark"
 
     def __post_init__(self) -> None:
+        self.sync_endpoint_presets()
+
+    def sync_endpoint_presets(self) -> None:
+        """Keep active model_roles and per-endpoint role presets consistent."""
         self.model_endpoints = dict(self.model_endpoints)
         self.model_endpoints.setdefault("DEFAULT", ModelEndpointState())
+        if (not isinstance(self.active_endpoint, str)
+                or self.active_endpoint not in self.model_endpoints):
+            self.active_endpoint = "DEFAULT"
+
         self.model_roles = dict(self.model_roles)
         for role in MODEL_ROLES:
-            self.model_roles.setdefault(role, ModelRoleState())
+            role_state = self.model_roles.get(role)
+            if isinstance(role_state, ModelRoleState):
+                self.model_roles[role] = ModelRoleState(
+                    role_state.endpoint_ref, role_state.model)
+            elif isinstance(role_state, dict):
+                ref = role_state.get(
+                    "endpoint_ref",
+                    role_state.get("endpointRef", self.active_endpoint),
+                )
+                mdl = role_state.get("model", "")
+                self.model_roles[role] = ModelRoleState(
+                    ref if isinstance(ref, str) else self.active_endpoint,
+                    mdl if isinstance(mdl, str) else "",
+                )
+            else:
+                self.model_roles[role] = ModelRoleState(
+                    endpoint_ref=self.active_endpoint)
+
+        self.endpoint_models = {
+            ep_id: model
+            for ep_id, model in dict(self.endpoint_models).items()
+            if ep_id in self.model_endpoints and isinstance(model, str)
+        }
+
+        cleaned_presets: Dict[str, Dict[str, ModelRoleState]] = {}
+        for ep_id, preset in dict(self.endpoint_role_presets).items():
+            if ep_id not in self.model_endpoints or not isinstance(preset, dict):
+                continue
+            ep_default = self.endpoint_models.get(ep_id, "")
+            normalized: Dict[str, ModelRoleState] = {}
+            for role in MODEL_ROLES:
+                item = preset.get(role)
+                if isinstance(item, ModelRoleState):
+                    ref = (item.endpoint_ref
+                           if item.endpoint_ref in self.model_endpoints
+                           else ep_id)
+                    normalized[role] = ModelRoleState(ref, item.model)
+                elif isinstance(item, dict):
+                    raw_ref = item.get(
+                        "endpoint_ref", item.get("endpointRef", ep_id))
+                    ref = (raw_ref
+                           if isinstance(raw_ref, str)
+                           and raw_ref in self.model_endpoints
+                           else ep_id)
+                    raw_model = item.get(
+                        "model", ep_default if ref == ep_id else "")
+                    normalized[role] = ModelRoleState(
+                        ref, raw_model if isinstance(raw_model, str) else "")
+                else:
+                    normalized[role] = ModelRoleState(ep_id, ep_default)
+            cleaned_presets[ep_id] = normalized
+
+        cleaned_presets[self.active_endpoint] = {
+            role: ModelRoleState(
+                self.model_roles[role].endpoint_ref,
+                self.model_roles[role].model,
+            )
+            for role in MODEL_ROLES
+        }
+
+        for ep_id in self.model_endpoints:
+            if not self.endpoint_models.get(ep_id):
+                source_roles = cleaned_presets.get(ep_id, {})
+                inferred = next(
+                    (r.model for r in source_roles.values()
+                     if r.endpoint_ref == ep_id and r.model),
+                    next(
+                        (r.model for r in self.model_roles.values()
+                         if r.endpoint_ref == ep_id and r.model),
+                        "",
+                    ),
+                )
+                self.endpoint_models[ep_id] = inferred
+            if ep_id not in cleaned_presets:
+                default_model = self.endpoint_models.get(ep_id, "")
+                cleaned_presets[ep_id] = {
+                    role: ModelRoleState(ep_id, default_model)
+                    for role in MODEL_ROLES
+                }
+
+        self.endpoint_role_presets = cleaned_presets
 
     @classmethod
     def from_config(cls, config: Dict[str, Any] | None) -> "AppState":
@@ -197,6 +289,8 @@ class AppState:
         registry = profile.get("modelEndpoints")
         state.model_endpoints = {}
         state.model_roles = {}
+        state.endpoint_models = {}
+        state.endpoint_role_presets = {}
         if isinstance(registry, dict) and registry:
             for endpoint_id, raw_endpoint in registry.items():
                 if isinstance(endpoint_id, str) and isinstance(raw_endpoint, dict):
@@ -214,6 +308,45 @@ class AppState:
                                   else "DEFAULT"),
                     model=model if isinstance(model, str) else "",
                 )
+            raw_active = profile.get("activeEndpoint")
+            if isinstance(raw_active, str) and raw_active in state.model_endpoints:
+                state.active_endpoint = raw_active
+            else:
+                dlg_ref = state.model_roles["dialogue"].endpoint_ref
+                state.active_endpoint = (
+                    dlg_ref if dlg_ref in state.model_endpoints else "DEFAULT")
+            for endpoint_id, raw_endpoint in registry.items():
+                if not isinstance(endpoint_id, str) or not isinstance(raw_endpoint, dict):
+                    continue
+                raw_default_model = raw_endpoint.get("defaultModel")
+                if isinstance(raw_default_model, str):
+                    state.endpoint_models[endpoint_id] = raw_default_model
+                raw_preset = raw_endpoint.get("modelRoles")
+                if (endpoint_id != state.active_endpoint
+                        and isinstance(raw_preset, dict) and raw_preset):
+                    fallback_default = state.endpoint_models.get(endpoint_id, "")
+                    preset_roles: Dict[str, ModelRoleState] = {}
+                    for role in MODEL_ROLES:
+                        item = raw_preset.get(role)
+                        if isinstance(item, dict):
+                            ref = item.get("endpointRef", endpoint_id)
+                            if (not isinstance(ref, str)
+                                    or ref not in state.model_endpoints):
+                                ref = endpoint_id
+                            mdl = item.get(
+                                "model",
+                                fallback_default if ref == endpoint_id else "",
+                            )
+                            preset_roles[role] = ModelRoleState(
+                                endpoint_ref=ref,
+                                model=mdl if isinstance(mdl, str) else "",
+                            )
+                        else:
+                            preset_roles[role] = ModelRoleState(
+                                endpoint_ref=endpoint_id,
+                                model=fallback_default,
+                            )
+                    state.endpoint_role_presets[endpoint_id] = preset_roles
         else:
             dialogue_routes = role_routes(profile, "dialogue")
             profile_endpoint = endpoint_from_legacy(profile)
@@ -241,6 +374,8 @@ class AppState:
                     endpoint_ref=endpoint_ref,
                     model=model if isinstance(model, str) else "",
                 )
+            state.active_endpoint = "DEFAULT"
+        state.sync_endpoint_presets()
 
         emotion = object_at(profile, "emotion")
         set_bool("emotion_enabled", emotion, "enabled")
@@ -275,6 +410,7 @@ class AppState:
 
     def to_settings_dict(self) -> Dict[str, Any]:
         """映射到 config_loader.apply_settings 期望的扁平 settings 键名。"""
+        self.sync_endpoint_presets()
         d = asdict(self)
         # 角色身份走启动参数，不进模型配置。
         d.pop("pet_name", None)
@@ -291,8 +427,11 @@ class AppState:
             "autoScreenChat": d["auto_screen_chat"],
             "chatIntervalMinMs": d["chat_interval_min_ms"],
             "chatIntervalMaxMs": d["chat_interval_max_ms"],
+            "activeEndpoint": d["active_endpoint"],
             "modelEndpoints": d["model_endpoints"],
             "modelRoles": d["model_roles"],
+            "endpointModels": d["endpoint_models"],
+            "endpointRolePresets": d["endpoint_role_presets"],
             "voiceEnabled": d["voice_enabled"],
             "speaker": d["speaker"],
             "volumePercent": d["volume_percent"],
